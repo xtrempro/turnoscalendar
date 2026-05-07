@@ -37,6 +37,8 @@ let linkedUnitState = {
     message: "",
     links: []
 };
+let activeFirebaseBackdrop = null;
+let loginGateEnabled = true;
 
 function escapeHTML(value) {
     return String(value ?? "")
@@ -168,21 +170,62 @@ function updateTopbar() {
     }
 }
 
-function closeModal(backdrop) {
+function setLoginGateActive(active) {
+    if (typeof document === "undefined") return;
+
+    document.body.classList.toggle(
+        "auth-gate-active",
+        Boolean(active)
+    );
+}
+
+function closeModal(backdrop, options = {}) {
+    if (
+        !options.force &&
+        backdrop?.dataset.authRequired === "true" &&
+        !currentUser
+    ) {
+        return;
+    }
+
+    if (activeFirebaseBackdrop === backdrop) {
+        activeFirebaseBackdrop = null;
+    }
+
     backdrop?.remove();
 }
 
-function createModal() {
+function createModal(options = {}) {
+    if (activeFirebaseBackdrop?.isConnected) {
+        if (options.locked) {
+            activeFirebaseBackdrop.dataset.authRequired = "true";
+            activeFirebaseBackdrop.classList.add(
+                "turn-change-dialog-backdrop--locked"
+            );
+        }
+
+        return activeFirebaseBackdrop;
+    }
+
     const backdrop = document.createElement("div");
 
     backdrop.className = "turn-change-dialog-backdrop";
+    if (options.locked) {
+        backdrop.dataset.authRequired = "true";
+        backdrop.classList.add("turn-change-dialog-backdrop--locked");
+    }
     document.body.appendChild(backdrop);
 
     backdrop.addEventListener("click", event => {
-        if (event.target === backdrop) {
+        if (
+            event.target === backdrop &&
+            backdrop.dataset.authRequired !== "true"
+        ) {
             closeModal(backdrop);
         }
     });
+
+    activeFirebaseBackdrop = backdrop;
 
     return backdrop;
 }
@@ -522,7 +565,9 @@ function renderSignedInModal(backdrop) {
     bindModalActions(backdrop);
 }
 
-function renderSignedOutModal(backdrop) {
+function renderSignedOutModal(backdrop, options = {}) {
+    const required = Boolean(options.required);
+
     backdrop.innerHTML = `
         <section class="turn-change-dialog firebase-dialog">
             <strong>Iniciar sesion</strong>
@@ -531,11 +576,15 @@ function renderSignedOutModal(backdrop) {
                 o unirte a uno existente.
             </p>
             <div class="firebase-dialog-note">
-                Hasta iniciar sesion y elegir un entorno, el sistema seguira trabajando en este equipo.
+                ${required
+                    ? "Para proteger los datos, el sistema no permite realizar cambios sin una sesion iniciada."
+                    : "Hasta iniciar sesion y elegir un entorno, el sistema seguira trabajando en este equipo."}
             </div>
             <div class="turn-change-dialog__actions">
                 <button class="primary-button" type="button" data-action="sign-in">Ingresar con Google</button>
-                <button class="secondary-button" type="button" data-action="close">Cancelar</button>
+                ${required ? "" : `
+                    <button class="secondary-button" type="button" data-action="close">Cancelar</button>
+                `}
             </div>
         </section>
     `;
@@ -582,18 +631,39 @@ async function handleAction(action, backdrop, sourceButton = null) {
         }
 
         if (action === "sign-in") {
-            await signInWithGoogle();
-            closeModal(backdrop);
+            const result = await signInWithGoogle();
+
+            currentUser = result?.user || currentUser;
+            if (currentUser) {
+                await ensureFirebaseUser(currentUser);
+                await refreshWorkspaces();
+                await refreshLinkedUnits();
+                setLoginGateActive(false);
+                backdrop.dataset.authRequired = "false";
+                backdrop.classList.remove(
+                    "turn-change-dialog-backdrop--locked"
+                );
+                updateTopbar();
+                options.onAuthChange?.(currentUser);
+                options.onWorkspaceChange?.(currentWorkspace);
+                renderSignedInModal(backdrop);
+            } else {
+                closeModal(backdrop, { force: true });
+            }
             return;
         }
 
         if (action === "sign-out") {
+            if (loginGateEnabled) {
+                setLoginGateActive(true);
+            }
+
             await signOutFirebase();
             setActiveWorkspace(null);
             currentWorkspace = null;
             workspaceList = [];
             migrationState = { mode: "idle", message: "" };
-            closeModal(backdrop);
+            closeModal(backdrop, { force: true });
             updateTopbar();
             options.onWorkspaceChange?.(currentWorkspace);
             return;
@@ -845,16 +915,18 @@ function bindModalActions(backdrop) {
     });
 }
 
-async function openFirebaseModal() {
+async function openFirebaseModal(options = {}) {
     if (!isFirebaseConfigured()) {
         renderDisabledModal();
         return;
     }
 
-    const backdrop = createModal();
+    const required =
+        Boolean(options.required) && loginGateEnabled && !currentUser;
+    const backdrop = createModal({ locked: required });
 
     if (!currentUser) {
-        renderSignedOutModal(backdrop);
+        renderSignedOutModal(backdrop, { required });
         return;
     }
 
@@ -865,14 +937,21 @@ async function openFirebaseModal() {
 
 export async function initFirebaseShell(initOptions = {}) {
     options = initOptions;
+    loginGateEnabled = options.requireLogin !== false;
 
     updateTopbar();
 
     options.userChip?.addEventListener("click", () => {
-        openFirebaseModal();
+        openFirebaseModal({
+            required: loginGateEnabled && !currentUser
+        });
     });
 
     if (!isFirebaseConfigured()) return;
+
+    if (loginGateEnabled) {
+        setLoginGateActive(true);
+    }
 
     try {
         await onFirebaseAuthChanged(async user => {
@@ -882,10 +961,27 @@ export async function initFirebaseShell(initOptions = {}) {
                 await ensureFirebaseUser(user);
                 await refreshWorkspaces();
                 await refreshLinkedUnits();
+                setLoginGateActive(false);
+
+                if (
+                    activeFirebaseBackdrop?.isConnected &&
+                    activeFirebaseBackdrop.dataset.authRequired === "true"
+                ) {
+                    activeFirebaseBackdrop.dataset.authRequired = "false";
+                    activeFirebaseBackdrop.classList.remove(
+                        "turn-change-dialog-backdrop--locked"
+                    );
+                    renderSignedInModal(activeFirebaseBackdrop);
+                }
             } else {
                 workspaceList = [];
                 currentWorkspace = null;
                 linkedUnitState.links = [];
+
+                if (loginGateEnabled) {
+                    setLoginGateActive(true);
+                    openFirebaseModal({ required: true });
+                }
             }
 
             updateTopbar();

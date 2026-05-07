@@ -2023,6 +2023,15 @@ body[data-active-view="log"] .secondary-grid {
     backdrop-filter: blur(8px);
 }
 
+.turn-change-dialog-backdrop--locked {
+    z-index: 120;
+}
+
+body.auth-gate-active .app-shell {
+    pointer-events: none;
+    user-select: none;
+}
+
 .turn-change-dialog {
     width: min(440px, 100%);
     padding: 22px;

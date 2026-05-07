@@ -373,6 +373,7 @@ Arquitectura:
 - `storage.rules` permite archivos bajo `workspaces/{workspaceId}/...` solo a miembros.
 - Si Google login devuelve `auth/unauthorized-domain`, agregar el hostname usado en navegador en Firebase Console > Authentication > Settings > Authorized domains. Para desarrollo local, autorizar `127.0.0.1` y `localhost` sin puerto.
 - En el modal `Cuenta y entornos`, cada entorno muestra el ID en un input seleccionable y botones para `Copiar ID`, `Copiar invitacion` y `Enviar correo` con `mailto:` prellenado.
+- Si Firebase esta configurado, `js/firebaseShell.js` exige login Google antes de permitir cambios: abre automaticamente el modal de inicio de sesion y bloquea la app con `body.auth-gate-active` hasta que haya usuario autenticado.
 - Para unirse a un entorno, `js/workspaces.js` crea primero `workspaces/{workspaceId}/members/{uid}` y luego lee el workspace; `firebase.rules` permite esa creacion solo si el workspace existe. Despues de cambiar reglas, hay que publicarlas en Firebase Console o con Firebase CLI.
 
 Verificacion ejecutada tras este avance:
