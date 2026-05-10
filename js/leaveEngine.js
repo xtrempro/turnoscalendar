@@ -47,6 +47,7 @@ import {
     puedeIniciarLegal,
     puedeReemplazarAusencia
 } from "./rulesEngine.js";
+import { createLeaveMemoTask } from "./memos.js";
 
 /* =========================================
 HELPERS
@@ -343,6 +344,15 @@ export async function aplicarAdministrativo(fecha, cantidad = 1){
         }
     );
 
+    createLeaveMemoTask({
+        profile: currentProfile,
+        typeLabel: "P. Administrativo",
+        amount: cantidad,
+        startKey: keys[0],
+        endKey: keys[keys.length - 1],
+        sourceType: "admin"
+    });
+
     renderTimeline();
     analizarStaffingMes();
 
@@ -395,6 +405,19 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
             amount: 0.5
         }
     );
+
+    createLeaveMemoTask({
+        profile: getCurrentProfile(),
+        typeLabel: tipo === "M"
+            ? "1/2 ADM Manana"
+            : "1/2 ADM Tarde",
+        amount: 0.5,
+        startKey: key,
+        endKey: key,
+        sourceType: tipo === "M"
+            ? "half_admin_morning"
+            : "half_admin_afternoon"
+    });
 
     renderTimeline();
     analizarStaffingMes();
@@ -615,6 +638,15 @@ export async function aplicarLegal(fecha, cantidad){
         }
     );
 
+    createLeaveMemoTask({
+        profile: getCurrentProfile(),
+        typeLabel: "F. Legal",
+        amount: cantidad,
+        startKey,
+        endKey: nuevos[nuevos.length - 1],
+        sourceType: "legal"
+    });
+
     renderTimeline();
     analizarStaffingMes();
 
@@ -744,6 +776,15 @@ export async function aplicarComp(fecha, cantidad = 10){
             amount: total
         }
     );
+
+    createLeaveMemoTask({
+        profile: getCurrentProfile(),
+        typeLabel: "F. Compensatorio",
+        amount: total,
+        startKey,
+        endKey: nuevos[nuevos.length - 1],
+        sourceType: "comp"
+    });
 
     renderTimeline();
     analizarStaffingMes();
@@ -1020,6 +1061,17 @@ export async function aplicarLicencia(
             type
         }
     );
+
+    if (type === "unpaid_leave") {
+        createLeaveMemoTask({
+            profile: getCurrentProfile(),
+            typeLabel: "Permiso sin goce",
+            amount: total,
+            startKey,
+            endKey: keys[keys.length - 1],
+            sourceType: "unpaid_leave"
+        });
+    }
 
     renderTimeline();
     analizarStaffingMes();

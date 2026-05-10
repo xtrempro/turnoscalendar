@@ -1,12 +1,12 @@
 # ProTurnos - Project Context
 
-Ultima actualizacion: 2026-05-06.
+Ultima actualizacion: 2026-05-09.
 
 Este archivo existe para que una futura sesion de Codex pueda retomar el proyecto sin depender del historial del chat. Antes de cambiar codigo, leer este archivo y luego confirmar el estado real con `git status`, `rg` y lectura de los modulos relevantes.
 
 ## Resumen
 
-ProTurnos es una aplicacion web estatica para gestion de turnos, permisos, ausencias, reemplazos, horas extras, dotacion, marcaciones, solicitudes de trabajadores y bitacora LOG.
+ProTurnos es una aplicacion web estatica para gestion de turnos, permisos, ausencias, reemplazos, horas extras, dotacion, marcaciones, solicitudes de trabajadores, MEMOS y bitacora LOG.
 
 La app se abre desde `index.html` y carga `js/main.js` como modulo ES:
 
@@ -77,6 +77,20 @@ http://127.0.0.1:8000/
   - El simbolo `!!!` del calendario usa la clase `clock-severe-day`, con badge rojo.
   - Cada registro en el panel Marcajes permite ingresar `Comentarios` y adjuntar documentos; los documentos se guardan dentro del segmento de marcaje como `documents`.
   - El registro de Marcajes tiene una barra de mes propia (`clockMarksPrevMonth`, `clockMarksNextMonth`, `clockMarksMonthLabel`) similar a Cambios de Turno, para avanzar o retroceder el mes sin depender de la navegacion visible del calendario principal.
+- Menu MEMOS:
+  - La navegacion principal incluye `MEMOS` despues de `Solicitudes` y antes de `Cambios de Turno`.
+  - `js/memos.js` guarda tareas en `localStorage` bajo `memos`, renderiza la pagina y mantiene el badge de pendientes.
+  - Se crea una tarea `Memorandum pendiente` al aplicar P. Administrativo, F. Legal, F. Compensatorio, 1/2 ADM Manana, 1/2 ADM Tarde, Permiso sin goce o un marcaje incompleto de entrada/salida.
+  - Cada tarea permite marcar `Realizado` y adjuntar documentos en base64.
+- Devolucion de Horas:
+  - El menu Turnos tiene el boton `DEVOLUCION DE HORAS (0)` antes de `AUSENCIA INJUSTIFICADA`.
+  - El saldo se edita en `Perfil > Vacaciones Disponibles > Horas para devolucion`.
+  - Al aplicar, solo se habilitan turnos base sin permisos, licencias, feriados, compensatorios, ausencias ni devoluciones ya aplicadas.
+  - El modal permite retrasar entrada y/o adelantar salida dentro del horario del turno, o usar `Todo el Turno` si el saldo alcanza.
+  - Calendario muestra `Devolucion` para turno completo y `Dev. Parcial` para parcial; timeline marca `D` o `DP`.
+  - Los marcajes de reloj control sobre una devolucion parcial usan el horario reducido como jornada esperada.
+  - Si el trabajador marca dentro del tramo cubierto por devolucion parcial o 1/2 ADM, esas horas no se consideran HHEE; solo cuenta como extra lo trabajado fuera del turno base/permisos.
+  - En la pagina HH.EE existe un switch `Enviar HH.EE a devolucion`; al activarlo, las HH.EE del mes visualizado no van a pago y se suman al saldo de devolucion con factor 1.25 para diurnas y 1.5 para nocturnas.
 - Calendario de cambios de turno:
   - Los minicalendarios para escoger fecha de cambio y devolucion en `js/swapUI.js` usan una grilla fija de 42 celdas con espacios invisibles (`mini-spacer`), para que todos los meses mantengan la misma altura y los botones anterior/siguiente no cambien de posicion al navegar.
 - Verificacion ejecutada tras esos cambios:
@@ -110,6 +124,7 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/
 - `js/staffing.js`: dotacion requerida, analisis de faltantes/excesos y contratos de reemplazo.
 - `js/clockMarks.js`: marcaciones, segmentos esperados, atrasos, extras e incidencias.
 - `js/workerRequests.js`: solicitudes de trabajadores, aceptacion/rechazo y aplicacion de solicitudes.
+- `js/memos.js`: tareas de memorandum pendientes, checkbox de realizado, documentos adjuntos y contador del menu MEMOS.
 - `js/hoursEngine.js`, `js/hoursCharts.js`, `js/hoursReport.js`: calculos, graficos y reportes de horas.
 - `js/systemSettings.js`: modal de ajustes, valores hora por grado, feriados manuales, solicitudes de reemplazo y dotacion.
 - `js/holidays.js`: feriados de Chile por API Nager.Date y feriados manuales.
@@ -125,6 +140,7 @@ La navegacion vive en `index.html` con botones `nav-tile`.
 
 - `calendarPanel`: calendario de turnos del perfil activo.
 - `workerRequestsPanel`: solicitudes de trabajadores.
+- `memosPanel`: tareas MEMOS / memorandum pendientes.
 - `clockMarksPanel`: marcaciones.
 - `turnChangesView`: cambios de turno.
 - `staffingPanel`: dotacion.
@@ -151,11 +167,15 @@ Claves principales:
 - `shift_<perfil>`: asignacion de turno activa/inactiva.
 - `carry_<perfil>_<year>_<month>`: arrastre mensual.
 - `leaveBalances_<perfil>`: saldos manuales de permisos/vacaciones por anio.
+- `leaveBalances_<perfil>[anio].hoursReturn`: saldo para la funcionalidad `Devolucion de Horas`; se edita en `Perfil > Vacaciones Disponibles > Horas para devolucion` y alimenta el contador del boton `DEVOLUCION DE HORAS (0)` en el menu Turnos.
+- `hourReturns_<perfil>`: devoluciones de horas aplicadas por dia calendario. Cada registro guarda turno/segmento, si cubre todo el turno, entrada/salida parcial y horas descontadas del saldo `hoursReturn`.
+- `hheeReturnTransfers_<perfil>`: configuracion mensual del switch HH.EE -> Devolucion de horas, con horas diurnas/nocturnas base, horas transferidas y saldo base al momento de activar.
 - `replacements`: reemplazos, prestamos y respaldos de HHEE.
 - `replacementRequests`: solicitudes de reemplazo.
 - `replacementRequestConfig`: configuracion de solicitudes de reemplazo.
 - `turnChangeConfig`: reglas globales de cambios de turno y turnos 24.
 - `workerRequests`: solicitudes desde trabajadores.
+- `memos`: tareas de memorandum pendientes y realizadas, con documentos adjuntos.
 - `auditLog`: bitacora de modificaciones.
 - `gradeHistory_<perfil>`: historial de grado/estamento/contrato.
 - `contractHistory_<perfil>`: historial contractual.

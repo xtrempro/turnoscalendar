@@ -24,6 +24,10 @@ import {
     getScheduledSegmentsForProfile,
     hasClockMark
 } from "./clockMarks.js";
+import {
+    calculateHheeReturnTransferHours,
+    isHheeReturnTransferEnabled
+} from "./hourReturnTransfers.js";
 
 const HORA_BASE_DIARIA = 8.8;
 
@@ -77,6 +81,17 @@ function formatHour(value) {
 
 function formatExtra(value) {
     const rounded = roundSignedExtra(value);
+
+    if (Number.isInteger(rounded)) {
+        return String(rounded);
+    }
+
+    return String(rounded).replace(".", ",");
+}
+
+function formatTransferHours(value) {
+    const rounded =
+        Math.round((Number(value) || 0) * 100) / 100;
 
     if (Number.isInteger(rounded)) {
         return String(rounded);
@@ -1666,23 +1681,32 @@ function buildStats({
         hheeNocturnas - clockAbsences.n
     );
 
-    const payment = calculatePaymentFromSegments(
-        nombre,
-        calculatePaymentSegments({
-            mode,
+    const returnTransferEnabled =
+        isHheeReturnTransferEnabled(nombre, y, m);
+    const returnTransferHours =
+        calculateHheeReturnTransferHours(
+            hheeDiurnas,
+            hheeNocturnas
+        );
+    const payment = returnTransferEnabled
+        ? { d: 0, n: 0 }
+        : calculatePaymentFromSegments(
             nombre,
-            y,
-            m,
-            days,
-            holidays,
-            data,
-            maps,
-            carryIn: effectiveCarryIn,
-            horasHabiles
-        }),
-        hheeDiurnas,
-        hheeNocturnas
-    );
+            calculatePaymentSegments({
+                mode,
+                nombre,
+                y,
+                m,
+                days,
+                holidays,
+                data,
+                maps,
+                carryIn: effectiveCarryIn,
+                horasHabiles
+            }),
+            hheeDiurnas,
+            hheeNocturnas
+        );
 
     return {
         totalD: roundHour(worked.d),
@@ -1692,6 +1716,8 @@ function buildStats({
         hheeNocturnas,
         paymentDiurno: payment.d,
         paymentNocturno: payment.n,
+        returnTransferEnabled,
+        returnTransferHours,
         mode,
         carryOut: calculateCarryForMode(
             mode,
@@ -1746,6 +1772,8 @@ export function calcularHorasMesPerfil(
             hheeNocturnas: 0,
             paymentDiurno: 0,
             paymentNocturno: 0,
+            returnTransferEnabled: false,
+            returnTransferHours: 0,
             mode: "aggregate",
             carryOut: { d: 0, n: 0 }
         };
@@ -1788,25 +1816,45 @@ export function renderSummaryHTML(stats) {
             maximumFractionDigits: 0
         }
     );
+    const dayAmount = stats.returnTransferEnabled
+        ? `A devoluci\u00f3n: ${formatTransferHours(
+            Math.max(0, stats.hheeDiurnas || 0) * 1.25
+        )}h`
+        : `$${currency.format(pagoDiurno)}`;
+    const nightAmount = stats.returnTransferEnabled
+        ? `A devoluci\u00f3n: ${formatTransferHours(
+            Math.max(0, stats.hheeNocturnas || 0) * 1.5
+        )}h`
+        : `$${currency.format(pagoNocturno)}`;
+    const transferNote = stats.returnTransferEnabled
+        ? `
+            <span>
+                Mes traspasado a devoluci&oacute;n:
+                ${formatTransferHours(stats.returnTransferHours)}h
+                disponibles.
+            </span>
+        `
+        : "";
 
     return `
         <div class="summary-grid">
             <article class="summary-card">
                 <span class="summary-label">Diurnas</span>
                 <strong class="summary-value ${dayAlertClass}">${formatExtra(stats.hheeDiurnas)}h</strong>
-                <span class="summary-amount">$${currency.format(pagoDiurno)}</span>
+                <span class="summary-amount">${dayAmount}</span>
             </article>
 
             <article class="summary-card">
                 <span class="summary-label">Nocturnas</span>
                 <strong class="summary-value">${formatExtra(stats.hheeNocturnas)}h</strong>
-                <span class="summary-amount">$${currency.format(pagoNocturno)}</span>
+                <span class="summary-amount">${nightAmount}</span>
             </article>
         </div>
 
         <div class="summary-footnote">
             <span>Total trabajado: ${formatHour(stats.totalD)}h diurnas / ${formatHour(stats.totalN)}h nocturnas</span>
             <span>Base del mes: ${formatHour(stats.horasHabiles)}h</span>
+            ${transferNote}
         </div>
     `;
 }

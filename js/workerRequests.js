@@ -37,6 +37,7 @@ import {
     getScheduledSegmentsForState,
     saveClockMarks
 } from "./clockMarks.js";
+import { createClockMemoTask } from "./memos.js";
 import {
     canSwapProfiles,
     getSwapDateBlockReason,
@@ -320,6 +321,15 @@ function normalizeClockSegment(segment = {}) {
     return normalized;
 }
 
+function clockSegmentLabel(segments, segmentId) {
+    const segment = segments.find(item => item.id === segmentId);
+
+    if (!segment) return "Turno";
+    if (segment.label) return `Turno ${segment.label}`;
+
+    return "Turno";
+}
+
 async function applyClockRequest(request, profile, date) {
     const keyDay = keyFromDate(date);
     const state =
@@ -402,6 +412,18 @@ async function applyClockRequest(request, profile, date) {
 
     marks[keyDay] = mark;
     saveClockMarks(profile, marks);
+    Object.entries(mark.segments).forEach(([segmentId, segment]) => {
+        if (!segment.missingEntry && !segment.missingExit) return;
+
+        createClockMemoTask({
+            profile,
+            dateKey: keyDay,
+            segmentId,
+            segmentLabel: clockSegmentLabel(segments, segmentId),
+            missingEntry: Boolean(segment.missingEntry),
+            missingExit: Boolean(segment.missingExit)
+        });
+    });
 
     return { ok: true };
 }

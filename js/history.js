@@ -20,6 +20,10 @@ function snapshotProfile(p){
         leaveBalances: getRaw(
             key(p,"leaveBalances")
         ),
+        hourReturns: getRaw(key(p,"hourReturns")),
+        hheeReturnTransfers: getRaw(
+            key(p,"hheeReturnTransfers")
+        ),
         abs: getRaw(key(p,"absences")),
         blocked: getRaw(key(p,"blocked")),
         shift: getRaw(key(p,"shift")),
@@ -40,6 +44,11 @@ function restoreProfile(p, state){
     setRaw(
         key(p,"leaveBalances"),
         state.leaveBalances || "{}"
+    );
+    setRaw(key(p,"hourReturns"), state.hourReturns || "{}");
+    setRaw(
+        key(p,"hheeReturnTransfers"),
+        state.hheeReturnTransfers || "{}"
     );
     setRaw(key(p,"absences"), state.abs || "{}");
     setRaw(key(p,"blocked"), state.blocked || "{}");
@@ -70,7 +79,8 @@ function snapshot(){
         profiles,
         ...snapshotProfile(p),
         swaps: getRaw("swaps"),
-        replacements: getRaw("replacements")
+        replacements: getRaw("replacements"),
+        memos: getRaw("memos")
     };
 }
 
@@ -91,6 +101,7 @@ function restore(state){
 
     setRaw("swaps", state.swaps || "[]");
     setRaw("replacements", state.replacements || "[]");
+    setRaw("memos", state.memos || "[]");
 }
 
 export function pushHistory(){

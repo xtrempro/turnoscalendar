@@ -730,11 +730,17 @@ export function estaBloqueadoModo(
     shiftAssigned,
     options = {}
 ) {
+    const hasHourReturn =
+        Boolean(options.hourReturns?.[keyDay]);
+    const hasFullHourReturn =
+        Boolean(options.hourReturns?.[keyDay]?.fullTurn);
+
     if (selectionMode === "halfadmin") {
         return (
             !isHab ||
             state === 0 ||
             state === 2 ||
+            hasHourReturn ||
             tieneAusencia(
                 keyDay,
                 admin,
@@ -746,7 +752,7 @@ export function estaBloqueadoModo(
     }
 
     if (selectionMode === MODO.ADMIN) {
-        return !puedeAplicarAdministrativo(
+        return hasHourReturn || !puedeAplicarAdministrativo(
             keyDay,
             state,
             isHab,
@@ -760,7 +766,7 @@ export function estaBloqueadoModo(
     }
 
     if (selectionMode === "legal") {
-        return !puedeIniciarLegal(
+        return hasHourReturn || !puedeIniciarLegal(
             keyDay,
             isHab,
             admin,
@@ -771,7 +777,7 @@ export function estaBloqueadoModo(
     }
 
     if (selectionMode === "comp") {
-        return !puedeAplicarCompensatorioDesde(
+        return hasHourReturn || !puedeAplicarCompensatorioDesde(
             keyDay,
             options.compCantidad || 0,
             options.holidays || {},
@@ -783,7 +789,7 @@ export function estaBloqueadoModo(
     }
 
     if (selectionMode === "license") {
-        return !puedeAplicarAusenciaBloqueanteDesde(
+        return hasHourReturn || !puedeAplicarAusenciaBloqueanteDesde(
             keyDay,
             options.licenseCantidad || 0,
             absences,
@@ -792,7 +798,7 @@ export function estaBloqueadoModo(
     }
 
     if (selectionMode === "unjustified") {
-        return !puedeAplicarAusenciaInjustificada(
+        return hasHourReturn || !puedeAplicarAusenciaInjustificada(
             keyDay,
             state,
             admin,
@@ -815,7 +821,24 @@ export function estaBloqueadoModo(
 
         return (
             !Number(state) ||
-            hasBlockingAbsence
+            hasBlockingAbsence ||
+            hasFullHourReturn
+        );
+    }
+
+    if (selectionMode === "hoursreturn") {
+        const hasBlockingAbsence = tieneAusencia(
+            keyDay,
+            admin,
+            legal,
+            comp,
+            absences
+        );
+
+        return (
+            !Number(state) ||
+            hasBlockingAbsence ||
+            hasHourReturn
         );
     }
 

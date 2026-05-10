@@ -1168,7 +1168,7 @@ export function saveManualLeaveBalances(
         ...currentYearBalances
     };
 
-    ["legal", "comp", "admin"].forEach(field => {
+    ["legal", "comp", "admin", "hoursReturn"].forEach(field => {
         if (
             !Object.prototype.hasOwnProperty.call(
                 balances,
@@ -1317,6 +1317,8 @@ export function updateProfile(oldName, nextProfile){
         "absences_",
         "rotativa_",
         "leaveBalances_",
+        "hourReturns_",
+        "hheeReturnTransfers_",
         "replacementContracts_",
         "clockMarks_",
         "hrLogs_",
@@ -1403,6 +1405,24 @@ export function updateProfile(oldName, nextProfile){
     }));
 
     saveWorkerRequests(workerRequests);
+
+    const replaceProfileName = value => {
+        if (!oldName || value === null || value === undefined) {
+            return value;
+        }
+
+        return String(value).split(oldName).join(targetName);
+    };
+    const memos = getJSON("memos", []).map(memo => ({
+        ...memo,
+        profile: memo.profile === oldName
+            ? targetName
+            : memo.profile,
+        sourceId: replaceProfileName(memo.sourceId),
+        detail: replaceProfileName(memo.detail)
+    }));
+
+    setJSON("memos", memos);
 
     if (currentProfile === oldName) {
         currentProfile = targetName;

@@ -1,6 +1,7 @@
 import { renderCalendar } from "./calendar.js";
 import { renderTimeline } from "./timeline.js";
 import { renderAuditLogPanel } from "./auditLog.js";
+import { renderMemosPanel } from "./memos.js";
 
 export function refreshAll(){
     renderCalendar();
@@ -21,6 +22,8 @@ export function refreshAll(){
     if (document.body.dataset.activeView === "log") {
         renderAuditLogPanel();
     }
+
+    renderMemosPanel();
 
     if (
         document.body.dataset.activeView === "clockmarks" &&

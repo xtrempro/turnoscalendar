@@ -82,7 +82,7 @@ function escapeHTML(value) {
 }
 
 function formatHour(value) {
-    const number = Math.round((Number(value) || 0) * 10) / 10;
+    const number = Math.round((Number(value) || 0) * 100) / 100;
 
     if (Number.isInteger(number)) {
         return String(number);
@@ -397,6 +397,12 @@ function getCalculationRows(stats, profileName) {
         { item: "Base habil ajustada del mes", valor: `${formatHour(stats.horasHabiles)}h` },
         { item: "HHEE diurnas redondeadas", valor: `${stats.hheeDiurnas}h` },
         { item: "HHEE nocturnas redondeadas", valor: `${stats.hheeNocturnas}h` },
+        {
+            item: "Destino de HH.EE del mes",
+            valor: stats.returnTransferEnabled
+                ? `Devolucion de horas (${formatHour(stats.returnTransferHours)}h generadas)`
+                : "Pago"
+        },
         { item: "Valor hora actual", valor: `$${formatMoney(valorHora)}` },
         { item: "Regla de valor hora", valor: "Se usa el grado vigente en la fecha de cada hora extra cuando existe historial." },
         { item: "Pago diurno estimado", valor: `$${formatMoney(pagoDiurno)}` },

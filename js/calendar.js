@@ -88,6 +88,10 @@ import {
     hasSevereClockIncident,
     hasSimpleClockIncident
 } from "./clockMarks.js";
+import {
+    getHourReturns,
+    hourReturnCalendarLabel
+} from "./hourReturns.js";
 import { TURNO } from "./constants.js";
 import {
     exportLocalSnapshot,
@@ -2148,6 +2152,7 @@ export async function renderCalendar() {
     const comp = getCompDays();
     const absences = getAbsences();
     const carryIn = getCarry(y, m);
+    const hourReturns = getHourReturns(activeProfile);
 
     for (let d = 1; d <= days; d++) {
         const keyDay = key(y, m, d);
@@ -2166,7 +2171,10 @@ export async function renderCalendar() {
         const isHoliday = holidays[keyDay];
         const isHab = isBusinessDay(date, holidays);
 
-        const label = obtenerLabelDia(
+        const hourReturn = hourReturns[keyDay] || null;
+        const label = hourReturn
+            ? hourReturnCalendarLabel(hourReturn)
+            : obtenerLabelDia(
             keyDay,
             state,
             admin,
@@ -2330,6 +2338,13 @@ export async function renderCalendar() {
             div.classList.add("replacement-day");
         }
 
+        if (hourReturn) {
+            div.classList.add("hours-return-day");
+            if (!hourReturn.fullTurn) {
+                div.classList.add("hours-return-day--partial");
+            }
+        }
+
         aplicarClasesEspeciales(
             div,
             keyDay,
@@ -2347,7 +2362,10 @@ export async function renderCalendar() {
         const bloqueado = estaBloqueadoModo(
             window.selectionMode,
             keyDay,
-            window.selectionMode === "admin"
+            (
+                window.selectionMode === "admin" ||
+                window.selectionMode === "hoursreturn"
+            )
                 ? getTurnoBase(activeProfile, keyDay)
                 : state,
             isHab,
@@ -2361,7 +2379,8 @@ export async function renderCalendar() {
                 licenseCantidad: window.licenseCantidad || 0,
                 licenseType: window.licenseType || "license",
                 rotativa: getRotativa(activeProfile),
-                holidays
+                holidays,
+                hourReturns
             }
         );
 

@@ -714,6 +714,7 @@ body:not([data-active-view="hours"]) .hours-charts-panel,
 body:not([data-active-view="staffing"]) #staffingView,
 body:not([data-active-view="turnos"]) .staffing-report-panel,
 body:not([data-active-view="requests"]) #workerRequestsPanel,
+body:not([data-active-view="memos"]) #memosPanel,
 body:not([data-active-view="clockmarks"]) #clockMarksPanel,
 body:not([data-active-view="log"]) #auditLogPanel {
     display: none;
@@ -742,6 +743,12 @@ body[data-active-view="requests"] .timeline-panel,
 body[data-active-view="requests"] #staffingPanel,
 body[data-active-view="requests"] #turnChangesView,
 body[data-active-view="requests"] .primary-grid,
+body[data-active-view="memos"] .calendar-panel,
+body[data-active-view="memos"] .leave-panel,
+body[data-active-view="memos"] .timeline-panel,
+body[data-active-view="memos"] #staffingPanel,
+body[data-active-view="memos"] #turnChangesView,
+body[data-active-view="memos"] .primary-grid,
 body[data-active-view="clockmarks"] .calendar-panel,
 body[data-active-view="clockmarks"] .leave-panel,
 body[data-active-view="clockmarks"] .timeline-panel,
@@ -777,6 +784,10 @@ body[data-active-view="hours"] .primary-grid {
 }
 
 body[data-active-view="requests"] .secondary-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-active-view="memos"] .secondary-grid {
     grid-template-columns: minmax(0, 1fr);
 }
 
@@ -1583,7 +1594,7 @@ body[data-active-view="log"] .secondary-grid {
     order: -1;
     padding: 8px;
     display: grid;
-    grid-template-columns: repeat(11, minmax(0, 1fr));
+    grid-template-columns: repeat(12, minmax(0, 1fr));
     gap: 5px;
 }
 
@@ -1603,32 +1614,36 @@ body[data-active-view="log"] .secondary-grid {
     order: 4;
 }
 
-#turnChangesNav {
+.actionbar .nav-tile[data-target="memosPanel"] {
     order: 5;
 }
 
-.actionbar .nav-tile[data-target="hoursPanel"] {
+#turnChangesNav {
     order: 6;
 }
 
-.actionbar .nav-tile[data-target="staffingPanel"] {
+.actionbar .nav-tile[data-target="hoursPanel"] {
     order: 7;
 }
 
-.actionbar .nav-tile[data-target="reportsPanel"] {
+.actionbar .nav-tile[data-target="staffingPanel"] {
     order: 8;
 }
 
-.actionbar .nav-tile[data-target="auditLogPanel"] {
+.actionbar .nav-tile[data-target="reportsPanel"] {
     order: 9;
 }
 
-#undoBtn {
+.actionbar .nav-tile[data-target="auditLogPanel"] {
     order: 10;
 }
 
-#redoBtn {
+#undoBtn {
     order: 11;
+}
+
+#redoBtn {
+    order: 12;
 }
 
 .nav-tile {
@@ -2991,6 +3006,96 @@ body.theme-dark .overtime-backup-subsection {
     font-weight: 700;
 }
 
+.hours-return-dialog {
+    width: min(540px, 100%);
+    padding: 28px;
+    border-radius: 34px;
+    background:
+        radial-gradient(circle at 12% 10%, rgba(20, 184, 166, 0.16), transparent 32%),
+        var(--panel);
+}
+
+.hours-return-dialog .turn-change-dialog__actions {
+    grid-template-columns: 1fr 1fr;
+    margin-top: 18px;
+}
+
+.hours-return-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.hours-return-field {
+    display: grid;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 0.94rem;
+    font-weight: 800;
+}
+
+.hours-return-field input,
+.hours-return-field select {
+    min-height: 46px;
+    font-weight: 800;
+}
+
+.hours-return-summary {
+    display: grid;
+    gap: 4px;
+    margin-top: 16px;
+    padding: 12px 14px;
+    border: 1px solid rgba(20, 184, 166, 0.22);
+    border-radius: 16px;
+    background: rgba(20, 184, 166, 0.1);
+    color: var(--text);
+}
+
+.hours-return-summary span,
+.hours-return-summary small {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 800;
+}
+
+.hours-return-summary strong {
+    margin: 0;
+    color: var(--text);
+    font-size: 1rem;
+}
+
+.hours-return-result {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: var(--field);
+    color: var(--text);
+    font-weight: 800;
+}
+
+.hours-return-result.is-invalid {
+    background: rgba(239, 68, 68, 0.12);
+    color: #ef4444;
+}
+
+.hours-return-full-button {
+    width: 100%;
+    min-height: 44px;
+    margin-top: 12px;
+    border: 1px solid rgba(20, 184, 166, 0.42);
+    border-radius: 14px;
+    background: rgba(20, 184, 166, 0.14);
+    color: var(--text);
+    font: inherit;
+    font-weight: 900;
+}
+
+.hours-return-full-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.46;
+}
+
 .system-settings-dialog {
     width: min(920px, 100%);
     max-height: min(86vh, 760px);
@@ -3347,7 +3452,8 @@ body.theme-dark .overtime-backup-subsection {
 .license-day,
 .professional-license-day,
 .unpaid-leave-day,
-.unjustified-absence-day {
+.unjustified-absence-day,
+.hours-return-day {
     color: #fff !important;
     border-color: transparent !important;
 }
@@ -3387,13 +3493,13 @@ body.theme-dark .overtime-backup-subsection {
     background: linear-gradient(135deg, #6d28d9, #8b5cf6) !important;
 }
 
-.weekend:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.legal-day):not(.comp-day),
-.holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.legal-day):not(.comp-day) {
+.weekend:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.hours-return-day):not(.legal-day):not(.comp-day),
+.holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.hours-return-day):not(.legal-day):not(.comp-day) {
     background: rgba(255, 255, 255, 0.06);
 }
 
-body.theme-light .weekend:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.legal-day):not(.comp-day),
-body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.legal-day):not(.comp-day) {
+body.theme-light .weekend:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.hours-return-day):not(.legal-day):not(.comp-day),
+body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.hours-return-day):not(.legal-day):not(.comp-day) {
     background: rgba(17, 32, 56, 0.05);
 }
 
@@ -3465,6 +3571,20 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 .unjustified-absence-day {
     background:
         linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(239, 68, 68, 0.9)) !important;
+}
+
+.hours-return-day {
+    background: linear-gradient(135deg, #0f766e, #14b8a6) !important;
+}
+
+.hours-return-day--partial {
+    background: linear-gradient(135deg, #0f766e, #2dd4bf) !important;
+}
+
+.day.hours-return-day {
+    box-shadow:
+        inset 0 0 0 2px rgba(20, 184, 166, 0.72),
+        0 10px 22px rgba(20, 184, 166, 0.14);
 }
 
 .legend-list {
@@ -3577,6 +3697,10 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     background: var(--panel-alt);
     border: 1px solid var(--border);
     font-size: 0.86rem;
+}
+
+.availability-item--wide {
+    grid-column: 1 / -1;
 }
 
 .availability-item span {
@@ -3733,6 +3857,31 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     text-align: center;
     color: var(--text-strong);
     letter-spacing: 0.02em;
+}
+
+.hhee-return-transfer {
+    margin: 12px 0 4px;
+    padding: 12px 14px;
+    border: 1px solid rgba(20, 184, 166, 0.22);
+    border-radius: 16px;
+    background: rgba(20, 184, 166, 0.1);
+}
+
+.hhee-return-transfer > span:first-child {
+    display: grid;
+    gap: 3px;
+}
+
+.hhee-return-transfer strong {
+    color: var(--text);
+    font-size: 0.96rem;
+}
+
+.hhee-return-transfer small {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    font-weight: 700;
+    line-height: 1.35;
 }
 
 .hhee-chart-controls {
@@ -4168,7 +4317,7 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.72);
 }
 
-.mini.timeline-inhabil:not(.needs-replacement):not(.needs-extra-reason):not(.contract-error-day):not(.replacement-day):not(.clock-incident-day):not(.clock-severe-day) {
+.mini.timeline-inhabil:not(.needs-replacement):not(.needs-extra-reason):not(.contract-error-day):not(.replacement-day):not(.clock-incident-day):not(.clock-severe-day):not(.hours-return-mini) {
     box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.14);
 }
 
@@ -4191,6 +4340,16 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 
 .mini.replacement-day .timeline-replacement-marker {
     background: #16a34a;
+}
+
+.mini.hours-return-mini {
+    box-shadow: inset 0 0 0 2px rgba(20, 184, 166, 0.76);
+}
+
+.mini.hours-return-mini .timeline-replacement-marker {
+    background: #0f766e;
+    color: #fff;
+    font-size: 0.62rem;
 }
 
 .mini.needs-extra-reason .timeline-replacement-marker {
@@ -4747,6 +4906,11 @@ body[data-active-view="turnos"] .staffing-report-pills .staffing-pill {
     gap: 14px;
 }
 
+.memos-panel {
+    display: grid;
+    gap: 14px;
+}
+
 .clockmarks-view {
     display: grid;
     grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
@@ -5050,6 +5214,11 @@ body[data-active-view="turnos"] .staffing-report-pills .staffing-pill {
     color: #16a34a;
 }
 
+.worker-request-status--completed {
+    background: rgba(20, 184, 166, 0.14);
+    color: #0f766e;
+}
+
 .worker-request-status--rejected,
 .worker-request-status--canceled {
     background: rgba(239, 68, 68, 0.12);
@@ -5096,6 +5265,71 @@ body[data-active-view="turnos"] .staffing-report-pills .staffing-pill {
 .worker-request-textarea textarea {
     min-height: 110px;
     resize: vertical;
+}
+
+.memo-card.is-completed {
+    opacity: 0.78;
+}
+
+.memo-card.is-completed h4,
+.memo-card.is-completed p {
+    text-decoration: line-through;
+}
+
+.memo-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.memo-check input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+}
+
+.memo-documents {
+    display: grid;
+    gap: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+
+.memo-documents small {
+    color: var(--text-muted);
+}
+
+.memo-document-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.memo-document-button,
+.memo-file-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 0 12px;
+    border: 1px solid rgba(29, 108, 255, 0.34);
+    border-radius: 999px;
+    background: rgba(29, 108, 255, 0.08);
+    color: var(--blue);
+    font-size: 0.82rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.memo-file-button {
+    width: max-content;
+}
+
+.memo-file-button input {
+    display: none;
 }
 
 .audit-feed__head {
@@ -5822,6 +6056,7 @@ body.mode-active .day.draft-selected {
     .staffing-panel,
     .swap-panel,
     .worker-requests-panel,
+    .memos-panel,
     .audit-log-panel {
         padding: 10px;
         border-radius: 16px;
@@ -6136,6 +6371,7 @@ body.mode-active .day.draft-selected {
     }
 
     .worker-request-card__main,
+    .memo-documents,
     .worker-request-actions {
         grid-template-columns: 1fr;
     }
@@ -6731,6 +6967,7 @@ body.mode-active .day.draft-selected {
     .staffing-panel,
     .swap-panel,
     .worker-requests-panel,
+    .memos-panel,
     .overview-card,
     .sidebar {
         padding: 12px;

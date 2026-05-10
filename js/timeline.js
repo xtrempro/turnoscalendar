@@ -34,6 +34,10 @@ import {
     hasSevereClockIncident,
     hasSimpleClockIncident
 } from "./clockMarks.js";
+import {
+    getHourReturn,
+    hourReturnTimelineMarker
+} from "./hourReturns.js";
 
 const timelineFilterState = {
     anchorProfile: "",
@@ -636,8 +640,11 @@ export async function renderTimeline(){
             const color = getColor(profile.name, key);
             const date = new Date(year, month, d);
             const isInhabil = !isBusinessDay(date, holidays);
-            const background =
-                timelineCellBackground(color, isInhabil);
+            const hourReturn =
+                getHourReturn(profile.name, key);
+            const background = hourReturn
+                ? "linear-gradient(135deg, #0f766e, #14b8a6)"
+                : timelineCellBackground(color, isInhabil);
             const contractError =
                 contractErrorMarker(profile.name, key);
             const needsReplacement =
@@ -677,10 +684,12 @@ export async function renderTimeline(){
                     : needsReplacement
                         ? "!"
                         : showExtraReason || showClockExtra
-                        ? "?"
-                    : simpleClockIncident
+                            ? "?"
+                            : simpleClockIncident
                             ? "*"
-                            : (replacement
+                            : (hourReturn
+                                ? hourReturnTimelineMarker(hourReturn)
+                                : replacement
                                 ? (replacement.isLoan ? "P" : "R")
                                 : "");
             const title = contractError
@@ -695,6 +704,8 @@ export async function renderTimeline(){
                             ? "Requiere motivo por horas extras de marcaje"
                             : simpleClockIncident
                                 ? "Incidencia de marcaje"
+                        : hourReturn
+                            ? `${hourReturn.fullTurn ? "Devoluci\u00f3n" : "Dev. Parcial"}: ${hourReturn.hours || 0} hrs.`
                         : replacement
                             ? (
                                 replacement.replaced
@@ -705,7 +716,7 @@ export async function renderTimeline(){
 
             html += `
                 <td
-                    class="mini ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${replacement ? "replacement-day" : ""}"
+                    class="mini ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
                     style="background:${background}"
                     title="${title}"
                     ${contractError ? `data-contract-error-profile="${profile.name}" data-contract-error-key="${key}"` : ""}

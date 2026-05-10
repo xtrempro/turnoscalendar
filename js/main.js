@@ -92,6 +92,7 @@ import {
     startWorkerRequestsRealtimeSync,
     stopWorkerRequestsRealtimeSync
 } from "./workerRequests.js";
+import { renderMemosPanel } from "./memos.js";
 import {
     addReplacementContract,
     formatContractDate,
@@ -104,6 +105,16 @@ import {
     getScheduledSegmentsForProfile,
     openClockMarkDialog
 } from "./clockMarks.js";
+import {
+    getHourReturn,
+    saveHourReturn
+} from "./hourReturns.js";
+import {
+    calculateHheeReturnTransferHours,
+    getHheeReturnTransfer,
+    isHheeReturnTransferEnabled,
+    saveHheeReturnTransfer
+} from "./hourReturnTransfers.js";
 import {
     totalAdministrativosUsados,
     aplicarAdministrativo,
@@ -490,12 +501,12 @@ function contarHabiles(
 }
 
 function formatSaldo(value) {
-    return Number.isInteger(value)
-        ? String(value)
-        : value
-            .toFixed(1)
-            .replace(".0", "")
-            .replace(".", ",");
+    const rounded =
+        Math.round((Number(value) || 0) * 100) / 100;
+
+    return Number.isInteger(rounded)
+        ? String(rounded)
+        : String(rounded).replace(".", ",");
 }
 
 function formatMonthHeading(date) {
@@ -515,7 +526,7 @@ function normalizeBalanceValue(value) {
 
     if (!Number.isFinite(numeric)) return 0;
 
-    return Math.max(0, Math.round(numeric * 10) / 10);
+    return Math.max(0, Math.round(numeric * 100) / 100);
 }
 
 function withManualBalance(
@@ -543,7 +554,8 @@ function getLeaveBalances(
     return {
         legal: withManualBalance(manual.legal, calculated.legal),
         admin: withManualBalance(manual.admin, calculated.admin),
-        comp: withManualBalance(manual.comp, calculated.comp)
+        comp: withManualBalance(manual.comp, calculated.comp),
+        hoursReturn: withManualBalance(manual.hoursReturn, 0)
     };
 }
 
@@ -2010,6 +2022,243 @@ function requestGradeEffectiveDate(previousSnapshot, nextProfile) {
     });
 }
 
+function getHheeMonthStats(profileName, year, month, holidays) {
+    const days = new Date(year, month + 1, 0).getDate();
+
+    return calcularHorasMesPerfil(
+        profileName,
+        year,
+        month,
+        days,
+        holidays,
+        getProfileData(profileName),
+        {},
+        getCarry(year, month)
+    );
+}
+
+function setHoursReturnBalance(profileName, year, value) {
+    const manual = getManualLeaveBalances(year, profileName);
+
+    saveManualLeaveBalances(
+        year,
+        {
+            ...manual,
+            hoursReturn: normalizeBalanceValue(value)
+        },
+        profileName
+    );
+}
+
+function adjustHoursReturnBalance(profileName, year, delta) {
+    const manual = getManualLeaveBalances(year, profileName);
+    const current = normalizeBalanceValue(manual.hoursReturn);
+
+    setHoursReturnBalance(
+        profileName,
+        year,
+        Math.max(0, current + Number(delta || 0))
+    );
+}
+
+function roundSignedHours(value) {
+    return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function hheeReturnTransferPayload(stats, transferredHours) {
+    return {
+        transferredHours,
+        hheeDiurnas: Math.max(0, Number(stats.hheeDiurnas) || 0),
+        hheeNocturnas: Math.max(0, Number(stats.hheeNocturnas) || 0)
+    };
+}
+
+function syncHheeReturnTransferBalance(profileName, year, month, stats) {
+    const existing =
+        getHheeReturnTransfer(profileName, year, month);
+
+    if (!existing?.enabled) return;
+
+    const transferredHours =
+        calculateHheeReturnTransferHours(
+            stats.hheeDiurnas,
+            stats.hheeNocturnas
+        );
+    const previousTransferred =
+        normalizeBalanceValue(existing.transferredHours);
+    const delta = roundSignedHours(
+        transferredHours - previousTransferred
+    );
+
+    if (delta) {
+        adjustHoursReturnBalance(profileName, year, delta);
+    }
+
+    saveHheeReturnTransfer(
+        profileName,
+        year,
+        month,
+        {
+            ...existing,
+            ...hheeReturnTransferPayload(stats, transferredHours),
+            enabled: true
+        }
+    );
+}
+
+function renderHheeReturnTransferControl(profile, year, month, stats) {
+    if (!DOM.hheeReturnTransferToggle) return;
+
+    if (!profile) {
+        DOM.hheeReturnTransferToggle.checked = false;
+        DOM.hheeReturnTransferToggle.disabled = true;
+        if (DOM.hheeReturnTransferInfo) {
+            DOM.hheeReturnTransferInfo.textContent =
+                "Selecciona un colaborador para configurar el destino de sus HH.EE.";
+        }
+        return;
+    }
+
+    const enabled =
+        isHheeReturnTransferEnabled(profile.name, year, month);
+    const transferHours =
+        calculateHheeReturnTransferHours(
+            stats.hheeDiurnas,
+            stats.hheeNocturnas
+        );
+
+    DOM.hheeReturnTransferToggle.checked = enabled;
+    DOM.hheeReturnTransferToggle.disabled = false;
+
+    if (DOM.hheeReturnTransferInfo) {
+        DOM.hheeReturnTransferInfo.textContent = enabled
+            ? `Mes traspasado: ${formatSaldo(transferHours)} hrs. se suman a devolucion.`
+            : `Al activar: ${formatSaldo(transferHours)} hrs. iran a devolucion en vez de pago.`;
+    }
+}
+
+async function handleHheeReturnTransferToggle() {
+    const profile = getPerfilActual();
+
+    if (!profile) return;
+
+    const year = profileRotationMiniDate.getFullYear();
+    const month = profileRotationMiniDate.getMonth();
+    const holidays = await fetchHolidays(year);
+    const stats = getHheeMonthStats(
+        profile.name,
+        year,
+        month,
+        holidays
+    );
+    const transferHours =
+        calculateHheeReturnTransferHours(
+            stats.hheeDiurnas,
+            stats.hheeNocturnas
+        );
+    const existing =
+        getHheeReturnTransfer(profile.name, year, month);
+    const shouldEnable =
+        Boolean(DOM.hheeReturnTransferToggle?.checked);
+
+    if (shouldEnable && transferHours <= 0) {
+        alert("Este mes no tiene horas extras positivas para traspasar a devolucion.");
+        renderProfileHoursSummary(profile);
+        return;
+    }
+
+    pushHistory();
+
+    if (shouldEnable) {
+        const previousTransferred = existing?.enabled
+            ? normalizeBalanceValue(existing.transferredHours)
+            : 0;
+        const manual =
+            getManualLeaveBalances(year, profile.name);
+        const baseBalance = existing?.enabled
+            ? normalizeBalanceValue(existing.baseBalance)
+            : normalizeBalanceValue(manual.hoursReturn);
+
+        adjustHoursReturnBalance(
+            profile.name,
+            year,
+            transferHours - previousTransferred
+        );
+        saveHheeReturnTransfer(
+            profile.name,
+            year,
+            month,
+            {
+                ...existing,
+                ...hheeReturnTransferPayload(stats, transferHours),
+                enabled: true,
+                baseBalance
+            }
+        );
+
+        addAuditLog(
+            AUDIT_CATEGORY.LEAVE_ABSENCE,
+            "Traspaso HH.EE a devolucion",
+            `${profile.name}: ${formatSaldo(stats.hheeDiurnas)}h diurnas y ${formatSaldo(stats.hheeNocturnas)}h nocturnas generan ${formatSaldo(transferHours)} hrs. de devolucion.`,
+            {
+                profile: profile.name,
+                year,
+                month,
+                transferHours
+            }
+        );
+    } else {
+        const currentBalance = normalizeBalanceValue(
+            getManualLeaveBalances(year, profile.name).hoursReturn
+        );
+        const baseBalance = Number.isFinite(
+            Number(existing?.baseBalance)
+        )
+            ? normalizeBalanceValue(existing.baseBalance)
+            : Math.max(
+                0,
+                currentBalance -
+                    normalizeBalanceValue(existing?.transferredHours)
+            );
+        const nextBalance = Math.min(
+            currentBalance,
+            baseBalance
+        );
+
+        setHoursReturnBalance(
+            profile.name,
+            year,
+            nextBalance
+        );
+        saveHheeReturnTransfer(
+            profile.name,
+            year,
+            month,
+            {
+                ...existing,
+                ...hheeReturnTransferPayload(stats, 0),
+                enabled: false,
+                transferredHours: 0,
+                baseBalance: nextBalance
+            }
+        );
+
+        addAuditLog(
+            AUDIT_CATEGORY.LEAVE_ABSENCE,
+            "Envio HH.EE a pago",
+            `${profile.name}: las HH.EE de ${formatMonthHeading(profileRotationMiniDate)} vuelven a pago.`,
+            {
+                profile: profile.name,
+                year,
+                month
+            }
+        );
+    }
+
+    refreshAll();
+    renderDashboardState();
+}
+
 async function renderProfileHoursSummary(profile = getPerfilActual()) {
     const summary = document.getElementById("summary");
     const records = DOM.hheeMonthlyRecords;
@@ -2018,6 +2267,7 @@ async function renderProfileHoursSummary(profile = getPerfilActual()) {
 
     if (!profile) {
         profileHoursSummaryRequest++;
+        renderHheeReturnTransferControl(null);
         summary.innerHTML = `
             <div class="empty-state empty-state--compact">
                 Selecciona un colaborador para ver sus horas extras.
@@ -2036,7 +2286,6 @@ async function renderProfileHoursSummary(profile = getPerfilActual()) {
     const requestId = ++profileHoursSummaryRequest;
     const y = profileRotationMiniDate.getFullYear();
     const m = profileRotationMiniDate.getMonth();
-    const days = new Date(y, m + 1, 0).getDate();
     const monthLabel = profileRotationMiniDate.toLocaleString(
         "es-CL",
         {
@@ -2048,16 +2297,20 @@ async function renderProfileHoursSummary(profile = getPerfilActual()) {
 
     if (requestId !== profileHoursSummaryRequest) return;
 
-    const stats = calcularHorasMesPerfil(
+    const stats = getHheeMonthStats(
         profile.name,
         y,
         m,
-        days,
-        holidays,
-        getProfileData(profile.name),
-        {},
-        getCarry(y, m)
+        holidays
     );
+
+    syncHheeReturnTransferBalance(
+        profile.name,
+        y,
+        m,
+        stats
+    );
+    renderHheeReturnTransferControl(profile, y, m, stats);
 
     summary.innerHTML = `
         <div class="summary-context">
@@ -2555,6 +2808,11 @@ function renderDisponibilidadVacaciones() {
                     <span>ADM</span>
                     <input id="availabilityAdminInput" type="number" min="0" step="0.5" value="${saldos.admin}">
                 </label>
+
+                <label class="availability-item availability-item--wide">
+                    <span>Horas para devoluci\u00f3n</span>
+                    <input id="availabilityHoursReturnInput" type="number" min="0" step="0.5" value="${saldos.hoursReturn}">
+                </label>
             </div>
 
             <div class="availability-note">
@@ -2583,6 +2841,11 @@ function renderDisponibilidadVacaciones() {
                 <span>ADM</span>
                 <strong>${formatSaldo(saldos.admin)} dias</strong>
             </div>
+
+            <div class="availability-item availability-item--wide">
+                <span>Horas para devoluci\u00f3n</span>
+                <strong>${formatSaldo(saldos.hoursReturn)} hrs.</strong>
+            </div>
         </div>
 
         <div class="availability-note">
@@ -2596,11 +2859,14 @@ function renderLeaveActionLabels() {
     const adminBase = "P. ADMINISTRATIVO";
     const compBase = "F. COMPENSATORIO";
     const legalBase = "F. LEGAL";
+    const hoursReturnBase = "DEVOLUCI\u00d3N DE HORAS";
 
     if (!profile || !isProfileActive(profile)) {
         DOM.adminBtnLabel.textContent = adminBase;
         DOM.compBtnLabel.textContent = compBase;
         DOM.legalBtnLabel.textContent = legalBase;
+        DOM.hoursReturnBtnLabel.textContent =
+            `${hoursReturnBase} (0)`;
         DOM.adminBtn.disabled = true;
         DOM.halfAdminMorningBtn.disabled = true;
         DOM.halfAdminAfternoonBtn.disabled = true;
@@ -2609,12 +2875,15 @@ function renderLeaveActionLabels() {
         DOM.licenseBtn.disabled = true;
         DOM.professionalLicenseBtn.disabled = true;
         DOM.unpaidLeaveBtn.disabled = true;
+        DOM.hoursReturnBtn.disabled = true;
         DOM.unjustifiedAbsenceBtn.disabled = true;
         DOM.clockMarkBtn.disabled = true;
         if (profile && !isProfileActive(profile)) {
             DOM.adminBtnLabel.textContent = `${adminBase} (inactivo)`;
             DOM.compBtnLabel.textContent = `${compBase} (inactivo)`;
             DOM.legalBtnLabel.textContent = `${legalBase} (inactivo)`;
+            DOM.hoursReturnBtnLabel.textContent =
+                `${hoursReturnBase} (inactivo)`;
         }
 
         return;
@@ -2628,6 +2897,8 @@ function renderLeaveActionLabels() {
         `${compBase} (${formatSaldo(saldos.comp)})`;
     DOM.legalBtnLabel.textContent =
         `${legalBase} (${formatSaldo(saldos.legal)})`;
+    DOM.hoursReturnBtnLabel.textContent =
+        `${hoursReturnBase} (${formatSaldo(saldos.hoursReturn)})`;
 
     DOM.adminBtn.disabled = saldos.admin <= 0;
     DOM.halfAdminMorningBtn.disabled = saldos.admin <= 0;
@@ -2637,6 +2908,7 @@ function renderLeaveActionLabels() {
     DOM.licenseBtn.disabled = false;
     DOM.professionalLicenseBtn.disabled = false;
     DOM.unpaidLeaveBtn.disabled = false;
+    DOM.hoursReturnBtn.disabled = saldos.hoursReturn <= 0;
     DOM.unjustifiedAbsenceBtn.disabled = false;
     DOM.clockMarkBtn.disabled = false;
 }
@@ -2860,6 +3132,10 @@ function getViewForTarget(targetId) {
         return "requests";
     }
 
+    if (targetId === "memosPanel") {
+        return "memos";
+    }
+
     if (targetId === "clockMarksPanel") {
         return "clockmarks";
     }
@@ -2901,6 +3177,10 @@ function setActiveShortcut(targetId) {
 
     if (nextView === "requests") {
         renderWorkerRequestsPanel();
+    }
+
+    if (nextView === "memos") {
+        renderMemosPanel();
     }
 
     if (nextView === "clockmarks") {
@@ -4750,6 +5030,9 @@ function handleAvailabilityEdit() {
         ),
         admin: normalizeBalanceValue(
             document.getElementById("availabilityAdminInput")?.value
+        ),
+        hoursReturn: normalizeBalanceValue(
+            document.getElementById("availabilityHoursReturnInput")?.value
         )
     };
     const compInput =
@@ -4763,7 +5046,7 @@ function handleAvailabilityEdit() {
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
         "Modifico saldos de vacaciones",
-        `${profile.name}: FL ${formatSaldo(balances.legal)}, ADM ${formatSaldo(balances.admin)}${balances.comp !== undefined ? `, FC ${formatSaldo(balances.comp)}` : ""}.`,
+        `${profile.name}: FL ${formatSaldo(balances.legal)}, ADM ${formatSaldo(balances.admin)}${balances.comp !== undefined ? `, FC ${formatSaldo(balances.comp)}` : ""}, Devolucion de horas ${formatSaldo(balances.hoursReturn)}.`,
         {
             profile: profile.name,
             year
@@ -4779,8 +5062,10 @@ function saveAvailabilityBalancesFromInputs(profileName) {
         document.getElementById("availabilityLegalInput");
     const adminInput =
         document.getElementById("availabilityAdminInput");
+    const hoursReturnInput =
+        document.getElementById("availabilityHoursReturnInput");
 
-    if (!profileName || !legalInput || !adminInput) {
+    if (!profileName || !legalInput || !adminInput || !hoursReturnInput) {
         return false;
     }
 
@@ -4788,7 +5073,8 @@ function saveAvailabilityBalancesFromInputs(profileName) {
     const previous = getManualLeaveBalances(year, profileName);
     const balances = {
         legal: normalizeBalanceValue(legalInput.value),
-        admin: normalizeBalanceValue(adminInput.value)
+        admin: normalizeBalanceValue(adminInput.value),
+        hoursReturn: normalizeBalanceValue(hoursReturnInput.value)
     };
     const compInput =
         document.getElementById("availabilityCompInput");
@@ -4800,6 +5086,8 @@ function saveAvailabilityBalancesFromInputs(profileName) {
     const changed =
         Number(previous.legal) !== Number(balances.legal) ||
         Number(previous.admin) !== Number(balances.admin) ||
+        Number(previous.hoursReturn || 0) !==
+            Number(balances.hoursReturn) ||
         (
             balances.comp !== undefined &&
             Number(previous.comp) !== Number(balances.comp)
@@ -4811,7 +5099,7 @@ function saveAvailabilityBalancesFromInputs(profileName) {
         addAuditLog(
             AUDIT_CATEGORY.LEAVE_ABSENCE,
             "Modifico saldos de vacaciones",
-            `${profileName}: FL ${formatSaldo(balances.legal)}, ADM ${formatSaldo(balances.admin)}${balances.comp !== undefined ? `, FC ${formatSaldo(balances.comp)}` : ""}.`,
+            `${profileName}: FL ${formatSaldo(balances.legal)}, ADM ${formatSaldo(balances.admin)}${balances.comp !== undefined ? `, FC ${formatSaldo(balances.comp)}` : ""}, Devolucion de horas ${formatSaldo(balances.hoursReturn)}.`,
             {
                 profile: profileName,
                 year
@@ -4991,6 +5279,390 @@ function openAmountDialog({
     });
 }
 
+function cloneReturnDate(date) {
+    return new Date(date.getTime());
+}
+
+function dateAtReturn(base, hour, minutes = 0) {
+    return new Date(
+        base.getFullYear(),
+        base.getMonth(),
+        base.getDate(),
+        hour,
+        minutes
+    );
+}
+
+function nextDateAtReturn(base, hour, minutes = 0) {
+    const date = dateAtReturn(base, hour, minutes);
+    date.setDate(date.getDate() + 1);
+    return date;
+}
+
+function parseReturnTime(value) {
+    const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
+
+    if (!match) return null;
+
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+        return null;
+    }
+
+    return { hour, minute };
+}
+
+function timeNearReturnReference(baseDate, value, reference) {
+    const parsed = parseReturnTime(value);
+
+    if (!parsed) return null;
+
+    const candidates = [
+        dateAtReturn(baseDate, parsed.hour, parsed.minute),
+        nextDateAtReturn(baseDate, parsed.hour, parsed.minute)
+    ];
+    const previous =
+        dateAtReturn(baseDate, parsed.hour, parsed.minute);
+
+    previous.setDate(previous.getDate() - 1);
+    candidates.push(previous);
+
+    return candidates.sort((a, b) =>
+        Math.abs(a - reference) - Math.abs(b - reference)
+    )[0];
+}
+
+function formatReturnTime(date) {
+    return [
+        String(date.getHours()).padStart(2, "0"),
+        String(date.getMinutes()).padStart(2, "0")
+    ].join(":");
+}
+
+function formatReturnDateTime(date) {
+    return `${formatReturnTime(date)} hrs.`;
+}
+
+function roundReturnHours(value) {
+    return Math.max(
+        0,
+        Math.round((Number(value) || 0) * 10) / 10
+    );
+}
+
+function returnHoursBetween(start, end) {
+    return roundReturnHours(
+        Math.max(0, (end - start) / 36e5)
+    );
+}
+
+function getSegmentReturnHours(segment) {
+    return returnHoursBetween(segment.start, segment.end);
+}
+
+function getReturnSegmentId(segment, index) {
+    return String(segment.id || `segment_${index}`);
+}
+
+function buildHourReturnRecord({
+    profile,
+    keyDay,
+    segment,
+    fullTurn,
+    entry,
+    exit,
+    hours
+}) {
+    return {
+        profile,
+        keyDay,
+        segmentId: String(segment.id || ""),
+        segmentLabel: segment.label || turnoLabel(getTurnoBase(profile, keyDay)),
+        fullTurn,
+        entryTime: fullTurn ? "" : formatReturnTime(entry),
+        exitTime: fullTurn ? "" : formatReturnTime(exit),
+        scheduledStart: formatReturnTime(segment.start),
+        scheduledEnd: formatReturnTime(segment.end),
+        hours: roundReturnHours(hours)
+    };
+}
+
+function openHoursReturnDialog({
+    profile,
+    keyDay,
+    date,
+    segments,
+    balance
+}) {
+    return new Promise(resolve => {
+        const normalizedSegments = segments.map((segment, index) => ({
+            ...segment,
+            id: getReturnSegmentId(segment, index)
+        }));
+        const backdrop = document.createElement("div");
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.innerHTML = `
+            <form class="turn-change-dialog hours-return-dialog" role="dialog" aria-modal="true">
+                <strong>Devoluci&oacute;n de horas</strong>
+                <p>
+                    Ajusta solo la entrada o salida del turno seleccionado.
+                    Saldo disponible: ${formatSaldo(balance)} hrs.
+                </p>
+
+                ${normalizedSegments.length > 1 ? `
+                    <label class="hours-return-field">
+                        <span>Turno</span>
+                        <select name="segment">
+                            ${normalizedSegments.map(segment => `
+                                <option value="${escapeHTML(segment.id)}">
+                                    ${escapeHTML(segment.label || "Turno")}
+                                </option>
+                            `).join("")}
+                        </select>
+                    </label>
+                ` : `
+                    <input name="segment" type="hidden" value="${escapeHTML(normalizedSegments[0].id)}">
+                `}
+
+                <div class="hours-return-summary" data-summary></div>
+
+                <div class="hours-return-row">
+                    <label class="hours-return-field">
+                        <span>Entrada</span>
+                        <input name="entryTime" type="time" required>
+                    </label>
+                    <label class="hours-return-field">
+                        <span>Salida</span>
+                        <input name="exitTime" type="time" required>
+                    </label>
+                </div>
+
+                <div class="hours-return-result" data-result>
+                    Horas a devolver: 0
+                </div>
+
+                <button class="hours-return-full-button" type="button" data-action="full-turn">
+                    Todo el Turno
+                </button>
+
+                <div class="turn-change-dialog__actions">
+                    <button class="primary-button" type="submit">
+                        Aplicar
+                    </button>
+                    <button class="secondary-button" type="button" data-action="cancel">
+                        Cancelar
+                    </button>
+                </div>
+            </form>
+        `;
+
+        const dialog = backdrop.querySelector("form");
+        const segmentInput = dialog.elements.segment;
+        const entryInput = dialog.elements.entryTime;
+        const exitInput = dialog.elements.exitTime;
+        const summary = dialog.querySelector("[data-summary]");
+        const result = dialog.querySelector("[data-result]");
+        const fullButton =
+            dialog.querySelector("[data-action='full-turn']");
+
+        const getSelectedSegment = () => {
+            const selectedId = segmentInput.value;
+
+            return normalizedSegments.find(segment =>
+                segment.id === selectedId
+            ) || normalizedSegments[0];
+        };
+
+        const close = value => {
+            document.removeEventListener("keydown", onKeydown);
+            backdrop.remove();
+            resolve(value);
+        };
+
+        const onKeydown = event => {
+            if (event.key === "Escape") {
+                close(null);
+            }
+        };
+
+        const computeCurrent = ({ silent = true } = {}) => {
+            const segment = getSelectedSegment();
+            const entry = timeNearReturnReference(
+                date,
+                entryInput.value,
+                segment.start
+            );
+            const exit = timeNearReturnReference(
+                date,
+                exitInput.value,
+                segment.end
+            );
+
+            if (!entry || !exit) {
+                return null;
+            }
+
+            if (entry < segment.start) {
+                if (!silent) {
+                    alert("La entrada no puede ser anterior al horario del turno.");
+                    entryInput.focus();
+                }
+                return null;
+            }
+
+            if (exit > segment.end) {
+                if (!silent) {
+                    alert("La salida no puede ser posterior al horario del turno.");
+                    exitInput.focus();
+                }
+                return null;
+            }
+
+            if (entry > exit) {
+                if (!silent) {
+                    alert("La entrada no puede quedar despues de la salida.");
+                    entryInput.focus();
+                }
+                return null;
+            }
+
+            const fullHours = getSegmentReturnHours(segment);
+            const hours = roundReturnHours(
+                returnHoursBetween(segment.start, entry) +
+                returnHoursBetween(exit, segment.end)
+            );
+            const fullTurn = hours >= fullHours;
+
+            return {
+                segment,
+                entry,
+                exit,
+                fullHours,
+                hours,
+                fullTurn
+            };
+        };
+
+        const syncDialog = () => {
+            const segment = getSelectedSegment();
+            const fullHours = getSegmentReturnHours(segment);
+            const enoughForFullTurn =
+                Number(balance) >= Number(fullHours);
+            const current = computeCurrent();
+
+            summary.innerHTML = `
+                <span>${escapeHTML(segment.label || "Turno")}</span>
+                <strong>
+                    ${formatReturnDateTime(segment.start)}
+                    -
+                    ${formatReturnDateTime(segment.end)}
+                </strong>
+                <small>Duraci&oacute;n: ${formatSaldo(fullHours)} hrs.</small>
+            `;
+
+            fullButton.disabled = !enoughForFullTurn;
+            fullButton.title = enoughForFullTurn
+                ? "Cubrir todo el turno con devolucion de horas."
+                : "Saldo insuficiente para cubrir todo el turno.";
+
+            if (!current) {
+                result.textContent = "Horas a devolver: 0";
+                result.classList.remove("is-invalid");
+                return;
+            }
+
+            result.textContent =
+                `Horas a devolver: ${formatSaldo(current.hours)} de ${formatSaldo(balance)} hrs.`;
+            result.classList.toggle(
+                "is-invalid",
+                current.hours > balance
+            );
+        };
+
+        const syncSegmentDefaults = () => {
+            const segment = getSelectedSegment();
+
+            entryInput.value = formatReturnTime(segment.start);
+            exitInput.value = formatReturnTime(segment.end);
+            syncDialog();
+        };
+
+        dialog
+            .querySelector("[data-action='cancel']")
+            .onclick = () => close(null);
+
+        fullButton.onclick = () => {
+            const segment = getSelectedSegment();
+            const fullHours = getSegmentReturnHours(segment);
+
+            if (balance < fullHours) return;
+
+            close(buildHourReturnRecord({
+                profile,
+                keyDay,
+                segment,
+                fullTurn: true,
+                entry: cloneReturnDate(segment.end),
+                exit: cloneReturnDate(segment.start),
+                hours: fullHours
+            }));
+        };
+
+        dialog.onsubmit = event => {
+            event.preventDefault();
+
+            const current = computeCurrent({ silent: false });
+
+            if (!current) return;
+
+            if (current.hours <= 0) {
+                alert("Modifica la entrada o salida para usar horas de devolucion.");
+                entryInput.focus();
+                return;
+            }
+
+            if (current.hours > balance) {
+                alert(
+                    `No puedes usar mas horas que el saldo disponible (${formatSaldo(balance)} hrs.).`
+                );
+                entryInput.focus();
+                return;
+            }
+
+            close(buildHourReturnRecord({
+                profile,
+                keyDay,
+                segment: current.segment,
+                fullTurn: current.fullTurn,
+                entry: current.entry,
+                exit: current.exit,
+                hours: current.hours
+            }));
+        };
+
+        if (segmentInput) {
+            segmentInput.onchange = syncSegmentDefaults;
+        }
+
+        entryInput.oninput = syncDialog;
+        exitInput.oninput = syncDialog;
+
+        backdrop.addEventListener("click", event => {
+            if (event.target === backdrop) {
+                close(null);
+            }
+        });
+
+        document.addEventListener("keydown", onKeydown);
+        document.body.appendChild(backdrop);
+        syncSegmentDefaults();
+        entryInput.focus();
+    });
+}
+
 async function activarSelectorLicencia(type = "license") {
     if (!canModifyCurrentProfile()) return;
 
@@ -5062,6 +5734,27 @@ function activarSelectorHalfAdmin(tipo) {
     );
 }
 
+async function activarSelectorDevolucionHoras() {
+    if (!canModifyCurrentProfile()) return;
+
+    const year = currentDate.getFullYear();
+    const holidays = await fetchHolidays(year);
+    const saldo = getLeaveBalances(year, holidays).hoursReturn;
+
+    if (saldo <= 0) {
+        alert("No hay horas disponibles para devolucion.");
+        return;
+    }
+
+    activarModo(
+        "hoursreturn",
+        `Selecciona un turno base para aplicar devolucion de horas. Saldo disponible: ${formatSaldo(saldo)} hrs.`
+    );
+
+    DOM.adminInfo.textContent =
+        "Solo quedan habilitados turnos base sin permisos, licencias, feriados, ausencias ni devoluciones ya aplicadas.";
+}
+
 function activarSelectorAusenciaInjustificada() {
     if (!canModifyCurrentProfile()) return;
 
@@ -5084,6 +5777,98 @@ function activarSelectorMarcajeReloj() {
 
     DOM.adminInfo.textContent =
         "Solo quedan habilitados los dias con turno real y sin vacaciones o ausencias.";
+}
+
+async function handleHoursReturnSelection(fecha) {
+    const profile = getCurrentProfile();
+    const keyDay = keyFromDate(fecha);
+    const holidays = await fetchHolidays(fecha.getFullYear());
+    const admin = getAdminDays();
+    const legal = getLegalDays();
+    const comp = getCompDays();
+    const absences = getAbsences();
+    const baseState = getTurnoBase(profile, keyDay);
+
+    if (!Number(baseState)) {
+        alert("Selecciona un dia con turno base para aplicar la devolucion de horas.");
+        clearSelectionMode();
+        return;
+    }
+
+    if (
+        admin[keyDay] ||
+        legal[keyDay] ||
+        comp[keyDay] ||
+        absences[keyDay]
+    ) {
+        alert("Este turno ya tiene un permiso, licencia, feriado o ausencia aplicada.");
+        clearSelectionMode();
+        return;
+    }
+
+    if (getHourReturn(profile, keyDay)) {
+        alert("Este turno ya tiene una devolucion de horas aplicada.");
+        clearSelectionMode();
+        return;
+    }
+
+    const balance =
+        getLeaveBalances(fecha.getFullYear(), holidays).hoursReturn;
+
+    if (balance <= 0) {
+        alert("No hay horas disponibles para devolucion.");
+        clearSelectionMode();
+        return;
+    }
+
+    const segments = getScheduledSegmentsForProfile(
+        profile,
+        keyDay,
+        fecha,
+        baseState,
+        holidays
+    ).filter(segment => segment.start < segment.end);
+
+    if (!segments.length) {
+        alert("No hay un horario de turno disponible para esta fecha.");
+        clearSelectionMode();
+        return;
+    }
+
+    const record = await openHoursReturnDialog({
+        profile,
+        keyDay,
+        date: fecha,
+        segments,
+        balance
+    });
+
+    if (!record) {
+        clearSelectionMode();
+        return;
+    }
+
+    pushHistory();
+    saveHourReturn(profile, keyDay, record);
+    decrementManualBalance(
+        "hoursReturn",
+        record.hours,
+        fecha.getFullYear()
+    );
+
+    addAuditLog(
+        AUDIT_CATEGORY.LEAVE_ABSENCE,
+        "Aplico devolucion de horas",
+        `${profile}: ${record.fullTurn ? "Devoluci\u00f3n" : "Dev. Parcial"} de ${formatSaldo(record.hours)} hrs. el ${formatDisplayDate(toISODate(fecha))}.`,
+        {
+            profile,
+            keyDay,
+            hours: record.hours,
+            fullTurn: record.fullTurn
+        }
+    );
+
+    clearSelectionMode();
 }
 
 async function handleClockMarkSelection(fecha) {
@@ -5354,6 +6139,11 @@ function bindProfileForm() {
             changeHoursMonth(1);
     }
 
+    if (DOM.hheeReturnTransferToggle) {
+        DOM.hheeReturnTransferToggle.onchange =
+            handleHheeReturnTransferToggle;
+    }
+
     if (DOM.clockMarksPrevMonthBtn) {
         DOM.clockMarksPrevMonthBtn.onclick = () =>
             changeClockMarksMonth(-1);
@@ -5457,6 +6247,7 @@ DOM.professionalLicenseBtn.onclick =
     () => activarSelectorLicencia("professional_license");
 DOM.unpaidLeaveBtn.onclick =
     () => activarSelectorLicencia("unpaid_leave");
+DOM.hoursReturnBtn.onclick = activarSelectorDevolucionHoras;
 DOM.unjustifiedAbsenceBtn.onclick =
     activarSelectorAusenciaInjustificada;
 DOM.clockMarkBtn.onclick = activarSelectorMarcajeReloj;
@@ -5507,6 +6298,11 @@ document.addEventListener("click", async event => {
         Number(celda.dataset.month),
         Number(celda.dataset.day)
     );
+
+    if (selectionMode === "hoursreturn") {
+        await handleHoursReturnSelection(fecha);
+        return;
+    }
 
     if (selectionMode === "clockmark") {
         await handleClockMarkSelection(fecha);
@@ -5632,6 +6428,10 @@ window.addEventListener("proturnos:workerRequestsChanged", () => {
     renderDashboardState();
 });
 
+window.addEventListener("proturnos:memosChanged", () => {
+    renderMemosPanel();
+});
+
 window.addEventListener("proturnos:auditUndoApplied", () => {
     refreshAll();
     renderStaffingPanel();
@@ -5681,6 +6481,7 @@ initFirebaseShell({
                     renderBotones();
                     renderSwapPanel();
                     renderWorkerRequestsPanel();
+                    renderMemosPanel();
                     renderStaffingPanel();
                     refreshAll();
                     renderDashboardState();
@@ -5701,6 +6502,7 @@ initHoursCharts(getPerfilActual);
 renderStaffingPanel();
 renderSwapPanel();
 renderWorkerRequestsPanel();
+renderMemosPanel();
 renderProfiles();
 renderBotones();
 

@@ -5,6 +5,8 @@ import {
     getRotativa,
     getShiftAssigned
 } from "./storage.js";
+import { getHourReturn } from "./hourReturns.js";
+import { createClockMemoTask } from "./memos.js";
 
 const BLOCK_MINUTES = 30;
 
@@ -311,7 +313,7 @@ function getHalfAdminScheduledSegments(profile, keyDay, date) {
     return null;
 }
 
-export function getScheduledSegmentsForProfile(
+function getRawScheduledSegmentsForProfile(
     profile,
     keyDay,
     date,
@@ -329,6 +331,205 @@ export function getScheduledSegmentsForProfile(
         date,
         state,
         holidays
+    );
+}
+
+function hourReturnMatchesSegment(record, segment, segments) {
+    if (!record) return false;
+
+    if (!record.segmentId) {
+        return segments.length === 1;
+    }
+
+    return String(record.segmentId) === String(segment.id);
+}
+
+function applyHourReturnToSegments(
+    profile,
+    keyDay,
+    date,
+    segments
+) {
+    const record = getHourReturn(profile, keyDay);
+
+    if (!record) {
+        return segments;
+    }
+
+    return segments
+        .map(segment => {
+            if (!hourReturnMatchesSegment(record, segment, segments)) {
+                return segment;
+            }
+
+            if (record.fullTurn) {
+                return null;
+            }
+
+            const entry = record.entryTime
+                ? timeNearReference(
+                    date,
+                    record.entryTime,
+                    segment.start
+                )
+                : null;
+            const exit = record.exitTime
+                ? timeNearReference(
+                    date,
+                    record.exitTime,
+                    segment.end
+                )
+                : null;
+            const start = entry
+                ? maxDate(segment.start, entry)
+                : cloneDate(segment.start);
+            const end = exit
+                ? minDate(segment.end, exit)
+                : cloneDate(segment.end);
+
+            if (end <= start) return null;
+
+            return {
+                ...segment,
+                start,
+                end,
+                hourReturn: record
+            };
+        })
+        .filter(Boolean);
+}
+
+function getHourReturnPermissionIntervals(
+    profile,
+    keyDay,
+    date,
+    state,
+    holidays = {}
+) {
+    const record = getHourReturn(profile, keyDay);
+
+    if (!record) return [];
+
+    const rawSegments = getRawScheduledSegmentsForProfile(
+        profile,
+        keyDay,
+        date,
+        state,
+        holidays
+    );
+    const adjustedSegments = applyHourReturnToSegments(
+        profile,
+        keyDay,
+        date,
+        rawSegments
+    );
+
+    return rawSegments
+        .filter(segment =>
+            hourReturnMatchesSegment(record, segment, rawSegments)
+        )
+        .flatMap(segment => {
+            const baseInterval = {
+                start: segment.start,
+                end: segment.end
+            };
+
+            if (record.fullTurn) {
+                return [baseInterval];
+            }
+
+            const workedInterval = adjustedSegments
+                .filter(item => item.id === segment.id)
+                .map(item => ({
+                    start: item.start,
+                    end: item.end
+                }));
+
+            return subtractIntervals(
+                [baseInterval],
+                workedInterval
+            );
+        });
+}
+
+function getHalfAdminPermissionIntervals(
+    profile,
+    keyDay,
+    date,
+    state,
+    holidays = {}
+) {
+    const admin = getJSON(`admin_${profile}`, {});
+
+    if (admin[keyDay] !== "0.5M" && admin[keyDay] !== "0.5T") {
+        return [];
+    }
+
+    const workedSegments =
+        getHalfAdminScheduledSegments(profile, keyDay, date);
+    const baseSegments = getScheduledSegmentsForState(
+        date,
+        state,
+        holidays
+    );
+
+    if (!workedSegments || !baseSegments.length) return [];
+
+    return subtractIntervals(
+        baseSegments.map(segment => ({
+            start: segment.start,
+            end: segment.end
+        })),
+        workedSegments.map(segment => ({
+            start: segment.start,
+            end: segment.end
+        }))
+    );
+}
+
+function getNonExtraPermissionIntervals(
+    profile,
+    keyDay,
+    date,
+    state,
+    holidays = {}
+) {
+    return [
+        ...getHalfAdminPermissionIntervals(
+            profile,
+            keyDay,
+            date,
+            state,
+            holidays
+        ),
+        ...getHourReturnPermissionIntervals(
+            profile,
+            keyDay,
+            date,
+            state,
+            holidays
+        )
+    ];
+}
+
+export function getScheduledSegmentsForProfile(
+    profile,
+    keyDay,
+    date,
+    state,
+    holidays = {}
+) {
+    return applyHourReturnToSegments(
+        profile,
+        keyDay,
+        date,
+        getRawScheduledSegmentsForProfile(
+            profile,
+            keyDay,
+            date,
+            state,
+            holidays
+        )
     );
 }
 
@@ -576,20 +777,15 @@ function segmentHasExtra(segment, mark) {
 }
 
 export function hasClockExtra(profile, keyDay, date, state, holidays = {}) {
-    const mark = getClockMark(profile, keyDay);
-
-    if (!mark) return false;
-
-    return getScheduledSegmentsForProfile(
+    const extra = getClockExtraHours(
         profile,
         keyDay,
         date,
-        getClockScheduleState(profile, keyDay, state),
+        state,
         holidays
-    )
-        .some(segment =>
-            segmentHasExtra(segment, getSegmentMark(mark, segment))
-        );
+    );
+
+    return Boolean(extra.d || extra.n);
 }
 
 export function getClockExtraHours(
@@ -614,6 +810,16 @@ export function getClockExtraHours(
         start: segment.start,
         end: segment.end
     }));
+    const nonExtraIntervals = [
+        ...scheduled,
+        ...getNonExtraPermissionIntervals(
+            profile,
+            keyDay,
+            date,
+            Number(state) || TURNO.LIBRE,
+            holidays
+        )
+    ];
     const worked = getWorkedIntervalsForState(
         profile,
         keyDay,
@@ -621,7 +827,10 @@ export function getClockExtraHours(
         state,
         holidays
     );
-    const extraIntervals = subtractIntervals(worked, scheduled);
+    const extraIntervals = subtractIntervals(
+        worked,
+        nonExtraIntervals
+    );
     const total = { d: 0, n: 0 };
 
     extraIntervals.forEach(interval => {
@@ -990,6 +1199,7 @@ export function openClockMarkDialog({
 
             const marks = getClockMarks(profile);
             const mark = { segments: {} };
+            const memoSegments = [];
 
             for (const segment of segments) {
                 const segmentMark = {};
@@ -1024,6 +1234,15 @@ export function openClockMarkDialog({
                     segmentMark.exitTime = exitTime;
                 }
 
+                if (missingEntry || missingExit) {
+                    memoSegments.push({
+                        segmentId: segment.id,
+                        segmentLabel: segmentTitle(segment),
+                        missingEntry,
+                        missingExit
+                    });
+                }
+
                 if (turn24ExceedsMaximum(date, segment, segmentMark)) {
                     alert("Un turno 24 no puede superar 24 horas. No es posible adelantar la entrada ni retrasar la salida de este turno.");
                     return;
@@ -1042,6 +1261,13 @@ export function openClockMarkDialog({
             }
 
             saveClockMarks(profile, marks);
+            memoSegments.forEach(segment => {
+                createClockMemoTask({
+                    profile,
+                    dateKey: keyDay,
+                    ...segment
+                });
+            });
             close(true);
         };
 
