@@ -81,6 +81,7 @@ http://127.0.0.1:8000/
   - La navegacion principal incluye `MEMOS` despues de `Solicitudes` y antes de `Cambios de Turno`.
   - `js/memos.js` guarda tareas en `localStorage` bajo `memos`, renderiza la pagina y mantiene el badge de pendientes.
   - Se crea una tarea `Memorandum pendiente` al aplicar P. Administrativo, F. Legal, F. Compensatorio, 1/2 ADM Manana, 1/2 ADM Tarde, Permiso sin goce o un marcaje incompleto de entrada/salida.
+  - Al guardar un nuevo contrato para un trabajador con rotativa `Reemplazo`, se crea una tarea `Memorandum Pendiente` con trabajador, inicio, termino, motivo del reemplazo y persona reemplazada.
   - Cada tarea permite marcar `Realizado` y adjuntar documentos en base64.
 - Devolucion de Horas:
   - El menu Turnos tiene el boton `DEVOLUCION DE HORAS (0)` antes de `AUSENCIA INJUSTIFICADA`.
@@ -147,7 +148,7 @@ La navegacion vive en `index.html` con botones `nav-tile`.
 - `hoursPanel`: horas y graficos.
 - `auditLogPanel`: LOG / bitacora.
 - `profileSection`: menu Perfil.
-- `reportsPanel`: reportes.
+- `reportsPanel`: reportes. Actualmente se dejo limpio y solo muestra `Listado Colaboradores` a la izquierda.
 
 `document.body.dataset.activeView` controla visibilidad y estados de layout.
 

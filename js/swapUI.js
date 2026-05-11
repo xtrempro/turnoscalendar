@@ -191,7 +191,7 @@ function renderSwapProfiles() {
     const filtro =
         document.getElementById("swapFilterRole")?.value || "Todos";
     const showInactive =
-        document.getElementById("swapShowInactiveProfiles")?.checked ?? true;
+        document.getElementById("swapShowInactiveProfiles")?.checked ?? false;
     const visibles = profiles.filter(profile => {
         const active = showInactive || isProfileActive(profile);
         const role = filtro === "Todos" || profile.estamento === filtro;

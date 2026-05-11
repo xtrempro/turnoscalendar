@@ -27,6 +27,7 @@ const KEY = "staffing_config";
 const APPLICANTS_KEY = "staffing_applicants";
 
 let staffingViewBound = false;
+let staffingWeekDate = null;
 
 const STAFFING_DATE_REMINDERS = [
     { month: 4, day: 12, label: "D\u00eda de la Enfermera(o)" },
@@ -737,6 +738,19 @@ function formatMonth(year, month) {
         .replace(".", "");
 }
 
+function formatShortWeekday(date) {
+    return date
+        .toLocaleDateString("es-CL", { weekday: "short" })
+        .replace(".", "");
+}
+
+function formatShortDate(date) {
+    return date.toLocaleDateString("es-CL", {
+        day: "2-digit",
+        month: "2-digit"
+    });
+}
+
 function isMedicalType(type) {
     return (
         type === "license" ||
@@ -1395,7 +1409,7 @@ function renderStaffingProfiles() {
     const profiles = getProfiles();
     const showInactive =
         document.getElementById("staffingShowInactiveProfiles")?.checked ??
-        true;
+        false;
     const roleFilter =
         document.getElementById("staffingFilterRole")?.value ||
         "Todos";
@@ -1710,6 +1724,229 @@ function getProfileStaffingCoverage(
         removedSegments,
         absence
     };
+}
+
+function weekStartMonday(date) {
+    const base = new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+    const day = base.getDay();
+    const offset = day === 0 ? -6 : 1 - day;
+
+    base.setDate(base.getDate() + offset);
+    return base;
+}
+
+function staffingWeekDays(date = currentDate) {
+    const start = weekStartMonday(date);
+
+    return Array.from({ length: 7 }, (_, index) => {
+        const day = new Date(start);
+        day.setDate(start.getDate() + index);
+        return day;
+    });
+}
+
+function getStaffingWeekDate() {
+    if (!staffingWeekDate) {
+        staffingWeekDate = new Date(
+            currentDate.getFullYear(),
+            currentDate.getMonth(),
+            currentDate.getDate()
+        );
+    }
+
+    return staffingWeekDate;
+}
+
+function changeStaffingWeek(offset) {
+    const next = new Date(getStaffingWeekDate());
+    next.setDate(next.getDate() + offset * 7);
+    staffingWeekDate = next;
+    renderStaffingWeeklyCalendar();
+}
+
+function profileWeeklyShiftSegments(profile, date, shiftKey, absenceCache) {
+    const y = date.getFullYear();
+    const m = date.getMonth();
+    const d = date.getDate();
+    const dayKey = key(y, m, d);
+    const modality = getStaffingProfileModality(profile);
+    const isDiurno = modality === "diurno";
+    const row = {
+        modality: isDiurno ? "diurno" : "4turno"
+    };
+    const turno = getStaffingTurno(profile, y, m, d);
+    const beforeSegments = turnSegmentsForStaffing(row, turno);
+    const absence = getProfileStaffingAbsence(
+        profile.name,
+        dayKey,
+        absenceCache
+    );
+    const removedSegments =
+        removeSegmentsByAbsence(absence, beforeSegments);
+    const activeSegments = new Set(
+        [...beforeSegments].filter(segment =>
+            !removedSegments.has(segment)
+        )
+    );
+
+    if (shiftKey === "diurno") {
+        if (!isDiurno) return null;
+        return [...activeSegments].filter(segment =>
+            segment === STAFFING_SEGMENT.DAY_MORNING ||
+            segment === STAFFING_SEGMENT.DAY_AFTERNOON
+        );
+    }
+
+    if (shiftKey === "larga") {
+        if (isDiurno) return null;
+        return [...activeSegments].filter(segment =>
+            segment === STAFFING_SEGMENT.DAY_MORNING ||
+            segment === STAFFING_SEGMENT.DAY_AFTERNOON
+        );
+    }
+
+    if (shiftKey === "noche" && activeSegments.has(STAFFING_SEGMENT.NIGHT)) {
+        return [STAFFING_SEGMENT.NIGHT];
+    }
+
+    return null;
+}
+
+function weeklyProfileMeta(profile) {
+    const group = getStaffingProfileGroupKey(profile);
+    const estamento = normalizeStaffingEstamento(profile.estamento);
+    const groupLabel = getStaffingGroupLabel(estamento, group);
+
+    return isProfessionBasedStaffing(estamento)
+        ? groupLabel
+        : estamento;
+}
+
+function weeklyShiftProfiles(date, shiftKey, absenceCache) {
+    return getProfiles()
+        .filter(isProfileActive)
+        .map(profile => {
+            const segments = profileWeeklyShiftSegments(
+                profile,
+                date,
+                shiftKey,
+                absenceCache
+            );
+
+            if (!segments?.length) return null;
+
+            return {
+                profile,
+                segments
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) =>
+            a.profile.name.localeCompare(b.profile.name, "es")
+        );
+}
+
+function weeklySegmentSummary(segments) {
+    if (!segments?.length) return "";
+    if (segments.includes(STAFFING_SEGMENT.NIGHT)) return "";
+
+    const hasMorning =
+        segments.includes(STAFFING_SEGMENT.DAY_MORNING);
+    const hasAfternoon =
+        segments.includes(STAFFING_SEGMENT.DAY_AFTERNOON);
+
+    if (hasMorning && hasAfternoon) return "";
+    if (hasMorning) return "AM";
+    if (hasAfternoon) return "PM";
+
+    return "";
+}
+
+function renderWeeklyProfileChip(item) {
+    const partial = weeklySegmentSummary(item.segments);
+
+    return `
+        <span class="staffing-weekly-person">
+            <strong>${escapeHTML(item.profile.name)}</strong>
+            <small>${escapeHTML(weeklyProfileMeta(item.profile))}${partial ? ` | ${escapeHTML(partial)}` : ""}</small>
+        </span>
+    `;
+}
+
+function renderStaffingWeeklyCell(date, shift) {
+    const people = weeklyShiftProfiles(
+        date,
+        shift.key,
+        new Map()
+    );
+
+    return `
+        <article class="staffing-weekly-cell staffing-weekly-cell--${shift.key}">
+            <div class="staffing-weekly-cell__shift">${escapeHTML(shift.label)}</div>
+            <div class="staffing-weekly-people">
+                ${
+                    people.length
+                        ? people.map(renderWeeklyProfileChip).join("")
+                        : `<span class="staffing-weekly-empty">Sin personal disponible</span>`
+                }
+            </div>
+        </article>
+    `;
+}
+
+function renderStaffingWeeklyCalendar() {
+    const target = document.getElementById("staffingWeeklyCalendar");
+    if (!target) return;
+
+    const days = staffingWeekDays(getStaffingWeekDate());
+    const shifts = [
+        { key: "diurno", label: "Diurno" },
+        { key: "larga", label: "Larga" },
+        { key: "noche", label: "Noche" }
+    ];
+
+    target.innerHTML = `
+        <div class="section-head section-head--with-action staffing-weekly-head">
+            <span class="section-head__title">
+                <h3>Calendario semanal</h3>
+                <span class="staffing-weekly-range">
+                    ${escapeHTML(formatShortDate(days[0]))} al ${escapeHTML(formatShortDate(days[6]))}
+                </span>
+            </span>
+            <span class="staffing-weekly-nav">
+                <button class="secondary-button secondary-button--small" type="button" data-staffing-week-prev>
+                    Anterior
+                </button>
+                <button class="secondary-button secondary-button--small" type="button" data-staffing-week-next>
+                    Siguiente
+                </button>
+            </span>
+        </div>
+        <div class="staffing-weekly-grid">
+            ${days.map(day => `
+                <div class="staffing-weekly-day">
+                    <strong>${escapeHTML(formatShortWeekday(day))}</strong>
+                    <span>${escapeHTML(formatShortDate(day))}</span>
+                </div>
+            `).join("")}
+            ${shifts.map(shift =>
+                days.map(day =>
+                    renderStaffingWeeklyCell(day, shift)
+                ).join("")
+            ).join("")}
+        </div>
+    `;
+
+    target
+        .querySelector("[data-staffing-week-prev]")
+        ?.addEventListener("click", () => changeStaffingWeek(-1));
+    target
+        .querySelector("[data-staffing-week-next]")
+        ?.addEventListener("click", () => changeStaffingWeek(1));
 }
 
 function uniqueAbsences(absences) {
@@ -2088,6 +2325,7 @@ export async function analizarStaffingMes(
 export async function renderStaffingAnalysis(){
     bindStaffingView();
     renderStaffingProfiles();
+    renderStaffingWeeklyCalendar();
     renderReplacementContractsLog();
     renderStaffingMedicalChart();
 

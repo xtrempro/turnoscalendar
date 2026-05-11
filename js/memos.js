@@ -107,6 +107,19 @@ function formatTimestamp(value) {
     });
 }
 
+function formatISODate(value) {
+    const match = String(value || "")
+        .match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+
+    if (!match) return "Sin fecha";
+
+    return [
+        String(Number(match[3])).padStart(2, "0"),
+        String(Number(match[2])).padStart(2, "0"),
+        match[1]
+    ].join("-");
+}
+
 function sortMemos(a, b) {
     const statusWeight = status =>
         status === STATUS_PENDING ? 0 : 1;
@@ -308,6 +321,41 @@ export function createClockMemoTask({
         typeLabel,
         detail,
         dateKey
+    });
+}
+
+export function createReplacementContractMemoTask({
+    profile,
+    contract
+} = {}) {
+    const start = String(contract?.start || "");
+    const end = String(contract?.end || "");
+    const replaces = String(contract?.replaces || "").trim();
+    const reason = String(contract?.reason || "").trim();
+
+    if (!profile || !start || !end || !replaces) return null;
+
+    const detail = [
+        `Nombre: ${profile}`,
+        `Inicio contrato: ${formatISODate(start)}`,
+        `Termino contrato: ${formatISODate(end)}`,
+        reason ? `Motivo del reemplazo: ${reason}` : "",
+        `Reemplaza a: ${replaces}`
+    ].filter(Boolean).join(" | ");
+
+    return createMemoTask({
+        sourceId: [
+            "replacement_contract",
+            profile,
+            contract.id || start,
+            end,
+            replaces,
+            reason
+        ].join(":"),
+        title: "Memorandum Pendiente",
+        profile,
+        typeLabel: "Contrato de reemplazo",
+        detail
     });
 }
 

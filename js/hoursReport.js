@@ -12,7 +12,9 @@ import {
     getTurnoBase
 } from "./turnEngine.js";
 import {
-    getTurnoExtraAgregado
+    getTurnoExtraAgregado,
+    getAbsenceType,
+    esAusenciaInjustificada
 } from "./rulesEngine.js";
 import {
     calcHours,
@@ -34,6 +36,8 @@ import {
     getContractsForProfile
 } from "./contracts.js";
 import { getActiveWorkspace } from "./workspaces.js";
+import { getJSON } from "./persistence.js";
+import { getClockMarks } from "./clockMarks.js";
 
 function key(year, month, day) {
     return `${year}-${month}-${day}`;
@@ -105,6 +109,20 @@ function safeFileName(value) {
         .replace(/^_+|_+$/g, "");
 }
 
+async function fetchReportHolidays(year) {
+    const [previous, current, next] = await Promise.all([
+        fetchHolidays(year - 1),
+        fetchHolidays(year),
+        fetchHolidays(year + 1)
+    ]);
+
+    return {
+        ...previous,
+        ...current,
+        ...next
+    };
+}
+
 function rotationLabel(type) {
     if (type === "3turno") return "3er Turno";
     if (type === "4turno") return "4° Turno";
@@ -123,6 +141,15 @@ function reportKind(profileName) {
     }
 
     return "shift-base";
+}
+
+function isNoAssignmentShiftProfile(profileName) {
+    const type = getRotativa(profileName).type;
+
+    return (
+        (type === "3turno" || type === "4turno") &&
+        !getShiftAssigned(profileName)
+    );
 }
 
 function turnoLabel(turno) {
@@ -211,6 +238,275 @@ function rowHours(date, turno, holidays) {
     return {
         d: formatHour(hours.d),
         n: formatHour(hours.n)
+    };
+}
+
+function numberHours(date, turno, holidays) {
+    const hours = calcHours(date, Number(turno) || 0, holidays) || {
+        d: 0,
+        n: 0
+    };
+
+    return {
+        d: Number(hours.d) || 0,
+        n: Number(hours.n) || 0
+    };
+}
+
+function addNumericHours(target, source) {
+    target.d += Number(source?.d) || 0;
+    target.n += Number(source?.n) || 0;
+}
+
+function readProfileMap(prefix, profileName) {
+    return getJSON(`${prefix}_${profileName}`, {});
+}
+
+function getReportMaps(profileName) {
+    return {
+        admin: readProfileMap("admin", profileName),
+        legal: readProfileMap("legal", profileName),
+        comp: readProfileMap("comp", profileName),
+        absences: readProfileMap("absences", profileName)
+    };
+}
+
+function absenceTypeLabel(type) {
+    if (type === "professional_license") return "LM Profesional";
+    if (type === "unpaid_leave") return "Permiso sin goce";
+    if (type === "unjustified_absence") return "Ausencia injustificada";
+    if (type === "license") return "Licencia Medica";
+
+    return type ? "Ausencia" : "";
+}
+
+function dayAbsenceDetail(keyDay, maps) {
+    if (maps.admin[keyDay] === 1) {
+        return {
+            label: "P. Administrativo",
+            full: true,
+            category: "admin"
+        };
+    }
+
+    if (maps.admin[keyDay] === "0.5M") {
+        return {
+            label: "1/2 ADM Manana",
+            full: false,
+            category: "half_admin",
+            workState: TURNO.MEDIA_TARDE
+        };
+    }
+
+    if (maps.admin[keyDay] === "0.5T") {
+        return {
+            label: "1/2 ADM Tarde",
+            full: false,
+            category: "half_admin",
+            workState: TURNO.MEDIA_MANANA
+        };
+    }
+
+    if (maps.admin[keyDay] === 0.5) {
+        return {
+            label: "1/2 ADM",
+            full: false,
+            category: "half_admin",
+            workState: TURNO.LIBRE
+        };
+    }
+
+    if (maps.legal[keyDay]) {
+        return {
+            label: "F. Legal",
+            full: true,
+            category: "legal"
+        };
+    }
+
+    if (maps.comp[keyDay]) {
+        return {
+            label: "F. Compensatorio",
+            full: true,
+            category: "comp"
+        };
+    }
+
+    if (maps.absences[keyDay]) {
+        const type = getAbsenceType(maps.absences[keyDay]);
+
+        return {
+            label: absenceTypeLabel(type),
+            full: true,
+            category: type,
+            type
+        };
+    }
+
+    return null;
+}
+
+function actualStateForReport(profileName, data, keyDay) {
+    return aplicarCambiosTurno(
+        profileName,
+        keyDay,
+        Number(data[keyDay]) || TURNO.LIBRE
+    );
+}
+
+function reportCarryForBoundary(profileName, date, data, maps, holidays) {
+    const keyDay = key(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+    const absence = dayAbsenceDetail(keyDay, maps);
+
+    if (absence?.full || esAusenciaInjustificada(maps.absences[keyDay])) {
+        return { d: 0, n: 0 };
+    }
+
+    const state = actualStateForReport(profileName, data, keyDay);
+
+    if (
+        state !== TURNO.NOCHE &&
+        state !== TURNO.TURNO24 &&
+        state !== TURNO.DIURNO_NOCHE
+    ) {
+        return { d: 0, n: 0 };
+    }
+
+    const next = new Date(date);
+    next.setDate(date.getDate() + 1);
+
+    return isBusinessDay(next, holidays)
+        ? { d: 1, n: 7 }
+        : { d: 0, n: 8 };
+}
+
+function reportCarryIn(profileName, year, month, data, holidays) {
+    const previous = new Date(year, month, 0);
+    const maps = getReportMaps(profileName);
+
+    return reportCarryForBoundary(
+        profileName,
+        previous,
+        data,
+        maps,
+        holidays
+    );
+}
+
+function reportCarryOut(profileName, year, month, days, data, holidays) {
+    const maps = getReportMaps(profileName);
+
+    return reportCarryForBoundary(
+        profileName,
+        new Date(year, month, days),
+        data,
+        maps,
+        holidays
+    );
+}
+
+function clockMarkSummary(profileName, keyDay) {
+    const mark = getClockMarks(profileName)[keyDay];
+
+    if (!mark?.segments) return "";
+
+    const items = Object.values(mark.segments)
+        .map(segment => {
+            const details = [];
+
+            if (segment.missingEntry) details.push("Sin entrada");
+            if (segment.missingExit) details.push("Sin salida");
+            if (segment.entryTime) {
+                details.push(`Entrada ${segment.entryTime}`);
+            }
+            if (segment.exitTime) {
+                details.push(`Salida ${segment.exitTime}`);
+            }
+
+            const note = segment.adminNote || segment.comments;
+
+            return [
+                details.join(" / "),
+                note
+            ].filter(Boolean).join(": ");
+        })
+        .filter(Boolean);
+
+    return items.join(" | ");
+}
+
+function buildNoAssignmentDayRows(profile, year, month, days, holidays) {
+    const profileName = profile.name;
+    const data = getProfileData(profileName);
+    const baseData = getBaseProfileData(profileName);
+    const swaps = cambiosDelMes(year, month);
+    const contracts = activeContractsForMonth(
+        profileName,
+        year,
+        month
+    );
+    const maps = getReportMaps(profileName);
+    const rows = [];
+    const rawTotals = { d: 0, n: 0 };
+
+    for (let day = 1; day <= days; day++) {
+        const keyDay = key(year, month, day);
+        const iso = isoFromKey(keyDay);
+        const date = parseKey(keyDay);
+        const rawBase = getTurnoBase(profileName, keyDay);
+        const baseWithSwaps = aplicarCambiosTurno(
+            profileName,
+            keyDay,
+            rawBase,
+            { includeReplacements: false }
+        );
+        const actual = actualStateForReport(profileName, data, keyDay);
+        const absence = dayAbsenceDetail(keyDay, maps);
+        const workState = absence?.full
+            ? TURNO.LIBRE
+            : absence?.workState || actual;
+        const hours = numberHours(date, workState, holidays);
+        const hasManualBase =
+            Object.prototype.hasOwnProperty.call(baseData, keyDay);
+        const swap = getSwapDetail(profileName, keyDay, swaps);
+        const replacement = replacementDetail(profileName, keyDay);
+        const contract = contractDetail(contracts, iso);
+        const clock = clockMarkSummary(profileName, keyDay);
+        const details = [
+            absence?.label,
+            replacement,
+            contract,
+            swap,
+            clock
+        ].filter(Boolean).join(" | ");
+
+        addNumericHours(rawTotals, hours);
+
+        rows.push({
+            fecha: formatDate(iso),
+            diaHabil: isBusinessDay(date, holidays) ? "Si" : "No",
+            tipo: hasManualBase
+                ? "Turno base"
+                : "Turno registrado",
+            turnoBase: turnoLabel(rawBase),
+            turnoConCambios: turnoLabel(baseWithSwaps),
+            turnoRealizado: absence?.label || turnoLabel(actual),
+            turnoExtra: turnoLabel(
+                getTurnoExtraAgregado(baseWithSwaps, actual)
+            ),
+            horasDiurnas: formatHour(hours.d),
+            horasNocturnas: formatHour(hours.n),
+            respaldo: details
+        });
+    }
+
+    return {
+        rows,
+        rawTotals
     };
 }
 
@@ -344,6 +640,195 @@ function buildContractRows(profileName, year, month) {
         }));
 }
 
+function permissionRowsAndAdjustments(profileName, year, month, days, holidays) {
+    const maps = getReportMaps(profileName);
+    const rows = [];
+    const adjustments = {
+        businessDays: 0,
+        businessHours: 0,
+        adminFullDays: 0,
+        adminFullHours: 0,
+        halfAdminCount: 0,
+        halfAdminHours: 0,
+        legalDays: 0,
+        legalHours: 0,
+        compDays: 0,
+        compHours: 0,
+        medicalBusinessDays: 0,
+        medicalHours: 0,
+        otherApprovedDays: 0,
+        otherApprovedHours: 0
+    };
+
+    for (let day = 1; day <= days; day++) {
+        const date = new Date(year, month, day);
+        const keyDay = key(year, month, day);
+        const iso = isoFromKey(keyDay);
+        const isBusiness = isBusinessDay(date, holidays);
+        const absence = dayAbsenceDetail(keyDay, maps);
+
+        if (isBusiness) {
+            adjustments.businessDays += 1;
+            adjustments.businessHours += 8.8;
+        }
+
+        if (!absence) continue;
+
+        const amount = absence.full ? 1 : 0.5;
+        const hours = isBusiness
+            ? (absence.full ? 8.8 : 4.4)
+            : 0;
+
+        if (absence.category === "admin" && isBusiness) {
+            adjustments.adminFullDays += 1;
+            adjustments.adminFullHours += hours;
+        } else if (absence.category === "half_admin" && isBusiness) {
+            adjustments.halfAdminCount += 1;
+            adjustments.halfAdminHours += hours;
+        } else if (absence.category === "legal" && isBusiness) {
+            adjustments.legalDays += 1;
+            adjustments.legalHours += hours;
+        } else if (absence.category === "comp" && isBusiness) {
+            adjustments.compDays += 1;
+            adjustments.compHours += hours;
+        } else if (
+            (absence.type === "license" ||
+                absence.type === "professional_license") &&
+            isBusiness
+        ) {
+            adjustments.medicalBusinessDays += 1;
+            adjustments.medicalHours += hours;
+        } else if (
+            absence.full &&
+            !esAusenciaInjustificada(maps.absences[keyDay]) &&
+            isBusiness
+        ) {
+            adjustments.otherApprovedDays += 1;
+            adjustments.otherApprovedHours += hours;
+        }
+
+        rows.push({
+            inicio: formatDate(iso),
+            termino: formatDate(iso),
+            cantidad: formatHour(amount),
+            tipo: absence.label,
+            nuevoSaldo: ""
+        });
+    }
+
+    return {
+        rows,
+        adjustments
+    };
+}
+
+function buildClockRows(profileName, year, month) {
+    const marks = getClockMarks(profileName);
+    const rows = [];
+
+    Object.entries(marks).forEach(([keyDay, mark]) => {
+        const parsed = parseKey(keyDay);
+
+        if (parsed.getFullYear() !== year || parsed.getMonth() !== month) {
+            return;
+        }
+
+        Object.values(mark.segments || {}).forEach(segment => {
+            const incidence = [
+                segment.missingEntry ? "Sin entrada" : "",
+                segment.missingExit ? "Sin salida" : "",
+                segment.entryTime ? `Entrada ${segment.entryTime}` : "",
+                segment.exitTime ? `Salida ${segment.exitTime}` : ""
+            ].filter(Boolean).join(" / ");
+
+            if (!incidence) return;
+
+            rows.push({
+                fecha: formatDate(isoFromKey(keyDay)),
+                turno: segment.label || "",
+                incidencia: incidence,
+                comentario:
+                    segment.adminNote ||
+                    segment.comments ||
+                    ""
+            });
+        });
+    });
+
+    return rows.sort((a, b) =>
+        a.fecha.localeCompare(b.fecha)
+    );
+}
+
+function buildNoAssignmentReportModel({
+    profile,
+    monthDate,
+    holidays,
+    stats
+}) {
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const data = getProfileData(profile.name);
+    const dayDetail = buildNoAssignmentDayRows(
+        profile,
+        year,
+        month,
+        days,
+        holidays
+    );
+    const carryIn = reportCarryIn(
+        profile.name,
+        year,
+        month,
+        data,
+        holidays
+    );
+    const carryOut = reportCarryOut(
+        profile.name,
+        year,
+        month,
+        days,
+        data,
+        holidays
+    );
+    const totalD =
+        dayDetail.rawTotals.d + carryIn.d - carryOut.d;
+    const totalN =
+        dayDetail.rawTotals.n + carryIn.n - carryOut.n;
+    const permissions = permissionRowsAndAdjustments(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays
+    );
+    const valorHora = getValorHora(profile.name);
+    const monthName = monthLabel(monthDate);
+
+    return {
+        profile,
+        monthDate,
+        year,
+        month,
+        monthName,
+        stats,
+        valorHora,
+        rawDiurnas: dayDetail.rawTotals.d,
+        rawNocturnas: dayDetail.rawTotals.n,
+        carryIn,
+        carryOut,
+        totalD,
+        totalN,
+        totalWorked: totalD + totalN,
+        adjustments: permissions.adjustments,
+        permissionRows: permissions.rows,
+        swapRows: buildSwapRows(profile.name, year, month),
+        clockRows: buildClockRows(profile.name, year, month),
+        dayRows: dayDetail.rows
+    };
+}
+
 function table(title, columns, rows) {
     const body = rows.length
         ? rows.map(row => `
@@ -369,6 +854,240 @@ function table(title, columns, rows) {
             </thead>
             <tbody>${body}</tbody>
         </table>
+    `;
+}
+
+function reportTable(title, columns, rows, emptyText = "Sin registros para este mes.") {
+    const body = rows.length
+        ? rows.map(row => `
+            <tr>
+                ${columns.map(column => `
+                    <td>${escapeHTML(row[column.key] ?? "")}</td>
+                `).join("")}
+            </tr>
+        `).join("")
+        : `
+            <tr>
+                <td colspan="${columns.length}">${escapeHTML(emptyText)}</td>
+            </tr>
+        `;
+
+    return `
+        <section class="report-section">
+            <h4>${escapeHTML(title)}</h4>
+            <div class="report-table-wrap">
+                <table class="report-table">
+                    <thead>
+                        <tr>
+                            ${columns.map(column => `<th>${escapeHTML(column.label)}</th>`).join("")}
+                        </tr>
+                    </thead>
+                    <tbody>${body}</tbody>
+                </table>
+            </div>
+        </section>
+    `;
+}
+
+function noAssignmentHoursRows(model) {
+    return [
+        {
+            item: "Horas diurnas",
+            signo: "(+)",
+            valor: formatHour(model.rawDiurnas),
+            item2: "Horas nocturnas",
+            signo2: "(+)",
+            valor2: formatHour(model.rawNocturnas)
+        },
+        {
+            item: "Horas diurnas mes anterior",
+            signo: "(+)",
+            valor: formatHour(model.carryIn.d),
+            item2: "Horas nocturnas mes anterior",
+            signo2: "(+)",
+            valor2: formatHour(model.carryIn.n)
+        },
+        {
+            item: "Horas diurnas mes siguiente",
+            signo: "(-)",
+            valor: formatHour(model.carryOut.d),
+            item2: "Horas nocturnas mes siguiente",
+            signo2: "(-)",
+            valor2: formatHour(model.carryOut.n)
+        },
+        {
+            item: "Total Horas Diurnas",
+            signo: "(=)",
+            valor: formatHour(model.totalD),
+            item2: "Total Horas Nocturnas",
+            signo2: "(=)",
+            valor2: formatHour(model.totalN)
+        }
+    ];
+}
+
+function noAssignmentBusinessRows(model) {
+    const adj = model.adjustments;
+    const rows = [
+        {
+            cantidad: formatHour(adj.businessDays),
+            item: "Dias habiles con contrato",
+            signo: "(+)",
+            horas: formatHour(adj.businessHours)
+        }
+    ];
+
+    [
+        ["adminFullDays", "adminFullHours", "P. Administrativos"],
+        ["legalDays", "legalHours", "F. Legal"],
+        ["compDays", "compHours", "F. Compensatorios"],
+        ["halfAdminCount", "halfAdminHours", "1/2 ADM manana/tarde"],
+        ["medicalBusinessDays", "medicalHours", "Licencias medicas en dias habiles"],
+        ["otherApprovedDays", "otherApprovedHours", "Otros permisos aprobados"]
+    ].forEach(([countKey, hoursKey, label]) => {
+        if (!adj[countKey]) return;
+
+        rows.push({
+            cantidad: formatHour(adj[countKey]),
+            item: label,
+            signo: "(-)",
+            horas: formatHour(adj[hoursKey])
+        });
+    });
+
+    rows.push({
+        cantidad: "",
+        item: `Total Horas habiles de ${model.monthName}`,
+        signo: "(=)",
+        horas: formatHour(model.stats.horasHabiles)
+    });
+
+    return rows;
+}
+
+function noAssignmentExtraRows(model) {
+    return [
+        {
+            item: `Horas habiles ${model.monthName}`,
+            valor: formatHour(model.stats.horasHabiles),
+            item2: "HHEE Diurnas",
+            valor2: formatHour(model.stats.hheeDiurnas)
+        },
+        {
+            item: "Total horas realizadas",
+            valor: formatHour(model.totalWorked),
+            item2: "HHEE Nocturnas",
+            valor2: formatHour(model.stats.hheeNocturnas)
+        },
+        {
+            item: "Pago diurno estimado",
+            valor: `$${formatMoney(model.stats.paymentDiurno)}`,
+            item2: "Pago nocturno estimado",
+            valor2: `$${formatMoney(model.stats.paymentNocturno)}`
+        }
+    ];
+}
+
+function noAssignmentProfileRows(model) {
+    const workspace = getActiveWorkspace();
+    const rotativa = getRotativa(model.profile.name);
+
+    return [
+        { campo: "Nombre", valor: model.profile.name },
+        { campo: "RUT", valor: model.profile.rut || "Sin registro" },
+        { campo: "Unidad", valor: workspace?.name || "Sin entorno activo" },
+        { campo: "Contrato", valor: model.profile.contractType || "Sin registro" },
+        { campo: "Grado", valor: model.profile.grade || "Sin registro" },
+        { campo: "Asignacion de Turno", valor: getShiftAssigned(model.profile.name) ? "SI" : "NO" },
+        { campo: "Estamento", valor: model.profile.estamento || "Sin registro" },
+        { campo: "Rotativa", valor: rotationLabel(rotativa.type) },
+        { campo: "Profesion", valor: model.profile.profession || "Sin informacion" },
+        { campo: "Valor Hora", valor: `$${formatMoney(model.valorHora)}` }
+    ];
+}
+
+function buildNoAssignmentReportHTML(model) {
+    return `
+        <div class="no-assignment-report">
+            <div class="report-title-strip">
+                PLANILLA "${escapeHTML(model.monthName.toUpperCase())}"
+            </div>
+            ${reportTable("Datos del trabajador", [
+                { key: "campo", label: "Campo" },
+                { key: "valor", label: "Valor" }
+            ], noAssignmentProfileRows(model))}
+            ${reportTable(`Horas mes de ${model.monthName}`, [
+                { key: "item", label: "Concepto diurno" },
+                { key: "signo", label: "" },
+                { key: "valor", label: "Horas" },
+                { key: "item2", label: "Concepto nocturno" },
+                { key: "signo2", label: "" },
+                { key: "valor2", label: "Horas" }
+            ], noAssignmentHoursRows(model))}
+            ${reportTable(`Calculo horas habiles de ${model.monthName}`, [
+                { key: "cantidad", label: "Cantidad" },
+                { key: "item", label: "Concepto" },
+                { key: "signo", label: "" },
+                { key: "horas", label: "Horas" }
+            ], noAssignmentBusinessRows(model))}
+            ${reportTable("Horas extras", [
+                { key: "item", label: "Concepto" },
+                { key: "valor", label: "Valor" },
+                { key: "item2", label: "Concepto" },
+                { key: "valor2", label: "Valor" }
+            ], noAssignmentExtraRows(model))}
+            ${reportTable("Permisos / Ausencias", [
+                { key: "inicio", label: "Fecha Inicio" },
+                { key: "termino", label: "Fecha Termino" },
+                { key: "cantidad", label: "N° Solicitado" },
+                { key: "tipo", label: "Tipo de permiso" },
+                { key: "nuevoSaldo", label: "Nuevo Saldo" }
+            ], model.permissionRows)}
+            ${reportTable("Cambios de turno", [
+                { key: "estado", label: "Estado" },
+                { key: "entrega", label: "Entrega turno" },
+                { key: "recibe", label: "Recibe turno" },
+                { key: "fechaCambio", label: "Fecha cambio" },
+                { key: "turnoCambio", label: "Turno cambio" },
+                { key: "fechaDevolucion", label: "Fecha devolucion" },
+                { key: "turnoDevolucion", label: "Turno devolucion" }
+            ], model.swapRows)}
+            ${reportTable("Registros de marcaje", [
+                { key: "fecha", label: "Fecha" },
+                { key: "turno", label: "Turno" },
+                { key: "incidencia", label: "Tipo de Incidencia" },
+                { key: "comentario", label: "Comentario" }
+            ], model.clockRows)}
+            ${reportTable("Detalle de turnos", [
+                { key: "fecha", label: "Fecha" },
+                { key: "turnoBase", label: "Turno Base" },
+                { key: "turnoRealizado", label: "Turno realizado" },
+                { key: "horasDiurnas", label: "Horas diurnas" },
+                { key: "horasNocturnas", label: "Horas nocturnas" },
+                { key: "respaldo", label: "Reemplazo / motivo / CCTT" }
+            ], model.dayRows)}
+        </div>
+    `;
+}
+
+function noAssignmentWorkbookHTML(model) {
+    return `
+        <!doctype html>
+        <html>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    body { font-family: Calibri, Arial, sans-serif; color: #111827; }
+                    .report-title-strip { background: #0f172a; color: #fff; font-size: 18px; font-weight: 700; text-align: center; padding: 10px; }
+                    h4 { margin: 14px 0 0; padding: 6px 8px; color: #fff; background: #1d6cff; font-size: 13px; text-transform: uppercase; }
+                    table { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+                    th { background: #dbeafe; color: #0f172a; font-weight: 700; }
+                    th, td { border: 1px solid #94a3b8; padding: 5px 7px; vertical-align: top; font-size: 11px; }
+                    td { mso-number-format:"\\@"; }
+                </style>
+            </head>
+            <body>${buildNoAssignmentReportHTML(model)}</body>
+        </html>
     `;
 }
 
@@ -519,9 +1238,87 @@ function downloadExcel(html, filename) {
     URL.revokeObjectURL(url);
 }
 
+export async function buildNoAssignmentReportPreviewHTML(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name || !isNoAssignmentShiftProfile(profile.name)) {
+        return "";
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = buildNoAssignmentReportModel({
+        profile,
+        monthDate,
+        holidays,
+        stats
+    });
+
+    return buildNoAssignmentReportHTML(model);
+}
+
+export async function exportNoAssignmentShiftReport(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name) {
+        alert("Selecciona un trabajador para descargar el reporte.");
+        return;
+    }
+
+    if (!isNoAssignmentShiftProfile(profile.name)) {
+        alert("Este reporte solo aplica para 3er o 4\u00b0 turno sin Asignaci\u00f3n de Turno.");
+        return;
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = buildNoAssignmentReportModel({
+        profile,
+        monthDate,
+        holidays,
+        stats
+    });
+    const filename = `Reporte_turno_sin_asignacion_${safeFileName(profile.name)}_${year}-${String(month + 1).padStart(2, "0")}.xls`;
+
+    downloadExcel(noAssignmentWorkbookHTML(model), filename);
+}
+
 export async function exportHoursReport(profile, monthDate = new Date()) {
     if (!profile?.name) {
         alert("Selecciona un trabajador para imprimir el reporte.");
+        return;
+    }
+
+    if (isNoAssignmentShiftProfile(profile.name)) {
+        await exportNoAssignmentShiftReport(profile, monthDate);
         return;
     }
 

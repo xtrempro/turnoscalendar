@@ -13,7 +13,11 @@ import {
     startFirebaseAppStateSync,
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
-import { exportHoursReport } from "./hoursReport.js";
+import {
+    buildNoAssignmentReportPreviewHTML,
+    exportHoursReport,
+    exportNoAssignmentShiftReport
+} from "./hoursReport.js";
 import {
     initHoursCharts,
     renderHoursCharts
@@ -92,7 +96,10 @@ import {
     startWorkerRequestsRealtimeSync,
     stopWorkerRequestsRealtimeSync
 } from "./workerRequests.js";
-import { renderMemosPanel } from "./memos.js";
+import {
+    createReplacementContractMemoTask,
+    renderMemosPanel
+} from "./memos.js";
 import {
     addReplacementContract,
     formatContractDate,
@@ -144,6 +151,7 @@ let availabilityEditMode = false;
 let profileRotationMiniDate = new Date();
 let profileHoursSummaryRequest = 0;
 let clockMarksRenderRequest = 0;
+let reportsDetailRequest = 0;
 let clockMarksMonthDate = new Date(
     currentDate.getFullYear(),
     currentDate.getMonth(),
@@ -154,6 +162,9 @@ let clockMarksMonthTouched = false;
 const PROFESSION_LABELS = {
     [SIN_INFORMACION_PROFESSION]: "Sin informaci\u00f3n"
 };
+
+const FOURTH_SHIFT_NO_ASSIGNMENT_REPORT_LABEL =
+    "3er o 4\u00b0 Turno sin asignaci\u00f3n de turno";
 
 function profileUsesProfession(profile = {}) {
     return (
@@ -274,6 +285,7 @@ const profileDraft = {
     contractStart: "",
     contractEnd: "",
     contractReplaces: "",
+    contractReason: "",
     shiftAssigned: false
 };
 
@@ -1020,6 +1032,7 @@ function clearDraftValues(){
     profileDraft.contractStart = "";
     profileDraft.contractEnd = "";
     profileDraft.contractReplaces = "";
+    profileDraft.contractReason = "";
     profileDraft.shiftAssigned = false;
 }
 
@@ -1121,6 +1134,7 @@ function getDisplayedProfileData(){
             contractStart: profileDraft.contractStart,
             contractEnd: profileDraft.contractEnd,
             contractReplaces: profileDraft.contractReplaces,
+            contractReason: profileDraft.contractReason,
             shiftAssigned: profileDraft.shiftAssigned
         };
     }
@@ -1145,6 +1159,7 @@ function getDisplayedProfileData(){
             contractStart: profileDraft.contractStart,
             contractEnd: profileDraft.contractEnd,
             contractReplaces: profileDraft.contractReplaces,
+            contractReason: profileDraft.contractReason,
             shiftAssigned: profileDraft.shiftAssigned
         };
     }
@@ -1169,6 +1184,7 @@ function getDisplayedProfileData(){
             contractStart: "",
             contractEnd: "",
             contractReplaces: "",
+            contractReason: "",
             shiftAssigned: false
         };
     }
@@ -1194,6 +1210,7 @@ function getDisplayedProfileData(){
         contractStart: "",
         contractEnd: "",
         contractReplaces: "",
+        contractReason: "",
         shiftAssigned: getShiftAssigned(profile.name)
     };
 }
@@ -1227,14 +1244,14 @@ function buildRotationStatus(data){
         }
 
         if (!data.contractStart) {
-            return "Configura en el modal el inicio del contrato de reemplazo.";
+            return "Presione el botón para ingresar un nuevo contrato de reemplazo.";
         }
 
         if (!data.contractEnd) {
             return `Inicio de contrato: ${formatDisplayDate(data.contractStart)}. Falta definir termino en el modal.`;
         }
 
-        return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}.`;
+        return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}.`;
     }
 
     if (profileDraft.mode === PROFILE_MODE.CREATE) {
@@ -1311,7 +1328,7 @@ function renderProfileRotationStatus(data, editing) {
         <span>${escapeHTML(buildRotationStatus(data))}</span>
         ${canConfigure ? `
             <button id="openRotationConfigBtn" class="profile-status-action" type="button">
-                Configurar rotativa
+                ${data.rotationType === "reemplazo" ? "Nuevo Contrato" : "Configurar rotativa"}
             </button>
         ` : ""}
     `;
@@ -1532,6 +1549,9 @@ function renderContractHistory(profile) {
                     -
                     ${escapeHTML(formatContractDate(contract.end))}
                 </strong>
+                ${contract.reason ? `
+                    <span>Motivo: ${escapeHTML(contract.reason)}</span>
+                ` : ""}
                 <span>Reemplaza a: ${escapeHTML(contract.replaces)}</span>
             </li>
         `)
@@ -1649,7 +1669,8 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         ),
         contractStart: profileDraft.contractStart,
         contractEnd: profileDraft.contractEnd,
-        contractReplaces: profileDraft.contractReplaces || ""
+        contractReplaces: profileDraft.contractReplaces || "",
+        contractReason: profileDraft.contractReason || ""
     };
     const backdrop = document.createElement("div");
 
@@ -1685,6 +1706,13 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             state.contractReplaces = targetField.value;
         }
 
+        const reasonField =
+            backdrop.querySelector("[data-contract-reason]");
+
+        if (reasonField) {
+            state.contractReason = reasonField.value;
+        }
+
         if (isReplacement) {
             if (!state.contractStart || !state.contractEnd) {
                 alert("Debes seleccionar inicio y termino del contrato.");
@@ -1697,10 +1725,18 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 return;
             }
 
+            if (!state.contractReason) {
+                alert("Debes seleccionar el motivo del reemplazo.");
+                reasonField?.focus();
+                return;
+            }
+
             profileDraft.contractStart = state.contractStart;
             profileDraft.contractEnd = state.contractEnd;
             profileDraft.contractReplaces =
                 state.contractReplaces.trim();
+            profileDraft.contractReason =
+                state.contractReason;
             profileDraft.rotationStart = state.contractStart;
             profileDraft.rotationFirstTurn = "larga";
         } else {
@@ -1717,6 +1753,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             profileDraft.contractStart = "";
             profileDraft.contractEnd = "";
             profileDraft.contractReplaces = "";
+            profileDraft.contractReason = "";
         }
 
         close();
@@ -1845,7 +1882,17 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 ${isReplacement ? `
                     <label class="rotation-contract-field">
                         <span>Reemplaza a</span>
-                        <input data-contract-replaces type="text" value="${escapeHTML(state.contractReplaces)}" placeholder="Nombre o motivo del reemplazo">
+                        <input data-contract-replaces type="text" value="${escapeHTML(state.contractReplaces)}" placeholder="Nombre del trabajador reemplazado">
+                    </label>
+
+                    <label class="rotation-contract-field">
+                        <span>Motivo del Reemplazo</span>
+                        <select data-contract-reason>
+                            <option value="">Seleccionar</option>
+                            <option value="Licencia Médica" ${state.contractReason === "Licencia Médica" ? "selected" : ""}>Licencia Médica</option>
+                            <option value="F. Legal" ${state.contractReason === "F. Legal" ? "selected" : ""}>F. Legal</option>
+                            <option value="F. Compensatorios" ${state.contractReason === "F. Compensatorios" ? "selected" : ""}>F. Compensatorios</option>
+                        </select>
                     </label>
                 ` : ""}
 
@@ -1882,6 +1929,12 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             .querySelector("[data-contract-replaces]")
             ?.addEventListener("input", event => {
                 state.contractReplaces = event.target.value;
+            });
+
+        backdrop
+            .querySelector("[data-contract-reason]")
+            ?.addEventListener("change", event => {
+                state.contractReason = event.target.value;
             });
     };
 
@@ -2791,7 +2844,7 @@ function renderDisponibilidadVacaciones() {
 
     if (availabilityEditMode) {
         DOM.availabilitySummary.innerHTML = `
-            <div class="availability-list">
+            <div class="availability-list" style="--availability-columns: ${showCompBalance ? 4 : 3};">
                 <label class="availability-item">
                     <span>FL</span>
                     <input id="availabilityLegalInput" type="number" min="0" step="0.5" value="${saldos.legal}">
@@ -2824,7 +2877,7 @@ function renderDisponibilidadVacaciones() {
     }
 
     DOM.availabilitySummary.innerHTML = `
-        <div class="availability-list">
+        <div class="availability-list" style="--availability-columns: ${showCompBalance ? 4 : 3};">
             <div class="availability-item">
                 <span>FL</span>
                 <strong>${formatSaldo(saldos.legal)} dias</strong>
@@ -2984,16 +3037,23 @@ function renderDashboardState() {
             !editing || !isReplacementRotation;
     }
 
+    if (DOM.replacementReasonSelect) {
+        DOM.replacementReasonSelect.value =
+            data.contractReason || "";
+        DOM.replacementReasonSelect.disabled =
+            !editing || !isReplacementRotation;
+    }
+
     if (DOM.replacementContractStatus) {
         if (!isReplacementRotation) {
             DOM.replacementContractStatus.textContent = "";
         } else if (editing) {
             DOM.replacementContractStatus.textContent =
                 data.contractStart && data.contractEnd
-                    ? `Contrato seleccionado: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}.`
+                    ? `Contrato seleccionado: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}.`
                     : data.contractStart
                         ? `Inicio seleccionado: ${formatDisplayDate(data.contractStart)}. Falta marcar termino.`
-                        : "Configura inicio y termino del contrato desde el modal de rotativa.";
+                        : "Presione el botón para ingresar un nuevo contrato de reemplazo.";
         } else {
             const contracts = profile
                 ? getContractsForProfile(profile.name)
@@ -3002,7 +3062,7 @@ function renderDashboardState() {
             DOM.replacementContractStatus.innerHTML = contracts.length
                 ? contracts
                     .map(contract =>
-                        `${formatContractDate(contract.start)} - ${formatContractDate(contract.end)} | ${contract.replaces}`
+                        `${formatContractDate(contract.start)} - ${formatContractDate(contract.end)}${contract.reason ? ` | ${contract.reason}` : ""} | ${contract.replaces}`
                     )
                     .join("<br>")
                 : "Sin contratos registrados.";
@@ -3015,6 +3075,7 @@ function renderDashboardState() {
     renderProfileDocs(data, editing);
     renderProfileRecords(profile, editing);
     renderHheeProfiles();
+    renderReportsProfiles();
 
     if (DOM.profileEditorHint) {
         DOM.profileEditorHint.textContent =
@@ -3136,6 +3197,10 @@ function getViewForTarget(targetId) {
         return "memos";
     }
 
+    if (targetId === "reportsPanel") {
+        return "reports";
+    }
+
     if (targetId === "clockMarksPanel") {
         return "clockmarks";
     }
@@ -3183,6 +3248,10 @@ function setActiveShortcut(targetId) {
         renderMemosPanel();
     }
 
+    if (nextView === "reports") {
+        renderReportsProfiles();
+    }
+
     if (nextView === "clockmarks") {
         syncClockMarksMonthFromCurrent();
         renderClockMarksPanel();
@@ -3205,7 +3274,7 @@ function setActiveShortcut(targetId) {
 function renderProfiles() {
     const profiles = getProfiles();
     const showInactive =
-        DOM.showInactiveProfiles?.checked ?? true;
+        DOM.showInactiveProfiles?.checked ?? false;
     const selectableProfiles = profiles.filter(profile =>
         showInactive || isProfileActive(profile)
     );
@@ -3313,7 +3382,7 @@ function renderHheeProfiles() {
 
     const profiles = getProfiles();
     const showInactive =
-        DOM.hheeShowInactiveProfiles?.checked ?? true;
+        DOM.hheeShowInactiveProfiles?.checked ?? false;
     const current = getCurrentProfile();
     const filtro = DOM.hheeFilterRole?.value || "Todos";
     const query = normalizeProfileSearch(
@@ -3393,7 +3462,7 @@ function renderClockMarksProfiles() {
 
     const profiles = getProfiles();
     const showInactive =
-        DOM.clockMarksShowInactiveProfiles?.checked ?? true;
+        DOM.clockMarksShowInactiveProfiles?.checked ?? false;
     const current = getCurrentProfile();
     const filtro = DOM.clockMarksFilterRole?.value || "Todos";
     const query = normalizeProfileSearch(
@@ -3471,6 +3540,191 @@ function renderClockMarksProfiles() {
 
         DOM.clockMarksProfiles.appendChild(item);
     });
+}
+
+function isFourthShiftNoAssignmentProfile(profileName) {
+    if (!profileName) return false;
+
+    const rotativa = getRotativa(profileName);
+
+    return (
+        rotativa.type === "3turno" ||
+        rotativa.type === "4turno"
+    ) &&
+        !getShiftAssigned(profileName);
+}
+
+async function renderReportsDetail() {
+    if (!DOM.reportsSelectedInfo) return;
+
+    const requestId = ++reportsDetailRequest;
+    const profile = getPerfilActual();
+
+    if (!profile) {
+        DOM.reportsSelectedInfo.textContent =
+            "Selecciona un colaborador para ver sus reportes disponibles.";
+        DOM.report4TurnoNoAssignmentCard?.classList.add("hidden");
+        if (DOM.report4TurnoNoAssignmentPreview) {
+            DOM.report4TurnoNoAssignmentPreview.innerHTML = "";
+        }
+        DOM.reportsUnavailableHint?.classList.add("hidden");
+        return;
+    }
+
+    const rotativa = getRotativa(profile.name);
+    const hasShiftAssigned = getShiftAssigned(profile.name);
+    const rotationStatus = [
+        getRotativaLabel(rotativa.type),
+        hasShiftAssigned
+            ? "con asignaci\u00f3n de turno"
+            : "sin asignaci\u00f3n de turno"
+    ].join(" ");
+    const canShowFourthShiftReport =
+        isFourthShiftNoAssignmentProfile(profile.name);
+
+    DOM.reportsSelectedInfo.innerHTML = `
+        <span>Trabajador seleccionado</span>
+        <strong>${escapeHTML(profile.name)}</strong>
+        <small>${escapeHTML(getProfileMetaLabel(profile))} | ${escapeHTML(rotationStatus)}</small>
+    `;
+
+    DOM.report4TurnoNoAssignmentCard?.classList.toggle(
+        "hidden",
+        !canShowFourthShiftReport
+    );
+
+    if (DOM.downloadNoAssignmentReportBtn) {
+        DOM.downloadNoAssignmentReportBtn.onclick = () =>
+            exportNoAssignmentShiftReport(profile, currentDate);
+    }
+
+    if (DOM.report4TurnoNoAssignmentPreview) {
+        DOM.report4TurnoNoAssignmentPreview.innerHTML =
+            canShowFourthShiftReport
+                ? `<div class="empty-state empty-state--compact">Calculando detalle mensual...</div>`
+                : "";
+    }
+
+    if (DOM.reportsUnavailableHint) {
+        DOM.reportsUnavailableHint.classList.toggle(
+            "hidden",
+            canShowFourthShiftReport
+        );
+        DOM.reportsUnavailableHint.textContent =
+            canShowFourthShiftReport
+                ? ""
+                : `No hay reportes espec\u00edficos para este perfil. El archivo "${FOURTH_SHIFT_NO_ASSIGNMENT_REPORT_LABEL}" aparece cuando el trabajador tiene rotativa 3er o 4\u00b0 Turno y no tiene Asignaci\u00f3n de Turno.`;
+    }
+
+    if (!canShowFourthShiftReport || !DOM.report4TurnoNoAssignmentPreview) {
+        return;
+    }
+
+    try {
+        const html = await buildNoAssignmentReportPreviewHTML(
+            profile,
+            currentDate
+        );
+
+        if (requestId !== reportsDetailRequest) return;
+
+        DOM.report4TurnoNoAssignmentPreview.innerHTML =
+            html || `<div class="empty-state empty-state--compact">No fue posible generar el detalle para este mes.</div>`;
+    } catch (error) {
+        if (requestId !== reportsDetailRequest) return;
+
+        console.error(error);
+        DOM.report4TurnoNoAssignmentPreview.innerHTML =
+            `<div class="empty-state empty-state--compact">No fue posible generar el detalle del reporte.</div>`;
+    }
+}
+
+function renderReportsProfiles() {
+    if (!DOM.reportsProfiles) return;
+
+    const profiles = getProfiles();
+    const showInactive =
+        DOM.reportsShowInactiveProfiles?.checked ?? false;
+    const current = getCurrentProfile();
+    const filtro = DOM.reportsFilterRole?.value || "Todos";
+    const query = normalizeProfileSearch(
+        DOM.reportsProfileSearch?.value || ""
+    );
+
+    DOM.reportsProfiles.innerHTML = "";
+
+    const visibles = profiles.filter(profile => {
+        const matchActive =
+            showInactive || isProfileActive(profile);
+        const matchRole =
+            filtro === "Todos" ||
+            profile.estamento === filtro;
+        const haystack = normalizeProfileSearch([
+            profile.name,
+            profile.estamento,
+            formatProfession(profile.profession),
+            profile.email,
+            profile.rut
+        ].join(" "));
+
+        return matchActive &&
+            matchRole &&
+            (!query || haystack.includes(query));
+    });
+
+    if (DOM.reportsEmptyProfiles) {
+        DOM.reportsEmptyProfiles.classList.toggle(
+            "hidden",
+            Boolean(visibles.length)
+        );
+        DOM.reportsEmptyProfiles.textContent = profiles.length
+            ? "No hay resultados con ese filtro."
+            : "Aun no hay colaboradores creados.";
+    }
+
+    visibles.forEach(profile => {
+        const item = document.createElement("div");
+        item.className = "profile-item";
+
+        if (!isProfileActive(profile)) {
+            item.classList.add("is-inactive");
+        }
+
+        if (profile.name === current) {
+            item.classList.add("active");
+        }
+
+        const avatar = document.createElement("div");
+        avatar.className = "profile-item__avatar";
+        avatar.textContent =
+            profile.name.trim().charAt(0).toUpperCase() || "T";
+
+        const content = document.createElement("div");
+        content.className = "profile-item__content";
+
+        const name = document.createElement("strong");
+        name.textContent = profile.name;
+
+        const meta = document.createElement("span");
+        meta.textContent = isProfileActive(profile)
+            ? getProfileMetaLabel(profile)
+            : `${getProfileMetaLabel(profile)} | Desactivado`;
+
+        content.append(name, meta);
+        item.append(avatar, content);
+
+        item.onclick = () => {
+            selectProfileByName(profile.name, {
+                scrollToTop: true
+            });
+            setActiveShortcut("reportsPanel");
+            renderReportsProfiles();
+        };
+
+        DOM.reportsProfiles.appendChild(item);
+    });
+
+    renderReportsDetail();
 }
 
 function formatClockMarkDate(keyDay) {
@@ -4150,7 +4404,7 @@ function normalizeProfileSearch(value) {
 
 function getTopSearchProfiles() {
     const showInactive =
-        DOM.showInactiveProfiles?.checked ?? true;
+        DOM.showInactiveProfiles?.checked ?? false;
 
     return getProfiles()
         .filter(profile =>
@@ -4361,6 +4615,7 @@ function startReplacementContractEdit(profileName, keyDay) {
         calendarKeyToInputDate(keyDay);
     profileDraft.contractEnd = "";
     profileDraft.contractReplaces = "";
+    profileDraft.contractReason = "";
     profileRotationMiniDate = parseKey(keyDay);
 
     renderProfiles();
@@ -4401,6 +4656,7 @@ function handleRotationSelectionChange() {
     profileDraft.contractStart = "";
     profileDraft.contractEnd = "";
     profileDraft.contractReplaces = "";
+    profileDraft.contractReason = "";
 
     if (!profileDraft.rotationType) {
         clearSelectionMode(false);
@@ -4418,7 +4674,8 @@ function hasPendingReplacementContract() {
     return Boolean(
         profileDraft.contractStart ||
         profileDraft.contractEnd ||
-        profileDraft.contractReplaces.trim()
+        profileDraft.contractReplaces.trim() ||
+        profileDraft.contractReason
     );
 }
 
@@ -4469,6 +4726,10 @@ function validateDraft() {
 
         if (!profileDraft.contractReplaces.trim()) {
             missing.push("a quien reemplaza");
+        }
+
+        if (!profileDraft.contractReason) {
+            missing.push("motivo del reemplazo");
         }
     }
 
@@ -4932,11 +5193,17 @@ async function guardarPerfil() {
         }
 
         if (shouldSaveReplacementContract) {
-            addReplacementContract(nextName, {
+            const replacementContract = addReplacementContract(nextName, {
                 start: profileDraft.contractStart,
                 end: profileDraft.contractEnd,
                 replaces:
-                    profileDraft.contractReplaces.trim()
+                    profileDraft.contractReplaces.trim(),
+                reason: profileDraft.contractReason
+            });
+
+            createReplacementContractMemoTask({
+                profile: nextName,
+                contract: replacementContract
             });
         }
 
@@ -6065,6 +6332,16 @@ function bindProfileForm() {
         };
     }
 
+    if (DOM.replacementReasonSelect) {
+        DOM.replacementReasonSelect.onchange = () => {
+            if (!isProfileEditing()) return;
+
+            profileDraft.contractReason =
+                DOM.replacementReasonSelect.value;
+            renderDashboardState();
+        };
+    }
+
     DOM.checkbox.onchange = () => {
         if (isProfileEditing()) {
             profileDraft.shiftAssigned =
@@ -6155,6 +6432,23 @@ function bindProfileForm() {
     }
 }
 
+function initializeInactiveProfileToggles() {
+    [
+        "showInactiveProfiles",
+        "hheeShowInactiveProfiles",
+        "reportsShowInactiveProfiles",
+        "staffingShowInactiveProfiles",
+        "swapShowInactiveProfiles",
+        "clockMarksShowInactiveProfiles"
+    ].forEach(id => {
+        const input = document.getElementById(id);
+
+        if (input) {
+            input.checked = false;
+        }
+    });
+}
+
 function bindShellInteractions() {
     DOM.filterRole.onchange = renderProfiles;
     DOM.profileSearch.oninput = renderProfiles;
@@ -6172,6 +6466,19 @@ function bindShellInteractions() {
 
     if (DOM.hheeShowInactiveProfiles) {
         DOM.hheeShowInactiveProfiles.onchange = renderHheeProfiles;
+    }
+
+    if (DOM.reportsFilterRole) {
+        DOM.reportsFilterRole.onchange = renderReportsProfiles;
+    }
+
+    if (DOM.reportsProfileSearch) {
+        DOM.reportsProfileSearch.oninput = renderReportsProfiles;
+    }
+
+    if (DOM.reportsShowInactiveProfiles) {
+        DOM.reportsShowInactiveProfiles.onchange =
+            renderReportsProfiles;
     }
 
     if (DOM.clockMarksFilterRole) {
@@ -6497,6 +6804,7 @@ initFirebaseShell({
     }
 });
 bindProfileForm();
+initializeInactiveProfileToggles();
 bindShellInteractions();
 initHoursCharts(getPerfilActual);
 renderStaffingPanel();

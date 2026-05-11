@@ -112,7 +112,7 @@
             <label class="inline-toggle sidebar-toggle">
                 <span>Mostrar desactivados</span>
                 <span class="toggle-check">
-                    <input id="showInactiveProfiles" type="checkbox" checked>
+                    <input id="showInactiveProfiles" type="checkbox">
                 </span>
             </label>
 
@@ -299,7 +299,17 @@
                         <div id="replacementContractEditor" class="replacement-contract-editor hidden">
                             <label class="metric-row metric-row--field">
                                 <span class="metric-label">Reemplaza a:</span>
-                                <input id="replacementTargetField" type="text" placeholder="Nombre o motivo del reemplazo">
+                                <input id="replacementTargetField" type="text" placeholder="Nombre del trabajador reemplazado">
+                            </label>
+
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">Motivo del Reemplazo:</span>
+                                <select id="replacementReasonField">
+                                    <option value="">Seleccionar</option>
+                                    <option value="Licencia M&#233;dica">Licencia M&#233;dica</option>
+                                    <option value="F. Legal">F. Legal</option>
+                                    <option value="F. Compensatorios">F. Compensatorios</option>
+                                </select>
                             </label>
 
                             <div id="replacementContractStatus" class="profile-status-note profile-status-note--soft">
@@ -647,7 +657,7 @@
                             <label class="inline-toggle sidebar-toggle">
                                 <span>Mostrar desactivados</span>
                                 <span class="toggle-check">
-                                    <input id="hheeShowInactiveProfiles" type="checkbox" checked>
+                                    <input id="hheeShowInactiveProfiles" type="checkbox">
                                 </span>
                             </label>
 
@@ -723,8 +733,75 @@
                 </div>
             </section>
 
-            <section class="panel timeline-panel" id="reportsPanel">
+            <section class="panel timeline-panel" id="timelinePanel">
                 <div id="teamTimeline"></div>
+            </section>
+
+            <section id="reportsPanel" class="reports-view">
+                <aside class="panel sidebar reports-sidebar">
+                    <h2 class="panel-title">Listado Colaboradores</h2>
+
+                    <label class="field-shell field-shell--icon">
+                        <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="7"></circle>
+                            <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
+                        </svg>
+                        <input id="reportsProfileSearch" type="text" placeholder="Buscar...">
+                    </label>
+
+                    <label class="field-shell field-shell--icon">
+                        <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="4" y1="6" x2="20" y2="6"></line>
+                            <line x1="7" y1="12" x2="17" y2="12"></line>
+                            <line x1="10" y1="18" x2="14" y2="18"></line>
+                        </svg>
+                        <select id="reportsFilterRole">
+                            <option value="Todos">Todos</option>
+                            <option value="Profesional">Profesional</option>
+                            <option value="T&#233;cnico">T&#233;cnico</option>
+                            <option value="Administrativo">Administrativo</option>
+                            <option value="Auxiliar">Auxiliar</option>
+                        </select>
+                    </label>
+
+                    <label class="inline-toggle sidebar-toggle">
+                        <span>Mostrar desactivados</span>
+                        <span class="toggle-check">
+                            <input id="reportsShowInactiveProfiles" type="checkbox">
+                        </span>
+                    </label>
+
+                    <div id="reportsProfiles" class="profile-list"></div>
+                    <p id="reportsEmptyProfiles" class="muted hidden"></p>
+                </aside>
+
+                <section class="panel reports-detail-panel">
+                    <div class="section-head">
+                        <h3>Reportes disponibles</h3>
+                    </div>
+
+                    <div id="reportsSelectedInfo" class="reports-selected-profile empty-state empty-state--compact"></div>
+
+                    <article id="report4TurnoNoAssignmentCard" class="report-download-card hidden">
+                        <div class="report-download-card__head">
+                            <span class="report-badge">3er / 4&deg; Turno sin asignaci&oacute;n</span>
+                            <strong>Reporte 3er / 4&deg; Turno sin asignaci&oacute;n de turno</strong>
+                        </div>
+                        <p>
+                            Archivo Excel optimizado para impresi&oacute;n vertical en tama&ntilde;o carta o legal.
+                            Conserva el detalle mensual, permisos, cambios de turno, marcajes y resumen de horas.
+                        </p>
+                        <div class="report-download-card__actions">
+                            <button id="downloadNoAssignmentReportBtn" class="primary-button" type="button">
+                                Descargar Excel
+                            </button>
+                        </div>
+                        <div id="report4TurnoNoAssignmentPreview" class="report-preview-card"></div>
+                    </article>
+
+                    <p id="reportsUnavailableHint" class="empty-state empty-state--compact hidden"></p>
+                </section>
+
             </section>
 
             <section class="secondary-grid">
@@ -758,7 +835,7 @@
                         <label class="inline-toggle sidebar-toggle">
                             <span>Mostrar desactivados</span>
                             <span class="toggle-check">
-                                <input id="staffingShowInactiveProfiles" type="checkbox" checked>
+                                <input id="staffingShowInactiveProfiles" type="checkbox">
                             </span>
                         </label>
 
@@ -770,6 +847,8 @@
                         <div class="section-head">
                             <h3>RRHH</h3>
                         </div>
+
+                        <section id="staffingWeeklyCalendar" class="staffing-weekly-calendar"></section>
 
                         <section id="staffingApplicantsPanel" class="staffing-applicants-panel"></section>
 
@@ -807,7 +886,7 @@
                         <label class="inline-toggle sidebar-toggle">
                             <span>Mostrar desactivados</span>
                             <span class="toggle-check">
-                                <input id="swapShowInactiveProfiles" type="checkbox" checked>
+                                <input id="swapShowInactiveProfiles" type="checkbox">
                             </span>
                         </label>
 
@@ -852,7 +931,7 @@
                         <label class="inline-toggle sidebar-toggle">
                             <span>Mostrar desactivados</span>
                             <span class="toggle-check">
-                                <input id="clockMarksShowInactiveProfiles" type="checkbox" checked>
+                                <input id="clockMarksShowInactiveProfiles" type="checkbox">
                             </span>
                         </label>
 
