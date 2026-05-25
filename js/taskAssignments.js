@@ -1,10 +1,9 @@
 import { getJSON, setJSON } from "./persistence.js";
 import {
-    getProfileData,
     getProfiles,
     isProfileActive
 } from "./storage.js";
-import { aplicarCambiosTurno } from "./turnEngine.js";
+import { getTurnoReal } from "./turnEngine.js";
 import { getAbsenceType } from "./rulesEngine.js";
 import { getHourReturn } from "./hourReturns.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
@@ -237,13 +236,7 @@ function profileByName(name) {
 }
 
 function getProfileShift(profile, keyDay) {
-    const data = getProfileData(profile.name);
-
-    return aplicarCambiosTurno(
-        profile.name,
-        keyDay,
-        Number(data[keyDay]) || TURNO.LIBRE
-    );
+    return getTurnoReal(profile.name, keyDay);
 }
 
 function readMap(prefix, profileName) {

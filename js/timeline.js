@@ -7,7 +7,9 @@ import {
 import * as calendar from "./calendar.js";
 import {
     aplicarCambiosTurno,
-    getTurnoBase
+    getTurnoBase,
+    getTurnoProgramado,
+    getTurnoReal
 } from "./turnEngine.js";
 import { TURNO, TURNO_COLOR } from "./constants.js";
 import { fetchHolidays } from "./holidays.js";
@@ -334,13 +336,7 @@ function getColor(nombre, key){
     if (admin[key] === "0.5M") return "#fbbf24";
     if (admin[key] === "0.5T") return "#facc15";
 
-    let turno = Number(data[key]) || 0;
-
-    turno = aplicarCambiosTurno(
-        nombre,
-        key,
-        turno
-    );
+    const turno = getTurnoReal(nombre, key);
 
     return TURNO_COLOR[turno] || TURNO_COLOR[0];
 }
@@ -374,7 +370,7 @@ function pendingManualExtraMarker(nombre, key) {
     const actualWithSwaps = aplicarCambiosTurno(
         nombre,
         key,
-        Number(data[key]) || 0,
+        getTurnoProgramado(nombre, key),
         { includeReplacements: false }
     );
     const extraTurn = getTurnoExtraAgregado(
@@ -393,11 +389,10 @@ function contractErrorMarker(nombre, key) {
         return false;
     }
 
-    const data = getData(nombre);
     const state = aplicarCambiosTurno(
         nombre,
         key,
-        Number(data[key]) || 0
+        getTurnoProgramado(nombre, key)
     );
 
     return state > 0 && !hasContractForDate(nombre, key);
@@ -661,11 +656,7 @@ export async function renderTimeline(){
                     profile.name,
                     key,
                     new Date(year, month, d),
-                    aplicarCambiosTurno(
-                        profile.name,
-                        key,
-                        Number(data[key]) || 0
-                    ),
+                    getTurnoReal(profile.name, key),
                     holidays
                 );
             const showClockExtra =
@@ -722,7 +713,7 @@ export async function renderTimeline(){
                     ${contractError ? `data-contract-error-profile="${profile.name}" data-contract-error-key="${key}"` : ""}
                     ${needsReplacement ? `data-replacement-profile="${profile.name}" data-replacement-key="${key}"` : ""}
                     ${showExtraReason ? `data-extra-profile="${profile.name}" data-extra-key="${key}" data-extra-turn="${showExtraReason}"` : ""}
-                    ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${profile.name}" data-clock-extra-key="${key}" data-clock-extra-turn="${aplicarCambiosTurno(profile.name, key, Number(data[key]) || 0)}"` : ""}
+                    ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${profile.name}" data-clock-extra-key="${key}" data-clock-extra-turn="${getTurnoReal(profile.name, key)}"` : ""}
                 >
                     ${marker ? `<span class="timeline-replacement-marker">${marker}</span>` : ""}
                 </td>

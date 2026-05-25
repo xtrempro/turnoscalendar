@@ -8,7 +8,8 @@ import {
 
 import {
     aplicarCambiosTurno,
-    getTurnoBase
+    getTurnoBase,
+    getTurnoProgramado
 } from "./turnEngine.js";
 
 import {
@@ -526,7 +527,7 @@ function actualStateForDay(nombre, data, keyDay) {
     return aplicarCambiosTurno(
         nombre,
         keyDay,
-        Number(data[keyDay]) || TURNO.LIBRE
+        getTurnoProgramado(nombre, keyDay)
     );
 }
 
@@ -681,16 +682,12 @@ function calculateWorkedTotals(
 }
 
 function monthHasMixedBaseRotations(nombre, y, m, days, data) {
-    const baseData = getBaseProfileData(nombre);
-    const hasBaseData = Object.keys(baseData).length > 0;
     let hasDiurno = false;
     let hasShift = false;
 
     for (let d = 1; d <= days; d++) {
         const keyDay = key(y, m, d);
-        const state = hasBaseData
-            ? Number(baseData[keyDay]) || TURNO.LIBRE
-            : Number(data[keyDay]) || TURNO.LIBRE;
+        const state = getTurnoBase(nombre, keyDay);
 
         if (state === TURNO.DIURNO) {
             hasDiurno = true;

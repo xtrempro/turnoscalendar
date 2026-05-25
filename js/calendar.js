@@ -2,6 +2,7 @@ import {
     aplicarCambiosTurno,
     fusionarTurnos,
     getTurnoBase,
+    getTurnoProgramado,
     siguienteTurnoValido
 } from "./turnEngine.js";
 import {
@@ -790,12 +791,10 @@ function replacementCoverageFromDataset(dataset = {}) {
 }
 
 function getActualState(profileName, keyDay) {
-    const data = getProfileData(profileName);
-
     return aplicarCambiosTurno(
         profileName,
         keyDay,
-        Number(data[keyDay]) || 0
+        getTurnoProgramado(profileName, keyDay)
     );
 }
 
@@ -927,7 +926,9 @@ function getPendingManualExtraTurn(
     const actualWithSwaps = aplicarCambiosTurno(
         profileName,
         keyDay,
-        Number(profileData[keyDay]) || 0,
+        Object.prototype.hasOwnProperty.call(profileData, keyDay)
+            ? Number(profileData[keyDay]) || 0
+            : getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
     );
     const extraTurn = getTurnoExtraAgregado(
@@ -1896,7 +1897,7 @@ async function openExtraReasonDialog(
         aplicarCambiosTurno(
             profileName,
             keyDay,
-            Number(profileData[keyDay]) || 0
+            getTurnoProgramado(profileName, keyDay)
         );
     const [year, month, day] = String(keyDay)
         .split("-")
@@ -2323,12 +2324,10 @@ export async function renderCalendar() {
         const keyDay = key(y, m, d);
         const baseState = getTurnoBase(activeProfile, keyDay);
 
-        let state = Number(data[keyDay]) || 0;
-
-        state = aplicarCambiosTurno(
+        const state = aplicarCambiosTurno(
             activeProfile,
             keyDay,
-            state
+            getTurnoProgramado(activeProfile, keyDay)
         );
 
         const date = new Date(y, m, d);

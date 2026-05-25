@@ -52,7 +52,8 @@ import {
 } from "./uiEngine.js";
 import {
     aplicarCambiosTurno,
-    getTurnoBase
+    getTurnoBase,
+    getTurnoProgramado
 } from "./turnEngine.js";
 import {
     calcularHorasMesPerfil,
@@ -1614,19 +1615,11 @@ function renderContractHistory(profile) {
 function getProfileRotationState(profileName, key) {
     if (!profileName) return 0;
 
-    const baseData = getBaseProfileData(profileName);
-    const data = getProfileData(profileName);
-    const hasData =
-        Object.prototype.hasOwnProperty.call(data, key);
-    const hasBaseData =
-        Object.prototype.hasOwnProperty.call(baseData, key);
-    const state = hasData
-        ? Number(data[key]) || 0
-        : hasBaseData
-            ? Number(baseData[key]) || 0
-            : 0;
-
-    return aplicarCambiosTurno(profileName, key, state);
+    return aplicarCambiosTurno(
+        profileName,
+        key,
+        getTurnoProgramado(profileName, key)
+    );
 }
 
 function handleContractDatePick(key) {
@@ -6276,7 +6269,7 @@ async function handleClockMarkSelection(fecha) {
     const state = aplicarCambiosTurno(
         profile,
         keyDay,
-        Number(data[keyDay]) || 0
+        getTurnoProgramado(profile, keyDay)
     );
 
     if (!state) {

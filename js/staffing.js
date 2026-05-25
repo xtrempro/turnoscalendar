@@ -7,7 +7,10 @@ import {
     getProfessionOptionsForEstamento,
     normalizeProfession
 } from "./storage.js";
-import { aplicarCambiosTurno } from "./turnEngine.js";
+import {
+    aplicarCambiosTurno,
+    getTurnoProgramado
+} from "./turnEngine.js";
 import { ESTAMENTO, TURNO } from "./constants.js";
 import { currentDate } from "./calendar.js";
 import { getJSON, setJSON } from "./persistence.js";
@@ -17,7 +20,13 @@ import {
     formatContractDate,
     getAllReplacementContracts
 } from "./contracts.js";
-import { getAbsenceType } from "./rulesEngine.js";
+import {
+    getAbsenceType,
+    requiereReemplazoTurnoBase
+} from "./rulesEngine.js";
+import {
+    getReplacementForCoveredShift
+} from "./replacements.js";
 import {
     addAuditLog,
     AUDIT_CATEGORY
@@ -1675,13 +1684,11 @@ function getReplacementSegmentsForStaffingRow(
 
 function getStaffingTurno(profile, y, m, d, options = {}) {
     const dayKey = key(y, m, d);
-    const data = getDataPerfil(profile.name);
-    const turno = data[dayKey] || 0;
 
     return aplicarCambiosTurno(
         profile.name,
         dayKey,
-        turno,
+        getTurnoProgramado(profile.name, dayKey),
         options
     );
 }
@@ -1974,11 +1981,19 @@ function weeklySegmentSummary(segments) {
 
 function renderWeeklyProfileChip(item) {
     const partial = weeklySegmentSummary(item.segments);
+    const needsReplacement = item.needsReplacement;
 
     return `
-        <span class="staffing-weekly-person">
-            <strong>${escapeHTML(item.profile.name)}</strong>
-            <small>${escapeHTML(weeklyProfileMeta(item.profile))}${partial ? ` | ${escapeHTML(partial)}` : ""}</small>
+        <span class="staffing-weekly-person${needsReplacement ? " staffing-weekly-person--needs-replacement" : ""}">
+            ${needsReplacement ? `
+                <button class="staffing-weekly-replacement-alert" type="button" data-weekly-replacement-profile="${escapeHTML(item.profile.name)}" data-weekly-replacement-key="${escapeHTML(item.keyDay)}" title="Buscar reemplazo">
+                    !
+                </button>
+            ` : ""}
+            <span class="staffing-weekly-person__body">
+                <strong>${escapeHTML(item.profile.name)}</strong>
+                <small>${escapeHTML(weeklyProfileMeta(item.profile))}${partial ? ` | ${escapeHTML(partial)}` : ""}</small>
+            </span>
         </span>
     `;
 }
@@ -2025,7 +2040,6 @@ function weeklyLeaveProfiles(
         date.getMonth(),
         date.getDate()
     );
-
     return getProfiles()
         .filter(isProfileActive)
         .filter(profile =>
@@ -2038,7 +2052,7 @@ function weeklyLeaveProfiles(
         .map(profile => {
             if (row.key === "hour_return") {
                 return getHourReturn(profile.name, keyDay)
-                    ? { profile }
+                    ? { profile, keyDay, needsReplacement: false }
                     : null;
             }
 
@@ -2048,9 +2062,35 @@ function weeklyLeaveProfiles(
                 absenceCache
             );
 
-            return absence?.code === row.key
-                ? { profile }
-                : null;
+            if (absence?.code !== row.key) return null;
+
+            const maps = {
+                admin: getJSON(`admin_${profile.name}`, {}),
+                legal: getJSON(`legal_${profile.name}`, {}),
+                comp: getJSON(`comp_${profile.name}`, {}),
+                absences: getJSON(`absences_${profile.name}`, {})
+            };
+
+            return {
+                profile,
+                keyDay,
+                needsReplacement:
+                    requiereReemplazoTurnoBase(
+                        keyDay,
+                        getStaffingTurno(
+                            profile,
+                            date.getFullYear(),
+                            date.getMonth(),
+                            date.getDate(),
+                            { includeReplacements: false }
+                        ),
+                        maps.admin,
+                        maps.legal,
+                        maps.comp,
+                        maps.absences
+                    ) &&
+                    !getReplacementForCoveredShift(profile.name, keyDay)
+            };
         })
         .filter(Boolean)
         .sort((a, b) =>
@@ -2204,6 +2244,22 @@ export async function renderStaffingWeeklyCalendar() {
     target
         .querySelector("#staffingWeeklyFilterProfession")
         ?.addEventListener("change", renderStaffingWeeklyCalendar);
+    target
+        .querySelectorAll("[data-weekly-replacement-profile]")
+        .forEach(button => {
+            button.addEventListener("click", event => {
+                event.stopPropagation();
+
+                if (typeof window.openReplacementDialog !== "function") {
+                    return;
+                }
+
+                window.openReplacementDialog(
+                    button.dataset.weeklyReplacementProfile,
+                    button.dataset.weeklyReplacementKey
+                );
+            });
+        });
 }
 
 function uniqueAbsences(absences) {

@@ -10,7 +10,8 @@ import { fetchHolidays } from "./holidays.js";
 import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import {
     aplicarCambiosTurno,
-    getTurnoBase
+    getTurnoBase,
+    getTurnoProgramado
 } from "./turnEngine.js";
 import {
     getTurnoExtraAgregado,
@@ -352,7 +353,7 @@ function actualStateForReport(profileName, data, keyDay) {
     return aplicarCambiosTurno(
         profileName,
         keyDay,
-        Number(data[keyDay]) || TURNO.LIBRE
+        getTurnoProgramado(profileName, keyDay)
     );
 }
 
@@ -473,7 +474,8 @@ function buildNoAssignmentDayRows(profile, year, month, days, holidays) {
             : absence?.workState || actual;
         const hours = numberHours(date, workState, holidays);
         const hasManualBase =
-            Object.prototype.hasOwnProperty.call(baseData, keyDay);
+            Object.prototype.hasOwnProperty.call(baseData, keyDay) ||
+            rawBase > TURNO.LIBRE;
         const swap = getSwapDetail(profileName, keyDay, swaps);
         const replacement = replacementDetail(profileName, keyDay);
         const contract = contractDetail(contracts, iso);
@@ -535,15 +537,16 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
             rawBase,
             { includeReplacements: false }
         );
-        const actual = aplicarCambiosTurno(
+        const actual = actualStateForReport(
             profileName,
-            keyDay,
-            Number(data[keyDay]) || TURNO.LIBRE
+            data,
+            keyDay
         );
         const extraState =
             getTurnoExtraAgregado(baseWithSwaps, actual);
         const hasManualBase =
-            Object.prototype.hasOwnProperty.call(baseData, keyDay);
+            Object.prototype.hasOwnProperty.call(baseData, keyDay) ||
+            rawBase > TURNO.LIBRE;
         const swap = getSwapDetail(profileName, keyDay, swaps);
         const replacement = replacementDetail(profileName, keyDay);
         const contract = contractDetail(contracts, iso);

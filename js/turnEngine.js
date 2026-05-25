@@ -6,9 +6,11 @@ import {
     getSwaps,
     getProfileData,
     getBaseProfileData,
-    getTurnChangeConfig
+    getTurnChangeConfig,
+    getRotativa
 } from "./storage.js";
 import { getJSON } from "./persistence.js";
+import { getCachedHolidays } from "./holidays.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import { getReplacementTurnForWorker } from "./replacements.js";
 
@@ -128,6 +130,111 @@ function offsetKey(key, offset) {
     date.setDate(date.getDate() + offset);
 
     return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function parseKeyDate(key) {
+    const parts = String(key || "").split("-").map(Number);
+
+    if (parts.length !== 3 || !parts.every(Number.isFinite)) {
+        return null;
+    }
+
+    const date = new Date(parts[0], parts[1], parts[2]);
+
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function parseISODate(value) {
+    const source = String(value || "").trim();
+    const parts = source.split("-").map(Number);
+
+    if (parts.length === 3 && parts.every(Number.isFinite)) {
+        const date = new Date(parts[0], parts[1] - 1, parts[2]);
+
+        return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    const fallback = new Date(source);
+
+    if (Number.isNaN(fallback.getTime())) return null;
+
+    return new Date(
+        fallback.getFullYear(),
+        fallback.getMonth(),
+        fallback.getDate()
+    );
+}
+
+function normalizeFirstTurn(value) {
+    return String(value || "").toLowerCase() === "noche"
+        ? "noche"
+        : "larga";
+}
+
+function rotationSequence(type, firstTurn = "larga") {
+    const startsWithNight = normalizeFirstTurn(firstTurn) === "noche";
+
+    if (type === "3turno") {
+        return startsWithNight
+            ? [TURNO.NOCHE, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE, TURNO.LARGA, TURNO.LARGA]
+            : [TURNO.LARGA, TURNO.LARGA, TURNO.NOCHE, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE];
+    }
+
+    if (type === "4turno") {
+        return startsWithNight
+            ? [TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE, TURNO.LARGA]
+            : [TURNO.LARGA, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE];
+    }
+
+    return [];
+}
+
+function dayDifference(start, date) {
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const startUTC = Date.UTC(
+        start.getFullYear(),
+        start.getMonth(),
+        start.getDate()
+    );
+    const dateUTC = Date.UTC(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+
+    return Math.floor((dateUTC - startUTC) / msPerDay);
+}
+
+function isBusinessDaySync(date, key) {
+    const day = date.getDay();
+
+    if (day === 0 || day === 6) return false;
+
+    return !getCachedHolidays(date.getFullYear())[key];
+}
+
+function rotativaTurnoBase(nombre, key) {
+    const rotativa = getRotativa(nombre);
+    const date = parseKeyDate(key);
+    const start = parseISODate(rotativa.start);
+
+    if (!date || !start || date < start) return TURNO.LIBRE;
+
+    if (rotativa.type === "diurno") {
+        return isBusinessDaySync(date, key)
+            ? TURNO.DIURNO
+            : TURNO.LIBRE;
+    }
+
+    const sequence = rotationSequence(
+        rotativa.type,
+        rotativa.firstTurn
+    );
+
+    if (!sequence.length) return TURNO.LIBRE;
+
+    return sequence[dayDifference(start, date) % sequence.length] ||
+        TURNO.LIBRE;
 }
 
 function turnoDesdeCodigoSwap(valor) {
@@ -319,25 +426,18 @@ export function siguienteTurno(actual, isHab = true) {
 
 
 export function getTurnoReal(nombre, key) {
-
-    const data = getProfileData(nombre);
-
-    const turnoBase = Number(data[key]) || 0;
-
     return aplicarCambiosTurno(
         nombre,
         key,
-        turnoBase
+        getTurnoProgramado(nombre, key)
     );
 }
 
 function estadoTurno(nombre, key) {
-    const data = getProfileData(nombre);
-
     return aplicarCambiosTurno(
         nombre,
         key,
-        Number(data[key]) || TURNO.LIBRE
+        getTurnoProgramado(nombre, key)
     );
 }
 
@@ -524,6 +624,12 @@ export function getTurnoBase(nombre, key) {
         return Number(baseData[key]) || TURNO.LIBRE;
     }
 
+    const computedBase = rotativaTurnoBase(nombre, key);
+
+    if (computedBase) {
+        return computedBase;
+    }
+
     if (hasBaseData) {
         return TURNO.LIBRE;
     }
@@ -535,4 +641,14 @@ export function getTurnoBase(nombre, key) {
     const data = getProfileData(nombre);
 
     return Number(data[key]) || TURNO.LIBRE;
+}
+
+export function getTurnoProgramado(nombre, key) {
+    const data = getProfileData(nombre);
+
+    if (Object.prototype.hasOwnProperty.call(data, key)) {
+        return Number(data[key]) || TURNO.LIBRE;
+    }
+
+    return getTurnoBase(nombre, key);
 }

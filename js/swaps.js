@@ -17,6 +17,7 @@ import {
     addAuditLog,
     AUDIT_CATEGORY
 } from "./auditLog.js";
+import { getTurnoBase } from "./turnEngine.js";
 
 function keyFromISO(value) {
     const parts = String(value || "").split("-");
@@ -84,8 +85,8 @@ function baseDataRange(data = {}) {
     };
 }
 
-function baseTurnForDate(data, date) {
-    return Number(data[keyFromDate(date)]) || 0;
+function baseTurnForDate(profileName, date) {
+    return getTurnoBase(profileName, keyFromDate(date));
 }
 
 export function haveSameBaseRotation(fromName, toName) {
@@ -124,7 +125,10 @@ export function haveSameBaseRotation(fromName, toName) {
     const day = new Date(start);
 
     while (day <= end && compared < 42) {
-        if (baseTurnForDate(fromBase, day) !== baseTurnForDate(toBase, day)) {
+        if (
+            baseTurnForDate(fromName, day) !==
+            baseTurnForDate(toName, day)
+        ) {
             return false;
         }
 
@@ -180,8 +184,9 @@ function resetDayToBase(profile, keyDay) {
         Boolean(getJSON(`absences_${profile}`, {})[keyDay]);
     const hasBase =
         Object.prototype.hasOwnProperty.call(baseData, keyDay);
+    const computedBase = getTurnoBase(profile, keyDay);
 
-    if (!hasBase) {
+    if (!hasBase && !computedBase) {
         if (hasAbsence) {
             blocked[keyDay] = true;
             saveBlockedDays(blocked, profile);
@@ -190,7 +195,9 @@ function resetDayToBase(profile, keyDay) {
         return;
     }
 
-    const baseTurno = Number(baseData[keyDay]) || 0;
+    const baseTurno = hasBase
+        ? Number(baseData[keyDay]) || 0
+        : computedBase;
 
     if (baseTurno) {
         data[keyDay] = baseTurno;
@@ -392,23 +399,7 @@ export function getSwapTurnState(profile, keyDay) {
         return Number(data[keyDay]) || 0;
     }
 
-    const baseData = getBaseProfileData(profile);
-    const hasBaseData =
-        Object.keys(baseData).length > 0;
-
-    if (Object.prototype.hasOwnProperty.call(baseData, keyDay)) {
-        return Number(baseData[keyDay]) || 0;
-    }
-
-    if (hasBaseData) {
-        return 0;
-    }
-
-    if (!getBlockedDays(profile)[keyDay]) {
-        return 0;
-    }
-
-    return Number(data[keyDay]) || 0;
+    return getTurnoBase(profile, keyDay);
 }
 
 export function isSwapExchangeableTurn(turno) {
