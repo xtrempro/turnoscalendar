@@ -115,6 +115,14 @@ export function pushHistory(){
     redoStack = [];
 }
 
+export function canUndo(){
+    return undoStack.length > 0;
+}
+
+export function canRedo(){
+    return redoStack.length > 0;
+}
+
 export function undo(){
 
     if(!undoStack.length) return false;

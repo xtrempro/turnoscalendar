@@ -22,6 +22,7 @@ import {
     addAuditLog,
     AUDIT_CATEGORY
 } from "./auditLog.js";
+import { getHourReturn } from "./hourReturns.js";
 
 const KEY = "staffing_config";
 const APPLICANTS_KEY = "staffing_applicants";
@@ -738,10 +739,9 @@ function formatMonth(year, month) {
         .replace(".", "");
 }
 
-function formatShortWeekday(date) {
+function formatFullWeekday(date) {
     return date
-        .toLocaleDateString("es-CL", { weekday: "short" })
-        .replace(".", "");
+        .toLocaleDateString("es-CL", { weekday: "long" });
 }
 
 function formatShortDate(date) {
@@ -1529,8 +1529,8 @@ function absenceCacheKey(profileName, keyDay) {
 
 function absenceLabelFromType(type) {
     if (type === "professional_license") return "LM Profesional";
-    if (type === "unpaid_leave") return "Permiso sin goce";
-    if (type === "license") return "Licencia Medica";
+    if (type === "unpaid_leave") return "Permiso sin Goce";
+    if (type === "license") return "Licencia M\u00e9dica";
     if (type === "unjustified_absence") {
         return "Ausencia injustificada";
     }
@@ -1553,31 +1553,37 @@ function getProfileStaffingAbsence(profileName, keyDay, cache) {
 
     if (admin[keyDay] === 1) {
         absence = {
+            code: "admin",
             kind: "full",
             label: "P. Administrativo"
         };
     } else if (admin[keyDay] === "0.5M") {
         absence = {
+            code: "half_morning",
             kind: "half_morning",
-            label: "1/2 ADM Manana"
+            label: "1/2 ADM Ma\u00f1ana"
         };
     } else if (admin[keyDay] === "0.5T") {
         absence = {
+            code: "half_afternoon",
             kind: "half_afternoon",
             label: "1/2 ADM Tarde"
         };
     } else if (admin[keyDay] === 0.5) {
         absence = {
+            code: "half_unknown",
             kind: "half_unknown",
             label: "1/2 ADM"
         };
     } else if (legal[keyDay]) {
         absence = {
+            code: "legal",
             kind: "full",
             label: "F. Legal"
         };
     } else if (comp[keyDay]) {
         absence = {
+            code: "comp",
             kind: "full",
             label: "F. Compensatorio"
         };
@@ -1585,6 +1591,7 @@ function getProfileStaffingAbsence(profileName, keyDay, cache) {
         const type = getAbsenceType(absences[keyDay]);
 
         absence = {
+            code: type,
             kind: "full",
             label: absenceLabelFromType(type)
         };
@@ -1775,10 +1782,16 @@ function profileWeeklyShiftSegments(profile, date, shiftKey, absenceCache) {
     const dayKey = key(y, m, d);
     const modality = getStaffingProfileModality(profile);
     const isDiurno = modality === "diurno";
-    const row = {
-        modality: isDiurno ? "diurno" : "4turno"
-    };
     const turno = getStaffingTurno(profile, y, m, d);
+    const displaysAsLong =
+        isDiurno &&
+        worksStaffingLong(turno);
+    const row = {
+        modality:
+            isDiurno && !displaysAsLong
+                ? "diurno"
+                : "4turno"
+    };
     const beforeSegments = turnSegmentsForStaffing(row, turno);
     const absence = getProfileStaffingAbsence(
         profile.name,
@@ -1794,7 +1807,7 @@ function profileWeeklyShiftSegments(profile, date, shiftKey, absenceCache) {
     );
 
     if (shiftKey === "diurno") {
-        if (!isDiurno) return null;
+        if (!isDiurno || displaysAsLong) return null;
         return [...activeSegments].filter(segment =>
             segment === STAFFING_SEGMENT.DAY_MORNING ||
             segment === STAFFING_SEGMENT.DAY_AFTERNOON
@@ -1802,7 +1815,7 @@ function profileWeeklyShiftSegments(profile, date, shiftKey, absenceCache) {
     }
 
     if (shiftKey === "larga") {
-        if (isDiurno) return null;
+        if (isDiurno && !displaysAsLong) return null;
         return [...activeSegments].filter(segment =>
             segment === STAFFING_SEGMENT.DAY_MORNING ||
             segment === STAFFING_SEGMENT.DAY_AFTERNOON
@@ -1820,15 +1833,108 @@ function weeklyProfileMeta(profile) {
     const group = getStaffingProfileGroupKey(profile);
     const estamento = normalizeStaffingEstamento(profile.estamento);
     const groupLabel = getStaffingGroupLabel(estamento, group);
+    const profession = weeklyProfileProfession(profile);
 
-    return isProfessionBasedStaffing(estamento)
-        ? groupLabel
-        : estamento;
+    if (isProfessionBasedStaffing(estamento)) return groupLabel;
+    if (profession === "Sin informacion") return estamento;
+
+    return `${estamento} | ${profession}`;
 }
 
-function weeklyShiftProfiles(date, shiftKey, absenceCache) {
+function weeklyProfileProfession(profile) {
+    return normalizeStaffingProfession(
+        profile.profession,
+        normalizeStaffingEstamento(profile.estamento)
+    );
+}
+
+function weeklyProfileMatchesFilters(
+    profile,
+    roleFilter = "Todos",
+    professionFilter = "Todas"
+) {
+    const profileEstamento =
+        normalizeStaffingEstamento(profile.estamento);
+    const roleMatches =
+        roleFilter === "Todos" ||
+        profileEstamento === normalizeStaffingEstamento(roleFilter);
+    const professionMatches =
+        professionFilter === "Todas" ||
+        weeklyProfileProfession(profile) === professionFilter;
+
+    return roleMatches && professionMatches;
+}
+
+function weeklyAvailableProfessions(roleFilter) {
+    return [...new Set(
+        getProfiles()
+            .filter(isProfileActive)
+            .filter(profile =>
+                weeklyProfileMatchesFilters(profile, roleFilter)
+            )
+            .map(weeklyProfileProfession)
+    )].sort((a, b) => a.localeCompare(b, "es"));
+}
+
+function renderWeeklyRoleFilterOptions(selected) {
+    return STAFFING_ESTAMENTOS.map(estamento => `
+        <option value="${escapeHTML(estamento)}" ${normalizeStaffingEstamento(estamento) === normalizeStaffingEstamento(selected) ? "selected" : ""}>
+            ${escapeHTML(estamento)}
+        </option>
+    `).join("");
+}
+
+function renderWeeklyProfessionFilterOptions(professions, selected) {
+    return professions.map(profession => `
+        <option value="${escapeHTML(profession)}" ${profession === selected ? "selected" : ""}>
+            ${escapeHTML(profession)}
+        </option>
+    `).join("");
+}
+
+const WEEKLY_LEAVE_ROWS = [
+    { key: "license", label: "Licencia M\u00e9dica" },
+    { key: "professional_license", label: "LM Profesional" },
+    { key: "admin", label: "P. Administrativo" },
+    { key: "legal", label: "F. Legal" },
+    { key: "comp", label: "F. Compensatorio" },
+    { key: "half_morning", label: "1/2 ADM Ma\u00f1ana" },
+    { key: "half_afternoon", label: "1/2 ADM Tarde" },
+    { key: "unpaid_leave", label: "Permiso sin Goce" },
+    { key: "hour_return", label: "Devoluci\u00f3n de Hora" }
+];
+
+async function weeklyHolidayMap(days) {
+    const years = [...new Set(
+        days.map(day => day.getFullYear())
+    )];
+    const holidays = await Promise.all(
+        years.map(year => fetchHolidays(year))
+    );
+
+    return Object.assign({}, ...holidays);
+}
+
+function weeklyIsInhabil(day, holidays) {
+    return !isBusinessDay(day, holidays);
+}
+
+function weeklyShiftProfiles(
+    date,
+    shiftKey,
+    absenceCache,
+    roleFilter,
+    professionFilter
+) {
     return getProfiles()
         .filter(isProfileActive)
+        .filter(profile =>
+            weeklyProfileMatchesFilters(
+                profile,
+                roleFilter,
+                professionFilter
+            )
+        )
         .map(profile => {
             const segments = profileWeeklyShiftSegments(
                 profile,
@@ -1877,15 +1983,24 @@ function renderWeeklyProfileChip(item) {
     `;
 }
 
-function renderStaffingWeeklyCell(date, shift) {
+function renderStaffingWeeklyCell(
+    date,
+    shift,
+    absenceCache,
+    roleFilter,
+    professionFilter,
+    isInhabil
+) {
     const people = weeklyShiftProfiles(
         date,
         shift.key,
-        new Map()
+        absenceCache,
+        roleFilter,
+        professionFilter
     );
 
     return `
-        <article class="staffing-weekly-cell staffing-weekly-cell--${shift.key}">
+        <article class="staffing-weekly-cell staffing-weekly-cell--${shift.key}${isInhabil ? " staffing-weekly-cell--inhabil" : ""}">
             <div class="staffing-weekly-cell__shift">${escapeHTML(shift.label)}</div>
             <div class="staffing-weekly-people">
                 ${
@@ -1898,11 +2013,116 @@ function renderStaffingWeeklyCell(date, shift) {
     `;
 }
 
-function renderStaffingWeeklyCalendar() {
+function weeklyLeaveProfiles(
+    date,
+    row,
+    absenceCache,
+    roleFilter,
+    professionFilter
+) {
+    const keyDay = key(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+
+    return getProfiles()
+        .filter(isProfileActive)
+        .filter(profile =>
+            weeklyProfileMatchesFilters(
+                profile,
+                roleFilter,
+                professionFilter
+            )
+        )
+        .map(profile => {
+            if (row.key === "hour_return") {
+                return getHourReturn(profile.name, keyDay)
+                    ? { profile }
+                    : null;
+            }
+
+            const absence = getProfileStaffingAbsence(
+                profile.name,
+                keyDay,
+                absenceCache
+            );
+
+            return absence?.code === row.key
+                ? { profile }
+                : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) =>
+            a.profile.name.localeCompare(b.profile.name, "es")
+        );
+}
+
+function weeklyLeaveRows(
+    days,
+    absenceCache,
+    roleFilter,
+    professionFilter
+) {
+    return WEEKLY_LEAVE_ROWS
+        .map(row => ({
+            ...row,
+            days: days.map(day => ({
+                date: day,
+                people: weeklyLeaveProfiles(
+                    day,
+                    row,
+                    absenceCache,
+                    roleFilter,
+                    professionFilter
+                )
+            }))
+        }))
+        .filter(row =>
+            row.days.some(day => day.people.length)
+        );
+}
+
+function renderStaffingWeeklyLeaveCell(row, day, isInhabil) {
+    return `
+        <article class="staffing-weekly-cell staffing-weekly-cell--leave${isInhabil ? " staffing-weekly-cell--inhabil" : ""}">
+            <div class="staffing-weekly-cell__shift">${escapeHTML(row.label)}</div>
+            <div class="staffing-weekly-people">
+                ${
+                    day.people.length
+                        ? day.people.map(renderWeeklyProfileChip).join("")
+                        : `<span class="staffing-weekly-empty">Sin registros</span>`
+                }
+            </div>
+        </article>
+    `;
+}
+
+export async function renderStaffingWeeklyCalendar() {
     const target = document.getElementById("staffingWeeklyCalendar");
     if (!target) return;
 
+    const roleFilter =
+        target.querySelector("#staffingWeeklyFilterRole")?.value ||
+        "Todos";
+    const currentProfessionFilter =
+        target.querySelector("#staffingWeeklyFilterProfession")?.value ||
+        "Todas";
+    const availableProfessions =
+        weeklyAvailableProfessions(roleFilter);
+    const professionFilter =
+        availableProfessions.includes(currentProfessionFilter)
+            ? currentProfessionFilter
+            : "Todas";
     const days = staffingWeekDays(getStaffingWeekDate());
+    const holidays = await weeklyHolidayMap(days);
+    const absenceCache = new Map();
+    const leaveRows = weeklyLeaveRows(
+        days,
+        absenceCache,
+        roleFilter,
+        professionFilter
+    );
     const shifts = [
         { key: "diurno", label: "Diurno" },
         { key: "larga", label: "Larga" },
@@ -1926,16 +2146,47 @@ function renderStaffingWeeklyCalendar() {
                 </button>
             </span>
         </div>
+        <div class="staffing-weekly-filters">
+            <label>
+                <span>Filtrar estamento</span>
+                <select id="staffingWeeklyFilterRole">
+                    <option value="Todos" ${roleFilter === "Todos" ? "selected" : ""}>Todos</option>
+                    ${renderWeeklyRoleFilterOptions(roleFilter)}
+                </select>
+            </label>
+            <label>
+                <span>Filtrar profesi&oacute;n</span>
+                <select id="staffingWeeklyFilterProfession">
+                    <option value="Todas" ${professionFilter === "Todas" ? "selected" : ""}>Todas</option>
+                    ${renderWeeklyProfessionFilterOptions(availableProfessions, professionFilter)}
+                </select>
+            </label>
+        </div>
         <div class="staffing-weekly-grid">
             ${days.map(day => `
-                <div class="staffing-weekly-day">
-                    <strong>${escapeHTML(formatShortWeekday(day))}</strong>
-                    <span>${escapeHTML(formatShortDate(day))}</span>
+                <div class="staffing-weekly-day${weeklyIsInhabil(day, holidays) ? " staffing-weekly-day--inhabil" : ""}">
+                    <strong>${escapeHTML(formatFullWeekday(day))} ${escapeHTML(formatShortDate(day))}</strong>
                 </div>
             `).join("")}
             ${shifts.map(shift =>
                 days.map(day =>
-                    renderStaffingWeeklyCell(day, shift)
+                    renderStaffingWeeklyCell(
+                        day,
+                        shift,
+                        absenceCache,
+                        roleFilter,
+                        professionFilter,
+                        weeklyIsInhabil(day, holidays)
+                    )
+                ).join("")
+            ).join("")}
+            ${leaveRows.map(row =>
+                row.days.map(day =>
+                    renderStaffingWeeklyLeaveCell(
+                        row,
+                        day,
+                        weeklyIsInhabil(day.date, holidays)
+                    )
                 ).join("")
             ).join("")}
         </div>
@@ -1947,6 +2198,12 @@ function renderStaffingWeeklyCalendar() {
     target
         .querySelector("[data-staffing-week-next]")
         ?.addEventListener("click", () => changeStaffingWeek(1));
+    target
+        .querySelector("#staffingWeeklyFilterRole")
+        ?.addEventListener("change", renderStaffingWeeklyCalendar);
+    target
+        .querySelector("#staffingWeeklyFilterProfession")
+        ?.addEventListener("change", renderStaffingWeeklyCalendar);
 }
 
 function uniqueAbsences(absences) {
@@ -2250,9 +2507,66 @@ function mostrarResultado(data){
         .join("");
 }
 
-function renderInlineStaffingReport(data, month = currentDate.getMonth()){
+function getStaffingReportScrollTarget(div, day) {
+    const entries = Array.from(
+        div.querySelectorAll("[data-staffing-report-day]")
+    );
+
+    return entries.find(entry =>
+        Number(entry.dataset.staffingReportDay) === day
+    ) ||
+        entries.find(entry =>
+            Number(entry.dataset.staffingReportDay) > day
+        ) ||
+        entries[entries.length - 1] ||
+        null;
+}
+
+export function scrollInlineStaffingReportToToday() {
     const div = document.getElementById("staffingReportInline");
     if (!div) return;
+
+    const today = new Date();
+    const reportYear = Number(div.dataset.staffingReportYear);
+    const reportMonth = Number(div.dataset.staffingReportMonth);
+
+    if (
+        reportYear !== today.getFullYear() ||
+        reportMonth !== today.getMonth()
+    ) {
+        return;
+    }
+
+    const target = getStaffingReportScrollTarget(
+        div,
+        today.getDate()
+    );
+    if (!target) return;
+
+    const scrollTop =
+        target.getBoundingClientRect().top -
+        div.getBoundingClientRect().top +
+        div.scrollTop;
+
+    div.scrollTop = Math.max(0, scrollTop);
+}
+
+function scrollInlineStaffingReportIfVisible() {
+    if (document.body.dataset.activeView !== "turnos") return;
+
+    requestAnimationFrame(scrollInlineStaffingReportToToday);
+}
+
+function renderInlineStaffingReport(
+    data,
+    year = currentDate.getFullYear(),
+    month = currentDate.getMonth()
+){
+    const div = document.getElementById("staffingReportInline");
+    if (!div) return;
+
+    div.dataset.staffingReportYear = year;
+    div.dataset.staffingReportMonth = month;
 
     const reportData = withBirthdayDetails(data, month);
     const issues = reportData.filter(item => item.detalle.length);
@@ -2263,12 +2577,13 @@ function renderInlineStaffingReport(data, month = currentDate.getMonth()){
                 Cobertura completa para el mes visible.
             </div>
         `;
+        scrollInlineStaffingReportIfVisible();
         return;
     }
 
     div.innerHTML = issues
         .map(item => `
-            <article class="staffing-report-day">
+            <article class="staffing-report-day" data-staffing-report-day="${item.dia}">
                 <strong>D&iacute;a ${item.dia}</strong>
                 <div class="staffing-report-pills">
                     ${item.detalle.map(renderDetailBadge).join("")}
@@ -2276,6 +2591,8 @@ function renderInlineStaffingReport(data, month = currentDate.getMonth()){
             </article>
         `)
         .join("");
+
+    scrollInlineStaffingReportIfVisible();
 }
 
 export function renderReplacementContractsLog(){
@@ -2318,7 +2635,7 @@ export async function analizarStaffingMes(
     const data = analizarMes(year, month, holidays);
 
     mostrarResultado(data);
-    renderInlineStaffingReport(data, month);
+    renderInlineStaffingReport(data, year, month);
     return data;
 }
 

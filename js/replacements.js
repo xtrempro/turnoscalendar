@@ -43,6 +43,15 @@ function parseKey(key) {
     );
 }
 
+function normalizeHours(hours) {
+    if (!hours) return null;
+
+    const d = Math.max(0, Number(hours.d) || 0);
+    const n = Math.max(0, Number(hours.n) || 0);
+
+    return d || n ? { d, n } : null;
+}
+
 export function codeToTurno(code) {
     if (code === "L") return TURNO.LARGA;
     if (code === "N") return TURNO.NOCHE;
@@ -162,6 +171,16 @@ export function getReplacementLogForWorkerMonth(profile, year, month) {
         .sort((a, b) => a.date.localeCompare(b.date));
 }
 
+export function getReplacementOvertimeHours(
+    replacement,
+    date,
+    turno,
+    holidays = {}
+) {
+    return normalizeHours(replacement?.overtimeHours) ||
+        calcHours(date, turno, holidays);
+}
+
 export function getAbsenceLabelForProfileDate(profile, keyDay) {
     const admin = getJSON(`admin_${profile}`, {});
     const legal = getJSON(`legal_${profile}`, {});
@@ -240,6 +259,8 @@ export function saveReplacement(data) {
         turno: turnoToCode(data.turno),
         clockLabel: data.clockLabel || "",
         clockHours: data.clockHours || null,
+        diurnoLongCoverage: Boolean(data.diurnoLongCoverage),
+        overtimeHours: normalizeHours(data.overtimeHours),
         isLoan: Boolean(data.isLoan),
         workerWorkspaceId: data.workerWorkspaceId || "",
         workerWorkspaceName: data.workerWorkspaceName || "",
@@ -401,6 +422,8 @@ function buildReplacementRequest(data) {
         channel,
         phone: workerProfile?.phone || "",
         scope: data.scope || "compatible",
+        diurnoLongCoverage: Boolean(data.diurnoLongCoverage),
+        overtimeHours: normalizeHours(data.overtimeHours),
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
         canceledAt: "",
@@ -449,14 +472,32 @@ export function createReplacementRequests(data, workers = []) {
     if (!uniqueWorkers.length) return [];
 
     const groupId = requestGroupId();
-    const requests = uniqueWorkers.map(worker =>
-        buildReplacementRequest({
+    const diurnoLongCoverageWorkers = new Set(
+        (data.diurnoLongCoverageWorkers || [])
+            .map(worker => String(worker || "").trim())
+            .filter(Boolean)
+    );
+    const workerCoverage = data.workerCoverage || {};
+    const requests = uniqueWorkers.map(worker => {
+        const coverage = workerCoverage[worker] || {};
+        const diurnoLongCoverage =
+            Boolean(coverage.diurnoLongCoverage) ||
+            diurnoLongCoverageWorkers.has(worker);
+
+        return buildReplacementRequest({
             ...data,
             worker,
             groupId,
-            groupSize: uniqueWorkers.length
-        })
-    );
+            groupSize: uniqueWorkers.length,
+            diurnoLongCoverage,
+            overtimeHours: coverage.overtimeHours ||
+                (
+                    diurnoLongCoverage
+                        ? data.diurnoLongCoverageHours
+                        : data.overtimeHours
+                )
+        });
+    });
 
     saveReplacementRequests([
         ...getReplacementRequests(),
@@ -608,6 +649,9 @@ export function applyAcceptedReplacementRequests() {
                     winner.source === "forced_replacement_request"
                         ? "forced_replacement"
                         : "replacement",
+                diurnoLongCoverage:
+                    Boolean(winner.diurnoLongCoverage),
+                overtimeHours: winner.overtimeHours,
                 requestId: winner.id,
                 requestGroupId: groupId
             });
@@ -710,7 +754,12 @@ export function renderReplacementLogHTML(profile, year, month, holidays = {}) {
                             )
                             : savedClockHours
                     )
-                    : calcHours(date, turno, holidays);
+                    : getReplacementOvertimeHours(
+                        record,
+                        date,
+                        turno,
+                        holidays
+                    );
                 const label = isClockExtra
                     ? (record.clockLabel || "Marcaje reloj control")
                     : turnoReplacementLabel(turno);

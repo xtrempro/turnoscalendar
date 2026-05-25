@@ -1,12 +1,23 @@
 import { prevMonth, nextMonth, currentDate } from "./calendar.js";
-import { pushHistory, undo, redo } from "./history.js";
+import {
+    pushHistory,
+    undo,
+    redo,
+    canUndo,
+    canRedo
+} from "./history.js";
 import { refreshAll } from "./refresh.js";
 import { DOM } from "./dom.js";
 import { renderSwapPanel } from "./swapUI.js";
 import {
     renderStaffingPanel,
+    renderStaffingWeeklyCalendar,
+    scrollInlineStaffingReportToToday,
     syncStaffingConfigForProfileChange
 } from "./staffing.js";
+import { renderTaskAssignmentsPanel } from "./taskAssignments.js";
+import { renderKanbanBoard } from "./kanban.js";
+import { renderAgendaPanel } from "./agenda.js";
 import { initSystemSettings } from "./systemSettings.js";
 import { initFirebaseShell } from "./firebaseShell.js";
 import {
@@ -3117,6 +3128,7 @@ function renderDashboardState() {
     if (document.body.dataset.activeView === "hours") {
         renderHoursCharts(profile);
     }
+    updateHistoryNavState();
     updateTurnChangesNavState();
 }
 
@@ -3134,7 +3146,24 @@ function renderBotones() {
         !hasProfile || !activeProfile || !shiftAssigned
     );
 
+    updateHistoryNavState();
     updateTurnChangesNavState();
+}
+
+function updateHistoryNavState() {
+    if (DOM.undoBtn) {
+        DOM.undoBtn.disabled = !canUndo();
+        DOM.undoBtn.title = DOM.undoBtn.disabled
+            ? "No hay acciones para deshacer."
+            : "Deshacer ultima accion.";
+    }
+
+    if (DOM.redoBtn) {
+        DOM.redoBtn.disabled = !canRedo();
+        DOM.redoBtn.title = DOM.redoBtn.disabled
+            ? "No hay acciones para rehacer."
+            : "Rehacer ultima accion.";
+    }
 }
 
 function updateTurnChangesNavState() {
@@ -3213,6 +3242,22 @@ function getViewForTarget(targetId) {
         return "staffing";
     }
 
+    if (targetId === "staffingWeeklyCalendar") {
+        return "weekly";
+    }
+
+    if (targetId === "taskAssignmentsPanel") {
+        return "tasks";
+    }
+
+    if (targetId === "kanbanPanel") {
+        return "kanban";
+    }
+
+    if (targetId === "agendaPanel") {
+        return "agenda";
+    }
+
     return "turnos";
 }
 
@@ -3259,6 +3304,26 @@ function setActiveShortcut(targetId) {
 
     if (nextView === "staffing") {
         renderStaffingPanel();
+    }
+
+    if (nextView === "weekly") {
+        renderStaffingWeeklyCalendar();
+    }
+
+    if (nextView === "tasks") {
+        renderTaskAssignmentsPanel();
+    }
+
+    if (nextView === "kanban") {
+        renderKanbanBoard();
+    }
+
+    if (nextView === "agenda") {
+        renderAgendaPanel();
+    }
+
+    if (nextView === "turnos") {
+        requestAnimationFrame(scrollInlineStaffingReportToToday);
     }
 
     document
@@ -3554,6 +3619,15 @@ function isFourthShiftNoAssignmentProfile(profileName) {
         !getShiftAssigned(profileName);
 }
 
+function formatReportPlanillaTitle(date) {
+    const month = date.toLocaleString("es-CL", {
+        month: "long",
+        year: "numeric"
+    });
+
+    return `PLANILLA "${month.toUpperCase()}"`;
+}
+
 async function renderReportsDetail() {
     if (!DOM.reportsSelectedInfo) return;
 
@@ -3564,6 +3638,9 @@ async function renderReportsDetail() {
         DOM.reportsSelectedInfo.textContent =
             "Selecciona un colaborador para ver sus reportes disponibles.";
         DOM.report4TurnoNoAssignmentCard?.classList.add("hidden");
+        if (DOM.report4TurnoNoAssignmentTitle) {
+            DOM.report4TurnoNoAssignmentTitle.textContent = "";
+        }
         if (DOM.report4TurnoNoAssignmentPreview) {
             DOM.report4TurnoNoAssignmentPreview.innerHTML = "";
         }
@@ -3592,6 +3669,13 @@ async function renderReportsDetail() {
         "hidden",
         !canShowFourthShiftReport
     );
+
+    if (DOM.report4TurnoNoAssignmentTitle) {
+        DOM.report4TurnoNoAssignmentTitle.textContent =
+            canShowFourthShiftReport
+                ? formatReportPlanillaTitle(currentDate)
+                : "";
+    }
 
     if (DOM.downloadNoAssignmentReportBtn) {
         DOM.downloadNoAssignmentReportBtn.onclick = () =>
@@ -4415,6 +4499,51 @@ function getTopSearchProfiles() {
         );
 }
 
+function getCalendarProfileDetail(profile = {}) {
+    const estamento = profile.estamento || "Sin estamento";
+    const profession = normalizeProfession(
+        profile.profession,
+        estamento
+    );
+
+    return profession === SIN_INFORMACION_PROFESSION
+        ? estamento
+        : formatProfession(profession);
+}
+
+function getCalendarProfileSearchValue(profile = {}) {
+    const name = String(profile.name || "").trim();
+    const separator = "      |      ";
+
+    if (!name) return "";
+
+    return `${name}${separator}${getCalendarProfileDetail(profile)}`;
+}
+
+function getCalendarProfileSearchKeys(profile = {}) {
+    return [
+        profile.name,
+        getCalendarProfileSearchValue(profile)
+    ]
+        .map(normalizeProfileSearch)
+        .filter(Boolean);
+}
+
+function findTopProfileSearchMatch(query, profiles) {
+    const normalizedQuery = normalizeProfileSearch(query);
+
+    const matchesBy = predicate =>
+        profiles.find(profile =>
+            getCalendarProfileSearchKeys(profile).some(predicate)
+        );
+
+    return (
+        matchesBy(value => value === normalizedQuery) ||
+        matchesBy(value => value.startsWith(normalizedQuery)) ||
+        matchesBy(value => value.includes(normalizedQuery))
+    );
+}
+
 function syncTopProfileSearch() {
     if (!DOM.topProfileSearchInput) return;
 
@@ -4423,19 +4552,25 @@ function syncTopProfileSearch() {
         profileDraft.mode === PROFILE_MODE.CREATE
             ? ""
             : data.name || getCurrentProfile() || "";
+    const profiles = getTopSearchProfiles();
+    const currentProfile =
+        profiles.find(profile => profile.name === currentName) ||
+        (currentName ? { ...data, name: currentName } : null);
 
     if (document.activeElement !== DOM.topProfileSearchInput) {
-        DOM.topProfileSearchInput.value = currentName;
+        DOM.topProfileSearchInput.value = currentProfile
+            ? getCalendarProfileSearchValue(currentProfile)
+            : currentName;
     }
 
     if (!DOM.topProfileOptions) return;
 
     DOM.topProfileOptions.innerHTML = "";
 
-    getTopSearchProfiles().forEach(profile => {
+    profiles.forEach(profile => {
         const option = document.createElement("option");
-        option.value = profile.name;
-        option.label = `${profile.name} | ${getProfileMetaLabel(profile)}`;
+        option.value = getCalendarProfileSearchValue(profile);
+        option.label = profile.name;
         DOM.topProfileOptions.appendChild(option);
     });
 }
@@ -4452,16 +4587,10 @@ function handleTopProfileSearch() {
 
     const normalizedQuery = normalizeProfileSearch(query);
     const profiles = getTopSearchProfiles();
-    const exact = profiles.find(profile =>
-        normalizeProfileSearch(profile.name) === normalizedQuery
+    const match = findTopProfileSearchMatch(
+        normalizedQuery,
+        profiles
     );
-    const startsWith = profiles.find(profile =>
-        normalizeProfileSearch(profile.name).startsWith(normalizedQuery)
-    );
-    const contains = profiles.find(profile =>
-        normalizeProfileSearch(profile.name).includes(normalizedQuery)
-    );
-    const match = exact || startsWith || contains;
 
     if (!match) {
         alert("No se encontro un colaborador con ese nombre.");
@@ -4471,7 +4600,8 @@ function handleTopProfileSearch() {
         return;
     }
 
-    DOM.topProfileSearchInput.value = match.name;
+    DOM.topProfileSearchInput.value =
+        getCalendarProfileSearchValue(match);
     selectProfileByName(match.name);
 }
 
@@ -6762,6 +6892,10 @@ initFirebaseShell({
         if (!user) {
             stopFirebaseAppStateSync();
         }
+
+        if (document.body.dataset.activeView === "kanban") {
+            renderKanbanBoard();
+        }
     },
     onWorkspaceChange: workspace => {
         if (workspace?.id) {
@@ -6790,6 +6924,12 @@ initFirebaseShell({
                     renderWorkerRequestsPanel();
                     renderMemosPanel();
                     renderStaffingPanel();
+                    if (document.body.dataset.activeView === "tasks") {
+                        renderTaskAssignmentsPanel();
+                    }
+                    if (document.body.dataset.activeView === "kanban") {
+                        renderKanbanBoard();
+                    }
                     refreshAll();
                     renderDashboardState();
                 }
@@ -6800,6 +6940,12 @@ initFirebaseShell({
         }
 
         refreshAll();
+        if (document.body.dataset.activeView === "tasks") {
+            renderTaskAssignmentsPanel();
+        }
+        if (document.body.dataset.activeView === "kanban") {
+            renderKanbanBoard();
+        }
         renderDashboardState();
     }
 });

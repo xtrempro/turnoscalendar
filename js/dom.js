@@ -77,6 +77,7 @@ export const DOM = {
     reportsEmptyProfiles: document.getElementById("reportsEmptyProfiles"),
     reportsSelectedInfo: document.getElementById("reportsSelectedInfo"),
     report4TurnoNoAssignmentCard: document.getElementById("report4TurnoNoAssignmentCard"),
+    report4TurnoNoAssignmentTitle: document.getElementById("report4TurnoNoAssignmentTitle"),
     report4TurnoNoAssignmentPreview: document.getElementById("report4TurnoNoAssignmentPreview"),
     downloadNoAssignmentReportBtn: document.getElementById("downloadNoAssignmentReportBtn"),
     reportsUnavailableHint: document.getElementById("reportsUnavailableHint"),

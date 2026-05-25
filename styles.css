@@ -392,6 +392,37 @@ svg {
     height: 16px;
 }
 
+.calendar-profile-viewer {
+    display: grid;
+    grid-template-columns: auto minmax(320px, 560px);
+    justify-content: start;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+    padding: 6px 10px;
+    border-radius: 12px;
+    background: var(--panel-alt);
+    border: 1px solid var(--border);
+}
+
+.calendar-profile-viewer label {
+    color: var(--text-soft);
+    font-size: 0.95rem;
+    font-weight: 800;
+}
+
+.calendar-profile-viewer .profile-viewer__field {
+    width: min(560px, 100%);
+    max-width: none;
+    height: 34px;
+    border-radius: 11px;
+    background: var(--field);
+}
+
+.calendar-profile-viewer .profile-viewer__field input {
+    font-weight: 800;
+}
+
 .theme-switch,
 .icon-button,
 .primary-button,
@@ -722,6 +753,10 @@ body:not([data-active-view="hours"]) #hoursView,
 body:not([data-active-view="hours"]) .hours-panel,
 body:not([data-active-view="hours"]) .hours-charts-panel,
 body:not([data-active-view="staffing"]) #staffingView,
+body:not([data-active-view="weekly"]) #staffingWeeklyCalendar,
+body:not([data-active-view="tasks"]) #taskAssignmentsPanel,
+body:not([data-active-view="kanban"]) #kanbanPanel,
+body:not([data-active-view="agenda"]) #agendaPanel,
 body:not([data-active-view="turnos"]) .staffing-report-panel,
 body:not([data-active-view="reports"]) #reportsPanel,
 body:not([data-active-view="requests"]) #workerRequestsPanel,
@@ -776,6 +811,18 @@ body[data-active-view="staffing"] .calendar-panel,
 body[data-active-view="staffing"] .leave-panel,
 body[data-active-view="staffing"] .timeline-panel,
 body[data-active-view="staffing"] #turnChangesView,
+body[data-active-view="weekly"] .timeline-panel,
+body[data-active-view="weekly"] .primary-grid,
+body[data-active-view="weekly"] #turnChangesView,
+body[data-active-view="tasks"] .primary-grid,
+body[data-active-view="tasks"] .timeline-panel,
+body[data-active-view="tasks"] #turnChangesView,
+body[data-active-view="kanban"] .primary-grid,
+body[data-active-view="kanban"] .timeline-panel,
+body[data-active-view="kanban"] #turnChangesView,
+body[data-active-view="agenda"] .primary-grid,
+body[data-active-view="agenda"] .timeline-panel,
+body[data-active-view="agenda"] #turnChangesView,
 body[data-active-view="reports"] .timeline-panel,
 body[data-active-view="reports"] .primary-grid,
 body[data-active-view="reports"] .secondary-grid,
@@ -802,6 +849,22 @@ body[data-active-view="requests"] .secondary-grid {
 }
 
 body[data-active-view="memos"] .secondary-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-active-view="weekly"] .secondary-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-active-view="tasks"] .secondary-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-active-view="kanban"] .secondary-grid {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-active-view="agenda"] .secondary-grid {
     grid-template-columns: minmax(0, 1fr);
 }
 
@@ -864,6 +927,13 @@ body[data-active-view="log"] .secondary-grid {
     align-items: start;
 }
 
+.agenda-view {
+    display: grid;
+    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+}
+
 .hhee-content {
     display: grid;
     gap: 18px;
@@ -895,6 +965,12 @@ body[data-active-view="log"] .secondary-grid {
     padding-right: 2px;
 }
 
+.agenda-sidebar .profile-list {
+    max-height: calc(100vh - 260px);
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
 .reports-detail-panel {
     display: grid;
     gap: 14px;
@@ -920,11 +996,12 @@ body[data-active-view="log"] .secondary-grid {
 
 .report-download-card {
     display: grid;
-    gap: 14px;
-    padding: 18px;
-    border: 1px solid rgba(29, 108, 255, 0.22);
-    border-radius: 18px;
-    background: linear-gradient(135deg, rgba(29, 108, 255, 0.1), rgba(255, 255, 255, 0.9));
+    gap: 8px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 .report-download-card__head {
@@ -962,9 +1039,37 @@ body[data-active-view="log"] .secondary-grid {
     text-decoration: none;
 }
 
+.report-preview-heading {
+    position: sticky;
+    top: 8px;
+    z-index: 30;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(150px, 180px);
+    gap: 8px;
+    align-items: stretch;
+    padding-bottom: 8px;
+    background: var(--panel);
+}
+
+.report-preview-heading .report-title-strip {
+    display: grid;
+    place-items: center;
+    min-height: 42px;
+}
+
+.report-download-inline {
+    min-height: 42px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+
 .report-preview-card {
     max-height: none;
     overflow: visible;
+}
+
+.report-preview-card .report-title-strip {
+    display: none;
 }
 
 .no-assignment-report {
@@ -1030,6 +1135,34 @@ body[data-active-view="log"] .secondary-grid {
 .report-table td {
     color: var(--text-soft);
     background: var(--field);
+}
+
+.report-worker-data-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    min-width: 0;
+}
+
+.report-worker-data-column {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+
+.report-section--worker-data .report-table {
+    min-width: 0;
+}
+
+.report-section--worker-data .report-table th:first-child,
+.report-section--worker-data .report-table td:first-child {
+    width: 1%;
+    padding-right: 22px;
+    white-space: nowrap;
+}
+
+.report-table .report-row--inhabil td:first-child {
+    background: rgba(248, 113, 113, 0.16);
 }
 
 .overview-card {
@@ -1786,7 +1919,7 @@ body[data-active-view="log"] .secondary-grid {
     order: -1;
     padding: 8px;
     display: grid;
-    grid-template-columns: repeat(12, minmax(0, 1fr));
+    grid-template-columns: repeat(16, minmax(0, 1fr));
     gap: 5px;
 }
 
@@ -1794,48 +1927,64 @@ body[data-active-view="log"] .secondary-grid {
     order: 1;
 }
 
-.actionbar .nav-tile[data-target="profileSection"] {
+.actionbar .nav-tile[data-target="staffingWeeklyCalendar"] {
     order: 2;
 }
 
-.actionbar .nav-tile[data-target="clockMarksPanel"] {
+.actionbar .nav-tile[data-target="taskAssignmentsPanel"] {
     order: 3;
 }
 
-.actionbar .nav-tile[data-target="workerRequestsPanel"] {
+.actionbar .nav-tile[data-target="kanbanPanel"] {
     order: 4;
 }
 
-.actionbar .nav-tile[data-target="memosPanel"] {
+.actionbar .nav-tile[data-target="agendaPanel"] {
     order: 5;
 }
 
-#turnChangesNav {
+.actionbar .nav-tile[data-target="profileSection"] {
     order: 6;
 }
 
-.actionbar .nav-tile[data-target="hoursPanel"] {
+.actionbar .nav-tile[data-target="clockMarksPanel"] {
     order: 7;
 }
 
-.actionbar .nav-tile[data-target="staffingPanel"] {
+.actionbar .nav-tile[data-target="workerRequestsPanel"] {
     order: 8;
 }
 
-.actionbar .nav-tile[data-target="reportsPanel"] {
+.actionbar .nav-tile[data-target="memosPanel"] {
     order: 9;
 }
 
-.actionbar .nav-tile[data-target="auditLogPanel"] {
+#turnChangesNav {
     order: 10;
 }
 
-#undoBtn {
+.actionbar .nav-tile[data-target="hoursPanel"] {
     order: 11;
 }
 
-#redoBtn {
+.actionbar .nav-tile[data-target="staffingPanel"] {
     order: 12;
+}
+
+.actionbar .nav-tile[data-target="reportsPanel"] {
+    order: 13;
+}
+
+.actionbar .nav-tile[data-target="auditLogPanel"] {
+    order: 14;
+}
+
+#undoBtn {
+    order: 15;
+}
+
+#redoBtn {
+    order: 16;
 }
 
 .nav-tile {
@@ -1879,6 +2028,11 @@ body[data-active-view="log"] .secondary-grid {
     letter-spacing: 0;
     line-height: 1.08;
     text-align: center;
+}
+
+.actionbar .nav-tile[data-target="staffingWeeklyCalendar"] span,
+.actionbar .nav-tile[data-target="taskAssignmentsPanel"] span {
+    white-space: normal;
 }
 
 .nav-tile .nav-alert-badge {
@@ -4647,6 +4801,10 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     border: 1px solid var(--border);
 }
 
+.staffing-weekly-calendar--view {
+    margin-bottom: 0;
+}
+
 .staffing-weekly-calendar .section-head {
     margin-bottom: 0;
 }
@@ -4676,9 +4834,25 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     font-size: 0.82rem;
 }
 
+.staffing-weekly-filters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 220px));
+    gap: 12px;
+    align-items: end;
+}
+
+.staffing-weekly-filters label {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    color: var(--text-soft);
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
 .staffing-weekly-grid {
     display: grid;
-    grid-template-columns: repeat(7, minmax(120px, 1fr));
+    grid-template-columns: repeat(7, minmax(146px, 1fr));
     gap: 8px;
     overflow-x: auto;
     padding-bottom: 2px;
@@ -4692,18 +4866,16 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 }
 
 .staffing-weekly-day {
-    display: grid;
-    gap: 2px;
+    display: flex;
+    align-items: center;
     padding: 10px;
     color: var(--text);
     background: var(--field);
     text-transform: capitalize;
 }
 
-.staffing-weekly-day span {
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    font-weight: 700;
+.staffing-weekly-day strong {
+    white-space: nowrap;
 }
 
 .staffing-weekly-cell {
@@ -4712,6 +4884,11 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     align-content: start;
     padding: 10px;
     background: var(--field);
+}
+
+.staffing-weekly-day--inhabil,
+.staffing-weekly-cell--inhabil {
+    background: var(--inhabil-soft);
 }
 
 .staffing-weekly-cell--diurno {
@@ -4724,6 +4901,10 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 
 .staffing-weekly-cell--noche {
     border-color: rgba(29, 108, 255, 0.28);
+}
+
+.staffing-weekly-cell--leave {
+    grid-template-rows: auto minmax(54px, 1fr);
 }
 
 .staffing-weekly-cell__shift {
@@ -4774,6 +4955,857 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     border-radius: 10px;
     background: var(--calendar-empty);
     border: 1px dashed var(--border);
+}
+
+.task-assignment-panel {
+    display: grid;
+    min-width: 0;
+    padding: 16px;
+}
+
+.task-assignment-shell {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+}
+
+.task-assignment-head {
+    align-items: center;
+    margin-bottom: 0;
+}
+
+.task-assignment-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.task-assignment-view-filters,
+.task-assignment-dialog__filters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.task-assignment-view-filters {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel-alt);
+}
+
+.task-assignment-view-filters strong,
+.task-assignment-dialog__filters strong {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text);
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
+.task-assignment-filter-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.task-assignment-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--field);
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.task-assignment-filter-chip input {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    padding: 0;
+    accent-color: var(--accent);
+}
+
+.task-assignment-filter-chip span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.task-assignment-section,
+.task-assignment-events {
+    display: grid;
+    min-width: 0;
+}
+
+.task-assignment-board,
+.task-assignment-events-grid {
+    display: grid;
+    grid-template-columns: minmax(230px, 270px) repeat(7, minmax(155px, 1fr));
+    gap: 8px;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--panel-alt);
+}
+
+.task-assignment-task-head,
+.task-assignment-day-head,
+.task-assignment-task-cell,
+.task-assignment-cell,
+.task-assignment-events-head,
+.task-assignment-event-day {
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--field);
+}
+
+.task-assignment-task-head,
+.task-assignment-events-head {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    padding: 12px;
+    box-shadow: 8px 0 18px rgba(15, 23, 42, 0.08);
+}
+
+.task-assignment-task-head strong,
+.task-assignment-events-head {
+    color: var(--text);
+    font-size: 0.9rem;
+    font-weight: 900;
+}
+
+.task-assignment-task-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 42px;
+    gap: 6px;
+    align-items: center;
+}
+
+.task-assignment-task-form input {
+    min-height: 42px;
+    border-radius: 10px;
+}
+
+.task-assignment-task-add {
+    width: 42px;
+    height: 42px;
+    display: grid;
+    place-items: center;
+    border-radius: 11px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 1.35rem;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 10px 20px rgba(29, 108, 255, 0.2);
+}
+
+.task-assignment-task-add:hover {
+    background: var(--accent-2);
+    transform: translateY(-1px);
+}
+
+.task-assignment-day-head,
+.task-assignment-event-day {
+    display: grid;
+    gap: 3px;
+    align-content: start;
+    padding: 10px;
+}
+
+.task-assignment-day-head {
+    min-height: 62px;
+}
+
+.task-assignment-day-head strong,
+.task-assignment-event-day > strong {
+    color: var(--text);
+    font-size: 0.84rem;
+    font-weight: 900;
+    text-transform: capitalize;
+}
+
+.task-assignment-day-head span,
+.task-assignment-event-day > span {
+    color: var(--text-muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+}
+
+.task-assignment-task-cell {
+    min-height: 96px;
+    padding: 8px;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.task-assignment-task-cell.is-drag-over,
+.task-assignment-cell.is-drag-over {
+    border-color: rgba(20, 184, 166, 0.7);
+    box-shadow: inset 0 0 0 3px rgba(20, 184, 166, 0.18);
+}
+
+.task-assignment-task-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    align-items: start;
+}
+
+.task-assignment-task-card__top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+}
+
+.task-assignment-task-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+.task-assignment-drag {
+    color: var(--text-muted);
+    cursor: grab;
+    font-weight: 900;
+    letter-spacing: 0;
+}
+
+.task-assignment-task-card:active .task-assignment-drag {
+    cursor: grabbing;
+}
+
+.task-assignment-task-card input {
+    width: 100%;
+    min-height: 36px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: 0.86rem;
+}
+
+.task-assignment-config,
+.task-assignment-delete {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border-radius: 10px;
+    color: #dc2626;
+    font-size: 1.15rem;
+    line-height: 1;
+}
+
+.task-assignment-config {
+    color: var(--accent);
+}
+
+.task-assignment-config.is-configured {
+    background: var(--accent-soft);
+    border-color: rgba(29, 108, 255, 0.32);
+}
+
+.task-assignment-config svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.85;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.task-assignment-cell {
+    display: grid;
+    gap: 7px;
+    align-content: start;
+    min-height: 96px;
+    padding: 9px;
+}
+
+.task-assignment-add {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    justify-self: end;
+    border-radius: 9px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 1.08rem;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 10px 20px rgba(29, 108, 255, 0.18);
+}
+
+.task-assignment-add:hover {
+    background: var(--accent-2);
+}
+
+.task-assignment-cell-workers {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.task-assignment-worker-chip {
+    max-width: 100%;
+    padding: 4px 7px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--text);
+    cursor: grab;
+    font-size: 0.72rem;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+}
+
+.task-assignment-worker-chip:active {
+    cursor: grabbing;
+}
+
+.task-assignment-worker-chip.is-dragging {
+    opacity: 0.55;
+}
+
+.task-assignment-cell p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.74rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.task-assignment-empty-row {
+    grid-column: 1 / -1;
+    min-height: 90px;
+    display: grid;
+    place-items: center;
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    background: var(--field);
+    color: var(--text-muted);
+    font-size: 0.86rem;
+    font-weight: 800;
+}
+
+.task-assignment-events-grid {
+    grid-template-columns: minmax(230px, 270px) repeat(7, minmax(155px, 1fr));
+}
+
+.task-assignment-events-head {
+    min-height: 92px;
+}
+
+.task-assignment-event-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.task-assignment-event {
+    display: block;
+    padding: 6px 7px;
+    border-radius: 9px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.task-assignment-event--absence {
+    background: rgba(248, 113, 113, 0.16);
+    color: #b91c1c;
+}
+
+.task-assignment-event--birthday {
+    background: rgba(34, 197, 94, 0.16);
+    color: #15803d;
+}
+
+.task-assignment-event-empty {
+    color: var(--text-muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+}
+
+.task-assignment-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(2, 6, 23, 0.56);
+    backdrop-filter: blur(10px);
+}
+
+.task-assignment-dialog {
+    width: min(780px, 100%);
+    max-height: min(760px, calc(100vh - 36px));
+    display: grid;
+    gap: 14px;
+    overflow: auto;
+    padding: 18px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--panel);
+    box-shadow: var(--shadow-panel);
+}
+
+.task-assignment-dialog__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.task-assignment-dialog__head h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 1.05rem;
+}
+
+.task-assignment-dialog__head span {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    font-weight: 800;
+    text-transform: capitalize;
+}
+
+.task-assignment-candidates {
+    display: grid;
+    gap: 8px;
+    max-height: 300px;
+    overflow: auto;
+    padding-right: 2px;
+}
+
+.task-assignment-candidate {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    color: var(--text);
+}
+
+.task-assignment-candidate.is-free {
+    border-color: rgba(34, 197, 94, 0.28);
+    background: rgba(34, 197, 94, 0.14);
+}
+
+.task-assignment-candidate.is-busy {
+    border-color: rgba(248, 113, 113, 0.3);
+    background: rgba(248, 113, 113, 0.16);
+}
+
+.task-assignment-candidate input {
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    accent-color: var(--accent);
+}
+
+.task-assignment-candidate span {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.task-assignment-candidate strong {
+    overflow-wrap: anywhere;
+    font-size: 0.86rem;
+}
+
+.task-assignment-candidate small {
+    color: var(--text-muted);
+    font-size: 0.74rem;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+}
+
+.task-assignment-note-field {
+    display: grid;
+    gap: 7px;
+    color: var(--text-soft);
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
+.task-assignment-note-field textarea {
+    min-height: 92px;
+}
+
+.task-assignment-default-worker-field {
+    display: grid;
+    gap: 7px;
+    color: var(--text-soft);
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
+.task-assignment-default-worker-list {
+    display: grid;
+    gap: 8px;
+    max-height: 340px;
+    overflow: auto;
+    padding-right: 2px;
+}
+
+.task-assignment-dialog__actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+body.theme-dark .task-assignment-task-head,
+body.theme-dark .task-assignment-events-head {
+    box-shadow: 8px 0 18px rgba(0, 0, 0, 0.18);
+}
+
+body.theme-dark .task-assignment-event--absence {
+    color: #fecaca;
+}
+
+body.theme-dark .task-assignment-event--birthday {
+    color: #bbf7d0;
+}
+
+.kanban-panel {
+    display: grid;
+    gap: 12px;
+    padding: 14px 18px 18px;
+    min-width: 0;
+}
+
+.kanban-head {
+    display: grid;
+    min-width: 0;
+}
+
+.kanban-form {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.95fr) minmax(300px, 1.3fr) minmax(160px, 0.58fr) minmax(110px, auto);
+    gap: 10px;
+    align-items: center;
+    min-width: 0;
+}
+
+.kanban-form input,
+.kanban-form select,
+.kanban-form textarea {
+    min-height: 38px;
+    border-radius: 12px;
+}
+
+.kanban-form textarea {
+    height: 38px;
+    max-height: 82px;
+    resize: vertical;
+}
+
+.kanban-add-button {
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding-inline: 14px;
+    white-space: nowrap;
+}
+
+.kanban-add-button svg {
+    width: 16px;
+    height: 16px;
+}
+
+.kanban-board {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(220px, 1fr));
+    gap: 10px;
+    min-height: 520px;
+    padding: 12px;
+    overflow-x: auto;
+    border-radius: 14px;
+    border: 1px solid rgba(17, 32, 56, 0.14);
+    background:
+        linear-gradient(180deg, rgba(17, 32, 56, 0.02), transparent 34%),
+        #ffffff;
+    box-shadow:
+        inset 0 0 0 1px rgba(17, 32, 56, 0.04),
+        inset 0 18px 28px rgba(17, 32, 56, 0.04);
+}
+
+.kanban-column {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-width: 0;
+    border-radius: 6px;
+    border: 1px solid rgba(17, 32, 56, 0.16);
+    background: rgba(17, 32, 56, 0.03);
+    transition: box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.kanban-column.is-drag-over {
+    border-color: rgba(20, 184, 166, 0.95);
+    box-shadow: inset 0 0 0 3px rgba(20, 184, 166, 0.42);
+}
+
+.kanban-column__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 58px;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(17, 32, 56, 0.16);
+    color: var(--text-strong);
+}
+
+.kanban-column__head h4 {
+    margin: 0;
+    font-size: 1.12rem;
+    font-weight: 800;
+}
+
+.kanban-column__head span {
+    min-width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgba(17, 32, 56, 0.08);
+    color: var(--text-strong);
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.kanban-column__cards {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-height: 410px;
+    padding: 14px;
+}
+
+.kanban-card {
+    display: grid;
+    gap: 8px;
+    min-height: 98px;
+    padding: 12px;
+    border-radius: 8px;
+    color: #122033;
+    cursor: grab;
+    box-shadow:
+        0 12px 18px rgba(0, 0, 0, 0.23),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+    transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+.kanban-card:active {
+    cursor: grabbing;
+}
+
+.kanban-card.is-dragging {
+    opacity: 0.58;
+    transform: rotate(1.5deg) scale(0.98);
+}
+
+.kanban-card--cyan {
+    background: #19c4d8;
+}
+
+.kanban-card--yellow {
+    background: #ffbd3c;
+}
+
+.kanban-card--green {
+    background: #72d63c;
+}
+
+.kanban-card--coral {
+    background: #ff6267;
+}
+
+.kanban-card__head {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.kanban-card strong {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 0.92rem;
+    line-height: 1.25;
+}
+
+.kanban-card p {
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: rgba(18, 32, 51, 0.82);
+    font-size: 0.82rem;
+    line-height: 1.35;
+    white-space: pre-wrap;
+}
+
+.kanban-card small {
+    color: rgba(18, 32, 51, 0.65);
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.kanban-card__delete {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    color: rgba(18, 32, 51, 0.72);
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.kanban-card__delete:hover {
+    color: #7f1d1d;
+    background: rgba(255, 255, 255, 0.54);
+}
+
+.kanban-card__delete svg {
+    width: 15px;
+    height: 15px;
+}
+
+.kanban-empty {
+    min-height: 92px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    border: 1px dashed rgba(17, 32, 56, 0.2);
+    color: var(--text-muted);
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
+body.theme-dark .kanban-board {
+    border-color: rgba(255, 255, 255, 0.78);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 34%),
+        #30333b;
+    box-shadow:
+        inset 0 0 0 1px rgba(0, 0, 0, 0.35),
+        inset 0 18px 28px rgba(0, 0, 0, 0.16);
+}
+
+body.theme-dark .kanban-column {
+    border-color: rgba(255, 255, 255, 0.7);
+    background: rgba(15, 23, 42, 0.13);
+}
+
+body.theme-dark .kanban-column__head {
+    border-bottom-color: rgba(255, 255, 255, 0.7);
+    color: #f8fafc;
+}
+
+body.theme-dark .kanban-column__head span {
+    background: rgba(255, 255, 255, 0.14);
+    color: #f8fafc;
+}
+
+body.theme-dark .kanban-empty {
+    border-color: rgba(255, 255, 255, 0.42);
+    color: rgba(255, 255, 255, 0.68);
+}
+
+.agenda-panel {
+    display: grid;
+    gap: 16px;
+    padding: 18px;
+    min-width: 0;
+}
+
+.agenda-sidebar-actions {
+    margin-bottom: 14px;
+}
+
+.agenda-sidebar-actions .primary-button {
+    width: 100%;
+    min-height: 42px;
+}
+
+.agenda-contact-list .profile-item {
+    width: 100%;
+    text-align: left;
+    font: inherit;
+}
+
+.agenda-form {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+}
+
+.agenda-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: start;
+}
+
+.agenda-field--wide {
+    grid-column: 1 / -1;
+}
+
+.agenda-notes {
+    min-height: 118px;
+    resize: vertical;
+}
+
+.agenda-attachment-list {
+    max-width: 760px;
+}
+
+.agenda-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.agenda-actions .primary-button,
+.agenda-actions .secondary-button,
+.agenda-actions .ghost-button {
+    min-height: 40px;
+}
+
+.agenda-delete-button {
+    margin-left: auto;
+    color: #dc2626;
 }
 
 .applicant-toolbar {
@@ -5010,6 +6042,11 @@ body[data-active-view="turnos"] .staffing-report-panel,
 body[data-active-view="turnos"] .staffing-report-day strong,
 body[data-active-view="turnos"] .staffing-report-pills .staffing-pill {
     font-weight: 500;
+}
+
+body[data-active-view="turnos"] .staffing-report-day strong {
+    font-size: 0.82rem;
+    line-height: 1.2;
 }
 
 .staffing-report-empty {
@@ -6248,24 +7285,24 @@ body.mode-active .day.draft-selected {
         gap: 8px;
     }
 
-    .profile-viewer {
+    .topbar .profile-viewer {
         gap: 6px;
         font-size: 0.72rem;
     }
 
-    .profile-viewer__field {
+    .topbar .profile-viewer__field {
         min-width: 190px;
         max-width: 230px;
         height: 30px;
         border-radius: 10px;
     }
 
-    .profile-viewer__field input {
+    .topbar .profile-viewer__field input {
         padding-inline: 8px;
         font-size: 0.72rem;
     }
 
-    .profile-viewer__button {
+    .topbar .profile-viewer__button {
         width: 30px;
     }
 
@@ -6388,6 +7425,7 @@ body.mode-active .day.draft-selected {
     .swap-panel,
     .worker-requests-panel,
     .memos-panel,
+    .agenda-panel,
     .audit-log-panel {
         padding: 10px;
         border-radius: 16px;
@@ -6582,7 +7620,7 @@ body.mode-active .day.draft-selected {
     }
 
     .actionbar {
-        grid-template-columns: repeat(12, minmax(0, 1fr));
+        grid-template-columns: repeat(16, minmax(0, 1fr));
         gap: 4px;
     }
 
@@ -6619,6 +7657,7 @@ body.mode-active .day.draft-selected {
     .staffing-view,
     .hours-view,
     .reports-view,
+    .agenda-view,
     .hhee-overview-grid {
         grid-template-columns: 1fr;
     }
@@ -6635,6 +7674,20 @@ body.mode-active .day.draft-selected {
     body[data-active-view="turnos"] .stacked-panels {
         grid-template-columns: 1fr;
     }
+
+    .kanban-head,
+    .kanban-form {
+        grid-template-columns: 1fr;
+    }
+
+    .task-assignment-head {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .task-assignment-toolbar {
+        justify-content: flex-start;
+    }
 }
 
 @media (max-width: 860px) {
@@ -6648,18 +7701,25 @@ body.mode-active .day.draft-selected {
         flex-wrap: wrap;
     }
 
-    .profile-viewer {
+    .topbar .profile-viewer {
         flex: 1 1 100%;
         justify-content: flex-end;
     }
 
-    .profile-viewer__field {
+    .topbar .profile-viewer__field {
         flex: 0 1 320px;
         max-width: 100%;
     }
 
     .medical-chart-head,
     .applicant-toolbar,
+    .staffing-weekly-filters,
+    .task-assignment-view-filters,
+    .task-assignment-dialog__filters,
+    .kanban-board,
+    .agenda-form-grid,
+    .report-preview-heading,
+    .report-worker-data-grid,
     .overview-card__grid,
     .contract-history-grid,
     .profile-form-grid,
@@ -6716,6 +7776,16 @@ body.mode-active .day.draft-selected {
     .calendar-header {
         grid-template-columns: 36px minmax(0, 1fr) 36px;
     }
+
+    .calendar-profile-viewer {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    .calendar-profile-viewer .profile-viewer__field {
+        width: 100%;
+        min-width: 0;
+    }
 }
 
 @media (max-width: 640px) {
@@ -6732,6 +7802,7 @@ body.mode-active .day.draft-selected {
     .hours-panel,
     .timeline-panel,
     .staffing-panel,
+    .task-assignment-panel,
     .swap-panel,
     .overview-card {
         border-radius: 20px;
@@ -6742,15 +7813,15 @@ body.mode-active .day.draft-selected {
         gap: 10px;
     }
 
-    .profile-viewer {
+    .topbar .profile-viewer {
         justify-content: stretch;
     }
 
-    .profile-viewer label {
+    .topbar .profile-viewer label {
         display: none;
     }
 
-    .profile-viewer__field {
+    .topbar .profile-viewer__field {
         flex: 1 1 100%;
         min-width: 0;
     }
@@ -6906,7 +7977,7 @@ body.mode-active .day.draft-selected {
         gap: 8px;
     }
 
-    .profile-viewer {
+    .topbar .profile-viewer {
         display: none;
     }
 
@@ -7297,6 +8368,8 @@ body.mode-active .day.draft-selected {
     .swap-panel,
     .worker-requests-panel,
     .memos-panel,
+    .agenda-panel,
+    .task-assignment-panel,
     .overview-card,
     .sidebar {
         padding: 12px;

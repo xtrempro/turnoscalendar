@@ -1,5 +1,6 @@
 import {
     getBaseProfileData,
+    getManualLeaveBalances,
     getProfileData,
     getRotativa,
     getShiftAssigned,
@@ -24,6 +25,7 @@ import { TURNO, TURNO_LABEL } from "./constants.js";
 import {
     codeToTurno,
     getReplacementLogForWorkerMonth,
+    getReplacementOvertimeHours,
     getReplacementsForWorkerShift,
     turnoReplacementLabel
 } from "./replacements.js";
@@ -599,7 +601,12 @@ function buildReplacementLogRows(profileName, year, month, holidays) {
             const keyDay = keyFromISO(record.date);
             const date = parseKey(keyDay);
             const turno = codeToTurno(record.turno);
-            const hours = calcHours(date, turno, holidays) || { d: 0, n: 0 };
+            const hours = getReplacementOvertimeHours(
+                record,
+                date,
+                turno,
+                holidays
+            ) || { d: 0, n: 0 };
 
             return {
                 fecha: formatDate(record.date),
@@ -640,9 +647,180 @@ function buildContractRows(profileName, year, month) {
         }));
 }
 
+function finiteBalance(value) {
+    const numeric = Number(value);
+
+    return Number.isFinite(numeric)
+        ? Math.max(0, numeric)
+        : null;
+}
+
+function leaveBalanceCategory(absence) {
+    if (!absence) return "";
+
+    if (
+        absence.category === "admin" ||
+        absence.category === "half_admin"
+    ) {
+        return "admin";
+    }
+
+    if (absence.category === "legal") return "legal";
+    if (absence.category === "comp") return "comp";
+
+    return "";
+}
+
+function leaveBalanceUsageForDay(keyDay, maps, holidays) {
+    const date = parseKey(keyDay);
+    const absence = dayAbsenceDetail(keyDay, maps);
+    const category = leaveBalanceCategory(absence);
+
+    if (!category) return null;
+
+    return {
+        category,
+        amount: isBusinessDay(date, holidays)
+            ? (absence.full ? 1 : 0.5)
+            : 0
+    };
+}
+
+function leaveBalanceKeysForYear(maps, year) {
+    return [
+        ...new Set([
+            ...Object.keys(maps.admin),
+            ...Object.keys(maps.legal),
+            ...Object.keys(maps.comp)
+        ])
+    ]
+        .filter(keyDay => parseKey(keyDay).getFullYear() === year)
+        .sort((a, b) => parseKey(a) - parseKey(b));
+}
+
+function createPermissionBalanceTracker(
+    profileName,
+    year,
+    month,
+    maps,
+    holidays
+) {
+    const manual = getManualLeaveBalances(year, profileName);
+    const usedInYear = {
+        admin: 0,
+        legal: 0,
+        comp: 0
+    };
+    const usedBeforeMonth = {
+        admin: 0,
+        legal: 0,
+        comp: 0
+    };
+    const monthStart = new Date(year, month, 1);
+
+    leaveBalanceKeysForYear(maps, year).forEach(keyDay => {
+        const usage = leaveBalanceUsageForDay(
+            keyDay,
+            maps,
+            holidays
+        );
+
+        if (!usage) return;
+
+        usedInYear[usage.category] += usage.amount;
+
+        if (parseKey(keyDay) < monthStart) {
+            usedBeforeMonth[usage.category] += usage.amount;
+        }
+    });
+
+    const currentBalances = {
+        admin:
+            finiteBalance(manual.admin) ??
+            Math.max(0, 6 - usedInYear.admin),
+        legal:
+            finiteBalance(manual.legal) ??
+            Math.max(0, 15 - usedInYear.legal),
+        comp: finiteBalance(manual.comp)
+    };
+    const remaining = Object.fromEntries(
+        Object.entries(currentBalances).map(([category, value]) => [
+            category,
+            value === null
+                ? null
+                : value +
+                    usedInYear[category] -
+                    usedBeforeMonth[category]
+        ])
+    );
+
+    return {
+        apply(absence, keyDay) {
+            const category = leaveBalanceCategory(absence);
+
+            if (!category || remaining[category] === null) return "";
+
+            const usage = leaveBalanceUsageForDay(
+                keyDay,
+                maps,
+                holidays
+            );
+
+            if (usage) {
+                remaining[category] = Math.max(
+                    0,
+                    remaining[category] - usage.amount
+                );
+            }
+
+            return formatHour(remaining[category]);
+        }
+    };
+}
+
+function nextDayKey(keyDay) {
+    const date = parseKey(keyDay);
+
+    date.setDate(date.getDate() + 1);
+
+    return key(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+}
+
+function permissionGroupKey(absence) {
+    return [
+        absence?.category || "",
+        absence?.type || "",
+        absence?.label || ""
+    ].join("|");
+}
+
+function appendPermissionSegment(rows, segment) {
+    if (!segment) return;
+
+    rows.push({
+        inicio: formatDate(segment.startISO),
+        termino: formatDate(segment.endISO),
+        cantidad: formatHour(segment.amount),
+        tipo: segment.label,
+        nuevoSaldo: segment.nuevoSaldo
+    });
+}
+
 function permissionRowsAndAdjustments(profileName, year, month, days, holidays) {
     const maps = getReportMaps(profileName);
     const rows = [];
+    let currentSegment = null;
+    const balanceTracker = createPermissionBalanceTracker(
+        profileName,
+        year,
+        month,
+        maps,
+        holidays
+    );
     const adjustments = {
         businessDays: 0,
         businessHours: 0,
@@ -675,6 +853,8 @@ function permissionRowsAndAdjustments(profileName, year, month, days, holidays) 
         if (!absence) continue;
 
         const amount = absence.full ? 1 : 0.5;
+        const groupKey = permissionGroupKey(absence);
+        const nuevoSaldo = balanceTracker.apply(absence, keyDay);
         const hours = isBusiness
             ? (absence.full ? 8.8 : 4.4)
             : 0;
@@ -707,14 +887,31 @@ function permissionRowsAndAdjustments(profileName, year, month, days, holidays) 
             adjustments.otherApprovedHours += hours;
         }
 
-        rows.push({
-            inicio: formatDate(iso),
-            termino: formatDate(iso),
-            cantidad: formatHour(amount),
-            tipo: absence.label,
-            nuevoSaldo: ""
-        });
+        if (
+            currentSegment &&
+            currentSegment.groupKey === groupKey &&
+            nextDayKey(currentSegment.endKey) === keyDay
+        ) {
+            currentSegment.endKey = keyDay;
+            currentSegment.endISO = iso;
+            currentSegment.amount += amount;
+            currentSegment.nuevoSaldo = nuevoSaldo;
+        } else {
+            appendPermissionSegment(rows, currentSegment);
+            currentSegment = {
+                groupKey,
+                startKey: keyDay,
+                endKey: keyDay,
+                startISO: iso,
+                endISO: iso,
+                amount,
+                label: absence.label,
+                nuevoSaldo
+            };
+        }
     }
+
+    appendPermissionSegment(rows, currentSegment);
 
     return {
         rows,
@@ -857,20 +1054,69 @@ function table(title, columns, rows) {
     `;
 }
 
-function reportTable(title, columns, rows, emptyText = "Sin registros para este mes.") {
-    const body = rows.length
-        ? rows.map(row => `
-            <tr>
+function reportTableRowsHTML(columns, rows, emptyText) {
+    return rows.length
+        ? rows.map(row => {
+            const rowClass =
+                row.diaHabil === "No"
+                    ? ` class="report-row--inhabil"`
+                    : "";
+
+            return `
+            <tr${rowClass}>
                 ${columns.map(column => `
                     <td>${escapeHTML(row[column.key] ?? "")}</td>
                 `).join("")}
             </tr>
-        `).join("")
+        `;
+        }).join("")
         : `
             <tr>
                 <td colspan="${columns.length}">${escapeHTML(emptyText)}</td>
             </tr>
         `;
+}
+
+function reportWorkerDataTable(title, columns, rows, emptyText) {
+    const middle = Math.ceil(rows.length / 2);
+    const groups = rows.length
+        ? [rows.slice(0, middle), rows.slice(middle)]
+        : [[]];
+
+    return `
+        <section class="report-section report-section--worker-data">
+            <h4>${escapeHTML(title)}</h4>
+            <div class="report-worker-data-grid">
+                ${groups.map((group, index) => `
+                    <div class="report-worker-data-column">
+                        <div class="report-table-wrap">
+                            <table class="report-table">
+                                <thead>
+                                    <tr>
+                                        ${columns.map(column => `<th>${escapeHTML(column.label)}</th>`).join("")}
+                                    </tr>
+                                </thead>
+                                <tbody>${reportTableRowsHTML(columns, group, emptyText)}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                `).join("")}
+            </div>
+        </section>
+    `;
+}
+
+function reportTable(title, columns, rows, emptyText = "Sin registros para este mes.") {
+    if (title === "Datos del trabajador") {
+        return reportWorkerDataTable(
+            title,
+            columns,
+            rows,
+            emptyText
+        );
+    }
+
+    const body = reportTableRowsHTML(columns, rows, emptyText);
 
     return `
         <section class="report-section">
@@ -1016,7 +1262,7 @@ function buildNoAssignmentReportHTML(model) {
                 { key: "campo", label: "Campo" },
                 { key: "valor", label: "Valor" }
             ], noAssignmentProfileRows(model))}
-            ${reportTable(`Horas mes de ${model.monthName}`, [
+            ${reportTable("Horas del Mes", [
                 { key: "item", label: "Concepto diurno" },
                 { key: "signo", label: "" },
                 { key: "valor", label: "Horas" },
@@ -1024,7 +1270,7 @@ function buildNoAssignmentReportHTML(model) {
                 { key: "signo2", label: "" },
                 { key: "valor2", label: "Horas" }
             ], noAssignmentHoursRows(model))}
-            ${reportTable(`Calculo horas habiles de ${model.monthName}`, [
+            ${reportTable("Cálculo de Horas Hábiles", [
                 { key: "cantidad", label: "Cantidad" },
                 { key: "item", label: "Concepto" },
                 { key: "signo", label: "" },
@@ -1084,6 +1330,11 @@ function noAssignmentWorkbookHTML(model) {
                     th { background: #dbeafe; color: #0f172a; font-weight: 700; }
                     th, td { border: 1px solid #94a3b8; padding: 5px 7px; vertical-align: top; font-size: 11px; }
                     td { mso-number-format:"\\@"; }
+                    .report-worker-data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+                    .report-worker-data-column { min-width: 0; }
+                    .report-section--worker-data th:first-child,
+                    .report-section--worker-data td:first-child { width: 1%; white-space: nowrap; padding-right: 22px; }
+                    .report-row--inhabil td:first-child { background: #fee2e2; }
                 </style>
             </head>
             <body>${buildNoAssignmentReportHTML(model)}</body>

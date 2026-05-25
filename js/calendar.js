@@ -747,6 +747,48 @@ function formatCandidateHours(value) {
         : String(hours).replace(".", ",");
 }
 
+function replacementCandidateCoverageAttrs(candidate) {
+    const attrs = [];
+
+    if (candidate.isDiurnoLongCoverage) {
+        attrs.push(`data-diurno-long-coverage="true"`);
+    }
+
+    if (candidate.overtimeHours) {
+        attrs.push(`data-overtime-day-hours="${Number(candidate.overtimeHours.d) || 0}"`);
+        attrs.push(`data-overtime-night-hours="${Number(candidate.overtimeHours.n) || 0}"`);
+    }
+
+    return attrs.join(" ");
+}
+
+function replacementCoverageFromDataset(dataset = {}) {
+    const coverage = {};
+    const hasCustomOvertime =
+        dataset.overtimeDayHours !== undefined ||
+        dataset.overtimeNightHours !== undefined;
+
+    if (dataset.diurnoLongCoverage === "true") {
+        coverage.diurnoLongCoverage = true;
+    }
+
+    if (hasCustomOvertime) {
+        coverage.overtimeHours = {
+            d: Number(dataset.overtimeDayHours) || 0,
+            n: Number(dataset.overtimeNightHours) || 0
+        };
+    }
+
+    if (
+        !coverage.diurnoLongCoverage &&
+        !coverage.overtimeHours
+    ) {
+        return {};
+    }
+
+    return coverage;
+}
+
 function getActualState(profileName, keyDay) {
     const data = getProfileData(profileName);
 
@@ -766,10 +808,9 @@ function isHalfAdminValue(value) {
 }
 
 function getHalfAdminCoverageTurn(profileName, keyDay) {
-    if (
-        !getShiftAssigned(profileName) ||
-        getRotativa(profileName).type === "diurno"
-    ) {
+    const baseTurn = getTurnoBase(profileName, keyDay);
+
+    if (baseTurn !== TURNO.LARGA) {
         return TURNO.LIBRE;
     }
 
@@ -799,9 +840,17 @@ function getReplacementNeededTurn(profileName, keyDay) {
 function canCoverShift(
     currentState,
     neededTurn,
-    config = getTurnChangeConfig()
+    config = getTurnChangeConfig(),
+    options = {}
 ) {
     if (!neededTurn) return false;
+
+    if (
+        currentState === TURNO.DIURNO &&
+        neededTurn === TURNO.LARGA
+    ) {
+        return options.allowDiurnoLongCoverage === true;
+    }
 
     const merged = fusionarTurnos(
         currentState,
@@ -818,6 +867,50 @@ function canCoverShift(
     }
 
     return true;
+}
+
+function diurnoLongCoverageHours(date) {
+    return {
+        d: date.getDay() === 5 ? 4 : 3,
+        n: 0
+    };
+}
+
+function isHalfAdminAfternoonCoverage(profileName, keyDay, neededTurn) {
+    if (neededTurn !== TURNO.MEDIA_TARDE) return false;
+
+    const admin = getJSON(`admin_${profileName}`, {});
+
+    return admin[keyDay] === "0.5T";
+}
+
+function halfAdminAfternoonCoverageHours(currentState, date) {
+    if (
+        currentState === TURNO.DIURNO ||
+        currentState === TURNO.DIURNO_NOCHE
+    ) {
+        return diurnoLongCoverageHours(date);
+    }
+
+    return {
+        d: 6,
+        n: 0
+    };
+}
+
+function isDiurnoLongCoverageCandidate(
+    profile,
+    currentState,
+    neededTurn,
+    date,
+    holidays
+) {
+    return (
+        getRotativa(profile.name).type === "diurno" &&
+        currentState === TURNO.DIURNO &&
+        neededTurn === TURNO.LARGA &&
+        isBusinessDay(date, holidays)
+    );
 }
 
 function getPendingManualExtraTurn(
@@ -865,6 +958,12 @@ async function getReplacementCandidates(
     const neededTurn =
         options.neededTurn ||
         getReplacementNeededTurn(profileName, keyDay);
+    const isHalfAfternoonCoverage =
+        isHalfAdminAfternoonCoverage(
+            profileName,
+            keyDay,
+            neededTurn
+        );
     const baseProfile = getProfiles().find(profile =>
         profile.name === profileName
     );
@@ -888,6 +987,22 @@ async function getReplacementCandidates(
         .map(profile => {
             const currentState =
                 getActualState(profile.name, keyDay);
+            const isDiurnoLongCoverage =
+                isDiurnoLongCoverageCandidate(
+                    profile,
+                    currentState,
+                    neededTurn,
+                    date,
+                    holidays
+                );
+            const overtimeHours = isDiurnoLongCoverage
+                ? diurnoLongCoverageHours(date)
+                : isHalfAfternoonCoverage
+                    ? halfAdminAfternoonCoverageHours(
+                        currentState,
+                        date
+                    )
+                    : null;
             const stats = calcularHorasMesPerfil(
                 profile.name,
                 y,
@@ -905,6 +1020,8 @@ async function getReplacementCandidates(
                 profile,
                 currentState,
                 isFree: currentState === 0,
+                isDiurnoLongCoverage,
+                overtimeHours,
                 isForced:
                     !profileCanCoverProfile(profile, baseProfile),
                 hheeDiurnas,
@@ -914,9 +1031,21 @@ async function getReplacementCandidates(
         })
         .filter(candidate =>
             !workerHasAbsence(candidate.profile.name, keyDay) &&
-            canCoverShift(candidate.currentState, neededTurn)
+            canCoverShift(
+                candidate.currentState,
+                neededTurn,
+                getTurnChangeConfig(),
+                {
+                    allowDiurnoLongCoverage:
+                        candidate.isDiurnoLongCoverage
+                }
+            )
         )
         .sort((a, b) => {
+            if (a.isDiurnoLongCoverage !== b.isDiurnoLongCoverage) {
+                return a.isDiurnoLongCoverage ? 1 : -1;
+            }
+
             if (a.isFree !== b.isFree) {
                 return a.isFree ? -1 : 1;
             }
@@ -971,6 +1100,7 @@ function replacementDialogHTML({
                         class="replacement-candidate-checkbox"
                         type="checkbox"
                         data-request-worker="${escapeHTML(candidate.profile.name)}"
+                        ${replacementCandidateCoverageAttrs(candidate)}
                         ${checked ? "checked" : ""}
                         ${pendingRequest ? "disabled" : ""}
                     >
@@ -1000,6 +1130,7 @@ function replacementDialogHTML({
                 data-worker="${escapeHTML(candidate.profile.name)}"
                 data-worker-workspace-id="${escapeHTML(candidate.workspaceId || "")}"
                 data-worker-workspace-name="${escapeHTML(candidate.workspaceName || "")}"
+                ${replacementCandidateCoverageAttrs(candidate)}
                 ${pendingRequest ? "disabled" : ""}
             >
                 <span>
@@ -1349,7 +1480,26 @@ async function openReplacementDialog(profileName, keyDay) {
             backdrop.querySelector("[data-action='send-selected-requests']");
         if (sendSelectedRequests) {
             sendSelectedRequests.onclick = async () => {
-                const workers = [...selectedRequestWorkers];
+                const selectedInputs = [
+                    ...backdrop.querySelectorAll("[data-request-worker]")
+                ].filter(input =>
+                    input.checked &&
+                    selectedRequestWorkers.has(
+                        input.dataset.requestWorker
+                    )
+                );
+                const workers = selectedInputs.map(input =>
+                    input.dataset.requestWorker
+                );
+                const diurnoLongInputs = selectedInputs.filter(input =>
+                    input.dataset.diurnoLongCoverage === "true"
+                );
+                const workerCoverage = Object.fromEntries(
+                    selectedInputs.map(input => [
+                        input.dataset.requestWorker,
+                        replacementCoverageFromDataset(input.dataset)
+                    ])
+                );
 
                 if (!workers.length) {
                     alert("Selecciona al menos un trabajador para enviar la solicitud.");
@@ -1369,7 +1519,16 @@ async function openReplacementDialog(profileName, keyDay) {
                         scope,
                         source: scope === "all-local"
                             ? "forced_replacement_request"
-                            : "replacement_request"
+                            : "replacement_request",
+                        diurnoLongCoverageWorkers:
+                            diurnoLongInputs.map(input =>
+                                input.dataset.requestWorker
+                            ),
+                        diurnoLongCoverageHours:
+                            replacementCoverageFromDataset(
+                                diurnoLongInputs[0]?.dataset
+                            ).overtimeHours,
+                        workerCoverage
                     },
                     workers
                 );
@@ -1434,7 +1593,10 @@ async function openReplacementDialog(profileName, keyDay) {
                             scope,
                             source: scope === "all-local"
                                 ? "forced_replacement_request"
-                                : "replacement_request"
+                                : "replacement_request",
+                            ...replacementCoverageFromDataset(
+                                button.dataset
+                            )
                         });
                         const whatsappUrl =
                             buildReplacementRequestWhatsAppUrl(request);
@@ -1468,7 +1630,10 @@ async function openReplacementDialog(profileName, keyDay) {
                             absenceType,
                             source: scope === "all-local"
                                 ? "forced_replacement"
-                                : "replacement"
+                                : "replacement",
+                            ...replacementCoverageFromDataset(
+                                button.dataset
+                            )
                         });
                     }
 

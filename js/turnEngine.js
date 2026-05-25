@@ -78,6 +78,14 @@ export function fusionarTurnos(actual, recibido) {
         return TURNO.DIURNO_NOCHE;
     }
 
+    /* Diurno que extiende jornada para cubrir Larga. */
+    if (
+        (actual === TURNO.DIURNO && recibido === TURNO.LARGA) ||
+        (actual === TURNO.LARGA && recibido === TURNO.DIURNO)
+    ) {
+        return TURNO.LARGA;
+    }
+
     /* Largo + Noche = 24 */
     if (
         (actual === TURNO.LARGA && recibido === TURNO.NOCHE) ||
