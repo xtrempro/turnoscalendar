@@ -4506,7 +4506,7 @@ function getCalendarProfileDetail(profile = {}) {
 
 function getCalendarProfileSearchValue(profile = {}) {
     const name = String(profile.name || "").trim();
-    const separator = "      |      ";
+    const separator = "   |   ";
 
     if (!name) return "";
 
@@ -4563,7 +4563,6 @@ function syncTopProfileSearch() {
     profiles.forEach(profile => {
         const option = document.createElement("option");
         option.value = getCalendarProfileSearchValue(profile);
-        option.label = profile.name;
         DOM.topProfileOptions.appendChild(option);
     });
 }

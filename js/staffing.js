@@ -1782,14 +1782,19 @@ function changeStaffingWeek(offset) {
     renderStaffingWeeklyCalendar();
 }
 
-function profileWeeklyShiftSegments(profile, date, shiftKey, absenceCache) {
+function profileWeeklyShiftContext(
+    profile,
+    date,
+    absenceCache,
+    options = {}
+) {
     const y = date.getFullYear();
     const m = date.getMonth();
     const d = date.getDate();
     const dayKey = key(y, m, d);
     const modality = getStaffingProfileModality(profile);
     const isDiurno = modality === "diurno";
-    const turno = getStaffingTurno(profile, y, m, d);
+    const turno = getStaffingTurno(profile, y, m, d, options);
     const displaysAsLong =
         isDiurno &&
         worksStaffingLong(turno);
@@ -1813,27 +1818,59 @@ function profileWeeklyShiftSegments(profile, date, shiftKey, absenceCache) {
         )
     );
 
+    return {
+        dayKey,
+        isDiurno,
+        displaysAsLong,
+        turno,
+        activeSegments,
+        beforeSegments,
+        removedSegments,
+        absence
+    };
+}
+
+function weeklySegmentsForShift(shiftKey, context, segments) {
+    const source = [...segments];
+
     if (shiftKey === "diurno") {
-        if (!isDiurno || displaysAsLong) return null;
-        return [...activeSegments].filter(segment =>
+        if (!context.isDiurno || context.displaysAsLong) return [];
+        return source.filter(segment =>
             segment === STAFFING_SEGMENT.DAY_MORNING ||
             segment === STAFFING_SEGMENT.DAY_AFTERNOON
         );
     }
 
     if (shiftKey === "larga") {
-        if (isDiurno && !displaysAsLong) return null;
-        return [...activeSegments].filter(segment =>
+        if (context.isDiurno && !context.displaysAsLong) return [];
+        return source.filter(segment =>
             segment === STAFFING_SEGMENT.DAY_MORNING ||
             segment === STAFFING_SEGMENT.DAY_AFTERNOON
         );
     }
 
-    if (shiftKey === "noche" && activeSegments.has(STAFFING_SEGMENT.NIGHT)) {
+    if (
+        shiftKey === "noche" &&
+        source.includes(STAFFING_SEGMENT.NIGHT)
+    ) {
         return [STAFFING_SEGMENT.NIGHT];
     }
 
-    return null;
+    return [];
+}
+
+function profileWeeklyShiftSegments(profile, date, shiftKey, absenceCache) {
+    const context = profileWeeklyShiftContext(
+        profile,
+        date,
+        absenceCache
+    );
+
+    return weeklySegmentsForShift(
+        shiftKey,
+        context,
+        context.activeSegments
+    );
 }
 
 function weeklyProfileMeta(profile) {
@@ -1881,6 +1918,63 @@ function weeklyAvailableProfessions(roleFilter) {
             )
             .map(weeklyProfileProfession)
     )].sort((a, b) => a.localeCompare(b, "es"));
+}
+
+function weeklyProfileNeedsReplacement(profile, keyDay, turno) {
+    const maps = {
+        admin: getJSON(`admin_${profile.name}`, {}),
+        legal: getJSON(`legal_${profile.name}`, {}),
+        comp: getJSON(`comp_${profile.name}`, {}),
+        absences: getJSON(`absences_${profile.name}`, {})
+    };
+
+    return requiereReemplazoTurnoBase(
+        keyDay,
+        turno,
+        maps.admin,
+        maps.legal,
+        maps.comp,
+        maps.absences
+    ) &&
+        !getReplacementForCoveredShift(profile.name, keyDay);
+}
+
+function profileWeeklyPendingReplacementSlot(
+    profile,
+    date,
+    shiftKey,
+    absenceCache
+) {
+    const context = profileWeeklyShiftContext(
+        profile,
+        date,
+        absenceCache,
+        { includeReplacements: false }
+    );
+    const segments = weeklySegmentsForShift(
+        shiftKey,
+        context,
+        context.removedSegments
+    );
+
+    if (!segments.length) return null;
+    if (
+        !weeklyProfileNeedsReplacement(
+            profile,
+            context.dayKey,
+            context.turno
+        )
+    ) {
+        return null;
+    }
+
+    return {
+        type: "replacement-slot",
+        profile,
+        keyDay: context.dayKey,
+        segments,
+        absence: context.absence
+    };
 }
 
 function renderWeeklyRoleFilterOptions(selected) {
@@ -1942,24 +2036,39 @@ function weeklyShiftProfiles(
                 professionFilter
             )
         )
-        .map(profile => {
+        .flatMap(profile => {
             const segments = profileWeeklyShiftSegments(
                 profile,
                 date,
                 shiftKey,
                 absenceCache
             );
+            const replacementSlot =
+                profileWeeklyPendingReplacementSlot(
+                    profile,
+                    date,
+                    shiftKey,
+                    absenceCache
+                );
+            const items = [];
 
-            if (!segments?.length) return null;
+            if (segments?.length) {
+                items.push({
+                    type: "profile",
+                    profile,
+                    segments
+                });
+            }
 
-            return {
-                profile,
-                segments
-            };
+            if (replacementSlot) {
+                items.push(replacementSlot);
+            }
+
+            return items;
         })
-        .filter(Boolean)
         .sort((a, b) =>
-            a.profile.name.localeCompare(b.profile.name, "es")
+            a.profile.name.localeCompare(b.profile.name, "es") ||
+            (a.type === "replacement-slot" ? 1 : -1)
         );
 }
 
@@ -1980,6 +2089,18 @@ function weeklySegmentSummary(segments) {
 }
 
 function renderWeeklyProfileChip(item) {
+    if (item.type === "replacement-slot") {
+        const label = item.absence?.label
+            ? `Reemplazo pendiente por ${item.absence.label}`
+            : "Reemplazo pendiente";
+
+        return `
+            <button class="staffing-weekly-replacement-slot" type="button" data-weekly-replacement-profile="${escapeHTML(item.profile.name)}" data-weekly-replacement-key="${escapeHTML(item.keyDay)}" title="${escapeHTML(label)}: ${escapeHTML(item.profile.name)}" aria-label="${escapeHTML(label)}: ${escapeHTML(item.profile.name)}">
+                <span>!</span>
+            </button>
+        `;
+    }
+
     const partial = weeklySegmentSummary(item.segments);
     const needsReplacement = item.needsReplacement;
 
@@ -2064,18 +2185,12 @@ function weeklyLeaveProfiles(
 
             if (absence?.code !== row.key) return null;
 
-            const maps = {
-                admin: getJSON(`admin_${profile.name}`, {}),
-                legal: getJSON(`legal_${profile.name}`, {}),
-                comp: getJSON(`comp_${profile.name}`, {}),
-                absences: getJSON(`absences_${profile.name}`, {})
-            };
-
             return {
                 profile,
                 keyDay,
                 needsReplacement:
-                    requiereReemplazoTurnoBase(
+                    weeklyProfileNeedsReplacement(
+                        profile,
                         keyDay,
                         getStaffingTurno(
                             profile,
@@ -2083,13 +2198,8 @@ function weeklyLeaveProfiles(
                             date.getMonth(),
                             date.getDate(),
                             { includeReplacements: false }
-                        ),
-                        maps.admin,
-                        maps.legal,
-                        maps.comp,
-                        maps.absences
-                    ) &&
-                    !getReplacementForCoveredShift(profile.name, keyDay)
+                        )
+                    )
             };
         })
         .filter(Boolean)
@@ -2170,44 +2280,40 @@ export async function renderStaffingWeeklyCalendar() {
     ];
 
     target.innerHTML = `
-        <div class="section-head section-head--with-action staffing-weekly-head">
-            <span class="section-head__title">
-                <h3>Calendario semanal</h3>
-                <span class="staffing-weekly-range">
-                    ${escapeHTML(formatShortDate(days[0]))} al ${escapeHTML(formatShortDate(days[6]))}
+        <div class="staffing-weekly-sticky">
+            <div class="staffing-weekly-filters">
+                <label>
+                    <span>Filtrar estamento</span>
+                    <select id="staffingWeeklyFilterRole">
+                        <option value="Todos" ${roleFilter === "Todos" ? "selected" : ""}>Todos</option>
+                        ${renderWeeklyRoleFilterOptions(roleFilter)}
+                    </select>
+                </label>
+                <label>
+                    <span>Filtrar profesi&oacute;n</span>
+                    <select id="staffingWeeklyFilterProfession">
+                        <option value="Todas" ${professionFilter === "Todas" ? "selected" : ""}>Todas</option>
+                        ${renderWeeklyProfessionFilterOptions(availableProfessions, professionFilter)}
+                    </select>
+                </label>
+                <span class="staffing-weekly-nav">
+                    <button class="secondary-button secondary-button--small" type="button" data-staffing-week-prev>
+                        Anterior
+                    </button>
+                    <button class="secondary-button secondary-button--small" type="button" data-staffing-week-next>
+                        Siguiente
+                    </button>
                 </span>
-            </span>
-            <span class="staffing-weekly-nav">
-                <button class="secondary-button secondary-button--small" type="button" data-staffing-week-prev>
-                    Anterior
-                </button>
-                <button class="secondary-button secondary-button--small" type="button" data-staffing-week-next>
-                    Siguiente
-                </button>
-            </span>
-        </div>
-        <div class="staffing-weekly-filters">
-            <label>
-                <span>Filtrar estamento</span>
-                <select id="staffingWeeklyFilterRole">
-                    <option value="Todos" ${roleFilter === "Todos" ? "selected" : ""}>Todos</option>
-                    ${renderWeeklyRoleFilterOptions(roleFilter)}
-                </select>
-            </label>
-            <label>
-                <span>Filtrar profesi&oacute;n</span>
-                <select id="staffingWeeklyFilterProfession">
-                    <option value="Todas" ${professionFilter === "Todas" ? "selected" : ""}>Todas</option>
-                    ${renderWeeklyProfessionFilterOptions(availableProfessions, professionFilter)}
-                </select>
-            </label>
+            </div>
+            <div class="staffing-weekly-days">
+                ${days.map(day => `
+                    <div class="staffing-weekly-day${weeklyIsInhabil(day, holidays) ? " staffing-weekly-day--inhabil" : ""}">
+                        <strong>${escapeHTML(formatFullWeekday(day))} ${escapeHTML(formatShortDate(day))}</strong>
+                    </div>
+                `).join("")}
+            </div>
         </div>
         <div class="staffing-weekly-grid">
-            ${days.map(day => `
-                <div class="staffing-weekly-day${weeklyIsInhabil(day, holidays) ? " staffing-weekly-day--inhabil" : ""}">
-                    <strong>${escapeHTML(formatFullWeekday(day))} ${escapeHTML(formatShortDate(day))}</strong>
-                </div>
-            `).join("")}
             ${shifts.map(shift =>
                 days.map(day =>
                     renderStaffingWeeklyCell(

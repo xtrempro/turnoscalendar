@@ -1958,19 +1958,19 @@ body[data-active-view="log"] .secondary-grid {
     order: 5;
 }
 
-.actionbar .nav-tile[data-target="profileSection"] {
+.actionbar .nav-tile[data-target="workerRequestsPanel"] {
     order: 6;
 }
 
-.actionbar .nav-tile[data-target="clockMarksPanel"] {
+.actionbar .nav-tile[data-target="memosPanel"] {
     order: 7;
 }
 
-.actionbar .nav-tile[data-target="workerRequestsPanel"] {
+.actionbar .nav-tile[data-target="profileSection"] {
     order: 8;
 }
 
-.actionbar .nav-tile[data-target="memosPanel"] {
+.actionbar .nav-tile[data-target="clockMarksPanel"] {
     order: 9;
 }
 
@@ -1982,11 +1982,11 @@ body[data-active-view="log"] .secondary-grid {
     order: 11;
 }
 
-.actionbar .nav-tile[data-target="staffingPanel"] {
+.actionbar .nav-tile[data-target="reportsPanel"] {
     order: 12;
 }
 
-.actionbar .nav-tile[data-target="reportsPanel"] {
+.actionbar .nav-tile[data-target="staffingPanel"] {
     order: 13;
 }
 
@@ -4820,26 +4820,28 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     margin-bottom: 0;
 }
 
-.staffing-weekly-calendar .section-head {
-    margin-bottom: 0;
-}
-
-.staffing-weekly-head {
-    align-items: center;
-    flex-wrap: wrap;
-}
-
-.staffing-weekly-range {
-    color: var(--text-muted);
-    font-size: 0.86rem;
-    font-weight: 700;
+.staffing-weekly-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: grid;
+    gap: 8px;
+    margin: -16px -16px 0;
+    padding: 12px 16px 10px;
+    border-bottom: 1px solid var(--border);
+    border-radius: 18px 18px 0 0;
+    background: var(--panel-alt);
+    box-shadow: 0 12px 24px rgba(17, 32, 56, 0.08);
 }
 
 .staffing-weekly-nav {
     display: inline-flex;
     align-items: center;
+    justify-self: end;
+    align-self: end;
     gap: 8px;
-    margin-left: auto;
+    margin-left: 0;
+    transform: translateY(1px);
 }
 
 .staffing-weekly-nav .secondary-button {
@@ -4851,7 +4853,7 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 
 .staffing-weekly-filters {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 220px));
+    grid-template-columns: repeat(2, minmax(0, 220px)) minmax(0, 1fr);
     gap: 12px;
     align-items: end;
 }
@@ -4863,6 +4865,12 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     color: var(--text-soft);
     font-size: 0.84rem;
     font-weight: 800;
+}
+
+.staffing-weekly-days {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(146px, 1fr));
+    gap: 8px;
 }
 
 .staffing-weekly-grid {
@@ -4977,6 +4985,37 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 
 .staffing-weekly-replacement-alert:hover {
     background: #dc2626;
+    transform: translateY(-1px);
+}
+
+.staffing-weekly-replacement-slot {
+    min-height: 54px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 7px 8px;
+    border: 1px solid rgba(17, 24, 39, 0.42);
+    border-radius: 10px;
+    background: var(--panel);
+}
+
+.staffing-weekly-replacement-slot span {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 999px;
+    background: #ef4444;
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 8px 18px rgba(239, 68, 68, 0.28);
+}
+
+.staffing-weekly-replacement-slot:hover {
+    border-color: rgba(239, 68, 68, 0.48);
+    background: rgba(248, 113, 113, 0.08);
     transform: translateY(-1px);
 }
 
