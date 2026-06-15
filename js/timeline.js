@@ -32,6 +32,11 @@ import {
     isReplacementProfile
 } from "./contracts.js";
 import {
+    getHonorariaExcessForKey,
+    getHonorariaLimitMessage,
+    getHonorariaMonthlySummary
+} from "./honoraria.js";
+import {
     hasClockExtra,
     hasSevereClockIncident,
     hasSimpleClockIncident
@@ -47,6 +52,28 @@ const timelineFilterState = {
     open: false
 };
 let timelineOutsideClickController = null;
+let timelineRenderRequest = 0;
+
+function yieldTimelineRender() {
+    return new Promise(resolve => {
+        setTimeout(resolve, 0);
+    });
+}
+
+function timelineRenderIsCurrent(requestId, year, month) {
+    return (
+        requestId === timelineRenderRequest &&
+        calendar.currentDate.getFullYear() === year &&
+        calendar.currentDate.getMonth() === month &&
+        ["turnos", "timeline"].includes(
+            document.body.dataset.activeView
+        )
+    );
+}
+
+export function cancelTimelineRender() {
+    timelineRenderRequest++;
+}
 
 function getData(nombre){
     return getJSON("data_" + nombre, {});
@@ -104,6 +131,19 @@ function stopTimelineOutsideClickListener() {
     timelineOutsideClickController = null;
 }
 
+function setTimelineFilterOpen(container, open) {
+    timelineFilterState.open = Boolean(open);
+    container
+        .querySelector(".timeline-filter")
+        ?.classList.toggle("is-open", timelineFilterState.open);
+
+    if (timelineFilterState.open) {
+        bindTimelineOutsideClickListener(container);
+    } else {
+        stopTimelineOutsideClickListener();
+    }
+}
+
 function bindTimelineOutsideClickListener(container) {
     stopTimelineOutsideClickListener();
 
@@ -119,9 +159,7 @@ function bindTimelineOutsideClickListener(container) {
 
             if (filter?.contains(event.target)) return;
 
-            timelineFilterState.open = false;
-            stopTimelineOutsideClickListener();
-            renderTimeline();
+            setTimelineFilterOpen(container, false);
         },
         { signal }
     );
@@ -131,9 +169,7 @@ function bindTimelineOutsideClickListener(container) {
         event => {
             if (event.key !== "Escape") return;
 
-            timelineFilterState.open = false;
-            stopTimelineOutsideClickListener();
-            renderTimeline();
+            setTimelineFilterOpen(container, false);
         },
         { signal }
     );
@@ -212,10 +248,10 @@ function timelineFilterGroups(profiles = []) {
         });
 }
 
-function ensureTimelineFilter(perfilActual, profiles) {
+function ensureTimelineFilter(perfilActual, groups) {
     const baseGroup = timelineGroupForProfile(perfilActual);
     const availableKeys = new Set(
-        timelineFilterGroups(profiles).map(group => group.key)
+        groups.map(group => group.key)
     );
 
     if (timelineFilterState.anchorProfile !== perfilActual.name) {
@@ -327,6 +363,7 @@ function getColor(nombre, key){
     const abs = getAbs(nombre);
 
     if (abs[key]?.type === "professional_license") return "#2563eb";
+    if (abs[key]?.type === "union_leave") return "#e64747";
     if (abs[key]?.type === "unpaid_leave") return "#6b7280";
     if (abs[key]) return "#ef4444";
     if (legal[key]) return "#0ea5a6";
@@ -429,7 +466,15 @@ function timelineCellBackground(color, isInhabil) {
     return `linear-gradient(rgba(239, 68, 68, 0.18), rgba(239, 68, 68, 0.18)), ${color}`;
 }
 
-function buildTimelineRows(grupo, actual, year, month, diasMes, holidays) {
+async function buildTimelineRows(
+    grupo,
+    actual,
+    year,
+    month,
+    diasMes,
+    holidays,
+    isCanceled
+) {
     const keys = monthKeys(year, month, diasMes);
     const nightKeys = keys.filter(key =>
         Number(getTurnoBase(actual, key)) === TURNO.NOCHE
@@ -438,62 +483,76 @@ function buildTimelineRows(grupo, actual, year, month, diasMes, holidays) {
         Number(getTurnoBase(actual, key)) === TURNO.LIBRE
     );
 
-    return grupo
-        .map(profile => {
-            const data = getData(profile.name);
-            const stats = calcularHorasMesPerfil(
+    const rows = [];
+
+    for (const profile of grupo) {
+        if (isCanceled()) return null;
+
+        const data = getData(profile.name);
+        const stats = calcularHorasMesPerfil(
+            profile.name,
+            year,
+            month,
+            diasMes,
+            holidays,
+            data,
+            getBlocked(profile.name),
+            getCarry(profile.name, year, month)
+        );
+        const honorariaSummary =
+            getHonorariaMonthlySummary(
                 profile.name,
                 year,
                 month,
-                diasMes,
-                holidays,
-                data,
-                getBlocked(profile.name),
-                getCarry(profile.name, year, month)
+                holidays
             );
-            const rotativa = getJSON(`rotativa_${profile.name}`, {});
-            const totalHhee =
-                (Number(stats.hheeDiurnas) || 0) +
-                (Number(stats.hheeNocturnas) || 0);
-            const samePattern =
-                profile.name !== actual &&
-                sameBasePattern(profile.name, actual, keys);
-            const nightMatch =
-                firstLargaMatchIndex(profile.name, nightKeys);
-            const freeMatch =
-                firstLargaMatchIndex(profile.name, freeKeys);
-            let priority = 3;
-            let matchIndex = Number.MAX_SAFE_INTEGER;
+        const rotativa = getJSON(`rotativa_${profile.name}`, {});
+        const totalHhee =
+            (Number(stats.hheeDiurnas) || 0) +
+            (Number(stats.hheeNocturnas) || 0);
+        const samePattern =
+            profile.name !== actual &&
+            sameBasePattern(profile.name, actual, keys);
+        const nightMatch =
+            firstLargaMatchIndex(profile.name, nightKeys);
+        const freeMatch =
+            firstLargaMatchIndex(profile.name, freeKeys);
+        let priority = 3;
+        let matchIndex = Number.MAX_SAFE_INTEGER;
 
-            if (profile.name === actual) {
-                priority = 0;
-            } else if (samePattern) {
-                priority = 6;
-            } else if (rotativa.type === "diurno") {
-                priority = 5;
-            } else if (rotativa.type === "3turno") {
-                priority = 4;
-            } else if (nightMatch >= 0) {
-                priority = 1;
-                matchIndex = nightMatch;
-            } else if (freeMatch >= 0) {
-                priority = 2;
-                matchIndex = freeMatch;
+        if (profile.name === actual) {
+            priority = 0;
+        } else if (samePattern) {
+            priority = 6;
+        } else if (rotativa.type === "diurno") {
+            priority = 5;
+        } else if (rotativa.type === "3turno") {
+            priority = 4;
+        } else if (nightMatch >= 0) {
+            priority = 1;
+            matchIndex = nightMatch;
+        } else if (freeMatch >= 0) {
+            priority = 2;
+            matchIndex = freeMatch;
+        }
+
+        rows.push({
+            profile,
+            data,
+            stats,
+            honorariaSummary,
+            sort: {
+                priority,
+                matchIndex,
+                totalHhee,
+                name: profile.name
             }
+        });
 
-            return {
-                profile,
-                data,
-                stats,
-                sort: {
-                    priority,
-                    matchIndex,
-                    totalHhee,
-                    name: profile.name
-                }
-            };
-        })
-        .sort((a, b) => {
+        await yieldTimelineRender();
+    }
+
+    return rows.sort((a, b) => {
             if (a.sort.priority !== b.sort.priority) {
                 return a.sort.priority - b.sort.priority;
             }
@@ -512,6 +571,8 @@ function buildTimelineRows(grupo, actual, year, month, diasMes, holidays) {
 
 export async function renderTimeline(){
     const div = document.getElementById("teamTimeline");
+    const requestId = ++timelineRenderRequest;
+
     if (!div) return;
 
     const profiles = getProfiles();
@@ -532,7 +593,7 @@ export async function renderTimeline(){
 
     const groups = timelineFilterGroups(profiles);
     const { baseGroup, selectedKeys } =
-        ensureTimelineFilter(perfilActual, profiles);
+        ensureTimelineFilter(perfilActual, groups);
     const grupo = profiles
         .filter(profile =>
             profile.name === actual ||
@@ -554,14 +615,36 @@ export async function renderTimeline(){
     const diasMes =
         new Date(year, month + 1, 0).getDate();
     const holidays = await fetchHolidays(year);
-    const timelineRows = buildTimelineRows(
+
+    if (
+        requestId !== timelineRenderRequest ||
+        !["turnos", "timeline"].includes(
+            document.body.dataset.activeView
+        )
+    ) {
+        return;
+    }
+
+    const timelineRows = await buildTimelineRows(
         grupo,
         actual,
         year,
         month,
         diasMes,
-        holidays
+        holidays,
+        () => !timelineRenderIsCurrent(
+            requestId,
+            year,
+            month
+        )
     );
+
+    if (
+        !timelineRows ||
+        !timelineRenderIsCurrent(requestId, year, month)
+    ) {
+        return;
+    }
 
     let html = `
         <div class="timeline-shell">
@@ -607,7 +690,27 @@ export async function renderTimeline(){
                 <tbody>
     `;
 
-    timelineRows.forEach(({ profile, data, stats }) => {
+    for (const {
+        profile,
+        data,
+        stats,
+        honorariaSummary
+    } of timelineRows) {
+        if (!timelineRenderIsCurrent(requestId, year, month)) {
+            return;
+        }
+
+        const dayHhee = honorariaSummary
+            ? honorariaSummary.overtimeDay
+            : stats.hheeDiurnas;
+        const nightHhee = honorariaSummary
+            ? honorariaSummary.overtimeNight
+            : stats.hheeNocturnas;
+        const honorariaHheeClass =
+            honorariaSummary?.overtimeHours > 0
+                ? " honoraria-hhee-excess"
+                : "";
+
         html += `<tr>`;
         html += `
             <td class="namecol">
@@ -622,11 +725,11 @@ export async function renderTimeline(){
             </td>
         `;
         html += `
-            <td class="timeline-hhee timeline-hhee--day${dayExtraAlertClass(profile.name, stats.hheeDiurnas)}">
-                ${formatTimelineHours(stats.hheeDiurnas)}
+            <td class="timeline-hhee timeline-hhee--day${dayExtraAlertClass(profile.name, dayHhee)}${honorariaHheeClass}">
+                ${formatTimelineHours(dayHhee)}
             </td>
-            <td class="timeline-hhee timeline-hhee--night">
-                ${formatTimelineHours(stats.hheeNocturnas)}
+            <td class="timeline-hhee timeline-hhee--night${honorariaHheeClass}">
+                ${formatTimelineHours(nightHhee)}
             </td>
         `;
 
@@ -642,6 +745,11 @@ export async function renderTimeline(){
                 : timelineCellBackground(color, isInhabil);
             const contractError =
                 contractErrorMarker(profile.name, key);
+            const honorariaExcess =
+                getHonorariaExcessForKey(
+                    honorariaSummary,
+                    key
+                );
             const needsReplacement =
                 needsReplacementMarker(profile.name, key);
             const pendingManualExtra =
@@ -666,6 +774,11 @@ export async function renderTimeline(){
                 !contractError &&
                 !needsReplacement &&
                 pendingManualExtra;
+            const showHonorariaLimit =
+                Boolean(honorariaExcess) &&
+                !contractError &&
+                !severeClockIncident &&
+                !needsReplacement;
             const replacement =
                 replacementMarker(profile.name, key);
             const marker = contractError
@@ -674,6 +787,8 @@ export async function renderTimeline(){
                     ? "!!!"
                     : needsReplacement
                         ? "!"
+                        : showHonorariaLimit
+                            ? "!"
                         : showExtraReason || showClockExtra
                             ? "?"
                             : simpleClockIncident
@@ -689,6 +804,8 @@ export async function renderTimeline(){
                     ? "Incidencia grave de marcaje"
                     : needsReplacement
                         ? "Requiere reemplazo de turno base"
+                        : showHonorariaLimit
+                            ? getHonorariaLimitMessage(honorariaSummary)
                         : showExtraReason
                         ? "Requiere motivo de horas extras"
                         : showClockExtra
@@ -707,10 +824,11 @@ export async function renderTimeline(){
 
             html += `
                 <td
-                    class="mini ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
+                    class="mini ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
                     style="background:${background}"
                     title="${title}"
                     ${contractError ? `data-contract-error-profile="${profile.name}" data-contract-error-key="${key}"` : ""}
+                    ${showHonorariaLimit ? `data-honoraria-limit-profile="${profile.name}" data-honoraria-limit-key="${key}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
                     ${needsReplacement ? `data-replacement-profile="${profile.name}" data-replacement-key="${key}"` : ""}
                     ${showExtraReason ? `data-extra-profile="${profile.name}" data-extra-key="${key}" data-extra-turn="${showExtraReason}"` : ""}
                     ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${profile.name}" data-clock-extra-key="${key}" data-clock-extra-turn="${getTurnoReal(profile.name, key)}"` : ""}
@@ -721,7 +839,8 @@ export async function renderTimeline(){
         }
 
         html += `</tr>`;
-    });
+        await yieldTimelineRender();
+    }
 
     html += `
                 </tbody>
@@ -729,12 +848,18 @@ export async function renderTimeline(){
         </div>
     `;
 
+    if (!timelineRenderIsCurrent(requestId, year, month)) {
+        return;
+    }
+
     div.innerHTML = html;
     div.querySelector("[data-timeline-filter-toggle]")
         ?.addEventListener("click", event => {
             event.stopPropagation();
-            timelineFilterState.open = !timelineFilterState.open;
-            renderTimeline();
+            setTimelineFilterOpen(
+                div,
+                !timelineFilterState.open
+            );
         });
     div.querySelectorAll("[data-timeline-filter-key]")
         .forEach(input => {
@@ -756,7 +881,7 @@ export async function renderTimeline(){
     div.querySelectorAll("[data-profile-name]")
         .forEach(button => {
             button.onclick = () => {
-                timelineFilterState.open = false;
+                setTimelineFilterOpen(div, false);
                 window.selectProfileByName?.(
                     button.dataset.profileName,
                     {
@@ -802,6 +927,12 @@ export async function renderTimeline(){
                     cell.dataset.contractErrorProfile,
                     cell.dataset.contractErrorKey
                 );
+            };
+        });
+    div.querySelectorAll("[data-honoraria-limit-profile]")
+        .forEach(cell => {
+            cell.onclick = () => {
+                alert(cell.dataset.honorariaLimitMessage);
             };
         });
     syncTimelineStickyOffsets(div);

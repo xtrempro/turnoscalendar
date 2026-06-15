@@ -24,6 +24,24 @@ let swapDate = new Date(
     new Date().getMonth(),
     1
 );
+let swapPickerYear = swapDate.getFullYear();
+let swapMonthPicker = null;
+let swapMonthPickerEventsBound = false;
+
+const SWAP_MONTH_NAMES = [
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre"
+];
 
 function parseInputDate(value){
     const parts = value.split("-");
@@ -130,9 +148,16 @@ function formatSwapMonth(){
 }
 
 function cambiarMesSwap(offset){
-    swapDate = new Date(
+    goToSwapMonth(
         getSwapYear(),
-        getSwapMonth() + offset,
+        getSwapMonth() + offset
+    );
+}
+
+function goToSwapMonth(year, month){
+    swapDate = new Date(
+        Number(year),
+        Number(month),
         1
     );
 
@@ -140,6 +165,152 @@ function cambiarMesSwap(offset){
     fechaDevolucionSeleccionada = "";
 
     renderSwapPanel();
+}
+
+function closeSwapMonthPicker() {
+    if (!swapMonthPicker) return;
+
+    swapMonthPicker.classList.add("hidden");
+    document
+        .getElementById("swapMonthLabel")
+        ?.setAttribute("aria-expanded", "false");
+}
+
+function positionSwapMonthPicker() {
+    const trigger = document.getElementById("swapMonthLabel");
+
+    if (
+        !trigger ||
+        !swapMonthPicker ||
+        swapMonthPicker.classList.contains("hidden")
+    ) {
+        return;
+    }
+
+    const gap = 8;
+    const edge = 12;
+    const triggerRect = trigger.getBoundingClientRect();
+    const pickerRect = swapMonthPicker.getBoundingClientRect();
+    const left = Math.min(
+        Math.max(
+            edge,
+            triggerRect.left +
+                (triggerRect.width - pickerRect.width) / 2
+        ),
+        window.innerWidth - pickerRect.width - edge
+    );
+    const preferredTop = triggerRect.bottom + gap;
+    const top =
+        preferredTop + pickerRect.height <= window.innerHeight - edge
+            ? preferredTop
+            : Math.max(edge, triggerRect.top - pickerRect.height - gap);
+
+    swapMonthPicker.style.left = `${Math.round(left)}px`;
+    swapMonthPicker.style.top = `${Math.round(top)}px`;
+}
+
+function renderSwapMonthPicker() {
+    if (!swapMonthPicker) return;
+
+    const activeYear = getSwapYear();
+    const activeMonth = getSwapMonth();
+
+    swapMonthPicker.innerHTML = `
+        <div class="calendar-month-picker__year">
+            <button class="calendar-month-picker__year-button" type="button" data-swap-year-step="-1" aria-label="A&#241;o anterior">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+            </button>
+            <strong>${swapPickerYear}</strong>
+            <button class="calendar-month-picker__year-button" type="button" data-swap-year-step="1" aria-label="A&#241;o siguiente">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+            </button>
+        </div>
+        <div class="calendar-month-picker__months">
+            ${SWAP_MONTH_NAMES.map((name, month) => `
+                <button
+                    class="calendar-month-picker__month${swapPickerYear === activeYear && month === activeMonth ? " is-active" : ""}"
+                    type="button"
+                    data-swap-month="${month}"
+                >
+                    ${name}
+                </button>
+            `).join("")}
+        </div>
+    `;
+
+    swapMonthPicker
+        .querySelectorAll("[data-swap-year-step]")
+        .forEach(button => {
+            button.onclick = event => {
+                event.stopPropagation();
+                swapPickerYear += Number(button.dataset.swapYearStep);
+                renderSwapMonthPicker();
+                positionSwapMonthPicker();
+            };
+        });
+
+    swapMonthPicker
+        .querySelectorAll("[data-swap-month]")
+        .forEach(button => {
+            button.onclick = event => {
+                event.stopPropagation();
+                closeSwapMonthPicker();
+                goToSwapMonth(
+                    swapPickerYear,
+                    Number(button.dataset.swapMonth)
+                );
+            };
+        });
+}
+
+function setupSwapMonthPicker(trigger) {
+    if (!trigger || trigger.dataset.swapMonthPickerBound === "true") {
+        return;
+    }
+
+    trigger.dataset.swapMonthPickerBound = "true";
+
+    if (!swapMonthPicker) {
+        swapMonthPicker = document.createElement("div");
+        swapMonthPicker.className = "calendar-month-picker hidden";
+        swapMonthPicker.setAttribute("role", "dialog");
+        swapMonthPicker.setAttribute(
+            "aria-label",
+            "Seleccionar mes y a\u00f1o"
+        );
+        document.body.appendChild(swapMonthPicker);
+    }
+
+    trigger.addEventListener("click", event => {
+        event.stopPropagation();
+
+        if (!swapMonthPicker.classList.contains("hidden")) {
+            closeSwapMonthPicker();
+            return;
+        }
+
+        swapPickerYear = getSwapYear();
+        renderSwapMonthPicker();
+        swapMonthPicker.classList.remove("hidden");
+        trigger.setAttribute("aria-expanded", "true");
+        positionSwapMonthPicker();
+    });
+
+    if (swapMonthPickerEventsBound) return;
+
+    swapMonthPickerEventsBound = true;
+    document.addEventListener("click", closeSwapMonthPicker);
+    document.addEventListener("keydown", event => {
+        if (event.key === "Escape") {
+            closeSwapMonthPicker();
+        }
+    });
+    window.addEventListener("resize", positionSwapMonthPicker);
+    window.addEventListener("scroll", positionSwapMonthPicker, true);
 }
 
 function toISO(date){
@@ -165,7 +336,7 @@ function keyFromInputDate(value) {
 }
 
 function bindSwapProfileFilters() {
-    ["swapProfileSearch", "swapFilterRole", "swapShowInactiveProfiles"]
+    ["swapProfileSearch", "swapFilterRole"]
         .forEach(id => {
             const element = document.getElementById(id);
 
@@ -190,10 +361,8 @@ function renderSwapProfiles() {
     );
     const filtro =
         document.getElementById("swapFilterRole")?.value || "Todos";
-    const showInactive =
-        document.getElementById("swapShowInactiveProfiles")?.checked ?? false;
     const visibles = profiles.filter(profile => {
-        const active = showInactive || isProfileActive(profile);
+        const active = isProfileActive(profile);
         const role = filtro === "Todos" || profile.estamento === filtro;
         const search = !query ||
             normalizeSearch(profile.name).includes(query) ||
@@ -269,9 +438,6 @@ export function renderSwapPanel(){
 
     if (!selectedFrom || !perfilFrom) {
         box.innerHTML = `
-            <div class="section-head">
-                <h3>Cambios de Turno</h3>
-            </div>
             <div class="empty-state">
                 Selecciona un trabajador para revisar cambios de turno.
             </div>
@@ -281,9 +447,6 @@ export function renderSwapPanel(){
 
     if (!getTurnChangeConfig().allowSwaps) {
         box.innerHTML = `
-            <div class="section-head">
-                <h3>Cambios de Turno</h3>
-            </div>
             <div class="empty-state">
                 Los cambios de turno estan desactivados en Ajustes del sistema.
             </div>
@@ -293,9 +456,6 @@ export function renderSwapPanel(){
 
     if (noPuedeIntercambiar(selectedFrom)) {
         box.innerHTML = `
-            <div class="section-head">
-                <h3>Cambios de Turno</h3>
-            </div>
             <div class="empty-state">
                 ${escapeHTML(selectedFrom)} no puede intercambiar turnos porque el perfil esta desactivado.
             </div>
@@ -305,9 +465,6 @@ export function renderSwapPanel(){
 
     if (perfiles.length < 2) {
         box.innerHTML = `
-            <div class="section-head">
-                <h3>Cambios de Turno</h3>
-            </div>
             <div class="empty-state">
                 Necesitas al menos dos colaboradores para registrar cambios de turno.
             </div>
@@ -329,16 +486,21 @@ export function renderSwapPanel(){
         .join("");
 
     box.innerHTML = `
-        <div class="section-head">
-            <h3>Cambios de Turno</h3>
-        </div>
-
         <div class="swap-monthbar">
             <button id="swapPrevMonth" class="swap-month-button" type="button" aria-label="Mes anterior">
                 &lt;
             </button>
 
-            <strong id="swapMonthLabel">${formatSwapMonth()}</strong>
+            <button
+                id="swapMonthLabel"
+                class="swap-month-trigger"
+                type="button"
+                aria-label="Elegir mes y a&#241;o"
+                aria-haspopup="dialog"
+                aria-expanded="false"
+            >
+                ${formatSwapMonth()}
+            </button>
 
             <button id="swapNextMonth" class="swap-month-button" type="button" aria-label="Mes siguiente">
                 &gt;
@@ -384,11 +546,15 @@ export function renderSwapPanel(){
     document.getElementById("swapNextMonth").onclick =
         () => cambiarMesSwap(1);
 
+    setupSwapMonthPicker(document.getElementById("swapMonthLabel"));
+
     document.getElementById("saveSwapBtn").onclick =
         guardarCambioTurno;
 
-    document.getElementById("swapTo").onchange =
-        renderMiniCalendarios;
+    document.getElementById("swapTo").onchange = () => {
+        renderMiniCalendarios();
+        renderSwapList();
+    };
 
     actualizarSwapTo(previousTo);
     renderSwapList();
@@ -619,15 +785,27 @@ function renderSwapList(){
     const div = document.getElementById("swapList");
     if (!div) return;
 
+    const from = getCurrentProfile();
+    const to = document.getElementById("swapTo")?.value || "";
+    const selectedWorkers = new Set(
+        [from, to].filter(Boolean)
+    );
     const swaps = cambiosDelMes(
         getSwapYear(),
         getSwapMonth()
+    ).filter(swap =>
+        selectedWorkers.has(swap.from) ||
+        selectedWorkers.has(swap.to)
     );
 
     if (!swaps.length) {
+        const pairText = from && to
+            ? ` donde participe ${escapeHTML(from)} o ${escapeHTML(to)}`
+            : "";
+
         div.innerHTML = `
             <div class="empty-state empty-state--compact">
-                No hay cambios de turno registrados en ${formatSwapMonth().toLowerCase()}.
+                No hay cambios de turno registrados${pairText} en ${formatSwapMonth().toLowerCase()}.
             </div>
         `;
         return;
@@ -690,7 +868,7 @@ function guardarCambioTurno(){
         !perfilTo ||
         !canSwapProfiles(from, to)
     ) {
-        alert("Los trabajadores no son compatibles para cambio de turno. Revisa estamento, profesion y que no tengan la misma rotativa base.");
+        alert("Los trabajadores no son compatibles para cambio de turno. Revisa estamento, profesi\u00f3n y que no tengan la misma rotativa base.");
         return;
     }
 
@@ -723,7 +901,7 @@ function guardarCambioTurno(){
     }
 
     if (motivoDevolucion) {
-        alert(`No se puede usar la fecha de devolucion: ${motivoDevolucion}`);
+        alert(`No se puede usar la fecha de devoluci\u00f3n: ${motivoDevolucion}`);
         return;
     }
 

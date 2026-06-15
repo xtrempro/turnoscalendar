@@ -4,6 +4,8 @@ import {
     saveGradeHourConfig,
     getReplacementRequestConfig,
     saveReplacementRequestConfig,
+    getReportSignatureConfig,
+    saveReportSignatureConfig,
     getTurnChangeConfig,
     saveTurnChangeConfig
 } from "./storage.js";
@@ -21,6 +23,15 @@ import {
     saveStaffingConfig,
     staffingConfigSummary
 } from "./staffing.js";
+import {
+    MENU_PERMISSION_DEFS,
+    deleteWorkspaceMember,
+    getWorkspacePermissionState,
+    isWorkspaceOwner,
+    listWorkspaceMembersForPermissions,
+    normalizeMenuPermissions,
+    saveWorkspaceMemberPermissions
+} from "./workspacePermissions.js";
 
 const GROUPS = [
     {
@@ -41,8 +52,12 @@ let activeTab = "grades";
 let manualHolidayDraft = [];
 let gradeConfigDraft = null;
 let replacementRequestConfigDraft = null;
+let reportSignatureConfigDraft = null;
 let turnChangeConfigDraft = null;
 let staffingConfigDraft = null;
+let memberPermissionDraft = [];
+let memberPermissionLoading = false;
+let memberPermissionError = "";
 let onSettingsSaved = null;
 
 function escapeHTML(value) {
@@ -156,7 +171,7 @@ function renderHolidaysPanel() {
         <section class="settings-card settings-card--wide">
             <div class="settings-card__head">
                 <h4>Feriados manuales</h4>
-                <span>Estos dias se consideran inhabiles y se suman a los feriados oficiales.</span>
+                <span>Estos d\u00edas se consideran inh\u00e1biles y se suman a los feriados oficiales.</span>
             </div>
 
             <div class="settings-holiday-form">
@@ -188,24 +203,85 @@ function renderRequestsPanel() {
     return `
         <section class="settings-card settings-card--wide">
             <div class="settings-card__head">
-                <h4>Solicitudes de reemplazo</h4>
+                <h4>Reemplazos</h4>
                 <span>
-                    Define cuanto tiempo tiene un trabajador para aceptar
-                    o rechazar una solicitud enviada a la app o por WhatsApp.
+                    Define que opciones aparecen al cargar sugerencias de
+                    reemplazo y solicitudes al trabajador.
                 </span>
             </div>
 
-            <label class="settings-request-field">
-                <span>Caducidad de solicitudes</span>
-                <input
-                    id="settingsReplacementRequestExpires"
-                    type="number"
-                    min="5"
-                    step="5"
-                    value="${Number(config.expiresMinutes) || 60}"
-                >
-                <small>Tiempo en minutos. Valor recomendado: 60.</small>
-            </label>
+            <div class="settings-switch-grid">
+                ${checkboxHTML({
+                    id: "settingsEnableLinkedUnitSuggestions",
+                    checked: config.enableLinkedUnitSuggestions !== false,
+                    title: "Buscar sugerencias en unidades enlazadas",
+                    description: "En las sugerencias de reemplazo se cargan trabajadores de otras unidades que se encuentren enlazadas."
+                })}
+                ${checkboxHTML({
+                    id: "settingsEnableCrossRoleSuggestions",
+                    checked: config.enableCrossRoleSuggestions !== false,
+                    title: "Mostrar personal de otras profesiones y/o estamentos",
+                    description: "En las sugerencias de reemplazo se muestran trabajadores de profesiones y/o estamentos distintos al trabajador que ocasiona la necesidad de reemplazo."
+                })}
+                ${checkboxHTML({
+                    id: "settingsEnableWorkerAcceptanceRequest",
+                    checked: config.enableWorkerAcceptanceRequest !== false,
+                    title: "Solicitar aceptacion al trabajador",
+                    description: "Al cargar las sugerencias aparece la opcion de preguntarle al trabajador si puede realizar el reemplazo antes de anadirlo al calendario."
+                })}
+            </div>
+
+            ${config.enableWorkerAcceptanceRequest !== false ? `
+                <label class="settings-request-field">
+                    <span>Caducidad de solicitudes</span>
+                    <input
+                        id="settingsReplacementRequestExpires"
+                        type="number"
+                        min="5"
+                        step="5"
+                        value="${Number(config.expiresMinutes) || 60}"
+                    >
+                    <small>Tiempo en minutos. Valor recomendado: 60.</small>
+                </label>
+            ` : ""}
+        </section>
+    `;
+}
+
+function renderSignaturePanel() {
+    const config =
+        reportSignatureConfigDraft ||
+        getReportSignatureConfig();
+    const labels = [
+        "Primera l&iacute;nea:",
+        "Segunda l&iacute;nea:",
+        "Tercera l&iacute;nea:",
+        "Cuarta l&iacute;nea:"
+    ];
+
+    return `
+        <section class="settings-card settings-card--wide">
+            <div class="settings-card__head">
+                <h4>Pie de Firma</h4>
+                <span>
+                    Configura el pie de firma que aparecer&aacute; en los
+                    documentos imprimibles.
+                </span>
+            </div>
+
+            <div class="settings-signature-grid">
+                ${labels.map((label, index) => `
+                    <label class="settings-signature-field">
+                        <span>${label}</span>
+                        <input
+                            type="text"
+                            maxlength="120"
+                            data-signature-line="${index}"
+                            value="${escapeHTML(config.lines[index] || "")}"
+                        >
+                    </label>
+                `).join("")}
+            </div>
         </section>
     `;
 }
@@ -263,6 +339,26 @@ function renderTurnChangesPanel() {
                     description: "Permite cambiar Larga por Noche o Noche por Larga. Si se desactiva, solo se permite Larga por Larga y Noche por Noche."
                 }) : ""}
 
+                ${config.allowSwaps ? checkboxHTML({
+                    id: "settingsLimitMonthlySwaps",
+                    checked: config.limitMonthlySwaps,
+                    title: "Limitar CCTT Mensuales",
+                    description: "Define una cantidad maxima de cambios de turno que cada trabajador puede realizar por mes."
+                }) : ""}
+
+                ${config.allowSwaps && config.limitMonthlySwaps ? `
+                    <label class="settings-limit-field">
+                        <span>Cambios mensuales autorizados por trabajador</span>
+                        <input
+                            id="settingsMonthlySwapLimit"
+                            type="number"
+                            min="1"
+                            step="1"
+                            value="${Number(config.monthlySwapLimit) || 2}"
+                        >
+                    </label>
+                ` : ""}
+
                 ${checkboxHTML({
                     id: "settingsAllowTwentyFourHourShifts",
                     checked: config.allowTwentyFourHourShifts,
@@ -274,7 +370,7 @@ function renderTurnChangesPanel() {
                     id: "settingsAllowInvertedTwentyFourHourShifts",
                     checked: config.allowInvertedTwentyFourHourShifts,
                     title: "Permitir turnos de 24 horas invertidos",
-                    description: "Si se desactiva, se bloquea Noche seguida de Larga al dia siguiente y Noche el dia anterior a una Larga."
+                    description: "Si se desactiva, se bloquea Noche seguida de Larga, Diurno o D + N al dia siguiente y Noche el dia anterior a cualquiera de esos turnos."
                 })}
             </div>
         </section>
@@ -334,11 +430,155 @@ function renderStaffingPanel() {
     `;
 }
 
+function memberLabel(member) {
+    return (
+        member.displayName ||
+        member.email ||
+        member.uid ||
+        "Usuario"
+    );
+}
+
+function renderUsersPanel() {
+    const state = getWorkspacePermissionState();
+
+    if (!isWorkspaceOwner()) {
+        return `
+            <section class="settings-card settings-card--wide">
+                <div class="settings-card__head">
+                    <h4>Usuarios y permisos</h4>
+                    <span>Solo el creador del entorno puede administrar permisos.</span>
+                </div>
+                <div class="settings-empty">
+                    No tienes permisos para modificar accesos de otros usuarios.
+                </div>
+            </section>
+        `;
+    }
+
+    if (!state.workspaceId) {
+        return `
+            <section class="settings-card settings-card--wide">
+                <div class="settings-card__head">
+                    <h4>Usuarios y permisos</h4>
+                    <span>Selecciona o crea un entorno para administrar usuarios.</span>
+                </div>
+                <div class="settings-empty">
+                    No hay un entorno activo.
+                </div>
+            </section>
+        `;
+    }
+
+    if (memberPermissionLoading) {
+        return `
+            <section class="settings-card settings-card--wide">
+                <div class="settings-card__head">
+                    <h4>Usuarios y permisos</h4>
+                    <span>Cargando usuarios del entorno...</span>
+                </div>
+                <div class="settings-empty">Cargando permisos.</div>
+            </section>
+        `;
+    }
+
+    if (memberPermissionError) {
+        return `
+            <section class="settings-card settings-card--wide">
+                <div class="settings-card__head">
+                    <h4>Usuarios y permisos</h4>
+                    <span>No se pudo cargar la lista de usuarios.</span>
+                </div>
+                <div class="settings-empty">
+                    ${escapeHTML(memberPermissionError)}
+                </div>
+            </section>
+        `;
+    }
+
+    return `
+        <section class="settings-card settings-card--wide">
+            <div class="settings-card__head">
+                <h4>Usuarios y permisos</h4>
+                <span>
+                    Define qu\u00e9 men\u00fas puede ver cada colaborador y en cu\u00e1les
+                    puede editar informaci\u00f3n.
+                </span>
+            </div>
+
+            <div class="settings-users-list">
+                ${memberPermissionDraft.map(member => {
+                    const isOwner = member.role === "owner";
+                    const permissions =
+                        normalizeMenuPermissions(member.permissions);
+
+                    return `
+                        <article class="settings-user-card">
+                            <div class="settings-user-card__head">
+                                <span>
+                                    <strong>${escapeHTML(memberLabel(member))}</strong>
+                                    <small>${escapeHTML(member.email || member.uid)}</small>
+                                </span>
+                                <div class="settings-user-card__actions">
+                                    <em>${isOwner ? "Creador" : "Colaborador"}</em>
+                                    ${isOwner ? "" : `
+                                        <button
+                                            class="settings-user-delete"
+                                            type="button"
+                                            data-delete-member="${escapeHTML(member.uid)}"
+                                        >
+                                            Eliminar
+                                        </button>
+                                    `}
+                                </div>
+                            </div>
+
+                            <div class="settings-permission-grid">
+                                <div class="settings-permission-row settings-permission-row--head">
+                                    <span>Men\u00fa</span>
+                                    <span>Ver</span>
+                                    <span>Editar</span>
+                                </div>
+                                ${MENU_PERMISSION_DEFS.map(menu => {
+                                    const permission = permissions[menu.key];
+                                    return `
+                                        <label class="settings-permission-row">
+                                            <span>${escapeHTML(menu.label)}</span>
+                                            <input
+                                                type="checkbox"
+                                                data-member-permission="${escapeHTML(member.uid)}"
+                                                data-permission-menu="${escapeHTML(menu.key)}"
+                                                data-permission-kind="view"
+                                                ${permission.view ? "checked" : ""}
+                                                ${isOwner ? "disabled" : ""}
+                                            >
+                                            <input
+                                                type="checkbox"
+                                                data-member-permission="${escapeHTML(member.uid)}"
+                                                data-permission-menu="${escapeHTML(menu.key)}"
+                                                data-permission-kind="edit"
+                                                ${permission.edit ? "checked" : ""}
+                                                ${(!permission.view || isOwner) ? "disabled" : ""}
+                                            >
+                                        </label>
+                                    `;
+                                }).join("")}
+                            </div>
+                        </article>
+                    `;
+                }).join("")}
+            </div>
+        </section>
+    `;
+}
+
 function renderActivePanel(config) {
     if (activeTab === "holidays") return renderHolidaysPanel();
     if (activeTab === "requests") return renderRequestsPanel();
+    if (activeTab === "signature") return renderSignaturePanel();
     if (activeTab === "turnChanges") return renderTurnChangesPanel();
     if (activeTab === "staffing") return renderStaffingPanel();
+    if (activeTab === "users") return renderUsersPanel();
 
     return renderGradesPanel(config);
 }
@@ -351,7 +591,7 @@ function modalHTML() {
             <div class="settings-dialog-head">
                 <span>
                     <strong id="systemSettingsTitle">Ajustes del sistema</strong>
-                    <p>Configura valores transversales para calculos y calendario.</p>
+                    <p>Configura valores transversales para c\u00e1lculos y calendario.</p>
                 </span>
                 <button class="icon-button" type="button" data-settings-close aria-label="Cerrar ajustes">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -369,14 +609,22 @@ function modalHTML() {
                     Feriados manuales
                 </button>
                 <button class="${activeTab === "requests" ? "is-active" : ""}" type="button" data-settings-tab="requests">
-                    Solicitudes
+                    Reemplazos
+                </button>
+                <button class="${activeTab === "signature" ? "is-active" : ""}" type="button" data-settings-tab="signature">
+                    Pie de Firma
                 </button>
                 <button class="${activeTab === "turnChanges" ? "is-active" : ""}" type="button" data-settings-tab="turnChanges">
-                    Cambio de Turno
+                    Turnos
                 </button>
                 <button class="${activeTab === "staffing" ? "is-active" : ""}" type="button" data-settings-tab="staffing">
                     Dotacion RRHH
                 </button>
+                ${isWorkspaceOwner() ? `
+                    <button class="${activeTab === "users" ? "is-active" : ""}" type="button" data-settings-tab="users">
+                        Usuarios
+                    </button>
+                ` : ""}
             </div>
 
             <div class="settings-panel">
@@ -421,15 +669,50 @@ function readRequestConfig(backdrop) {
     const fallback =
         replacementRequestConfigDraft ||
         getReplacementRequestConfig();
+    const hasInput = id =>
+        Boolean(backdrop.querySelector(`#${id}`));
+    const checked = id =>
+        Boolean(backdrop.querySelector(`#${id}`)?.checked);
     const expiresMinutes = Number(input?.value);
 
     return {
         ...fallback,
+        enableLinkedUnitSuggestions:
+            hasInput("settingsEnableLinkedUnitSuggestions")
+                ? checked("settingsEnableLinkedUnitSuggestions")
+                : fallback.enableLinkedUnitSuggestions,
+        enableCrossRoleSuggestions:
+            hasInput("settingsEnableCrossRoleSuggestions")
+                ? checked("settingsEnableCrossRoleSuggestions")
+                : fallback.enableCrossRoleSuggestions,
+        enableWorkerAcceptanceRequest:
+            hasInput("settingsEnableWorkerAcceptanceRequest")
+                ? checked("settingsEnableWorkerAcceptanceRequest")
+                : fallback.enableWorkerAcceptanceRequest,
         expiresMinutes:
             Number.isFinite(expiresMinutes) && expiresMinutes > 0
                 ? Math.round(expiresMinutes)
                 : fallback.expiresMinutes
     };
+}
+
+function readSignatureConfig(backdrop) {
+    const fallback =
+        reportSignatureConfigDraft ||
+        getReportSignatureConfig();
+    const lines = [...fallback.lines];
+
+    backdrop
+        .querySelectorAll("[data-signature-line]")
+        .forEach(input => {
+            const index = Number(input.dataset.signatureLine);
+
+            if (index >= 0 && index < 4) {
+                lines[index] = input.value;
+            }
+        });
+
+    return { lines };
 }
 
 function readTurnChangeConfig(backdrop) {
@@ -440,6 +723,9 @@ function readTurnChangeConfig(backdrop) {
         Boolean(backdrop.querySelector(`#${id}`));
     const checked = id =>
         Boolean(backdrop.querySelector(`#${id}`)?.checked);
+    const monthlySwapLimit = Number(
+        backdrop.querySelector("#settingsMonthlySwapLimit")?.value
+    );
 
     return {
         ...fallback,
@@ -457,7 +743,18 @@ function readTurnChangeConfig(backdrop) {
         allowInvertedTwentyFourHourShifts:
             hasInput("settingsAllowInvertedTwentyFourHourShifts")
                 ? checked("settingsAllowInvertedTwentyFourHourShifts")
-                : fallback.allowInvertedTwentyFourHourShifts
+                : fallback.allowInvertedTwentyFourHourShifts,
+        limitMonthlySwaps:
+            hasInput("settingsLimitMonthlySwaps")
+                ? checked("settingsLimitMonthlySwaps")
+                : fallback.limitMonthlySwaps,
+        monthlySwapLimit:
+            hasInput("settingsMonthlySwapLimit")
+                ? Number.isFinite(monthlySwapLimit) &&
+                    monthlySwapLimit > 0
+                    ? Math.round(monthlySwapLimit)
+                    : fallback.monthlySwapLimit
+                : fallback.monthlySwapLimit
     };
 }
 
@@ -486,6 +783,47 @@ function readStaffingConfig(backdrop) {
     return config;
 }
 
+function readMemberPermissionDraft(backdrop) {
+    const byUid = new Map(
+        memberPermissionDraft.map(member => [
+            member.uid,
+            {
+                ...member,
+                permissions: normalizeMenuPermissions(member.permissions)
+            }
+        ])
+    );
+
+    backdrop
+        .querySelectorAll("[data-member-permission][data-permission-menu][data-permission-kind]")
+        .forEach(input => {
+            const member = byUid.get(input.dataset.memberPermission);
+            if (!member || member.role === "owner") return;
+
+            const menuKey = input.dataset.permissionMenu;
+            const kind = input.dataset.permissionKind;
+
+            if (!member.permissions[menuKey]) {
+                member.permissions[menuKey] = {
+                    view: true,
+                    edit: true
+                };
+            }
+
+            member.permissions[menuKey][kind] = input.checked;
+
+            if (kind === "view" && !input.checked) {
+                member.permissions[menuKey].edit = false;
+            }
+
+            if (kind === "edit" && input.checked) {
+                member.permissions[menuKey].view = true;
+            }
+        });
+
+    memberPermissionDraft = Array.from(byUid.values());
+}
+
 function preserveActiveDraft(backdrop) {
     if (activeTab === "grades") {
         gradeConfigDraft = readRateConfig(backdrop);
@@ -496,6 +834,11 @@ function preserveActiveDraft(backdrop) {
             readRequestConfig(backdrop);
     }
 
+    if (activeTab === "signature") {
+        reportSignatureConfigDraft =
+            readSignatureConfig(backdrop);
+    }
+
     if (activeTab === "turnChanges") {
         turnChangeConfigDraft =
             readTurnChangeConfig(backdrop);
@@ -504,6 +847,52 @@ function preserveActiveDraft(backdrop) {
     if (activeTab === "staffing") {
         staffingConfigDraft = readStaffingConfig(backdrop);
     }
+
+    if (activeTab === "users") {
+        readMemberPermissionDraft(backdrop);
+    }
+}
+
+async function loadMemberPermissionDraft() {
+    if (!isWorkspaceOwner()) {
+        memberPermissionDraft = [];
+        memberPermissionLoading = false;
+        memberPermissionError = "";
+        return;
+    }
+
+    memberPermissionLoading = true;
+    memberPermissionError = "";
+
+    try {
+        memberPermissionDraft =
+            await listWorkspaceMembersForPermissions();
+    } catch (error) {
+        memberPermissionDraft = [];
+        memberPermissionError =
+            error?.message || "No se pudieron cargar los usuarios.";
+    } finally {
+        memberPermissionLoading = false;
+    }
+}
+
+async function saveMemberPermissionDrafts() {
+    if (!isWorkspaceOwner()) return;
+
+    const state = getWorkspacePermissionState();
+    if (!state.workspaceId) return;
+
+    await Promise.all(
+        memberPermissionDraft
+            .filter(member => member.role !== "owner")
+            .map(member =>
+                saveWorkspaceMemberPermissions(
+                    state.workspaceId,
+                    member.uid,
+                    member.permissions
+                )
+            )
+    );
 }
 
 function rerenderHolidayList(backdrop) {
@@ -515,16 +904,33 @@ function rerenderHolidayList(backdrop) {
 
 function bindBackdrop(backdrop) {
     backdrop.addEventListener("change", event => {
-        if (event.target?.id !== "settingsAllowSwaps") return;
+        if (
+            event.target?.matches?.("[data-member-permission]")
+        ) {
+            preserveActiveDraft(backdrop);
+            backdrop.innerHTML = modalHTML();
+            return;
+        }
 
+        if (
+            ![
+                "settingsAllowSwaps",
+                "settingsLimitMonthlySwaps",
+                "settingsEnableWorkerAcceptanceRequest"
+            ].includes(event.target?.id)
+        ) {
+            return;
+        }
+
+        const focusId = event.target.id;
         preserveActiveDraft(backdrop);
         backdrop.innerHTML = modalHTML();
         backdrop
-            .querySelector("#settingsAllowSwaps")
+            .querySelector(`#${focusId}`)
             ?.focus();
     });
 
-    backdrop.addEventListener("click", event => {
+    backdrop.addEventListener("click", async event => {
         if (
             event.target === backdrop ||
             event.target.closest("[data-settings-close]")
@@ -578,44 +984,107 @@ function bindBackdrop(backdrop) {
             return;
         }
 
-        if (event.target.closest("[data-settings-save]")) {
+        const deleteMemberButton =
+            event.target.closest("[data-delete-member]");
+        if (deleteMemberButton) {
             preserveActiveDraft(backdrop);
-            const previousStaffingConfig = getStaffingConfig();
-            const nextStaffingConfig =
-                staffingConfigDraft ||
-                getStaffingConfig();
-            saveGradeHourConfig(gradeConfigDraft);
-            saveManualHolidays(manualHolidayDraft);
-            saveReplacementRequestConfig(
-                replacementRequestConfigDraft ||
-                getReplacementRequestConfig()
-            );
-            saveTurnChangeConfig(
-                turnChangeConfigDraft ||
-                getTurnChangeConfig()
-            );
-            saveStaffingConfig(nextStaffingConfig);
 
-            if (
-                staffingConfigSummary(previousStaffingConfig) !==
-                staffingConfigSummary(nextStaffingConfig)
-            ) {
+            const state = getWorkspacePermissionState();
+            const uid = deleteMemberButton.dataset.deleteMember;
+            const member = memberPermissionDraft.find(item =>
+                item.uid === uid
+            );
+
+            if (!state.workspaceId || !member || member.role === "owner") {
+                return;
+            }
+
+            const label = memberLabel(member);
+            const confirmed = window.confirm(
+                `Eliminar a ${label} del entorno? Este usuario dejara de tener acceso a los menus y datos compartidos.`
+            );
+
+            if (!confirmed) return;
+
+            deleteMemberButton.disabled = true;
+
+            try {
+                await deleteWorkspaceMember(state.workspaceId, uid);
+                memberPermissionDraft =
+                    memberPermissionDraft.filter(item => item.uid !== uid);
+
                 addAuditLog(
-                    AUDIT_CATEGORY.STAFFING,
-                    "Modifico dotacion requerida",
-                    `Antes: ${staffingConfigSummary(previousStaffingConfig)}. Ahora: ${staffingConfigSummary(nextStaffingConfig)}.`,
-                    { scope: "staffing_settings" }
+                    AUDIT_CATEGORY.SYSTEM_SETTINGS,
+                    "Elimino colaborador del entorno",
+                    `Quito el acceso de ${label}.`,
+                    {
+                        scope: "workspace_members",
+                        uid
+                    }
+                );
+
+                backdrop.innerHTML = modalHTML();
+            } catch (error) {
+                deleteMemberButton.disabled = false;
+                alert(
+                    error?.message ||
+                    "No se pudo eliminar el usuario del entorno."
                 );
             }
 
-            addAuditLog(
-                AUDIT_CATEGORY.SYSTEM_SETTINGS,
-                "Modifico ajustes del sistema",
-                "Actualizo valores por grado, feriados manuales, caducidad de solicitudes, reglas de cambios de turno y/o dotacion requerida.",
-                { scope: "system_settings" }
-            );
-            backdrop.remove();
-            onSettingsSaved?.();
+            return;
+        }
+
+        if (event.target.closest("[data-settings-save]")) {
+            try {
+                preserveActiveDraft(backdrop);
+                const previousStaffingConfig = getStaffingConfig();
+                const nextStaffingConfig =
+                    staffingConfigDraft ||
+                    getStaffingConfig();
+                saveGradeHourConfig(gradeConfigDraft);
+                saveManualHolidays(manualHolidayDraft);
+                saveReplacementRequestConfig(
+                    replacementRequestConfigDraft ||
+                    getReplacementRequestConfig()
+                );
+                saveReportSignatureConfig(
+                    reportSignatureConfigDraft ||
+                    getReportSignatureConfig()
+                );
+                saveTurnChangeConfig(
+                    turnChangeConfigDraft ||
+                    getTurnChangeConfig()
+                );
+                saveStaffingConfig(nextStaffingConfig);
+                await saveMemberPermissionDrafts();
+
+                if (
+                    staffingConfigSummary(previousStaffingConfig) !==
+                    staffingConfigSummary(nextStaffingConfig)
+                ) {
+                    addAuditLog(
+                        AUDIT_CATEGORY.STAFFING,
+                        "Modifico dotacion requerida",
+                        `Antes: ${staffingConfigSummary(previousStaffingConfig)}. Ahora: ${staffingConfigSummary(nextStaffingConfig)}.`,
+                        { scope: "staffing_settings" }
+                    );
+                }
+
+                addAuditLog(
+                    AUDIT_CATEGORY.SYSTEM_SETTINGS,
+                    "Modifico ajustes del sistema",
+                    "Actualizo valores por grado, feriados manuales, opciones de reemplazos, pie de firma, reglas de cambios de turno, dotacion requerida y/o permisos de usuarios.",
+                    { scope: "system_settings" }
+                );
+                backdrop.remove();
+                onSettingsSaved?.();
+            } catch (error) {
+                alert(
+                    error?.message ||
+                    "No se pudieron guardar los ajustes."
+                );
+            }
         }
     });
 }
@@ -629,8 +1098,13 @@ export function openSystemSettings() {
     gradeConfigDraft = getGradeHourConfig();
     replacementRequestConfigDraft =
         getReplacementRequestConfig();
+    reportSignatureConfigDraft =
+        getReportSignatureConfig();
     turnChangeConfigDraft = getTurnChangeConfig();
     staffingConfigDraft = getStaffingConfig();
+    memberPermissionDraft = [];
+    memberPermissionLoading = false;
+    memberPermissionError = "";
 
     const backdrop = document.createElement("div");
     backdrop.className = "turn-change-dialog-backdrop";
@@ -648,14 +1122,37 @@ export function openSystemSettings() {
                     ? "#settingsHolidayDate"
                     : activeTab === "requests"
                         ? "#settingsReplacementRequestExpires"
-                        : activeTab === "turnChanges"
-                            ? "#settingsAllowSwaps"
-                            : "[data-staffing-modality]"
+                        : activeTab === "signature"
+                            ? "[data-signature-line]"
+                            : activeTab === "turnChanges"
+                                ? "#settingsAllowSwaps"
+                                : activeTab === "users"
+                                    ? "[data-member-permission]"
+                                    : "[data-staffing-modality]"
         )
         ?.focus();
+
+    if (isWorkspaceOwner()) {
+        memberPermissionLoading = true;
+        backdrop.innerHTML = modalHTML();
+        loadMemberPermissionDraft()
+            .then(() => {
+                if (!backdrop.isConnected) return;
+                backdrop.innerHTML = modalHTML();
+            });
+    }
 }
 
 export function initSystemSettings(options = {}) {
     onSettingsSaved = options.onSaved || null;
-    options.button?.addEventListener("click", openSystemSettings);
+    options.button?.addEventListener("click", () => {
+        if (!isWorkspaceOwner()) {
+            alert(
+                "Solo el creador del entorno puede abrir los ajustes del sistema."
+            );
+            return;
+        }
+
+        openSystemSettings();
+    });
 }

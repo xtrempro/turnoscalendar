@@ -3,11 +3,15 @@ import {
     getManualLeaveBalances,
     getProfileData,
     getRotativa,
+    getReportSignatureConfig,
     getShiftAssigned,
     getValorHora
 } from "./storage.js";
 import { fetchHolidays } from "./holidays.js";
-import { calcularHorasMesPerfil } from "./hoursEngine.js";
+import {
+    calcularExtraDiurnoProgramadoDia,
+    calcularHorasMesPerfil
+} from "./hoursEngine.js";
 import {
     aplicarCambiosTurno,
     getTurnoBase,
@@ -20,6 +24,7 @@ import {
 } from "./rulesEngine.js";
 import {
     calcHours,
+    calcCarry,
     isBusinessDay
 } from "./calculations.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
@@ -32,15 +37,23 @@ import {
 } from "./replacements.js";
 import {
     cambioEstaAnulado,
-    cambiosDelMes
+    cambiosDelMes,
+    getSwapPerspective
 } from "./swaps.js";
 import {
     formatContractDate,
-    getContractsForProfile
+    getContractsForProfile,
+    hasContractForDate,
+    isReplacementProfile
 } from "./contracts.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { getJSON } from "./persistence.js";
-import { getClockMarks } from "./clockMarks.js";
+import {
+    getClockExtraHours,
+    getClockMarks
+} from "./clockMarks.js";
+
+const UNBACKED_OVERTIME_DETAIL = "Horas sin respaldo registrado";
 
 function key(year, month, day) {
     return `${year}-${month}-${day}`;
@@ -88,6 +101,11 @@ function escapeHTML(value) {
         .replace(/'/g, "&#039;");
 }
 
+function displayReportText(value) {
+    return String(value ?? "")
+        .replace(/\bSin informacion\b/g, "Sin informaci\u00f3n");
+}
+
 function formatHour(value) {
     const number = Math.round((Number(value) || 0) * 100) / 100;
 
@@ -112,6 +130,21 @@ function safeFileName(value) {
         .replace(/^_+|_+$/g, "");
 }
 
+function reportSignatureFooterHTML() {
+    const lines = getReportSignatureConfig()
+        .lines
+        .map(line => String(line || "").trim())
+        .filter(Boolean);
+
+    if (!lines.length) return "";
+
+    return `
+        <footer class="report-signature-footer">
+            ${lines.map(line => `<div>${escapeHTML(line)}</div>`).join("")}
+        </footer>
+    `;
+}
+
 async function fetchReportHolidays(year) {
     const [previous, current, next] = await Promise.all([
         fetchHolidays(year - 1),
@@ -130,6 +163,7 @@ function rotationLabel(type) {
     if (type === "3turno") return "3er Turno";
     if (type === "4turno") return "4° Turno";
     if (type === "diurno") return "Diurno";
+    if (type === "libre") return "Libre";
     if (type === "reemplazo") return "Reemplazo";
 
     return "Sin rotativa";
@@ -138,7 +172,7 @@ function rotationLabel(type) {
 function reportKind(profileName) {
     const type = getRotativa(profileName).type;
 
-    if (type === "reemplazo") return "replacement";
+    if (isReplacementProfile(profileName)) return "replacement";
     if (getShiftAssigned(profileName) || type === "diurno") {
         return "extra-only";
     }
@@ -152,6 +186,26 @@ function isNoAssignmentShiftProfile(profileName) {
     return (
         (type === "3turno" || type === "4turno") &&
         !getShiftAssigned(profileName)
+    );
+}
+
+export function isAssignedShiftReportProfile(profileName) {
+    const type = getRotativa(profileName).type;
+
+    return (
+        (type === "3turno" || type === "4turno") &&
+        getShiftAssigned(profileName)
+    );
+}
+
+export function isReplacementReportProfile(profileName) {
+    return isReplacementProfile(profileName);
+}
+
+export function isDiurnoReportProfile(profileName) {
+    return (
+        !isReplacementProfile(profileName) &&
+        getRotativa(profileName).type === "diurno"
     );
 }
 
@@ -173,24 +227,22 @@ function getSwapDetail(profileName, keyDay, swaps) {
     swaps.forEach(swap => {
         if (cambioEstaAnulado(swap)) return;
 
-        if (!swap.skipFecha && swap.fecha === iso) {
-            if (swap.from === profileName) {
-                details.push(`Entrega ${swap.turno || ""} a ${swap.to}`);
-            }
+        const perspective = getSwapPerspective(swap, profileName);
 
-            if (swap.to === profileName) {
-                details.push(`Recibe ${swap.turno || ""} de ${swap.from}`);
-            }
+        if (!perspective) return;
+
+        if (
+            !perspective.changeSkipped &&
+            perspective.changeDate === iso
+        ) {
+            details.push(`CCTT ${perspective.changeTurnLabel} con ${perspective.counterpart}`);
         }
 
-        if (!swap.skipDevolucion && swap.devolucion === iso) {
-            if (swap.to === profileName) {
-                details.push(`Devuelve ${swap.turnoDevuelto || ""} a ${swap.from}`);
-            }
-
-            if (swap.from === profileName) {
-                details.push(`Recibe devolucion ${swap.turnoDevuelto || ""} de ${swap.to}`);
-            }
+        if (
+            !perspective.returnSkipped &&
+            perspective.returnDate === iso
+        ) {
+            details.push(`DDTT ${perspective.returnTurnLabel} con ${perspective.counterpart}`);
         }
     });
 
@@ -261,6 +313,13 @@ function addNumericHours(target, source) {
     target.n += Number(source?.n) || 0;
 }
 
+function hasPositiveHours(hours = {}) {
+    return (
+        (Number(hours.d) || 0) > 0 ||
+        (Number(hours.n) || 0) > 0
+    );
+}
+
 function readProfileMap(prefix, profileName) {
     return getJSON(`${prefix}_${profileName}`, {});
 }
@@ -276,9 +335,10 @@ function getReportMaps(profileName) {
 
 function absenceTypeLabel(type) {
     if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "Permiso Gremial";
     if (type === "unpaid_leave") return "Permiso sin goce";
     if (type === "unjustified_absence") return "Ausencia injustificada";
-    if (type === "license") return "Licencia Medica";
+    if (type === "license") return "Licencia M\u00e9dica";
 
     return type ? "Ausencia" : "";
 }
@@ -294,7 +354,7 @@ function dayAbsenceDetail(keyDay, maps) {
 
     if (maps.admin[keyDay] === "0.5M") {
         return {
-            label: "1/2 ADM Manana",
+            label: "1/2 ADM Ma\u00f1ana",
             full: false,
             category: "half_admin",
             workState: TURNO.MEDIA_TARDE
@@ -363,6 +423,14 @@ function reportCarryForBoundary(profileName, date, data, maps, holidays) {
         date.getMonth(),
         date.getDate()
     );
+
+    if (
+        isReplacementProfile(profileName) &&
+        !hasContractForDate(profileName, keyDay)
+    ) {
+        return { d: 0, n: 0 };
+    }
+
     const absence = dayAbsenceDetail(keyDay, maps);
 
     if (absence?.full || esAusenciaInjustificada(maps.absences[keyDay])) {
@@ -412,6 +480,80 @@ function reportCarryOut(profileName, year, month, days, data, holidays) {
     );
 }
 
+function hasNightCarryComponent(turno) {
+    const state = Number(turno) || TURNO.LIBRE;
+
+    return (
+        state === TURNO.NOCHE ||
+        state === TURNO.TURNO24 ||
+        state === TURNO.DIURNO_NOCHE ||
+        state === TURNO.TURNO18
+    );
+}
+
+function assignedExtraStateForDay(profileName, keyDay, data) {
+    const baseWithSwaps = aplicarCambiosTurno(
+        profileName,
+        keyDay,
+        getTurnoBase(profileName, keyDay),
+        { includeReplacements: false }
+    );
+    const actual = actualStateForReport(profileName, data, keyDay);
+
+    return getTurnoExtraAgregado(baseWithSwaps, actual);
+}
+
+function assignedCarryForBoundary(profileName, date, data, maps, holidays) {
+    const keyDay = key(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+    const absence = dayAbsenceDetail(keyDay, maps);
+
+    if (absence?.full || esAusenciaInjustificada(maps.absences[keyDay])) {
+        return { d: 0, n: 0 };
+    }
+
+    const extraState = assignedExtraStateForDay(
+        profileName,
+        keyDay,
+        data
+    );
+
+    if (!hasNightCarryComponent(extraState)) {
+        return { d: 0, n: 0 };
+    }
+
+    return calcCarry(date, extraState, holidays);
+}
+
+function assignedCarryIn(profileName, year, month, holidays) {
+    const previous = new Date(year, month, 0);
+    const previousData = getProfileData(profileName);
+    const maps = getReportMaps(profileName);
+
+    return assignedCarryForBoundary(
+        profileName,
+        previous,
+        previousData,
+        maps,
+        holidays
+    );
+}
+
+function assignedCarryOut(profileName, year, month, days, data, holidays) {
+    const maps = getReportMaps(profileName);
+
+    return assignedCarryForBoundary(
+        profileName,
+        new Date(year, month, days),
+        data,
+        maps,
+        holidays
+    );
+}
+
 function clockMarkSummary(profileName, keyDay) {
     const mark = getClockMarks(profileName)[keyDay];
 
@@ -442,7 +584,14 @@ function clockMarkSummary(profileName, keyDay) {
     return items.join(" | ");
 }
 
-function buildNoAssignmentDayRows(profile, year, month, days, holidays) {
+function buildNoAssignmentDayRows(
+    profile,
+    year,
+    month,
+    days,
+    holidays,
+    options = {}
+) {
     const profileName = profile.name;
     const data = getProfileData(profileName);
     const baseData = getBaseProfileData(profileName);
@@ -461,6 +610,28 @@ function buildNoAssignmentDayRows(profile, year, month, days, holidays) {
         const iso = isoFromKey(keyDay);
         const date = parseKey(keyDay);
         const rawBase = getTurnoBase(profileName, keyDay);
+        const contractIsRequired =
+            options.contractOnly === true;
+        const hasActiveContract =
+            !contractIsRequired ||
+            hasContractForDate(profileName, keyDay);
+
+        if (!hasActiveContract) {
+            rows.push({
+                fecha: formatDate(iso),
+                diaHabil: isBusinessDay(date, holidays) ? "S\u00ed" : "No",
+                tipo: "Sin contrato",
+                turnoBase: turnoLabel(rawBase),
+                turnoConCambios: "-",
+                turnoRealizado: "SIN CONTRATO",
+                turnoExtra: "-",
+                horasDiurnas: "-",
+                horasNocturnas: "-",
+                respaldo: "SIN CONTRATO"
+            });
+            continue;
+        }
+
         const baseWithSwaps = aplicarCambiosTurno(
             profileName,
             keyDay,
@@ -487,24 +658,132 @@ function buildNoAssignmentDayRows(profile, year, month, days, holidays) {
             swap,
             clock
         ].filter(Boolean).join(" | ");
+        const extraState = getTurnoExtraAgregado(baseWithSwaps, actual);
 
         addNumericHours(rawTotals, hours);
 
         rows.push({
             fecha: formatDate(iso),
-            diaHabil: isBusinessDay(date, holidays) ? "Si" : "No",
+            diaHabil: isBusinessDay(date, holidays) ? "S\u00ed" : "No",
             tipo: hasManualBase
                 ? "Turno base"
                 : "Turno registrado",
             turnoBase: turnoLabel(rawBase),
             turnoConCambios: turnoLabel(baseWithSwaps),
             turnoRealizado: absence?.label || turnoLabel(actual),
-            turnoExtra: turnoLabel(
-                getTurnoExtraAgregado(baseWithSwaps, actual)
-            ),
+            turnoExtra: turnoLabel(extraState),
             horasDiurnas: formatHour(hours.d),
             horasNocturnas: formatHour(hours.n),
-            respaldo: details
+            respaldo: details || (
+                Number(extraState) > TURNO.LIBRE
+                    ? UNBACKED_OVERTIME_DETAIL
+                    : ""
+            )
+        });
+    }
+
+    return {
+        rows,
+        rawTotals
+    };
+}
+
+function formatExtraCell(value) {
+    const number = Math.round((Number(value) || 0) * 100) / 100;
+
+    return number ? formatHour(number) : "-";
+}
+
+function combineNumericHours(...sources) {
+    return sources.reduce((total, source) => ({
+        d: total.d + (Number(source?.d) || 0),
+        n: total.n + (Number(source?.n) || 0)
+    }), { d: 0, n: 0 });
+}
+
+function subtractNumericHours(base, subtraction) {
+    return {
+        d: (Number(base?.d) || 0) - (Number(subtraction?.d) || 0),
+        n: (Number(base?.n) || 0) - (Number(subtraction?.n) || 0)
+    };
+}
+
+function buildAssignedShiftDayRows(profile, year, month, days, holidays) {
+    const profileName = profile.name;
+    const isDiurno = isDiurnoReportProfile(profileName);
+    const data = getProfileData(profileName);
+    const swaps = cambiosDelMes(year, month);
+    const contracts = activeContractsForMonth(
+        profileName,
+        year,
+        month
+    );
+    const maps = getReportMaps(profileName);
+    const rows = [];
+    const rawTotals = { d: 0, n: 0 };
+
+    for (let day = 1; day <= days; day++) {
+        const keyDay = key(year, month, day);
+        const iso = isoFromKey(keyDay);
+        const date = parseKey(keyDay);
+        const rawBase = getTurnoBase(profileName, keyDay);
+        const baseWithSwaps = aplicarCambiosTurno(
+            profileName,
+            keyDay,
+            rawBase,
+            { includeReplacements: false }
+        );
+        const actual = actualStateForReport(profileName, data, keyDay);
+        const absence = dayAbsenceDetail(keyDay, maps);
+        const extraState = absence?.full
+            ? TURNO.LIBRE
+            : getTurnoExtraAgregado(baseWithSwaps, actual);
+        const shiftExtraHours = isDiurno
+            ? calcularExtraDiurnoProgramadoDia(
+                date,
+                absence?.full ? TURNO.LIBRE : actual,
+                holidays
+            )
+            : numberHours(date, extraState, holidays);
+        const clockExtraHours = absence?.full
+            ? { d: 0, n: 0 }
+            : getClockExtraHours(
+                profileName,
+                keyDay,
+                date,
+                actual,
+                holidays
+            );
+        const extraHours = combineNumericHours(
+            shiftExtraHours,
+            clockExtraHours
+        );
+        const swap = getSwapDetail(profileName, keyDay, swaps);
+        const replacement = replacementDetail(profileName, keyDay);
+        const contract = contractDetail(contracts, iso);
+        const clock = clockMarkSummary(profileName, keyDay);
+        const details = [
+            absence?.label,
+            replacement,
+            contract,
+            swap,
+            clock
+        ].filter(Boolean).join(" | ");
+
+        addNumericHours(rawTotals, extraHours);
+
+        rows.push({
+            fecha: formatDate(iso),
+            diaHabil: isBusinessDay(date, holidays) ? "S\u00ed" : "No",
+            turnoBase: turnoLabel(rawBase),
+            turnoRealizado: absence?.label || turnoLabel(actual),
+            hheeDiurnas: formatExtraCell(extraHours.d),
+            hheeNocturnas: formatExtraCell(extraHours.n),
+            respaldo: details || (
+                hasPositiveHours(extraHours)
+                    ? UNBACKED_OVERTIME_DETAIL
+                    : ""
+            )
         });
     }
 
@@ -571,7 +850,7 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
 
         rows.push({
             fecha: formatDate(iso),
-            diaHabil: isBusinessDay(date, holidays) ? "Si" : "No",
+            diaHabil: isBusinessDay(date, holidays) ? "S\u00ed" : "No",
             tipo: kind === "extra-only"
                 ? "Turno extra"
                 : hasManualBase
@@ -589,7 +868,7 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
                 : actualHours.n,
             respaldo: details || (
                 isExtra
-                    ? "Sin respaldo registrado"
+                    ? UNBACKED_OVERTIME_DETAIL
                     : ""
             )
         });
@@ -630,15 +909,28 @@ function buildSwapRows(profileName, year, month) {
             swap.from === profileName ||
             swap.to === profileName
         )
-        .map(swap => ({
-            estado: cambioEstaAnulado(swap) ? "Anulado" : "Activo",
-            entrega: swap.from,
-            recibe: swap.to,
-            fechaCambio: formatDate(swap.fecha),
-            turnoCambio: swap.turno || "",
-            fechaDevolucion: formatDate(swap.devolucion),
-            turnoDevolucion: swap.turnoDevuelto || ""
-        }));
+        .map(swap => {
+            const perspective =
+                getSwapPerspective(swap, profileName);
+            const fechaCambio =
+                perspective && !perspective.changeSkipped
+                    ? formatDate(perspective.changeDate)
+                    : "";
+            const fechaDevolucion =
+                perspective && !perspective.returnSkipped
+                    ? formatDate(perspective.returnDate)
+                    : "";
+
+            return {
+                estado: cambioEstaAnulado(swap) ? "Anulado" : "Activo",
+                entrega: profileName,
+                recibe: perspective?.counterpart || "",
+                fechaCambio,
+                turnoCambio: perspective?.changeTurnLabel || "",
+                fechaDevolucion,
+                turnoDevolucion: perspective?.returnTurnLabel || ""
+            };
+        });
 }
 
 function buildContractRows(profileName, year, month) {
@@ -646,7 +938,8 @@ function buildContractRows(profileName, year, month) {
         .map(contract => ({
             inicio: formatContractDate(contract.start),
             termino: formatContractDate(contract.end),
-            reemplaza: contract.replaces
+            reemplaza: contract.replaces,
+            motivo: contract.reason || ""
         }));
 }
 
@@ -744,7 +1037,9 @@ function createPermissionBalanceTracker(
         legal:
             finiteBalance(manual.legal) ??
             Math.max(0, 15 - usedInYear.legal),
-        comp: finiteBalance(manual.comp)
+        comp:
+            finiteBalance(manual.comp) ??
+            Math.max(0, 10 - usedInYear.comp)
     };
     const remaining = Object.fromEntries(
         Object.entries(currentBalances).map(([category, value]) => [
@@ -813,7 +1108,14 @@ function appendPermissionSegment(rows, segment) {
     });
 }
 
-function permissionRowsAndAdjustments(profileName, year, month, days, holidays) {
+function permissionRowsAndAdjustments(
+    profileName,
+    year,
+    month,
+    days,
+    holidays,
+    options = {}
+) {
     const maps = getReportMaps(profileName);
     const rows = [];
     let currentSegment = null;
@@ -845,6 +1147,16 @@ function permissionRowsAndAdjustments(profileName, year, month, days, holidays) 
         const date = new Date(year, month, day);
         const keyDay = key(year, month, day);
         const iso = isoFromKey(keyDay);
+
+        if (
+            options.contractOnly === true &&
+            !hasContractForDate(profileName, keyDay)
+        ) {
+            appendPermissionSegment(rows, currentSegment);
+            currentSegment = null;
+            continue;
+        }
+
         const isBusiness = isBusinessDay(date, holidays);
         const absence = dayAbsenceDetail(keyDay, maps);
 
@@ -876,6 +1188,7 @@ function permissionRowsAndAdjustments(profileName, year, month, days, holidays) 
             adjustments.compHours += hours;
         } else if (
             (absence.type === "license" ||
+                absence.type === "union_leave" ||
                 absence.type === "professional_license") &&
             isBusiness
         ) {
@@ -964,7 +1277,8 @@ function buildNoAssignmentReportModel({
     profile,
     monthDate,
     holidays,
-    stats
+    stats,
+    contractOnly = false
 }) {
     const year = monthDate.getFullYear();
     const month = monthDate.getMonth();
@@ -975,7 +1289,8 @@ function buildNoAssignmentReportModel({
         year,
         month,
         days,
-        holidays
+        holidays,
+        { contractOnly }
     );
     const carryIn = reportCarryIn(
         profile.name,
@@ -1001,7 +1316,8 @@ function buildNoAssignmentReportModel({
         year,
         month,
         days,
-        holidays
+        holidays,
+        { contractOnly }
     );
     const valorHora = getValorHora(profile.name);
     const monthName = monthLabel(monthDate);
@@ -1013,6 +1329,7 @@ function buildNoAssignmentReportModel({
         month,
         monthName,
         stats,
+        contractOnly,
         valorHora,
         rawDiurnas: dayDetail.rawTotals.d,
         rawNocturnas: dayDetail.rawTotals.n,
@@ -1022,6 +1339,96 @@ function buildNoAssignmentReportModel({
         totalN,
         totalWorked: totalD + totalN,
         adjustments: permissions.adjustments,
+        permissionRows: permissions.rows,
+        contractRows: contractOnly
+            ? buildContractRows(profile.name, year, month)
+            : [],
+        swapRows: buildSwapRows(profile.name, year, month),
+        clockRows: buildClockRows(profile.name, year, month),
+        dayRows: [
+            ...dayDetail.rows,
+            {
+                fecha: "Total del mes",
+                turnoBase: "",
+                turnoRealizado: "",
+                horasDiurnas: formatHour(totalD),
+                horasNocturnas: formatHour(totalN),
+                respaldo: ""
+            }
+        ]
+    };
+}
+
+function buildAssignedShiftReportModel({
+    profile,
+    monthDate,
+    holidays,
+    stats
+}) {
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const data = getProfileData(profile.name);
+    const dayDetail = buildAssignedShiftDayRows(
+        profile,
+        year,
+        month,
+        days,
+        holidays
+    );
+    const carryIn = assignedCarryIn(
+        profile.name,
+        year,
+        month,
+        holidays
+    );
+    const carryOut = assignedCarryOut(
+        profile.name,
+        year,
+        month,
+        days,
+        data,
+        holidays
+    );
+    const currentMonthTotals = subtractNumericHours(
+        dayDetail.rawTotals,
+        carryOut
+    );
+    const totalD =
+        dayDetail.rawTotals.d + carryIn.d - carryOut.d;
+    const totalN =
+        dayDetail.rawTotals.n + carryIn.n - carryOut.n;
+    const permissions = permissionRowsAndAdjustments(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays
+    );
+    const valorHora = getValorHora(profile.name);
+    const monthName = monthLabel(monthDate);
+    return {
+        profile,
+        monthDate,
+        year,
+        month,
+        monthName,
+        stats,
+        valorHora,
+        rawDiurnas: dayDetail.rawTotals.d,
+        rawNocturnas: dayDetail.rawTotals.n,
+        currentMonthDiurnas: currentMonthTotals.d,
+        currentMonthNocturnas: currentMonthTotals.n,
+        carryIn,
+        carryOut,
+        totalD,
+        totalN,
+        paymentDiurno: stats.returnTransferEnabled
+            ? 0
+            : totalD * valorHora * 1.25,
+        paymentNocturno: stats.returnTransferEnabled
+            ? 0
+            : totalN * valorHora * 1.5,
         permissionRows: permissions.rows,
         swapRows: buildSwapRows(profile.name, year, month),
         clockRows: buildClockRows(profile.name, year, month),
@@ -1034,7 +1441,7 @@ function table(title, columns, rows) {
         ? rows.map(row => `
             <tr>
                 ${columns.map(column => `
-                    <td>${escapeHTML(row[column.key] ?? "")}</td>
+                    <td>${escapeHTML(displayReportText(row[column.key] ?? ""))}</td>
                 `).join("")}
             </tr>
         `).join("")
@@ -1068,7 +1475,7 @@ function reportTableRowsHTML(columns, rows, emptyText) {
             return `
             <tr${rowClass}>
                 ${columns.map(column => `
-                    <td>${escapeHTML(row[column.key] ?? "")}</td>
+                    <td>${escapeHTML(displayReportText(row[column.key] ?? ""))}</td>
                 `).join("")}
             </tr>
         `;
@@ -1180,20 +1587,33 @@ function noAssignmentBusinessRows(model) {
     const rows = [
         {
             cantidad: formatHour(adj.businessDays),
-            item: "Dias habiles con contrato",
+            item: "D\u00edas h\u00e1biles con contrato",
             signo: "(+)",
             horas: formatHour(adj.businessHours)
         }
     ];
 
-    [
+    const adjustmentRows = [
         ["adminFullDays", "adminFullHours", "P. Administrativos"],
         ["legalDays", "legalHours", "F. Legal"],
-        ["compDays", "compHours", "F. Compensatorios"],
-        ["halfAdminCount", "halfAdminHours", "1/2 ADM manana/tarde"],
-        ["medicalBusinessDays", "medicalHours", "Licencias medicas en dias habiles"],
-        ["otherApprovedDays", "otherApprovedHours", "Otros permisos aprobados"]
-    ].forEach(([countKey, hoursKey, label]) => {
+        ["halfAdminCount", "halfAdminHours", "1/2 ADM ma\u00f1ana/tarde"],
+        ["medicalBusinessDays", "medicalHours", "Licencias m\u00e9dicas / LM Profesional en d\u00edas h\u00e1biles"]
+    ];
+
+    if (!model.contractOnly) {
+        adjustmentRows.splice(
+            2,
+            0,
+            ["compDays", "compHours", "F. Compensatorios"]
+        );
+        adjustmentRows.push([
+            "otherApprovedDays",
+            "otherApprovedHours",
+            "Otros permisos aprobados"
+        ]);
+    }
+
+    adjustmentRows.forEach(([countKey, hoursKey, label]) => {
         if (!adj[countKey]) return;
 
         rows.push({
@@ -1206,7 +1626,7 @@ function noAssignmentBusinessRows(model) {
 
     rows.push({
         cantidad: "",
-        item: `Total Horas habiles de ${model.monthName}`,
+        item: `Total Horas h\u00e1biles de ${model.monthName}`,
         signo: "(=)",
         horas: formatHour(model.stats.horasHabiles)
     });
@@ -1214,10 +1634,21 @@ function noAssignmentBusinessRows(model) {
     return rows;
 }
 
+function formatReturnTransferValue(hours) {
+    return `${formatHour(Math.max(0, Number(hours) || 0))}h`;
+}
+
 function noAssignmentExtraRows(model) {
+    const returnTransferEnabled =
+        Boolean(model.stats?.returnTransferEnabled);
+    const dayReturnHours =
+        Math.max(0, Number(model.stats?.hheeDiurnas) || 0) * 1.25;
+    const nightReturnHours =
+        Math.max(0, Number(model.stats?.hheeNocturnas) || 0) * 1.5;
+
     return [
         {
-            item: `Horas habiles ${model.monthName}`,
+            item: `Horas h\u00e1biles ${model.monthName}`,
             valor: formatHour(model.stats.horasHabiles),
             item2: "HHEE Diurnas",
             valor2: formatHour(model.stats.hheeDiurnas)
@@ -1229,17 +1660,99 @@ function noAssignmentExtraRows(model) {
             valor2: formatHour(model.stats.hheeNocturnas)
         },
         {
-            item: "Pago diurno estimado",
-            valor: `$${formatMoney(model.stats.paymentDiurno)}`,
-            item2: "Pago nocturno estimado",
-            valor2: `$${formatMoney(model.stats.paymentNocturno)}`
+            item: returnTransferEnabled
+                ? "A devoluci\u00f3n diurna"
+                : "Pago diurno estimado",
+            valor: returnTransferEnabled
+                ? formatReturnTransferValue(dayReturnHours)
+                : `$${formatMoney(model.stats.paymentDiurno)}`,
+            item2: returnTransferEnabled
+                ? "A devoluci\u00f3n nocturna"
+                : "Pago nocturno estimado",
+            valor2: returnTransferEnabled
+                ? formatReturnTransferValue(nightReturnHours)
+                : `$${formatMoney(model.stats.paymentNocturno)}`
+        }
+    ];
+}
+
+function assignedShiftSummaryRows(model) {
+    const returnTransferEnabled =
+        Boolean(model.stats?.returnTransferEnabled);
+    const dayReturnHours =
+        Math.max(0, Number(model.totalD) || 0) * 1.25;
+    const nightReturnHours =
+        Math.max(0, Number(model.totalN) || 0) * 1.5;
+
+    return [
+        {
+            item: "HHEE diurnas mes anterior",
+            signo: "(+)",
+            valor: formatHour(model.carryIn.d),
+            item2: "HHEE nocturnas mes anterior",
+            signo2: "(+)",
+            valor2: formatHour(model.carryIn.n)
+        },
+        {
+            item: "HHEE diurnas mes siguiente",
+            signo: "(-)",
+            valor: formatHour(model.carryOut.d),
+            item2: "HHEE nocturnas mes siguiente",
+            signo2: "(-)",
+            valor2: formatHour(model.carryOut.n)
+        },
+        {
+            item: "HHEE realizadas en mes actual",
+            signo: "(+)",
+            valor: formatHour(model.rawDiurnas),
+            item2: "HHEE realizadas en mes actual",
+            signo2: "(+)",
+            valor2: formatHour(model.rawNocturnas)
+        },
+        {
+            item: returnTransferEnabled
+                ? "Total HHEE diurnas a devoluci\u00f3n"
+                : "Total HHEE diurnas a pago",
+            signo: "(=)",
+            valor: formatHour(model.totalD),
+            item2: returnTransferEnabled
+                ? "Total HHEE nocturnas a devoluci\u00f3n"
+                : "Total HHEE nocturnas a pago",
+            signo2: "(=)",
+            valor2: formatHour(model.totalN)
+        },
+        {
+            item: returnTransferEnabled
+                ? "A devoluci\u00f3n diurna"
+                : "Pago extra diurno estimado",
+            signo: "(=)",
+            valor: returnTransferEnabled
+                ? formatReturnTransferValue(dayReturnHours)
+                : `$${formatMoney(model.paymentDiurno)}`,
+            item2: returnTransferEnabled
+                ? "A devoluci\u00f3n nocturna"
+                : "Pago extra nocturno estimado",
+            signo2: "(=)",
+            valor2: returnTransferEnabled
+                ? formatReturnTransferValue(nightReturnHours)
+                : `$${formatMoney(model.paymentNocturno)}`
         }
     ];
 }
 
 function noAssignmentProfileRows(model) {
     const workspace = getActiveWorkspace();
-    const rotativa = getRotativa(model.profile.name);
+    const replacementContract =
+        isReplacementProfile(model.profile.name)
+            ? activeContractsForMonth(
+                model.profile.name,
+                model.year,
+                model.month
+            )[0]
+            : null;
+    const rotativa = replacementContract
+        ? getRotativa(replacementContract.replaces)
+        : getRotativa(model.profile.name);
 
     return [
         { campo: "Nombre", valor: model.profile.name },
@@ -1247,10 +1760,10 @@ function noAssignmentProfileRows(model) {
         { campo: "Unidad", valor: workspace?.name || "Sin entorno activo" },
         { campo: "Contrato", valor: model.profile.contractType || "Sin registro" },
         { campo: "Grado", valor: model.profile.grade || "Sin registro" },
-        { campo: "Asignacion de Turno", valor: getShiftAssigned(model.profile.name) ? "SI" : "NO" },
+        { campo: "Asignaci\u00f3n de Turno", valor: getShiftAssigned(model.profile.name) ? "S\u00cd" : "NO" },
         { campo: "Estamento", valor: model.profile.estamento || "Sin registro" },
         { campo: "Rotativa", valor: rotationLabel(rotativa.type) },
-        { campo: "Profesion", valor: model.profile.profession || "Sin informacion" },
+        { campo: "Profesi\u00f3n", valor: model.profile.profession || "Sin informaci\u00f3n" },
         { campo: "Valor Hora", valor: `$${formatMoney(model.valorHora)}` }
     ];
 }
@@ -1265,6 +1778,12 @@ function buildNoAssignmentReportHTML(model) {
                 { key: "campo", label: "Campo" },
                 { key: "valor", label: "Valor" }
             ], noAssignmentProfileRows(model))}
+            ${model.contractRows?.length ? reportTable("Contratos", [
+                { key: "inicio", label: "Fecha Inicio" },
+                { key: "termino", label: "Fecha T\u00e9rmino" },
+                { key: "reemplaza", label: "Reemplaza a" },
+                { key: "motivo", label: "Motivo" }
+            ], model.contractRows) : ""}
             ${reportTable("Horas del Mes", [
                 { key: "item", label: "Concepto diurno" },
                 { key: "signo", label: "" },
@@ -1287,7 +1806,7 @@ function buildNoAssignmentReportHTML(model) {
             ], noAssignmentExtraRows(model))}
             ${reportTable("Permisos / Ausencias", [
                 { key: "inicio", label: "Fecha Inicio" },
-                { key: "termino", label: "Fecha Termino" },
+                { key: "termino", label: "Fecha T\u00e9rmino" },
                 { key: "cantidad", label: "N° Solicitado" },
                 { key: "tipo", label: "Tipo de permiso" },
                 { key: "nuevoSaldo", label: "Nuevo Saldo" }
@@ -1298,8 +1817,8 @@ function buildNoAssignmentReportHTML(model) {
                 { key: "recibe", label: "Recibe turno" },
                 { key: "fechaCambio", label: "Fecha cambio" },
                 { key: "turnoCambio", label: "Turno cambio" },
-                { key: "fechaDevolucion", label: "Fecha devolucion" },
-                { key: "turnoDevolucion", label: "Turno devolucion" }
+                { key: "fechaDevolucion", label: "Fecha devoluci\u00f3n" },
+                { key: "turnoDevolucion", label: "Turno devoluci\u00f3n" }
             ], model.swapRows)}
             ${reportTable("Registros de marcaje", [
                 { key: "fecha", label: "Fecha" },
@@ -1315,6 +1834,58 @@ function buildNoAssignmentReportHTML(model) {
                 { key: "horasNocturnas", label: "Horas nocturnas" },
                 { key: "respaldo", label: "Reemplazo / motivo / CCTT" }
             ], model.dayRows)}
+            ${reportSignatureFooterHTML()}
+        </div>
+    `;
+}
+
+function buildAssignedShiftReportHTML(model) {
+    return `
+        <div class="no-assignment-report assigned-shift-report">
+            <div class="report-title-strip">
+                PLANILLA "${escapeHTML(model.monthName.toUpperCase())}"
+            </div>
+            ${reportTable("Datos del trabajador", [
+                { key: "campo", label: "Campo" },
+                { key: "valor", label: "Valor" }
+            ], noAssignmentProfileRows(model))}
+            ${reportTable("Resumen de horas extras", [
+                { key: "item", label: "Concepto diurno" },
+                { key: "signo", label: "" },
+                { key: "valor", label: "Horas / Valor" },
+                { key: "item2", label: "Concepto nocturno" },
+                { key: "signo2", label: "" },
+                { key: "valor2", label: "Horas / Valor" }
+            ], assignedShiftSummaryRows(model))}
+            ${reportTable("Permisos / Ausencias", [
+                { key: "inicio", label: "Fecha Inicio" },
+                { key: "termino", label: "Fecha T\u00e9rmino" },
+                { key: "cantidad", label: "N° Solicitado" },
+                { key: "tipo", label: "Tipo de permiso" },
+                { key: "nuevoSaldo", label: "Nuevo Saldo" }
+            ], model.permissionRows)}
+            ${reportTable("Cambios de turno", [
+                { key: "recibe", label: "Recibe turno" },
+                { key: "fechaCambio", label: "Fecha cambio" },
+                { key: "turnoCambio", label: "Turno cambio" },
+                { key: "fechaDevolucion", label: "Fecha devoluci\u00f3n" },
+                { key: "turnoDevolucion", label: "Turno devoluci\u00f3n" }
+            ], model.swapRows)}
+            ${reportTable("Registros de marcaje", [
+                { key: "fecha", label: "Fecha" },
+                { key: "turno", label: "Turno" },
+                { key: "incidencia", label: "Tipo de Incidencia" },
+                { key: "comentario", label: "Comentario" }
+            ], model.clockRows)}
+            ${reportTable("Detalle de turnos", [
+                { key: "fecha", label: "Fecha" },
+                { key: "turnoBase", label: "Turno Base" },
+                { key: "turnoRealizado", label: "Turno realizado" },
+                { key: "hheeDiurnas", label: "HHEE diurnas" },
+                { key: "hheeNocturnas", label: "HHEE nocturnas" },
+                { key: "respaldo", label: "Reemplazo / motivo / CCTT" }
+            ], model.dayRows)}
+            ${reportSignatureFooterHTML()}
         </div>
     `;
 }
@@ -1338,6 +1909,7 @@ function noAssignmentWorkbookHTML(model) {
                     .report-section--worker-data th:first-child,
                     .report-section--worker-data td:first-child { width: 1%; white-space: nowrap; padding-right: 22px; }
                     .report-row--inhabil td:first-child { background: #fee2e2; }
+                    .report-signature-footer { width: 320px; margin: 72px 28px 0 auto; padding: 8px 0 0; border-top: 1px solid #1e2f4d; color: #1e2f4d; font-size: 11px; line-height: 1.3; text-align: center; }
                 </style>
             </head>
             <body>${buildNoAssignmentReportHTML(model)}</body>
@@ -1345,41 +1917,88 @@ function noAssignmentWorkbookHTML(model) {
     `;
 }
 
+function assignedShiftWorkbookHTML(model) {
+    return `
+        <!doctype html>
+        <html>
+            <head>
+                <meta charset="UTF-8">
+                <style>
+                    body { font-family: Calibri, Arial, sans-serif; color: #111827; }
+                    .report-title-strip { background: #0f172a; color: #fff; font-size: 18px; font-weight: 700; text-align: center; padding: 10px; }
+                    h4 { margin: 14px 0 0; padding: 6px 8px; color: #fff; background: #1d6cff; font-size: 13px; text-transform: uppercase; }
+                    table { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+                    th { background: #dbeafe; color: #0f172a; font-weight: 700; }
+                    th, td { border: 1px solid #94a3b8; padding: 5px 7px; vertical-align: top; font-size: 11px; }
+                    td { mso-number-format:"\\@"; }
+                    .report-worker-data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+                    .report-worker-data-column { min-width: 0; }
+                    .report-section--worker-data th:first-child,
+                    .report-section--worker-data td:first-child { width: 1%; white-space: nowrap; padding-right: 22px; }
+                    .report-row--inhabil td:first-child { background: #fee2e2; }
+                    .report-signature-footer { width: 320px; margin: 72px 28px 0 auto; padding: 8px 0 0; border-top: 1px solid #1e2f4d; color: #1e2f4d; font-size: 11px; line-height: 1.3; text-align: center; }
+                </style>
+            </head>
+            <body>${buildAssignedShiftReportHTML(model)}</body>
+        </html>
+    `;
+}
+
 function getCalculationRows(stats, profileName) {
     const valorHora = getValorHora(profileName);
+    const returnTransferEnabled =
+        Boolean(stats.returnTransferEnabled);
     const pagoDiurno = Number.isFinite(Number(stats.paymentDiurno))
         ? Number(stats.paymentDiurno)
         : stats.hheeDiurnas * 1.25 * valorHora;
     const pagoNocturno = Number.isFinite(Number(stats.paymentNocturno))
         ? Number(stats.paymentNocturno)
         : stats.hheeNocturnas * 1.5 * valorHora;
+    const dayReturnHours =
+        Math.max(0, Number(stats.hheeDiurnas) || 0) * 1.25;
+    const nightReturnHours =
+        Math.max(0, Number(stats.hheeNocturnas) || 0) * 1.5;
     const modeLabel = stats.mode === "diurno"
         ? "Personal Diurno"
         : stats.mode === "assigned"
-            ? "Rotativa con asignacion de turno"
-            : "Rotativa sin asignacion / calculo agregado";
+            ? "Rotativa con asignaci\u00f3n de turno"
+            : "Rotativa sin asignaci\u00f3n / c\u00e1lculo agregado";
     const formula = stats.mode === "aggregate"
         ? "Base mensual ajustada - horas diurnas trabajadas; el remanente se cruza contra horas nocturnas."
         : "Se compara cada turno real contra la rotativa base y solo se contabiliza la diferencia.";
 
     return [
-        { item: "Modo de calculo", valor: modeLabel },
+        { item: "Modo de c\u00e1lculo", valor: modeLabel },
         { item: "Formula aplicada", valor: formula },
         { item: "Horas diurnas trabajadas", valor: `${formatHour(stats.totalD)}h` },
         { item: "Horas nocturnas trabajadas", valor: `${formatHour(stats.totalN)}h` },
-        { item: "Base habil ajustada del mes", valor: `${formatHour(stats.horasHabiles)}h` },
+        { item: "Base h\u00e1bil ajustada del mes", valor: `${formatHour(stats.horasHabiles)}h` },
         { item: "HHEE diurnas redondeadas", valor: `${stats.hheeDiurnas}h` },
         { item: "HHEE nocturnas redondeadas", valor: `${stats.hheeNocturnas}h` },
         {
             item: "Destino de HH.EE del mes",
             valor: stats.returnTransferEnabled
-                ? `Devolucion de horas (${formatHour(stats.returnTransferHours)}h generadas)`
+                ? `Devoluci\u00f3n de horas (${formatHour(stats.returnTransferHours)}h generadas)`
                 : "Pago"
         },
         { item: "Valor hora actual", valor: `$${formatMoney(valorHora)}` },
         { item: "Regla de valor hora", valor: "Se usa el grado vigente en la fecha de cada hora extra cuando existe historial." },
-        { item: "Pago diurno estimado", valor: `$${formatMoney(pagoDiurno)}` },
-        { item: "Pago nocturno estimado", valor: `$${formatMoney(pagoNocturno)}` },
+        {
+            item: returnTransferEnabled
+                ? "A devoluci\u00f3n diurna"
+                : "Pago diurno estimado",
+            valor: returnTransferEnabled
+                ? formatReturnTransferValue(dayReturnHours)
+                : `$${formatMoney(pagoDiurno)}`
+        },
+        {
+            item: returnTransferEnabled
+                ? "A devoluci\u00f3n nocturna"
+                : "Pago nocturno estimado",
+            valor: returnTransferEnabled
+                ? formatReturnTransferValue(nightReturnHours)
+                : `$${formatMoney(pagoNocturno)}`
+        },
         { item: "Traspaso al mes siguiente", valor: `${formatHour(stats.carryOut?.d)}h diurnas / ${formatHour(stats.carryOut?.n)}h nocturnas` }
     ];
 }
@@ -1403,10 +2022,10 @@ function buildWorkbookHTML({
         { campo: "Unidad", valor: workspaceUnit },
         { campo: "Tipo de contrato", valor: profile.contractType || "Sin registro" },
         { campo: "Estamento", valor: profile.estamento || "Sin registro" },
-        { campo: "Profesion", valor: profile.profession || "Sin informacion" },
+        { campo: "Profesi\u00f3n", valor: profile.profession || "Sin informaci\u00f3n" },
         { campo: "Grado", valor: profile.grade || "Sin registro" },
         { campo: "Rotativa", valor: rotationLabel(rotativa.type) },
-        { campo: "Asignacion de turno", valor: getShiftAssigned(profile.name) ? "Si" : "No" },
+        { campo: "Asignaci\u00f3n de turno", valor: getShiftAssigned(profile.name) ? "S\u00ed" : "No" },
         { campo: "Mes reportado", valor: monthLabel(monthDate) }
     ];
 
@@ -1423,12 +2042,13 @@ function buildWorkbookHTML({
                     th { background: #dbeafe; color: #0f172a; font-weight: 700; }
                     th, td { border: 1px solid #9ca3af; padding: 7px 9px; vertical-align: top; }
                     .note { color: #475569; margin-bottom: 14px; }
+                    .report-signature-footer { width: 320px; margin: 72px 28px 0 auto; padding: 8px 0 0; border-top: 1px solid #1e2f4d; color: #1e2f4d; font-size: 11px; line-height: 1.3; text-align: center; }
                 </style>
             </head>
             <body>
                 <h1>${escapeHTML(title)}</h1>
                 <div class="note">
-                    Archivo generado desde ProTurnos. Las horas del resumen aplican la misma regla de calculo que la vista de Horas Extras.
+                    Archivo generado desde ProTurnos. Las horas del resumen aplican la misma regla de c\u00e1lculo que la vista de Horas Extras.
                 </div>
                 ${table("Datos del trabajador", [
                     { key: "campo", label: "Campo" },
@@ -1436,12 +2056,12 @@ function buildWorkbookHTML({
                 ], profileRows)}
                 ${contractRows.length ? table("Contratos del mes", [
                     { key: "inicio", label: "Inicio" },
-                    { key: "termino", label: "Termino" },
+                    { key: "termino", label: "T\u00e9rmino" },
                     { key: "reemplaza", label: "Reemplaza a" }
                 ], contractRows) : ""}
                 ${table("Detalle mensual", [
                     { key: "fecha", label: "Fecha" },
-                    { key: "diaHabil", label: "Dia habil" },
+                    { key: "diaHabil", label: "D\u00eda h\u00e1bil" },
                     { key: "tipo", label: "Tipo" },
                     { key: "turnoBase", label: "Turno base" },
                     { key: "turnoConCambios", label: "Base con CCTT" },
@@ -1465,13 +2085,14 @@ function buildWorkbookHTML({
                     { key: "recibe", label: "Recibe turno" },
                     { key: "fechaCambio", label: "Fecha cambio" },
                     { key: "turnoCambio", label: "Turno cambio" },
-                    { key: "fechaDevolucion", label: "Fecha devolucion" },
-                    { key: "turnoDevolucion", label: "Turno devolucion" }
+                    { key: "fechaDevolucion", label: "Fecha devoluci\u00f3n" },
+                    { key: "turnoDevolucion", label: "Turno devoluci\u00f3n" }
                 ], swapRows)}
-                ${table("Detalle del calculo", [
+                ${table("Detalle del c\u00e1lculo", [
                     { key: "item", label: "Item" },
                     { key: "valor", label: "Valor" }
                 ], getCalculationRows(stats, profile.name))}
+                ${reportSignatureFooterHTML()}
             </body>
         </html>
     `;
@@ -1525,6 +2146,115 @@ export async function buildNoAssignmentReportPreviewHTML(
     return buildNoAssignmentReportHTML(model);
 }
 
+export async function buildReplacementReportPreviewHTML(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name || !isReplacementReportProfile(profile.name)) {
+        return "";
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = buildNoAssignmentReportModel({
+        profile,
+        monthDate,
+        holidays,
+        stats,
+        contractOnly: true
+    });
+
+    return buildNoAssignmentReportHTML(model);
+}
+
+export async function buildAssignedShiftReportPreviewHTML(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name || !isAssignedShiftReportProfile(profile.name)) {
+        return "";
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = buildAssignedShiftReportModel({
+        profile,
+        monthDate,
+        holidays,
+        stats
+    });
+
+    return buildAssignedShiftReportHTML(model);
+}
+
+export async function buildDiurnoReportPreviewHTML(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name || !isDiurnoReportProfile(profile.name)) {
+        return "";
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = stats.mode === "aggregate"
+        ? buildNoAssignmentReportModel({
+            profile,
+            monthDate,
+            holidays,
+            stats
+        })
+        : buildAssignedShiftReportModel({
+            profile,
+            monthDate,
+            holidays,
+            stats
+        });
+
+    return stats.mode === "aggregate"
+        ? buildNoAssignmentReportHTML(model)
+        : buildAssignedShiftReportHTML(model);
+}
+
 export async function exportNoAssignmentShiftReport(
     profile,
     monthDate = new Date()
@@ -1565,14 +2295,162 @@ export async function exportNoAssignmentShiftReport(
     downloadExcel(noAssignmentWorkbookHTML(model), filename);
 }
 
+export async function exportReplacementShiftReport(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name) {
+        alert("Selecciona un trabajador para descargar el reporte.");
+        return;
+    }
+
+    if (!isReplacementReportProfile(profile.name)) {
+        alert("Este reporte solo aplica para trabajadores con contrato Reemplazo.");
+        return;
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = buildNoAssignmentReportModel({
+        profile,
+        monthDate,
+        holidays,
+        stats,
+        contractOnly: true
+    });
+    const filename = `Reporte_reemplazo_${safeFileName(profile.name)}_${year}-${String(month + 1).padStart(2, "0")}.xls`;
+
+    downloadExcel(noAssignmentWorkbookHTML(model), filename);
+}
+
+export async function exportAssignedShiftReport(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name) {
+        alert("Selecciona un trabajador para descargar el reporte.");
+        return;
+    }
+
+    if (!isAssignedShiftReportProfile(profile.name)) {
+        alert("Este reporte solo aplica para 3er o 4\u00b0 turno con Asignaci\u00f3n de Turno.");
+        return;
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = buildAssignedShiftReportModel({
+        profile,
+        monthDate,
+        holidays,
+        stats
+    });
+    const filename = `Reporte_turno_con_asignacion_${safeFileName(profile.name)}_${year}-${String(month + 1).padStart(2, "0")}.xls`;
+
+    downloadExcel(assignedShiftWorkbookHTML(model), filename);
+}
+
+export async function exportDiurnoShiftReport(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name) {
+        alert("Selecciona un trabajador para descargar el reporte.");
+        return;
+    }
+
+    if (!isDiurnoReportProfile(profile.name)) {
+        alert("Este reporte solo aplica para trabajadores con rotativa Diurno.");
+        return;
+    }
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+    const model = stats.mode === "aggregate"
+        ? buildNoAssignmentReportModel({
+            profile,
+            monthDate,
+            holidays,
+            stats
+        })
+        : buildAssignedShiftReportModel({
+            profile,
+            monthDate,
+            holidays,
+            stats
+        });
+    const filename = `Reporte_diurno_${safeFileName(profile.name)}_${year}-${String(month + 1).padStart(2, "0")}.xls`;
+
+    downloadExcel(
+        stats.mode === "aggregate"
+            ? noAssignmentWorkbookHTML(model)
+            : assignedShiftWorkbookHTML(model),
+        filename
+    );
+}
+
 export async function exportHoursReport(profile, monthDate = new Date()) {
     if (!profile?.name) {
         alert("Selecciona un trabajador para imprimir el reporte.");
         return;
     }
 
+    if (isReplacementReportProfile(profile.name)) {
+        await exportReplacementShiftReport(profile, monthDate);
+        return;
+    }
+
+    if (isDiurnoReportProfile(profile.name)) {
+        await exportDiurnoShiftReport(profile, monthDate);
+        return;
+    }
+
     if (isNoAssignmentShiftProfile(profile.name)) {
         await exportNoAssignmentShiftReport(profile, monthDate);
+        return;
+    }
+
+    if (isAssignedShiftReportProfile(profile.name)) {
+        await exportAssignedShiftReport(profile, monthDate);
         return;
     }
 

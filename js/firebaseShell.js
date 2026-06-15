@@ -10,12 +10,9 @@ import {
     getActiveWorkspace,
     joinWorkspace,
     listUserWorkspaces,
+    prepareWorkspaceInvitation,
     setActiveWorkspace
 } from "./workspaces.js";
-import {
-    buildLocalMigrationSnapshot,
-    uploadLocalSnapshotToActiveWorkspace
-} from "./firebaseMigration.js";
 import {
     acceptWorkspaceLink,
     listWorkspaceLinks,
@@ -28,10 +25,6 @@ let currentUser = null;
 let currentWorkspace = getActiveWorkspace();
 let workspaceList = [];
 let options = {};
-let migrationState = {
-    mode: "idle",
-    message: ""
-};
 let linkedUnitState = {
     loading: false,
     message: "",
@@ -83,6 +76,9 @@ function workspaceInviteURL(workspace) {
     const url = new URL(baseURL);
 
     url.searchParams.set("joinWorkspace", workspace.id);
+    if (workspace.inviteCode) {
+        url.searchParams.set("inviteCode", workspace.inviteCode);
+    }
 
     return url.toString();
 }
@@ -95,6 +91,14 @@ function pendingJoinWorkspaceId() {
         .get("joinWorkspace") || "";
 }
 
+function pendingJoinInviteCode() {
+    if (typeof window === "undefined") return "";
+
+    return new URL(window.location.href)
+        .searchParams
+        .get("inviteCode") || "";
+}
+
 function clearPendingJoinWorkspaceId() {
     if (
         typeof window === "undefined" ||
@@ -105,9 +109,15 @@ function clearPendingJoinWorkspaceId() {
 
     const url = new URL(window.location.href);
 
-    if (!url.searchParams.has("joinWorkspace")) return;
+    if (
+        !url.searchParams.has("joinWorkspace") &&
+        !url.searchParams.has("inviteCode")
+    ) {
+        return;
+    }
 
     url.searchParams.delete("joinWorkspace");
+    url.searchParams.delete("inviteCode");
     window.history.replaceState(
         {},
         "",
@@ -129,8 +139,8 @@ function workspaceInvitationText(workspace) {
         "",
         inviteURL ? `Abre esta invitacion: ${inviteURL}` : "",
         "Inicia sesion con Google.",
-        "Si el ID no aparece automaticamente, pegalo en Unirse a entorno existente:",
-        workspace.id
+        "Si el enlace no aparece automaticamente, pega estos datos en Unirse a entorno existente:",
+        `${workspace.id} | ${workspace.inviteCode || ""}`
     ].filter(Boolean).join("\n");
 }
 
@@ -306,26 +316,6 @@ function workspaceListHTML() {
     }).join("");
 }
 
-function localSnapshotKeyCount() {
-    try {
-        const snapshot = buildLocalMigrationSnapshot();
-
-        return Object.keys(snapshot.data || {}).length;
-    } catch {
-        return 0;
-    }
-}
-
-function migrationStatusHTML() {
-    if (!migrationState.message) return "";
-
-    return `
-        <div class="firebase-migration-status firebase-migration-status--${escapeHTML(migrationState.mode)}">
-            ${escapeHTML(migrationState.message)}
-        </div>
-    `;
-}
-
 function friendlyFirebaseError(error) {
     const code = error?.code || "";
 
@@ -357,54 +347,6 @@ function friendlyFirebaseError(error) {
     return error?.message || "No se pudo completar la accion.";
 }
 
-function migrationPanelHTML() {
-    if (!currentWorkspace) {
-        return `
-            <div class="firebase-migration-panel">
-                <strong>Sincronizacion del entorno</strong>
-                <p>
-                    Selecciona o crea un entorno para activar la sincronizacion
-                    completa del sistema.
-                </p>
-            </div>
-        `;
-    }
-
-    const keyCount = localSnapshotKeyCount();
-    const isConfirming = migrationState.mode === "confirm";
-    const isLoading = migrationState.mode === "loading";
-    const primaryAction = isConfirming ?
-        "upload-local-snapshot" :
-        "prepare-local-snapshot-upload";
-    const primaryLabel = isLoading ?
-        "Guardando..." :
-        isConfirming ?
-        "Confirmar copia" :
-        "Guardar copia manual";
-
-    return `
-        <div class="firebase-migration-panel">
-            <strong>Sincronizacion del entorno</strong>
-            <p>
-                El entorno <b>${escapeHTML(currentWorkspace.name)}</b> sincroniza
-                automaticamente el estado completo del sistema. Puedes crear ademas
-                una copia manual con <b>${keyCount}</b> registros locales como respaldo.
-            </p>
-            ${migrationStatusHTML()}
-            <div class="firebase-migration-actions">
-                <button class="primary-button" type="button" data-action="${primaryAction}" ${isLoading ? "disabled" : ""}>
-                    ${primaryLabel}
-                </button>
-                ${isConfirming ? `
-                    <button class="secondary-button" type="button" data-action="cancel-local-snapshot-upload">
-                        Cancelar
-                    </button>
-                ` : ""}
-            </div>
-        </div>
-    `;
-}
-
 function linkedUnitStatusLabel(status) {
     if (status === "accepted") return "Activo";
     if (status === "rejected") return "Rechazado";
@@ -434,7 +376,7 @@ function linkedUnitsPanelHTML() {
     );
     const message = linkedUnitState.message
         ? `
-            <div class="firebase-migration-status firebase-migration-status--success">
+            <div class="firebase-linked-status">
                 ${escapeHTML(linkedUnitState.message)}
             </div>
         `
@@ -542,7 +484,7 @@ function renderSignedInModal(backdrop) {
 
                 <label class="firebase-field">
                     <span>Unirse a entorno existente</span>
-                    <input id="firebaseJoinWorkspaceId" type="text" placeholder="Pega el ID del entorno" value="${escapeHTML(pendingWorkspaceId)}">
+                    <input id="firebaseJoinWorkspaceId" type="text" placeholder="Pega enlace de invitacion o ID | codigo" value="${escapeHTML(pendingWorkspaceId)}">
                     <button class="secondary-button" type="button" data-action="join-workspace">Unirme</button>
                 </label>
             </div>
@@ -550,8 +492,6 @@ function renderSignedInModal(backdrop) {
             <div class="firebase-workspace-list">
                 ${workspaceListHTML()}
             </div>
-
-            ${migrationPanelHTML()}
 
             ${linkedUnitsPanelHTML()}
 
@@ -575,11 +515,11 @@ function renderSignedOutModal(backdrop, options = {}) {
                 Ingresa con tu cuenta Google para crear un entorno de trabajo
                 o unirte a uno existente.
             </p>
-            <div class="firebase-dialog-note">
-                ${required
-                    ? "Para proteger los datos, el sistema no permite realizar cambios sin una sesion iniciada."
-                    : "Hasta iniciar sesion y elegir un entorno, el sistema seguira trabajando en este equipo."}
-            </div>
+            ${required ? "" : `
+                <div class="firebase-dialog-note">
+                    Hasta iniciar sesion y elegir un entorno, el sistema seguira trabajando en este equipo.
+                </div>
+            `}
             <div class="turn-change-dialog__actions">
                 <button class="primary-button" type="button" data-action="sign-in">Ingresar con Google</button>
                 ${required ? "" : `
@@ -662,50 +602,9 @@ async function handleAction(action, backdrop, sourceButton = null) {
             setActiveWorkspace(null);
             currentWorkspace = null;
             workspaceList = [];
-            migrationState = { mode: "idle", message: "" };
             closeModal(backdrop, { force: true });
             updateTopbar();
             options.onWorkspaceChange?.(currentWorkspace);
-            return;
-        }
-
-        if (action === "prepare-local-snapshot-upload") {
-            if (!currentWorkspace) {
-                throw new Error(
-                    "Selecciona un entorno antes de subir los datos locales."
-                );
-            }
-
-            migrationState = {
-                mode: "confirm",
-                message:
-                    "Confirma solo si este es el entorno correcto. Esto guarda una copia manual adicional; la sincronizacion automatica ya sigue activa."
-            };
-            renderSignedInModal(backdrop);
-            return;
-        }
-
-        if (action === "cancel-local-snapshot-upload") {
-            migrationState = { mode: "idle", message: "" };
-            renderSignedInModal(backdrop);
-            return;
-        }
-
-        if (action === "upload-local-snapshot") {
-            migrationState = {
-                mode: "loading",
-                message: "Subiendo copia local a Firebase..."
-            };
-            renderSignedInModal(backdrop);
-
-            const result = await uploadLocalSnapshotToActiveWorkspace();
-
-            migrationState = {
-                mode: "success",
-                message:
-                    `Copia subida correctamente (${result.keyCount} registros locales).`
-            };
-            renderSignedInModal(backdrop);
             return;
         }
 
@@ -717,11 +616,6 @@ async function handleAction(action, backdrop, sourceButton = null) {
             if (!workspace) return;
 
             await copyTextToClipboard(workspace.id);
-            migrationState = {
-                mode: "success",
-                message: "ID del entorno copiado al portapapeles."
-            };
-            renderSignedInModal(backdrop);
             return;
         }
 
@@ -732,14 +626,13 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
             if (!workspace) return;
 
+            const invitationWorkspace =
+                await prepareWorkspaceInvitation(currentUser, workspace);
+
             await copyTextToClipboard(
-                workspaceInvitationText(workspace)
+                workspaceInvitationText(invitationWorkspace)
             );
-            migrationState = {
-                mode: "success",
-                message: "Invitacion copiada al portapapeles."
-            };
-            renderSignedInModal(backdrop);
+            await refreshWorkspaces();
             return;
         }
 
@@ -750,15 +643,19 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
             if (!workspace) return;
 
+            const invitationWorkspace =
+                await prepareWorkspaceInvitation(currentUser, workspace);
+
             const subject = encodeURIComponent(
                 `Invitacion a ProTurnos - ${workspace.name || workspace.id}`
             );
             const body = encodeURIComponent(
-                workspaceInvitationText(workspace)
+                workspaceInvitationText(invitationWorkspace)
             );
 
             window.location.href =
                 `mailto:?subject=${subject}&body=${body}`;
+            await refreshWorkspaces();
             return;
         }
 
@@ -771,7 +668,6 @@ async function handleAction(action, backdrop, sourceButton = null) {
                 await createWorkspace(currentUser, input?.value);
             await refreshWorkspaces();
             await refreshLinkedUnits();
-            migrationState = { mode: "idle", message: "" };
             linkedUnitState.message = "";
             updateTopbar();
             options.onWorkspaceChange?.(currentWorkspace);
@@ -785,11 +681,14 @@ async function handleAction(action, backdrop, sourceButton = null) {
             );
 
             currentWorkspace =
-                await joinWorkspace(currentUser, input?.value);
+                await joinWorkspace(
+                    currentUser,
+                    input?.value,
+                    pendingJoinInviteCode()
+                );
             clearPendingJoinWorkspaceId();
             await refreshWorkspaces();
             await refreshLinkedUnits();
-            migrationState = { mode: "idle", message: "" };
             linkedUnitState.message = "";
             updateTopbar();
             options.onWorkspaceChange?.(currentWorkspace);
@@ -899,7 +798,6 @@ function bindModalActions(backdrop) {
 
             currentWorkspace = workspace;
             setActiveWorkspace(workspace);
-            migrationState = { mode: "idle", message: "" };
             linkedUnitState.message = "";
             updateTopbar();
             options.onWorkspaceChange?.(currentWorkspace);

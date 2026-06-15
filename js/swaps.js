@@ -18,6 +18,8 @@ import {
     AUDIT_CATEGORY
 } from "./auditLog.js";
 import { getTurnoBase } from "./turnEngine.js";
+import { isReplacementProfile } from "./contracts.js";
+import { getReplacementTurnForWorker } from "./replacements.js";
 
 function keyFromISO(value) {
     const parts = String(value || "").split("-");
@@ -36,6 +38,7 @@ function isMedicalLicense(absence) {
 
     return (
         type === "license" ||
+        type === "union_leave" ||
         type === "professional_license"
     );
 }
@@ -96,8 +99,8 @@ export function haveSameBaseRotation(fromName, toName) {
     if (
         !fromRotativa.type ||
         !toRotativa.type ||
-        fromRotativa.type === "reemplazo" ||
-        toRotativa.type === "reemplazo" ||
+        isReplacementProfile(fromName) ||
+        isReplacementProfile(toName) ||
         fromRotativa.type !== toRotativa.type
     ) {
         return false;
@@ -227,6 +230,49 @@ export function cambiosDelMes(year, month) {
     );
 }
 
+export function activeMonthlySwapCount(profile, year, month) {
+    if (!profile) return 0;
+
+    return getSwaps().filter(swap =>
+        !cambioEstaAnulado(swap) &&
+        Number(swap.year) === Number(year) &&
+        Number(swap.month) === Number(month) &&
+        (
+            swap.from === profile ||
+            swap.to === profile
+        )
+    ).length;
+}
+
+export function monthlySwapLimitBlockReason(profiles, year, month) {
+    const config = getTurnChangeConfig();
+
+    if (!config.limitMonthlySwaps) {
+        return "";
+    }
+
+    const limit = Number(config.monthlySwapLimit) || 0;
+
+    if (limit <= 0) {
+        return "";
+    }
+
+    const uniqueProfiles = Array.from(
+        new Set(
+            (Array.isArray(profiles) ? profiles : [profiles])
+                .filter(Boolean)
+        )
+    );
+
+    const blockedProfile = uniqueProfiles.find(profile =>
+        activeMonthlySwapCount(profile, year, month) >= limit
+    );
+
+    return blockedProfile
+        ? `${blockedProfile} ya alcanzo el limite de ${limit} cambio(s) de turno en este mes.`
+        : "";
+}
+
 /* =========================================
    REGISTRAR CAMBIO
 ========================================= */
@@ -257,7 +303,7 @@ export function registrarCambio(data) {
     addAuditLog(
         AUDIT_CATEGORY.TURN_CHANGES,
         "Registro cambio de turno",
-        `${data.from} -> ${data.to}: cambio ${data.fecha}, devolucion ${data.devolucion}.`,
+        `${data.from} -> ${data.to}: cambio ${data.fecha}, devoluci\u00f3n ${data.devolucion}.`,
         {
             profile: data.from,
             swapId: id,
@@ -301,6 +347,130 @@ export function getCambioTurnoRecibido(nombre, keyDay) {
             )
         )
     ) || null;
+}
+
+export function swapCodeLabel(code) {
+    if (code === "L") return "Larga";
+    if (code === "N") return "Noche";
+    if (code === "24") return "24";
+    if (code === "D") return "Diurno";
+    if (code === "D+N") return "D+N";
+    if (code === "HM") return "1/2M";
+    if (code === "HT") return "Extensi\u00f3n horaria";
+    if (code === "18") return "18 horas";
+
+    return String(code || "");
+}
+
+export function getSwapPerspective(swap, profileName) {
+    if (!swap || !profileName) return null;
+
+    if (swap.from === profileName) {
+        return {
+            role: "from",
+            counterpart: swap.to,
+            changeDate: swap.fecha,
+            changeTurn: swap.turno,
+            changeTurnLabel: swapCodeLabel(swap.turno),
+            changeSkipped: Boolean(swap.skipFecha),
+            returnDate: swap.devolucion,
+            returnTurn: swap.turnoDevuelto,
+            returnTurnLabel: swapCodeLabel(swap.turnoDevuelto),
+            returnSkipped: Boolean(swap.skipDevolucion)
+        };
+    }
+
+    if (swap.to === profileName) {
+        return {
+            role: "to",
+            counterpart: swap.from,
+            changeDate: swap.devolucion,
+            changeTurn: swap.turnoDevuelto,
+            changeTurnLabel: swapCodeLabel(swap.turnoDevuelto),
+            changeSkipped: Boolean(swap.skipDevolucion),
+            returnDate: swap.fecha,
+            returnTurn: swap.turno,
+            returnTurnLabel: swapCodeLabel(swap.turno),
+            returnSkipped: Boolean(swap.skipFecha)
+        };
+    }
+
+    return null;
+}
+
+export function getCambiosTurnoCalendario(nombre, keyDay) {
+    const fecha = isoFromKey(keyDay);
+    const markers = [];
+
+    getSwaps().forEach(swap => {
+        if (
+            !swap ||
+            cambioEstaAnulado(swap) ||
+            (swap.from !== nombre && swap.to !== nombre)
+        ) {
+            return;
+        }
+
+        const perspective = getSwapPerspective(swap, nombre);
+
+        if (!perspective) return;
+
+        if (
+            !perspective.changeSkipped &&
+            perspective.changeDate === fecha
+        ) {
+            markers.push({
+                swap,
+                perspective,
+                type: "change",
+                label: `CCTT ${perspective.changeTurnLabel}`.trim()
+            });
+        }
+
+        if (
+            !perspective.returnSkipped &&
+            perspective.returnDate === fecha
+        ) {
+            markers.push({
+                swap,
+                perspective,
+                type: "return",
+                label: `DDTT ${perspective.returnTurnLabel}`.trim()
+            });
+        }
+    });
+
+    return markers;
+}
+
+export function getCambioTurnoCalendario(nombre, keyDay) {
+    return getCambiosTurnoCalendario(nombre, keyDay)[0] || null;
+}
+
+export function getCambioTurnoSolicitado(nombre, keyDay) {
+    const fecha = isoFromKey(keyDay);
+    const swap = getSwaps().find(item =>
+        !cambioEstaAnulado(item) &&
+        item.from === nombre &&
+        (
+            (!item.skipFecha && item.fecha === fecha) ||
+            (!item.skipDevolucion && item.devolucion === fecha)
+        )
+    );
+
+    if (!swap) return null;
+
+    if (!swap.skipFecha && swap.fecha === fecha) {
+        return {
+            swap,
+            label: `CCTT ${swapCodeLabel(swap.turno)}`.trim()
+        };
+    }
+
+    return {
+        swap,
+        label: `DDTT ${swapCodeLabel(swap.turnoDevuelto)}`.trim()
+    };
 }
 
 export function cambioTieneLicenciaEnTurnosBase(swap) {
@@ -358,8 +528,8 @@ export function deshacerCambioTurno(swap) {
     saveSwaps(swaps);
     addAuditLog(
         AUDIT_CATEGORY.TURN_CHANGES,
-        "Anulo cambio de turno",
-        `${swap.from} -> ${swap.to}: cambio ${swap.fecha}, devolucion ${swap.devolucion}.`,
+        "Anul\u00f3 cambio de turno",
+        `${swap.from} -> ${swap.to}: cambio ${swap.fecha}, devoluci\u00f3n ${swap.devolucion}.`,
         {
             profile: swap.from,
             swapId: swap.id,
@@ -392,14 +562,21 @@ export function profileHasSwapAbsence(profile, keyDay) {
 }
 
 export function getSwapTurnState(profile, keyDay) {
-    const data = getProfileData(profile);
-    const rotativa = getRotativa(profile);
+    const base = getTurnoBase(profile, keyDay);
 
-    if (rotativa.type === "reemplazo") {
-        return Number(data[keyDay]) || 0;
+    if (isSwapExchangeableTurn(base)) {
+        return base;
     }
 
-    return getTurnoBase(profile, keyDay);
+    if (base !== TURNO.DIURNO) {
+        return base;
+    }
+
+    const extra = getReplacementTurnForWorker(profile, keyDay);
+
+    return isSwapExchangeableTurn(extra)
+        ? extra
+        : base;
 }
 
 export function isSwapExchangeableTurn(turno) {
@@ -428,12 +605,14 @@ function offsetKey(key, offset) {
     return keyFromDate(date);
 }
 
-function includesLarga(turno) {
+function includesDaytimeStart(turno) {
     const value = Number(turno) || TURNO.LIBRE;
 
     return (
         value === TURNO.LARGA ||
-        value === TURNO.TURNO24
+        value === TURNO.TURNO24 ||
+        value === TURNO.DIURNO ||
+        value === TURNO.DIURNO_NOCHE
     );
 }
 
@@ -483,12 +662,12 @@ function createsInvertedTwentyFourForReceiver({
 
     return (
         (
-            includesLarga(projectedTurn) &&
+            includesDaytimeStart(projectedTurn) &&
             includesNoche(previousTurn)
         ) ||
         (
             includesNoche(projectedTurn) &&
-            includesLarga(nextTurn)
+            includesDaytimeStart(nextTurn)
         )
     );
 }
@@ -523,6 +702,19 @@ export function getSwapDateBlockReason({
 
     if (!giver || !receiver || !keyDay) {
         return "Seleccion incompleta.";
+    }
+
+    const date = parseKeyDate(keyDay);
+    const limitReason = date
+        ? monthlySwapLimitBlockReason(
+            [giver, receiver],
+            date.getFullYear(),
+            date.getMonth()
+        )
+        : "";
+
+    if (limitReason) {
+        return limitReason;
     }
 
     if (profileHasSwapAbsence(giver, keyDay)) {

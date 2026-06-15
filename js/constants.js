@@ -30,7 +30,7 @@ export const TURNO_LABEL = {
     4: "Diurno",
     5: "D+N",
     6: "1/2M",
-    7: "1/2T",
+    7: "Extensi\u00f3n horaria",
     8: "18 horas"
 };
 
@@ -54,7 +54,7 @@ export const TURNO_COLOR = {
    1:"#22c55e",
    2:"#1d6cff",
    3:"#8b2bd9",
-   4:"#13b981",
+   4:"#0b8853",
    5:"#f0b100",
    6:"#fbbf24",
    7:"#f59e0b",

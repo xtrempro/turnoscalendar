@@ -17,7 +17,10 @@ import {
 } from "./calculations.js";
 
 import { TURNO } from "./constants.js";
-import { esAusenciaInjustificada } from "./rulesEngine.js";
+import {
+    esAusenciaInjustificada,
+    getAbsenceType
+} from "./rulesEngine.js";
 import { getJSON } from "./persistence.js";
 import {
     getWorkedIntervalsForState,
@@ -29,6 +32,10 @@ import {
     calculateHheeReturnTransferHours,
     isHheeReturnTransferEnabled
 } from "./hourReturnTransfers.js";
+import {
+    hasContractForDate,
+    isReplacementProfile
+} from "./contracts.js";
 
 const HORA_BASE_DIARIA = 8.8;
 
@@ -219,6 +226,13 @@ function getMaps(nombre) {
     };
 }
 
+function includesContractDay(nombre, keyDay) {
+    return (
+        !isReplacementProfile(nombre) ||
+        hasContractForDate(nombre, keyDay)
+    );
+}
+
 function hasUnjustifiedAbsence(keyDay, maps) {
     return esAusenciaInjustificada(maps.absences[keyDay]);
 }
@@ -241,6 +255,24 @@ function getApprovedCoverage(keyDay, maps) {
     }
 
     return coverage;
+}
+
+function getReplacementBusinessCoverage(keyDay, maps) {
+    if (maps.legal[keyDay]) return 1;
+
+    if (maps.admin[keyDay] === 1) return 1;
+    if (isHalfAdmin(maps.admin[keyDay])) return 0.5;
+
+    const absenceType =
+        getAbsenceType(maps.absences[keyDay]);
+
+    return (
+        absenceType === "license" ||
+        absenceType === "professional_license" ||
+        absenceType === "union_leave"
+    )
+        ? 1
+        : 0;
 }
 
 function shouldSkipWorkedShift(keyDay, maps) {
@@ -523,6 +555,34 @@ function subtractIntervals(actualIntervals, baseIntervals) {
     return fragments;
 }
 
+export function calcularExtraDiurnoProgramadoDia(
+    date,
+    state,
+    holidays = {}
+) {
+    const rangeStart = new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+    const rangeEnd = new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate() + 2
+    );
+    const intervals = subtractIntervals(
+        intervalsForState(date, state, holidays),
+        normalDiurnoInterval(date, holidays)
+    );
+
+    return classifyIntervals(
+        intervals,
+        holidays,
+        rangeStart,
+        rangeEnd
+    );
+}
+
 function actualStateForDay(nombre, data, keyDay) {
     return aplicarCambiosTurno(
         nombre,
@@ -633,6 +693,11 @@ function calculateWorkedTotals(
     for (let d = 1; d <= days; d++) {
         const date = new Date(y, m, d);
         const keyDay = key(y, m, d);
+
+        if (!includesContractDay(nombre, keyDay)) {
+            continue;
+        }
+
         const coverage = getApprovedCoverage(keyDay, maps);
 
         if (shouldSkipWorkedShift(keyDay, maps)) {
@@ -705,13 +770,36 @@ function monthHasMixedBaseRotations(nombre, y, m, days, data) {
     return hasDiurno && hasShift;
 }
 
+function diurnoHasMissingBaseShift(nombre, y, m, days) {
+    const maps = getMaps(nombre);
+
+    for (let d = 1; d <= days; d++) {
+        const keyDay = key(y, m, d);
+
+        if (
+            getTurnoBase(nombre, keyDay) === TURNO.DIURNO &&
+            hasUnjustifiedAbsence(keyDay, maps)
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function getCalculationMode(nombre, y, m, days, data) {
+    if (isReplacementProfile(nombre)) {
+        return "aggregate";
+    }
+
     if (monthHasMixedBaseRotations(nombre, y, m, days, data)) {
         return "aggregate";
     }
 
     if (getRotativa(nombre).type === "diurno") {
-        return "diurno";
+        return diurnoHasMissingBaseShift(nombre, y, m, days)
+            ? "aggregate"
+            : "diurno";
     }
 
     return getShiftAssigned(nombre)
@@ -720,6 +808,7 @@ function getCalculationMode(nombre, y, m, days, data) {
 }
 
 function calculateAdjustedBusinessHours(
+    nombre,
     y,
     m,
     days,
@@ -732,12 +821,20 @@ function calculateAdjustedBusinessHours(
         const date = new Date(y, m, d);
         const keyDay = key(y, m, d);
 
+        if (!includesContractDay(nombre, keyDay)) {
+            continue;
+        }
+
         if (!isBusinessDay(date, holidays)) {
             continue;
         }
 
         total += HORA_BASE_DIARIA;
-        total -= getApprovedCoverage(keyDay, maps) *
+        const coverage = isReplacementProfile(nombre)
+            ? getReplacementBusinessCoverage(keyDay, maps)
+            : getApprovedCoverage(keyDay, maps);
+
+        total -= coverage *
             HORA_BASE_DIARIA;
     }
 
@@ -943,6 +1040,7 @@ function calculateCarryForMode(
     const carryEnd = new Date(y, m + 1, 2);
 
     if (
+        !includesContractDay(nombre, keyDay) ||
         getApprovedCoverage(keyDay, maps) > 0 ||
         hasUnjustifiedAbsence(keyDay, maps)
     ) {
@@ -999,6 +1097,10 @@ function calculateClockAbsenceAdjustments(
     for (let d = 1; d <= days; d++) {
         const date = new Date(y, m, d);
         const keyDay = key(y, m, d);
+
+        if (!includesContractDay(nombre, keyDay)) {
+            continue;
+        }
 
         if (!hasClockMark(nombre, keyDay)) {
             continue;
@@ -1283,11 +1385,20 @@ function calculateAggregateExtraSegments(
         const date = new Date(y, m, d);
         const keyDay = key(y, m, d);
         const dayTotals = { d: 0, n: 0 };
-        const coverage = getApprovedCoverage(keyDay, maps);
 
         if (d === 1 && (carryIn?.d || carryIn?.n)) {
             addHours(dayTotals, carryIn);
         }
+
+        if (!includesContractDay(nombre, keyDay)) {
+            daily.push({
+                keyDay,
+                ...dayTotals
+            });
+            continue;
+        }
+
+        const coverage = getApprovedCoverage(keyDay, maps);
 
         if (!shouldSkipWorkedShift(keyDay, maps)) {
             if (coverage === 0.5) {
@@ -1385,6 +1496,10 @@ function calculateClockAbsenceSegments(
     for (let d = 1; d <= days; d++) {
         const date = new Date(y, m, d);
         const keyDay = key(y, m, d);
+
+        if (!includesContractDay(nombre, keyDay)) {
+            continue;
+        }
 
         if (!hasClockMark(nombre, keyDay)) {
             continue;
@@ -1615,6 +1730,7 @@ function buildStats({
         effectiveCarryIn
     );
     const horasHabiles = calculateAdjustedBusinessHours(
+        nombre,
         y,
         m,
         days,
@@ -1828,7 +1944,7 @@ export function renderSummaryHTML(stats) {
             <span>
                 Mes traspasado a devoluci&oacute;n:
                 ${formatTransferHours(stats.returnTransferHours)}h
-                disponibles.
+                disponibles desde el mes siguiente.
             </span>
         `
         : "";

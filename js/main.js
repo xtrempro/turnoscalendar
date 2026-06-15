@@ -1,4 +1,9 @@
-import { prevMonth, nextMonth, currentDate } from "./calendar.js";
+import {
+    prevMonth,
+    nextMonth,
+    currentDate,
+    renderCalendar
+} from "./calendar.js";
 import {
     pushHistory,
     undo,
@@ -10,7 +15,6 @@ import { refreshAll } from "./refresh.js";
 import { DOM } from "./dom.js";
 import { renderSwapPanel } from "./swapUI.js";
 import {
-    renderStaffingPanel,
     renderStaffingWeeklyCalendar,
     scrollInlineStaffingReportToToday,
     syncStaffingConfigForProfileChange
@@ -18,6 +22,7 @@ import {
 import { renderTaskAssignmentsPanel } from "./taskAssignments.js";
 import { renderKanbanBoard } from "./kanban.js";
 import { renderAgendaPanel } from "./agenda.js";
+import { renderDashboardPanel } from "./dashboard.js";
 import { initSystemSettings } from "./systemSettings.js";
 import { initFirebaseShell } from "./firebaseShell.js";
 import {
@@ -25,14 +30,25 @@ import {
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
 import {
+    buildAssignedShiftReportPreviewHTML,
+    buildDiurnoReportPreviewHTML,
     buildNoAssignmentReportPreviewHTML,
+    buildReplacementReportPreviewHTML,
+    exportAssignedShiftReport,
+    exportDiurnoShiftReport,
     exportHoursReport,
-    exportNoAssignmentShiftReport
+    exportNoAssignmentShiftReport,
+    exportReplacementShiftReport,
+    isAssignedShiftReportProfile,
+    isDiurnoReportProfile,
+    isReplacementReportProfile
 } from "./hoursReport.js";
 import {
     initHoursCharts,
     renderHoursCharts
 } from "./hoursCharts.js";
+import { renderTimeline } from "./timeline.js";
+import { withBusyState } from "./busy.js";
 import {
     addAuditLog,
     AUDIT_CATEGORY,
@@ -104,19 +120,31 @@ import {
 import { cambioEstaAnulado } from "./swaps.js";
 import { renderReplacementLogHTML } from "./replacements.js";
 import {
+    refreshWorkerRequestsNavBadge,
     renderWorkerRequestsPanel,
     startWorkerRequestsRealtimeSync,
     stopWorkerRequestsRealtimeSync
 } from "./workerRequests.js";
 import {
     createReplacementContractMemoTask,
-    renderMemosPanel
+    renderMemosPanel,
+    updateMemosNavBadge
 } from "./memos.js";
 import {
     addReplacementContract,
     formatContractDate,
-    getContractsForProfile
+    getContractsForProfile,
+    isHonorariaContractType,
+    isReplacementContractType
 } from "./contracts.js";
+import {
+    canEditTarget,
+    canViewTarget,
+    firstViewableTarget,
+    loadWorkspacePermissions,
+    startWorkspacePermissionListener,
+    stopWorkspacePermissionListener
+} from "./workspacePermissions.js";
 import {
     getClockMarks,
     saveClockMarks,
@@ -131,6 +159,7 @@ import {
 import {
     calculateHheeReturnTransferHours,
     getHheeReturnTransfer,
+    getHheeReturnTransfers,
     isHheeReturnTransferEnabled,
     saveHheeReturnTransfer
 } from "./hourReturnTransfers.js";
@@ -142,6 +171,7 @@ import {
     aplicarLegal,
     aplicarComp,
     aplicarLicencia,
+    existeBloque10Legal,
     validarCantidadLegalAnual
 } from "./leaveEngine.js";
 
@@ -154,6 +184,7 @@ const PROFILE_MODE = {
 const THEME_KEY = "proturnos_theme";
 
 let selectionMode = null;
+let pendingRotationChange = null;
 let adminCantidad = 0;
 let compCantidad = 0;
 let legalCantidad = 0;
@@ -163,7 +194,17 @@ let availabilityEditMode = false;
 let profileRotationMiniDate = new Date();
 let profileHoursSummaryRequest = 0;
 let clockMarksRenderRequest = 0;
+let calendarDirectEditEnabled = false;
 let reportsDetailRequest = 0;
+let reportsMonthDate = new Date(
+    currentDate.getFullYear(),
+    currentDate.getMonth(),
+    1
+);
+let reportsMonthPicker = null;
+let reportsMonthPickerYear = reportsMonthDate.getFullYear();
+let reportsMonthPickerAnchor = null;
+let reportsMonthPickerListenersBound = false;
 let clockMarksMonthDate = new Date(
     currentDate.getFullYear(),
     currentDate.getMonth(),
@@ -177,6 +218,26 @@ const PROFESSION_LABELS = {
 
 const FOURTH_SHIFT_NO_ASSIGNMENT_REPORT_LABEL =
     "3er o 4\u00b0 Turno sin asignaci\u00f3n de turno";
+const FOURTH_SHIFT_ASSIGNED_REPORT_LABEL =
+    "3er o 4\u00b0 Turno con asignaci\u00f3n de turno";
+const REPLACEMENT_REPORT_LABEL =
+    "Contrato Reemplazo";
+const DIURNO_REPORT_LABEL =
+    "Rotativa Diurno";
+const REPORT_MONTH_NAMES = [
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre"
+];
 
 function profileUsesProfession(profile = {}) {
     return (
@@ -298,17 +359,31 @@ const profileDraft = {
     contractEnd: "",
     contractReplaces: "",
     contractReason: "",
+    honorariaStart: "",
+    honorariaEnd: "",
+    honorariaHourlyRate: "",
+    honorariaMaxMonthlyHours: "",
+    unionLeaveEnabled: false,
     shiftAssigned: false
 };
 
+function isReplacementDraft(data = profileDraft) {
+    return isReplacementContractType(data.contractType);
+}
+
+function isHonorariaDraft(data = profileDraft) {
+    return isHonorariaContractType(data.contractType);
+}
+
 window.selectionMode = null;
 window.compCantidad = 0;
+window.legalCantidad = 0;
 window.licenseCantidad = 0;
 window.licenseType = "license";
 window.pushUndoState = pushHistory;
 window.getProfileDraftSelectionKey = () =>
     inputDateToCalendarKey(
-        profileDraft.rotationType === "reemplazo"
+        isReplacementDraft()
             ? profileDraft.contractStart
             : profileDraft.rotationStart
     );
@@ -321,7 +396,7 @@ const HR_LOG_CONFIG = [
             { name: "level", label: "Nivel" },
             { name: "institution", label: "Institucion" },
             { name: "degree", label: "Titulo/Grado obtenido" },
-            { name: "year", label: "Ano de egreso", type: "number" }
+            { name: "year", label: "A\u00f1o de egreso", type: "number" }
         ],
         fileLabel: "Titulo PDF"
     },
@@ -369,27 +444,27 @@ const HR_LOG_CONFIG = [
     },
     {
         key: "merit",
-        title: "Anotaciones de merito",
+        title: "Anotaciones de m\u00e9rito",
         filterYear: true,
         fields: [
             { name: "date", label: "Fecha", type: "date" },
-            { name: "title", label: "Titulo de la anotacion" }
+            { name: "title", label: "T\u00edtulo de la anotaci\u00f3n" }
         ],
         fileLabel: "Archivo escaneado"
     },
     {
         key: "demerit",
-        title: "Anotaciones de demerito",
+        title: "Anotaciones de dem\u00e9rito",
         filterYear: true,
         fields: [
             { name: "date", label: "Fecha", type: "date" },
-            { name: "title", label: "Titulo de la anotacion" }
+            { name: "title", label: "T\u00edtulo de la anotaci\u00f3n" }
         ],
         fileLabel: "Archivo escaneado"
     },
     {
         key: "performance",
-        title: "Evaluaciones de desempeno",
+        title: "Evaluaciones de desempe\u00f1o",
         filterYear: true,
         fields: [
             { name: "date", label: "Fecha", type: "date" },
@@ -564,22 +639,128 @@ function withManualBalance(
         : fallbackValue;
 }
 
+function monthSerial(year, month) {
+    return Number(year) * 12 + Number(month);
+}
+
+function nextMonthPeriod(year, month) {
+    const date = new Date(
+        Number(year),
+        Number(month) + 1,
+        1
+    );
+
+    return {
+        year: date.getFullYear(),
+        month: date.getMonth()
+    };
+}
+
+function hheeReturnEffectivePeriod(record = {}) {
+    const effectiveYear = Number(record.effectiveYear);
+    const effectiveMonth = Number(record.effectiveMonth);
+
+    if (
+        Number.isFinite(effectiveYear) &&
+        Number.isFinite(effectiveMonth)
+    ) {
+        return {
+            year: effectiveYear,
+            month: effectiveMonth
+        };
+    }
+
+    return nextMonthPeriod(record.year, record.month);
+}
+
+function hasStoredHheeReturnEffectivePeriod(record = {}) {
+    return (
+        Number.isFinite(Number(record.effectiveYear)) &&
+        Number.isFinite(Number(record.effectiveMonth))
+    );
+}
+
+function futureHheeReturnTransferHours(
+    profileName,
+    year,
+    month
+) {
+    if (
+        !profileName ||
+        !Number.isFinite(Number(year)) ||
+        !Number.isFinite(Number(month))
+    ) {
+        return 0;
+    }
+
+    const targetSerial = monthSerial(year, month);
+
+    return Object.values(getHheeReturnTransfers(profileName))
+        .filter(record => record?.enabled)
+        .reduce((sum, record) => {
+            const effective =
+                hheeReturnEffectivePeriod(record);
+
+            const appliesToYear =
+                Number(effective.year) === Number(year) ||
+                (
+                    !hasStoredHheeReturnEffectivePeriod(record) &&
+                    Number(record.year) === Number(year)
+                );
+
+            if (
+                !appliesToYear ||
+                monthSerial(effective.year, effective.month) <=
+                    targetSerial
+            ) {
+                return sum;
+            }
+
+            return sum +
+                normalizeBalanceValue(record.transferredHours);
+        }, 0);
+}
+
 function getLeaveBalances(
     year = new Date().getFullYear(),
-    holidays = getCachedHolidays(year)
+    holidays = getCachedHolidays(year),
+    options = {}
 ) {
-    const manual = getManualLeaveBalances(year);
+    const profileName =
+        options.profileName || getCurrentProfile();
+    const targetMonth =
+        Number.isFinite(Number(options.month))
+            ? Number(options.month)
+            : Number(year) === currentDate.getFullYear()
+                ? currentDate.getMonth()
+                : null;
+    const manual = getManualLeaveBalances(year, profileName);
     const calculated = {
         legal: Math.max(0, 15 - contarHabiles(getLegalDays(), year, holidays)),
-        admin: Math.max(0, 6 - totalAdministrativosUsados()),
-        comp: contarHabiles(getCompDays(), year, holidays)
+        admin: Math.max(0, 6 - totalAdministrativosUsados(year)),
+        comp: Math.max(0, 10 - contarHabiles(getCompDays(), year, holidays))
     };
+    const hoursReturnTotal =
+        withManualBalance(manual.hoursReturn, 0);
+    const unavailableFutureHours =
+        targetMonth === null
+            ? 0
+            : futureHheeReturnTransferHours(
+                profileName,
+                year,
+                targetMonth
+            );
 
     return {
         legal: withManualBalance(manual.legal, calculated.legal),
         admin: withManualBalance(manual.admin, calculated.admin),
         comp: withManualBalance(manual.comp, calculated.comp),
-        hoursReturn: withManualBalance(manual.hoursReturn, 0)
+        hoursReturn: Math.max(
+            0,
+            normalizeBalanceValue(
+                hoursReturnTotal - unavailableFutureHours
+            )
+        )
     };
 }
 
@@ -883,6 +1064,7 @@ function getRotativaLabel(type){
     if (type === "3turno") return "3er Turno";
     if (type === "4turno") return "4° Turno";
     if (type === "diurno") return "Diurno";
+    if (type === "libre") return "Libre";
     if (type === "reemplazo") return "Reemplazo";
     return "Sin rotativa";
 }
@@ -891,32 +1073,280 @@ function requiresRotationFirstTurn(type) {
     return type === "3turno" || type === "4turno";
 }
 
+function requiresRotationStart(type) {
+    return Boolean(type) && type !== "libre";
+}
+
+function getRotationStartOptions(type) {
+    if (type === "3turno") {
+        return [
+            {
+                value: "larga",
+                label: "Iniciar con primer Largo",
+                summary: "primer Largo",
+                detail: "Iniciar con el primer turno Largo"
+            },
+            {
+                value: "larga2",
+                label: "Iniciar con segundo Largo",
+                summary: "segundo Largo",
+                detail: "Iniciar con el segundo turno Largo"
+            },
+            {
+                value: "noche",
+                label: "Iniciar con primera Noche",
+                summary: "primera Noche",
+                detail: "Iniciar con la primera Noche"
+            },
+            {
+                value: "noche2",
+                label: "Iniciar con segunda Noche",
+                summary: "segunda Noche",
+                detail: "Iniciar con la segunda Noche"
+            },
+            {
+                value: "libre1",
+                label: "Iniciar con primer Libre",
+                summary: "primer Libre",
+                detail: "Iniciar con el primer Libre"
+            },
+            {
+                value: "libre2",
+                label: "Iniciar con segundo Libre",
+                summary: "segundo Libre",
+                detail: "Iniciar con el segundo Libre"
+            }
+        ];
+    }
+
+    if (type === "4turno") {
+        return [
+            {
+                value: "larga",
+                label: "Iniciar con Largo",
+                summary: "Largo",
+                detail: "Iniciar con turno Largo"
+            },
+            {
+                value: "noche",
+                label: "Iniciar con Noche",
+                summary: "Noche",
+                detail: "Iniciar con turno Noche"
+            },
+            {
+                value: "libre1",
+                label: "Iniciar con primer Libre",
+                summary: "primer Libre",
+                detail: "Iniciar con el primer Libre"
+            },
+            {
+                value: "libre2",
+                label: "Iniciar con segundo Libre",
+                summary: "segundo Libre",
+                detail: "Iniciar con el segundo Libre"
+            }
+        ];
+    }
+
+    return [];
+}
+
+function supportsLibreRotation(data = profileDraft) {
+    return isReplacementDraft(data) || isHonorariaDraft(data);
+}
+
+function profileSupportsLibreRotation(profile = {}) {
+    return (
+        isReplacementContractType(profile.contractType) ||
+        isHonorariaContractType(profile.contractType)
+    );
+}
+
+function getCalendarRotationOptions(profile = {}) {
+    const options = [
+        { value: "3turno", label: "3er Turno" },
+        { value: "4turno", label: "4to Turno" },
+        { value: "diurno", label: "Diurno" }
+    ];
+
+    if (profileSupportsLibreRotation(profile)) {
+        options.push({ value: "libre", label: "Libre" });
+    }
+
+    return options;
+}
+
+function getCalendarRotationDefaultState(profile) {
+    const rotativa = getRotativa(profile?.name);
+    const options = getCalendarRotationOptions(profile);
+    const fallbackType = options[0]?.value || "4turno";
+    const existingType = options.some(option =>
+        option.value === rotativa.type
+    )
+        ? rotativa.type
+        : fallbackType;
+
+    return {
+        type: existingType,
+        firstTurn: normalizeRotationFirstTurnForType(
+            existingType,
+            rotativa.firstTurn
+        )
+    };
+}
+
+function syncProfileRotationOptions(data = profileDraft) {
+    const select = DOM.profileRotationSelect;
+
+    if (!select) return;
+
+    const replacementContract = isReplacementDraft(data);
+    const libreAllowed = supportsLibreRotation(data);
+    const emptyOption = select.querySelector('option[value=""]');
+    const libreOption = select.querySelector('option[value="libre"]');
+
+    if (emptyOption) {
+        emptyOption.textContent = replacementContract
+            ? "Heredar rotativa del trabajador reemplazado"
+            : "Seleccionar";
+    }
+
+    select
+        .querySelectorAll(
+            'option[value="3turno"], option[value="4turno"], option[value="diurno"]'
+        )
+        .forEach(option => {
+            option.hidden = replacementContract;
+            option.disabled = replacementContract;
+        });
+
+    if (libreOption) {
+        libreOption.hidden = !libreAllowed;
+        libreOption.disabled = !libreAllowed;
+    }
+}
+
 function normalizeRotationFirstTurn(value) {
-    return String(value || "").toLowerCase() === "noche"
+    const normalized = String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+
+    if (
+        normalized === "larga2" ||
+        normalized === "largo2" ||
+        normalized === "segunda larga" ||
+        normalized === "segundo largo" ||
+        normalized === "2 larga" ||
+        normalized === "2 largo"
+    ) {
+        return "larga2";
+    }
+
+    if (
+        normalized === "noche2" ||
+        normalized === "segunda noche" ||
+        normalized === "2 noche"
+    ) {
+        return "noche2";
+    }
+
+    if (
+        normalized === "libre2" ||
+        normalized === "segundo libre" ||
+        normalized === "segunda libre" ||
+        normalized === "2 libre"
+    ) {
+        return "libre2";
+    }
+
+    if (
+        normalized === "libre" ||
+        normalized === "libre1" ||
+        normalized === "primer libre" ||
+        normalized === "primera libre" ||
+        normalized === "1 libre"
+    ) {
+        return "libre1";
+    }
+
+    return normalized === "noche"
         ? "noche"
         : "larga";
 }
 
-function getRotationFirstTurnLabel(value) {
-    return normalizeRotationFirstTurn(value) === "noche"
-        ? "Noche"
-        : "Larga";
+function normalizeRotationFirstTurnForType(type, value) {
+    const normalized = normalizeRotationFirstTurn(value);
+    const options = getRotationStartOptions(type);
+
+    if (!options.length) return normalized;
+
+    return options.some(option => option.value === normalized)
+        ? normalized
+        : options[0].value;
 }
 
-function getRotationSequence(type, firstTurn = "larga") {
-    const startsWithNight =
-        normalizeRotationFirstTurn(firstTurn) === "noche";
+function getRotationFirstTurnLabel(value, type = "") {
+    const normalized = normalizeRotationFirstTurnForType(type, value);
+    const option = getRotationStartOptions(type)
+        .find(item => item.value === normalized);
+
+    if (option) return option.summary || option.label;
+
+    if (normalized === "larga2") return "segundo Largo";
+    if (normalized === "noche") return "primera Noche";
+    if (normalized === "noche2") return "segunda Noche";
+    if (normalized === "libre1") return "primer Libre";
+    if (normalized === "libre2") return "segundo Libre";
+
+    return "primer Largo";
+}
+
+function rotateRotationSequence(sequence, startIndex) {
+    return [
+        ...sequence.slice(startIndex),
+        ...sequence.slice(0, startIndex)
+    ];
+}
+
+function rotationStartIndex(type, firstTurn = "larga") {
+    const normalized =
+        normalizeRotationFirstTurnForType(type, firstTurn);
 
     if (type === "3turno") {
-        return startsWithNight
-            ? [2, 2, 0, 0, 1, 1]
-            : [1, 1, 2, 2, 0, 0];
+        if (normalized === "larga2") return 1;
+        if (normalized === "noche") return 2;
+        if (normalized === "noche2") return 3;
+        if (normalized === "libre1") return 4;
+        if (normalized === "libre2") return 5;
+
+        return 0;
     }
 
     if (type === "4turno") {
-        return startsWithNight
-            ? [2, 0, 0, 1]
-            : [1, 2, 0, 0];
+        if (normalized === "noche") return 1;
+        if (normalized === "libre1") return 2;
+        if (normalized === "libre2") return 3;
+
+        return 0;
+    }
+
+    return 0;
+}
+
+function getRotationSequence(type, firstTurn = "larga") {
+    if (type === "3turno") {
+        return rotateRotationSequence(
+            [1, 1, 2, 2, 0, 0],
+            rotationStartIndex(type, firstTurn)
+        );
+    }
+
+    if (type === "4turno") {
+        return rotateRotationSequence(
+            [1, 2, 0, 0],
+            rotationStartIndex(type, firstTurn)
+        );
     }
 
     return [];
@@ -956,8 +1386,13 @@ function describeProfileChanges(before, after) {
         ["birthDate", "fecha de nacimiento"],
         ["unitEntryDate", "fecha de ingreso"],
         ["contractType", "tipo de contrato"],
+        ["honorariaStart", "inicio contrato honorarios"],
+        ["honorariaEnd", "termino contrato honorarios"],
+        ["honorariaHourlyRate", "valor hora honorarios"],
+        ["honorariaMaxMonthlyHours", "maximo mensual honorarios"],
         ["estamento", "estamento"],
         ["profession", "profesion"],
+        ["unionLeaveEnabled", "permiso gremial"],
         ["grade", "grado"]
     ];
 
@@ -1005,6 +1440,11 @@ function getPerfilActual() {
 }
 
 function canModifyCurrentProfile() {
+    if (!canEditTarget("calendarPanel")) {
+        alert("Tu usuario tiene permiso solo de lectura en Turnos.");
+        return false;
+    }
+
     const profile = getPerfilActual();
 
     if (!profile || isProfileActive(profile)) {
@@ -1014,6 +1454,13 @@ function canModifyCurrentProfile() {
     alert(
         "Este perfil esta desactivado. Reactivalo desde Perfil para cargar turnos, permisos o modificaciones de calendario."
     );
+    return false;
+}
+
+function canEditCurrentProfileMenu() {
+    if (canEditTarget("profileSection")) return true;
+
+    alert("Tu usuario tiene permiso solo de lectura en Perfiles.");
     return false;
 }
 
@@ -1045,11 +1492,18 @@ function clearDraftValues(){
     profileDraft.contractEnd = "";
     profileDraft.contractReplaces = "";
     profileDraft.contractReason = "";
+    profileDraft.honorariaStart = "";
+    profileDraft.honorariaEnd = "";
+    profileDraft.honorariaHourlyRate = "";
+    profileDraft.honorariaMaxMonthlyHours = "";
+    profileDraft.unionLeaveEnabled = false;
     profileDraft.shiftAssigned = false;
 }
 
 function loadDraftFromProfile(profile){
     const rotativa = getRotativa(profile.name);
+    const legacyReplacement =
+        rotativa.type === "reemplazo";
     const rotationStart =
         normalizeStoredStart(rotativa.start);
 
@@ -1074,17 +1528,31 @@ function loadDraftFromProfile(profile){
     profileDraft.active = isProfileActive(profile);
     profileDraft.unit = "";
     profileDraft.unitEntryDate = profile.unitEntryDate || "";
-    profileDraft.contractType = profile.contractType || "";
+    profileDraft.contractType = legacyReplacement
+        ? "Reemplazo"
+        : profile.contractType || "";
     profileDraft.estamento = profile.estamento || "";
+    profileDraft.unionLeaveEnabled =
+        Boolean(profile.unionLeaveEnabled);
     profileDraft.profession = normalizeProfession(
         profile.profession,
         profileDraft.estamento
     );
     profileDraft.grade = String(profile.grade || "");
-    profileDraft.rotationType = rotativa.type || "";
-    profileDraft.rotationStart = rotationStart;
+    profileDraft.rotationType = legacyReplacement
+        ? ""
+        : rotativa.type || "";
+    profileDraft.rotationStart = legacyReplacement
+        ? ""
+        : rotationStart;
     profileDraft.rotationFirstTurn =
         normalizeRotationFirstTurn(rotativa.firstTurn);
+    profileDraft.honorariaStart = profile.honorariaStart || "";
+    profileDraft.honorariaEnd = profile.honorariaEnd || "";
+    profileDraft.honorariaHourlyRate =
+        String(profile.honorariaHourlyRate || "");
+    profileDraft.honorariaMaxMonthlyHours =
+        String(profile.honorariaMaxMonthlyHours || "");
     profileDraft.shiftAssigned = getShiftAssigned(profile.name);
 }
 
@@ -1147,6 +1615,11 @@ function getDisplayedProfileData(){
             contractEnd: profileDraft.contractEnd,
             contractReplaces: profileDraft.contractReplaces,
             contractReason: profileDraft.contractReason,
+            honorariaStart: profileDraft.honorariaStart,
+            honorariaEnd: profileDraft.honorariaEnd,
+            honorariaHourlyRate: profileDraft.honorariaHourlyRate,
+            honorariaMaxMonthlyHours: profileDraft.honorariaMaxMonthlyHours,
+            unionLeaveEnabled: profileDraft.unionLeaveEnabled,
             shiftAssigned: profileDraft.shiftAssigned
         };
     }
@@ -1172,6 +1645,11 @@ function getDisplayedProfileData(){
             contractEnd: profileDraft.contractEnd,
             contractReplaces: profileDraft.contractReplaces,
             contractReason: profileDraft.contractReason,
+            honorariaStart: profileDraft.honorariaStart,
+            honorariaEnd: profileDraft.honorariaEnd,
+            honorariaHourlyRate: profileDraft.honorariaHourlyRate,
+            honorariaMaxMonthlyHours: profileDraft.honorariaMaxMonthlyHours,
+            unionLeaveEnabled: profileDraft.unionLeaveEnabled,
             shiftAssigned: profileDraft.shiftAssigned
         };
     }
@@ -1197,11 +1675,18 @@ function getDisplayedProfileData(){
             contractEnd: "",
             contractReplaces: "",
             contractReason: "",
+            honorariaStart: "",
+            honorariaEnd: "",
+            honorariaHourlyRate: "",
+            honorariaMaxMonthlyHours: "",
+            unionLeaveEnabled: false,
             shiftAssigned: false
         };
     }
 
     const rotativa = getRotativa(profile.name);
+    const legacyReplacement =
+        rotativa.type === "reemplazo";
 
     return {
         name: profile.name,
@@ -1212,17 +1697,28 @@ function getDisplayedProfileData(){
         docs: Array.isArray(profile.docs) ? profile.docs : [],
         active: isProfileActive(profile),
         unitEntryDate: profile.unitEntryDate || "",
-        contractType: profile.contractType || "",
+        contractType: legacyReplacement
+            ? "Reemplazo"
+            : profile.contractType || "",
         estamento: profile.estamento,
         profession: profile.profession || "Sin informacion",
         grade: String(profile.grade || ""),
-        rotationType: rotativa.type || "",
-        rotationStart: normalizeStoredStart(rotativa.start),
+        rotationType: legacyReplacement
+            ? ""
+            : rotativa.type || "",
+        rotationStart: legacyReplacement
+            ? ""
+            : normalizeStoredStart(rotativa.start),
         rotationFirstTurn: normalizeRotationFirstTurn(rotativa.firstTurn),
         contractStart: "",
         contractEnd: "",
         contractReplaces: "",
         contractReason: "",
+        honorariaStart: profile.honorariaStart || "",
+        honorariaEnd: profile.honorariaEnd || "",
+        honorariaHourlyRate: String(profile.honorariaHourlyRate || ""),
+        honorariaMaxMonthlyHours: String(profile.honorariaMaxMonthlyHours || ""),
+        unionLeaveEnabled: Boolean(profile.unionLeaveEnabled),
         shiftAssigned: getShiftAssigned(profile.name)
     };
 }
@@ -1234,14 +1730,16 @@ function formatRotationStartSummary(data, prefix = "") {
     const firstTurnText =
         requiresRotationFirstTurn(data.rotationType) &&
         data.rotationStart
-            ? `, iniciando con ${getRotationFirstTurnLabel(data.rotationFirstTurn)}`
+            ? `, iniciando con ${getRotationFirstTurnLabel(data.rotationFirstTurn, data.rotationType)}`
             : "";
 
     return `${prefix}${getRotativaLabel(data.rotationType)}${startText}${firstTurnText}.`;
 }
 
 function buildRotationStatus(data){
-    if (data.rotationType === "reemplazo") {
+    if (isReplacementDraft(data)) {
+        const freeRotation = data.rotationType === "libre";
+
         if (profileDraft.mode === PROFILE_MODE.VIEW) {
             const profile = getPerfilActual();
             const contracts = profile
@@ -1249,10 +1747,12 @@ function buildRotationStatus(data){
                 : [];
 
             if (!contracts.length) {
-                return "Rotativa Reemplazo sin contratos registrados.";
+                return "Contrato Reemplazo sin periodos registrados.";
             }
 
-            return `Rotativa Reemplazo con ${contracts.length} contrato(s) registrado(s).`;
+            return freeRotation
+                ? `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s). Rotativa Libre: calendario disponible para carga manual.`
+                : `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s). La rotativa se hereda del trabajador reemplazado.`;
         }
 
         if (!data.contractStart) {
@@ -1263,7 +1763,34 @@ function buildRotationStatus(data){
             return `Inicio de contrato: ${formatDisplayDate(data.contractStart)}. Falta definir termino en el modal.`;
         }
 
-        return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}.`;
+        return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}.${freeRotation ? " Rotativa Libre: calendario disponible para carga manual." : ""}`;
+    }
+
+    if (isHonorariaDraft(data)) {
+        if (!data.honorariaStart || !data.honorariaEnd) {
+            return "Completa la vigencia del contrato de Honorarios antes de aplicar la rotativa.";
+        }
+
+        const contractSummary =
+            `Contrato Honorarios: ${formatDisplayDate(data.honorariaStart)} al ${formatDisplayDate(data.honorariaEnd)} | Tope mensual: ${data.honorariaMaxMonthlyHours || 0} hrs.`;
+
+        if (!data.rotationType) {
+            return `${contractSummary} Selecciona una rotativa.`;
+        }
+
+        if (data.rotationType === "libre") {
+            return `${contractSummary} Rotativa Libre: calendario disponible para carga manual.`;
+        }
+
+        if (!data.rotationStart) {
+            return `${contractSummary} Configura desde que fecha se aplicara ${getRotativaLabel(data.rotationType)}.`;
+        }
+
+        return `${contractSummary} ${formatRotationStartSummary(data, "")}`;
+    }
+
+    if (data.rotationType === "libre") {
+        return "Rotativa Libre: calendario disponible para carga manual.";
     }
 
     if (profileDraft.mode === PROFILE_MODE.CREATE) {
@@ -1303,16 +1830,24 @@ function buildRotationStatus(data){
 
 function buildEditorHint(profile){
     if (profileDraft.mode === PROFILE_MODE.CREATE) {
-        if (profileDraft.rotationType === "reemplazo") {
+        if (isReplacementDraft()) {
             return "Completa nombre, estamento, periodo de contrato y a quien reemplaza antes de guardar.";
+        }
+
+        if (isHonorariaDraft()) {
+            return "Completa los datos del contrato de Honorarios y configura una rotativa dentro de su vigencia.";
         }
 
         return "Completa nombre, estamento, rotativa y configura en el modal desde que fecha inicia antes de guardar.";
     }
 
     if (profileDraft.mode === PROFILE_MODE.EDIT) {
-        if (profileDraft.rotationType === "reemplazo") {
+        if (isReplacementDraft()) {
             return "Puedes actualizar los datos del trabajador o agregar un nuevo contrato de reemplazo indicando inicio, termino y a quien reemplaza.";
+        }
+
+        if (isHonorariaDraft()) {
+            return "Actualiza la vigencia, el valor hora y el tope mensual. La rotativa solo se mostrara dentro del contrato.";
         }
 
         return "Actualiza los datos del trabajador. Solo si cambias la rotativa debes configurar en el modal desde que fecha aplica.";
@@ -1328,8 +1863,20 @@ function buildEditorHint(profile){
 function renderProfileRotationStatus(data, editing) {
     if (!DOM.profileRotationStatus) return;
 
+    const replacementContract =
+        isReplacementDraft(data);
     const canConfigure =
-        editing && Boolean(data.rotationType);
+        editing &&
+        (
+            replacementContract ||
+            (
+                Boolean(data.rotationType) &&
+                (
+                    !isHonorariaDraft(data) ||
+                    Boolean(data.honorariaStart && data.honorariaEnd)
+                )
+            )
+        );
 
     DOM.profileRotationStatus.classList.toggle(
         "profile-status-note--with-action",
@@ -1340,7 +1887,7 @@ function renderProfileRotationStatus(data, editing) {
         <span>${escapeHTML(buildRotationStatus(data))}</span>
         ${canConfigure ? `
             <button id="openRotationConfigBtn" class="profile-status-action" type="button">
-                ${data.rotationType === "reemplazo" ? "Nuevo Contrato" : "Configurar rotativa"}
+                ${replacementContract ? "Nuevo Contrato" : "Configurar rotativa"}
             </button>
         ` : ""}
     `;
@@ -1348,7 +1895,11 @@ function renderProfileRotationStatus(data, editing) {
     document
         .getElementById("openRotationConfigBtn")
         ?.addEventListener("click", () => {
-            openRotationConfigModal(data.rotationType);
+            openRotationConfigModal(
+                replacementContract
+                    ? "reemplazo"
+                    : data.rotationType
+            );
         });
 }
 
@@ -1396,13 +1947,16 @@ function formatRotationValue(rotativa = {}) {
     const type = rotativa?.type || "";
     const start = normalizeStoredStart(rotativa?.start || "");
     const firstTurn =
-        normalizeRotationFirstTurn(rotativa?.firstTurn);
+        normalizeRotationFirstTurnForType(
+            type,
+            rotativa?.firstTurn
+        );
     const startText = start
         ? ` desde ${formatDisplayDate(start)}`
         : "";
     const firstTurnText =
         requiresRotationFirstTurn(type) && start
-            ? `, inicia con ${getRotationFirstTurnLabel(firstTurn)}`
+            ? `, inicia con ${getRotationFirstTurnLabel(firstTurn, type)}`
             : "";
 
     return `${getRotativaLabel(type)}${startText}${firstTurnText}`;
@@ -1428,7 +1982,7 @@ function contractHistoryChanges(
         },
         {
             key: "profession",
-            label: "Profesion"
+            label: "Profesi\u00f3n"
         },
         {
             key: "grade",
@@ -1665,10 +2219,12 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
 
     const profile = getPerfilActual();
     const isReplacement = type === "reemplazo";
+    const isHonoraria = !isReplacement && isHonorariaDraft();
     const state = {
         monthDate: getRotationModalMonth(type),
         rotationStart: profileDraft.rotationStart,
-        firstTurn: normalizeRotationFirstTurn(
+        firstTurn: normalizeRotationFirstTurnForType(
+            type,
             profileDraft.rotationFirstTurn
         ),
         contractStart: profileDraft.contractStart,
@@ -1697,6 +2253,19 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 state.contractEnd = selected;
             }
         } else {
+            if (
+                isHonoraria &&
+                (
+                    !profileDraft.honorariaStart ||
+                    !profileDraft.honorariaEnd ||
+                    compareISODate(selected, profileDraft.honorariaStart) < 0 ||
+                    compareISODate(selected, profileDraft.honorariaEnd) > 0
+                )
+            ) {
+                alert("Selecciona una fecha de inicio dentro de la vigencia del contrato de Honorarios.");
+                return;
+            }
+
             state.rotationStart = selected;
         }
 
@@ -1741,7 +2310,6 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 state.contractReplaces.trim();
             profileDraft.contractReason =
                 state.contractReason;
-            profileDraft.rotationStart = state.contractStart;
             profileDraft.rotationFirstTurn = "larga";
         } else {
             if (!state.rotationStart) {
@@ -1752,7 +2320,10 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             profileDraft.rotationStart = state.rotationStart;
             profileDraft.rotationFirstTurn =
                 requiresRotationFirstTurn(type)
-                    ? normalizeRotationFirstTurn(state.firstTurn)
+                    ? normalizeRotationFirstTurnForType(
+                        type,
+                        state.firstTurn
+                    )
                     : "larga";
             profileDraft.contractStart = "";
             profileDraft.contractEnd = "";
@@ -1802,10 +2373,24 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 contract.end >= iso
             );
             const cell = document.createElement("button");
+            const outsideHonorariaContract =
+                isHonoraria &&
+                (
+                    !profileDraft.honorariaStart ||
+                    !profileDraft.honorariaEnd ||
+                    compareISODate(iso, profileDraft.honorariaStart) < 0 ||
+                    compareISODate(iso, profileDraft.honorariaEnd) > 0
+                );
 
             cell.type = "button";
             cell.className = "profile-mini-day is-pickable";
             cell.dataset.key = key;
+
+            if (outsideHonorariaContract) {
+                cell.classList.add("is-contract-disabled");
+                cell.disabled = true;
+                cell.title = "Fuera de la vigencia del contrato de Honorarios.";
+            }
 
             if (selectedKey === key) {
                 cell.classList.add("is-selected");
@@ -1861,9 +2446,20 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             : `Configurar ${getRotativaLabel(type)}`;
         const instructions = isReplacement
             ? "Selecciona inicio y termino del contrato. Si el periodo cruza de mes, usa las flechas para navegar."
+            : isHonoraria
+                ? `Selecciona el inicio de la rotativa dentro de la vigencia del contrato de Honorarios: ${formatDisplayDate(profileDraft.honorariaStart)} al ${formatDisplayDate(profileDraft.honorariaEnd)}.`
             : requiresRotationFirstTurn(type)
-                ? "Selecciona desde que fecha se aplicara la rotativa y si la secuencia comienza con turno Larga o Noche."
+                ? "Selecciona desde que fecha se aplicara la rotativa y desde que punto de la secuencia comenzara."
                 : "Selecciona desde que fecha se aplicara la rotativa escogida.";
+        const startOptions =
+            getRotationStartOptions(type)
+                .map(option => `
+                    <button class="rotation-start-option ${state.firstTurn === option.value ? "is-selected" : ""}" type="button" data-first-turn="${option.value}">
+                        <span>${option.label}</span>
+                        <small>${option.detail}</small>
+                    </button>
+                `)
+                .join("");
 
         backdrop.innerHTML = `
             <div class="turn-change-dialog rotation-config-dialog" role="dialog" aria-modal="true">
@@ -1872,21 +2468,20 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
 
                 ${requiresRotationFirstTurn(type) ? `
                     <div class="rotation-start-options" aria-label="Turno inicial">
-                        <button class="rotation-start-option ${state.firstTurn === "larga" ? "is-selected" : ""}" type="button" data-first-turn="larga">
-                            <span>Larga</span>
-                            <small>Iniciar con turno de dia</small>
-                        </button>
-                        <button class="rotation-start-option ${state.firstTurn === "noche" ? "is-selected" : ""}" type="button" data-first-turn="noche">
-                            <span>Noche</span>
-                            <small>Iniciar con turno nocturno</small>
-                        </button>
+                        ${startOptions}
                     </div>
                 ` : ""}
 
                 ${isReplacement ? `
                     <label class="rotation-contract-field">
                         <span>Reemplaza a</span>
-                        <input data-contract-replaces type="text" value="${escapeHTML(state.contractReplaces)}" placeholder="Nombre del trabajador reemplazado">
+                        <input data-contract-replaces type="text" list="rotationReplacementTargetOptions" value="${escapeHTML(state.contractReplaces)}" placeholder="Nombre del trabajador reemplazado">
+                        <datalist id="rotationReplacementTargetOptions">
+                            ${getProfiles()
+                                .filter(item => item.name !== profileDraft.name)
+                                .map(item => `<option value="${escapeHTML(item.name)}"></option>`)
+                                .join("")}
+                        </datalist>
                     </label>
 
                     <label class="rotation-contract-field">
@@ -1963,7 +2558,8 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             targetElement?.closest("[data-first-turn]");
         if (firstTurnButton) {
             state.firstTurn =
-                normalizeRotationFirstTurn(
+                normalizeRotationFirstTurnForType(
+                    type,
                     firstTurnButton.dataset.firstTurn
                 );
             render();
@@ -1996,6 +2592,237 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
     });
 
     render();
+}
+
+function openCalendarRotationConfigModal() {
+    if (!canModifyCurrentProfile()) return;
+
+    const profile = getPerfilActual();
+
+    if (!profile) {
+        alert("Selecciona un trabajador antes de modificar la rotativa.");
+        return;
+    }
+
+    const options = getCalendarRotationOptions(profile);
+    const state = getCalendarRotationDefaultState(profile);
+    const backdrop = document.createElement("div");
+
+    backdrop.className = "turn-change-dialog-backdrop";
+    document.body.appendChild(backdrop);
+
+    const close = () => backdrop.remove();
+    const render = () => {
+        const startOptions =
+            getRotationStartOptions(state.type)
+                .map(option => `
+                    <button class="rotation-start-option ${state.firstTurn === option.value ? "is-selected" : ""}" type="button" data-first-turn="${option.value}">
+                        <span>${escapeHTML(option.label)}</span>
+                        <small>${escapeHTML(option.detail)}</small>
+                    </button>
+                `)
+                .join("");
+        const selectedLabel =
+            getRotativaLabel(state.type);
+        const firstTurnText =
+            requiresRotationFirstTurn(state.type)
+                ? ` iniciando con ${getRotationFirstTurnLabel(state.firstTurn, state.type)}`
+                : "";
+
+        backdrop.innerHTML = `
+            <div class="turn-change-dialog rotation-config-dialog calendar-rotation-dialog" role="dialog" aria-modal="true">
+                <strong>Modificar rotativa</strong>
+                <p>Selecciona la nueva rotativa. Luego elige la fecha de inicio directamente sobre el calendario.</p>
+
+                <label class="rotation-contract-field">
+                    <span>Nueva rotativa</span>
+                    <select data-calendar-rotation-type>
+                        ${options
+                            .map(option => `
+                                <option value="${option.value}" ${option.value === state.type ? "selected" : ""}>
+                                    ${escapeHTML(option.label)}
+                                </option>
+                            `)
+                            .join("")}
+                    </select>
+                </label>
+
+                ${requiresRotationFirstTurn(state.type) ? `
+                    <div class="rotation-start-options" aria-label="Punto de inicio de la rotativa">
+                        ${startOptions}
+                    </div>
+                ` : ""}
+
+                <div class="profile-mini-help">
+                    Se aplicara ${escapeHTML(selectedLabel)}${escapeHTML(firstTurnText)} desde la fecha que selecciones.
+                </div>
+
+                <div class="turn-change-dialog__actions">
+                    <button class="primary-button" type="button" data-action="pick-date">Elegir fecha</button>
+                    <button class="secondary-button" type="button" data-action="cancel">Cancelar</button>
+                </div>
+            </div>
+        `;
+    };
+
+    backdrop.addEventListener("change", event => {
+        const field =
+            event.target instanceof Element
+                ? event.target.closest("[data-calendar-rotation-type]")
+                : null;
+
+        if (!field) return;
+
+        state.type = field.value;
+        state.firstTurn =
+            requiresRotationFirstTurn(state.type)
+                ? normalizeRotationFirstTurnForType(
+                    state.type,
+                    state.firstTurn
+                )
+                : "larga";
+        render();
+    });
+
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) {
+            close();
+            return;
+        }
+
+        const targetElement =
+            event.target instanceof Element
+                ? event.target
+                : event.target.parentElement;
+        const firstTurnButton =
+            targetElement?.closest("[data-first-turn]");
+
+        if (firstTurnButton) {
+            state.firstTurn =
+                normalizeRotationFirstTurnForType(
+                    state.type,
+                    firstTurnButton.dataset.firstTurn
+                );
+            render();
+            return;
+        }
+
+        const actionButton =
+            targetElement?.closest("[data-action]");
+        const action = actionButton?.dataset.action;
+
+        if (action === "cancel") {
+            close();
+            return;
+        }
+
+        if (action === "pick-date") {
+            pendingRotationChange = {
+                type: state.type,
+                firstTurn:
+                    requiresRotationFirstTurn(state.type)
+                        ? normalizeRotationFirstTurnForType(
+                            state.type,
+                            state.firstTurn
+                        )
+                        : "larga"
+            };
+
+            close();
+            activarModo(
+                "rotation",
+                `Modificar rotativa: selecciona en el calendario desde que dia comenzara ${getRotativaLabel(pendingRotationChange.type)}.`
+            );
+        }
+    });
+
+    render();
+}
+
+async function applyCalendarRotationChange(fecha) {
+    const profile = getPerfilActual();
+    const pending = pendingRotationChange;
+
+    if (!profile || !pending) {
+        clearSelectionMode(false);
+        return;
+    }
+
+    const startISO = toInputDate(fecha);
+    const type = pending.type;
+    const firstTurn =
+        requiresRotationFirstTurn(type)
+            ? normalizeRotationFirstTurnForType(type, pending.firstTurn)
+            : "larga";
+
+    if (
+        type === "libre" &&
+        !profileSupportsLibreRotation(profile)
+    ) {
+        alert("La rotativa Libre solo esta disponible para contratos Reemplazo u Honorarios.");
+        return;
+    }
+
+    if (
+        isHonorariaContractType(profile.contractType) &&
+        (
+            !profile.honorariaStart ||
+            !profile.honorariaEnd ||
+            compareISODate(startISO, profile.honorariaStart) < 0 ||
+            compareISODate(startISO, profile.honorariaEnd) > 0
+        )
+    ) {
+        alert("Selecciona una fecha dentro de la vigencia del contrato de Honorarios.");
+        return;
+    }
+
+    pendingRotationChange = null;
+    clearSelectionMode(false);
+
+    await withBusyState(async () => {
+        pushHistory();
+
+        if (type === "libre") {
+            saveRotativa({
+                type,
+                start: "",
+                firstTurn: "larga"
+            }, profile.name);
+            await applyDraftRotation(type, startISO, "larga", {
+                cleanupStart: startISO
+            });
+        } else {
+            saveRotativa({
+                type,
+                start: startISO,
+                firstTurn
+            }, profile.name);
+            await applyDraftRotation(type, startISO, firstTurn);
+        }
+
+        const rotationDateText =
+            type === "libre"
+                ? ` desde ${formatDisplayDate(startISO)}`
+                : ` desde ${formatDisplayDate(startISO)}`;
+        const firstTurnText =
+            requiresRotationFirstTurn(type)
+                ? ` iniciando con ${getRotationFirstTurnLabel(firstTurn, type)}`
+                : "";
+
+        addAuditLog(
+            AUDIT_CATEGORY.CALENDAR,
+            "Modifico rotativa desde calendario",
+            `${profile.name}: ${getRotativaLabel(type)}${rotationDateText}${firstTurnText}.`,
+            {
+                profile: profile.name,
+                date: startISO,
+                rotationType: type,
+                firstTurn
+            }
+        );
+    }, {
+        label: "Aplicando rotativa..."
+    });
 }
 
 function requestGradeEffectiveDate(previousSnapshot, nextProfile) {
@@ -2118,6 +2945,14 @@ function adjustHoursReturnBalance(profileName, year, delta) {
     );
 }
 
+function hheeReturnEffectiveLabel(year, month) {
+    const effective = nextMonthPeriod(year, month);
+
+    return formatMonthHeading(
+        new Date(effective.year, effective.month, 1)
+    );
+}
+
 function roundSignedHours(value) {
     return Math.round((Number(value) || 0) * 100) / 100;
 }
@@ -2135,6 +2970,14 @@ function syncHheeReturnTransferBalance(profileName, year, month, stats) {
         getHheeReturnTransfer(profileName, year, month);
 
     if (!existing?.enabled) return;
+    const effective =
+        hheeReturnEffectivePeriod({
+            ...existing,
+            year,
+            month
+        });
+    const hasStoredEffective =
+        hasStoredHheeReturnEffectivePeriod(existing);
 
     const transferredHours =
         calculateHheeReturnTransferHours(
@@ -2147,8 +2990,25 @@ function syncHheeReturnTransferBalance(profileName, year, month, stats) {
         transferredHours - previousTransferred
     );
 
+    if (!hasStoredEffective && Number(effective.year) !== Number(year)) {
+        adjustHoursReturnBalance(
+            profileName,
+            year,
+            -previousTransferred
+        );
+        adjustHoursReturnBalance(
+            profileName,
+            effective.year,
+            previousTransferred
+        );
+    }
+
     if (delta) {
-        adjustHoursReturnBalance(profileName, year, delta);
+        adjustHoursReturnBalance(
+            profileName,
+            effective.year,
+            delta
+        );
     }
 
     saveHheeReturnTransfer(
@@ -2158,7 +3018,9 @@ function syncHheeReturnTransferBalance(profileName, year, month, stats) {
         {
             ...existing,
             ...hheeReturnTransferPayload(stats, transferredHours),
-            enabled: true
+            enabled: true,
+            effectiveYear: effective.year,
+            effectiveMonth: effective.month
         }
     );
 }
@@ -2188,9 +3050,12 @@ function renderHheeReturnTransferControl(profile, year, month, stats) {
     DOM.hheeReturnTransferToggle.disabled = false;
 
     if (DOM.hheeReturnTransferInfo) {
+        const effectiveLabel =
+            hheeReturnEffectiveLabel(year, month);
+
         DOM.hheeReturnTransferInfo.textContent = enabled
-            ? `Mes traspasado: ${formatSaldo(transferHours)} hrs. se suman a devolucion.`
-            : `Al activar: ${formatSaldo(transferHours)} hrs. iran a devolucion en vez de pago.`;
+            ? `Mes traspasado: ${formatSaldo(transferHours)} hrs. disponibles desde ${effectiveLabel}.`
+            : `Al activar: ${formatSaldo(transferHours)} hrs. ir\u00e1n a devoluci\u00f3n desde ${effectiveLabel}.`;
     }
 }
 
@@ -2217,9 +3082,17 @@ async function handleHheeReturnTransferToggle() {
         getHheeReturnTransfer(profile.name, year, month);
     const shouldEnable =
         Boolean(DOM.hheeReturnTransferToggle?.checked);
+    const effective =
+        existing
+            ? hheeReturnEffectivePeriod({
+                ...existing,
+                year,
+                month
+            })
+            : nextMonthPeriod(year, month);
 
     if (shouldEnable && transferHours <= 0) {
-        alert("Este mes no tiene horas extras positivas para traspasar a devolucion.");
+        alert("Este mes no tiene horas extras positivas para traspasar a devoluci\u00f3n.");
         renderProfileHoursSummary(profile);
         return;
     }
@@ -2231,14 +3104,14 @@ async function handleHheeReturnTransferToggle() {
             ? normalizeBalanceValue(existing.transferredHours)
             : 0;
         const manual =
-            getManualLeaveBalances(year, profile.name);
+            getManualLeaveBalances(effective.year, profile.name);
         const baseBalance = existing?.enabled
             ? normalizeBalanceValue(existing.baseBalance)
             : normalizeBalanceValue(manual.hoursReturn);
 
         adjustHoursReturnBalance(
             profile.name,
-            year,
+            effective.year,
             transferHours - previousTransferred
         );
         saveHheeReturnTransfer(
@@ -2249,24 +3122,31 @@ async function handleHheeReturnTransferToggle() {
                 ...existing,
                 ...hheeReturnTransferPayload(stats, transferHours),
                 enabled: true,
-                baseBalance
+                baseBalance,
+                effectiveYear: effective.year,
+                effectiveMonth: effective.month
             }
         );
 
         addAuditLog(
             AUDIT_CATEGORY.LEAVE_ABSENCE,
-            "Traspaso HH.EE a devolucion",
-            `${profile.name}: ${formatSaldo(stats.hheeDiurnas)}h diurnas y ${formatSaldo(stats.hheeNocturnas)}h nocturnas generan ${formatSaldo(transferHours)} hrs. de devolucion.`,
+            "Traspaso HH.EE a devoluci\u00f3n",
+            `${profile.name}: ${formatSaldo(stats.hheeDiurnas)}h diurnas y ${formatSaldo(stats.hheeNocturnas)}h nocturnas generan ${formatSaldo(transferHours)} hrs. de devoluci\u00f3n desde ${hheeReturnEffectiveLabel(year, month)}.`,
             {
                 profile: profile.name,
                 year,
                 month,
-                transferHours
+                transferHours,
+                effectiveYear: effective.year,
+                effectiveMonth: effective.month
             }
         );
     } else {
         const currentBalance = normalizeBalanceValue(
-            getManualLeaveBalances(year, profile.name).hoursReturn
+            getManualLeaveBalances(
+                effective.year,
+                profile.name
+            ).hoursReturn
         );
         const baseBalance = Number.isFinite(
             Number(existing?.baseBalance)
@@ -2284,7 +3164,7 @@ async function handleHheeReturnTransferToggle() {
 
         setHoursReturnBalance(
             profile.name,
-            year,
+            effective.year,
             nextBalance
         );
         saveHheeReturnTransfer(
@@ -2296,7 +3176,9 @@ async function handleHheeReturnTransferToggle() {
                 ...hheeReturnTransferPayload(stats, 0),
                 enabled: false,
                 transferredHours: 0,
-                baseBalance: nextBalance
+                baseBalance: nextBalance,
+                effectiveYear: effective.year,
+                effectiveMonth: effective.month
             }
         );
 
@@ -2313,7 +3195,6 @@ async function handleHheeReturnTransferToggle() {
     }
 
     refreshAll();
-    renderDashboardState();
 }
 
 async function renderProfileHoursSummary(profile = getPerfilActual()) {
@@ -2369,20 +3250,11 @@ async function renderProfileHoursSummary(profile = getPerfilActual()) {
     );
     renderHheeReturnTransferControl(profile, y, m, stats);
 
-    summary.innerHTML = `
-        <div class="summary-context">
-            Mes HH.EE visualizado: ${monthLabel}
-        </div>
-        ${renderSummaryHTML(stats)}
-    `;
+    summary.innerHTML = renderSummaryHTML(stats);
 
     if (records) {
-        records.innerHTML = `
-            <div class="hhee-records-context">
-                ${escapeHTML(profile.name)} | ${monthLabel}
-            </div>
-            ${renderReplacementLogHTML(profile.name, y, m, holidays)}
-        `;
+        records.innerHTML =
+            renderReplacementLogHTML(profile.name, y, m, holidays);
     }
 }
 
@@ -2397,19 +3269,33 @@ function renderProfileRotationMiniCalendar() {
     const displayedRotationType = isProfileEditing()
         ? profileDraft.rotationType
         : getRotativa(profile?.name).type;
-    const isReplacementRotation =
-        displayedRotationType === "reemplazo";
+    const isReplacementContract =
+        isProfileEditing()
+            ? isReplacementDraft()
+            : isReplacementContractType(
+                profile?.contractType
+            ) ||
+                displayedRotationType === "reemplazo";
+    const isHonorariaContract =
+        isProfileEditing()
+            ? isHonorariaDraft()
+            : isHonorariaContractType(profile?.contractType);
     const selectedKey = inputDateToCalendarKey(
-        isReplacementRotation
+        isReplacementContract
             ? profileDraft.contractStart
             : profileDraft.rotationStart
     );
     const contractEndKey =
         inputDateToCalendarKey(profileDraft.contractEnd);
     const editing = isProfileEditing();
-    const canPick = editing && Boolean(displayedRotationType);
+    const canPick =
+        editing &&
+        (
+            isReplacementContract ||
+            requiresRotationStart(displayedRotationType)
+        );
     const existingContracts =
-        isReplacementRotation && profile
+        isReplacementContract && profile
             ? getContractsForProfile(profile.name)
             : [];
 
@@ -2447,12 +3333,20 @@ function renderProfileRotationMiniCalendar() {
         cell.type = "button";
         cell.className = "profile-mini-day";
         cell.dataset.key = key;
+        const outsideHonorariaContract =
+            isHonorariaContract &&
+            (
+                !profileDraft.honorariaStart ||
+                !profileDraft.honorariaEnd ||
+                compareISODate(iso, profileDraft.honorariaStart) < 0 ||
+                compareISODate(iso, profileDraft.honorariaEnd) > 0
+            );
 
         if (selectedKey === key) {
             cell.classList.add("is-selected");
         }
 
-        if (isReplacementRotation) {
+        if (isReplacementContract) {
             if (existingContract) {
                 cell.classList.add("has-existing-contract");
                 cell.title =
@@ -2475,17 +3369,22 @@ function renderProfileRotationMiniCalendar() {
             }
         }
 
-        if (canPick) {
+        if (canPick && !outsideHonorariaContract) {
             cell.classList.add("is-pickable");
         } else {
             cell.disabled = true;
+        }
+
+        if (outsideHonorariaContract) {
+            cell.classList.add("is-contract-disabled");
+            cell.title = "Fuera de la vigencia del contrato de Honorarios.";
         }
 
         aplicarClaseTurno(cell, state);
         cell.innerHTML = `
             <span>${d}</span>
             <small>${
-                isReplacementRotation
+                isReplacementContract
                     ? (
                         existingContract
                             ? "Vigente"
@@ -2505,7 +3404,7 @@ function renderProfileRotationMiniCalendar() {
         <p class="profile-mini-help">
             ${canPick
                 ? (
-                    isReplacementRotation
+                    isReplacementContract
                         ? "Selecciona inicio y termino del contrato de reemplazo."
                         : "Selecciona aqui desde que fecha se aplicara la rotativa escogida."
                 )
@@ -2533,7 +3432,7 @@ function renderProfileRotationMiniCalendar() {
         .querySelectorAll(".profile-mini-day.is-pickable")
         .forEach(button => {
             button.onclick = () => {
-                if (profileDraft.rotationType === "reemplazo") {
+                if (isReplacementDraft()) {
                     handleContractDatePick(button.dataset.key);
                     return;
                 }
@@ -2670,7 +3569,7 @@ function renderRecordCard(config, logs, editing) {
     const filterHTML = config.filterYear
         ? `
             <label class="record-year-filter">
-                <span>Ano</span>
+                <span>A&ntilde;o</span>
                 <select data-record-filter="${config.key}">
                     <option value="all">Todos</option>
                     ${years.map(year => `
@@ -2840,8 +3739,15 @@ function renderDisponibilidadVacaciones() {
         return;
     }
 
-    const saldos = getLeaveBalances();
-    const year = new Date().getFullYear();
+    const year = currentDate.getFullYear();
+    const saldos = getLeaveBalances(
+        year,
+        getCachedHolidays(year),
+        {
+            month: currentDate.getMonth(),
+            profileName: profile.name
+        }
+    );
     const showCompBalance = isProfileEditing()
         ? Boolean(profileDraft.shiftAssigned)
         : getShiftAssigned(profile.name);
@@ -2873,7 +3779,7 @@ function renderDisponibilidadVacaciones() {
             </div>
 
             <div class="availability-note">
-                Editando saldos vigentes del ano ${year}.
+                Editando saldos vigentes del a\u00f1o ${year}.
             </div>
         `;
 
@@ -2884,19 +3790,19 @@ function renderDisponibilidadVacaciones() {
         <div class="availability-list" style="--availability-columns: ${showCompBalance ? 4 : 3};">
             <div class="availability-item">
                 <span>FL</span>
-                <strong>${formatSaldo(saldos.legal)} dias</strong>
+                <strong>${formatSaldo(saldos.legal)} d&iacute;as</strong>
             </div>
 
             ${showCompBalance ? `
                 <div class="availability-item">
                     <span>FC</span>
-                    <strong>${formatSaldo(saldos.comp)} reg.</strong>
+                    <strong>${formatSaldo(saldos.comp)} d&iacute;as</strong>
                 </div>
             ` : ""}
 
             <div class="availability-item">
                 <span>ADM</span>
-                <strong>${formatSaldo(saldos.admin)} dias</strong>
+                <strong>${formatSaldo(saldos.admin)} d&iacute;as</strong>
             </div>
 
             <div class="availability-item availability-item--wide">
@@ -2906,7 +3812,7 @@ function renderDisponibilidadVacaciones() {
         </div>
 
         <div class="availability-note">
-            Saldos vigentes del ano ${year}.
+            Saldos vigentes del a\u00f1o ${year}.
         </div>
     `;
 }
@@ -2931,6 +3837,10 @@ function renderLeaveActionLabels() {
         DOM.legalBtn.disabled = true;
         DOM.licenseBtn.disabled = true;
         DOM.professionalLicenseBtn.disabled = true;
+        if (DOM.unionLeaveBtn) {
+            DOM.unionLeaveBtn.disabled = true;
+            DOM.unionLeaveBtn.classList.add("hidden");
+        }
         DOM.unpaidLeaveBtn.disabled = true;
         DOM.hoursReturnBtn.disabled = true;
         DOM.unjustifiedAbsenceBtn.disabled = true;
@@ -2946,7 +3856,17 @@ function renderLeaveActionLabels() {
         return;
     }
 
-    const saldos = getLeaveBalances();
+    const balanceYear = currentDate.getFullYear();
+    const saldos = getLeaveBalances(
+        balanceYear,
+        getCachedHolidays(balanceYear),
+        {
+            month: currentDate.getMonth(),
+            profileName: profile.name
+        }
+    );
+    const canUseUnionLeave =
+        Boolean(profile.unionLeaveEnabled);
 
     DOM.adminBtnLabel.textContent =
         `${adminBase} (${formatSaldo(saldos.admin)})`;
@@ -2964,18 +3884,85 @@ function renderLeaveActionLabels() {
     DOM.legalBtn.disabled = saldos.legal <= 0;
     DOM.licenseBtn.disabled = false;
     DOM.professionalLicenseBtn.disabled = false;
+    if (DOM.unionLeaveBtn) {
+        DOM.unionLeaveBtn.classList.toggle(
+            "hidden",
+            !canUseUnionLeave
+        );
+        DOM.unionLeaveBtn.disabled = !canUseUnionLeave;
+    }
     DOM.unpaidLeaveBtn.disabled = false;
     DOM.hoursReturnBtn.disabled = saldos.hoursReturn <= 0;
     DOM.unjustifiedAbsenceBtn.disabled = false;
     DOM.clockMarkBtn.disabled = false;
 }
 
+function syncEditRestrictedControls() {
+    const calendarCanEdit = canEditTarget("calendarPanel");
+
+    [
+        DOM.adminBtn,
+        DOM.halfAdminMorningBtn,
+        DOM.halfAdminAfternoonBtn,
+        DOM.legalBtn,
+        DOM.compBtn,
+        DOM.licenseBtn,
+        DOM.professionalLicenseBtn,
+        DOM.unionLeaveBtn,
+        DOM.unpaidLeaveBtn,
+        DOM.hoursReturnBtn,
+        DOM.unjustifiedAbsenceBtn,
+        DOM.clockMarkBtn
+    ].forEach(button => {
+        if (!button) return;
+
+        button.classList.toggle(
+            "is-disabled",
+            !calendarCanEdit
+        );
+
+        if (!calendarCanEdit) {
+            button.disabled = true;
+            button.title =
+                "Tu usuario tiene permiso solo de lectura en Turnos.";
+        } else {
+            button.title = "";
+        }
+    });
+}
+
 function renderDashboardState() {
     const profile = getPerfilActual();
     const data = getDisplayedProfileData();
-    const editing = isProfileEditing();
+    const profileCanEdit = canEditTarget("profileSection");
+    const editing = isProfileEditing() && profileCanEdit;
+    const activeView =
+        document.body.dataset.activeView || "turnos";
 
     syncTopProfileSearch();
+
+    if (activeView !== "profile") {
+        if (activeView === "hours") {
+            renderProfileHoursSummary(profile);
+            renderHheeProfiles();
+            syncHoursMonthControls(true);
+            renderHoursCharts(profile);
+
+            if (DOM.printHoursReportBtn) {
+                DOM.printHoursReportBtn.disabled =
+                    !profile ||
+                    profileDraft.mode === PROFILE_MODE.CREATE;
+            }
+        }
+
+        renderLeaveActionLabels();
+        syncEditRestrictedControls();
+        syncTurnosSidePanelHeight();
+        updateHistoryNavState();
+        updateTurnChangesNavState();
+        syncWorkspacePermissionUI({ switchIfNeeded: false });
+        return;
+    }
 
     DOM.profileNameInput.value = data.name || "";
     DOM.profileEmailInput.value = data.email || "";
@@ -2988,7 +3975,12 @@ function renderDashboardState() {
     DOM.profileRoleSelect.value = data.estamento || "";
     syncProfileProfessionField(data, editing);
     DOM.profileGradeSelect.value = data.grade || "";
+    syncProfileRotationOptions(data);
     DOM.profileRotationSelect.value = data.rotationType || "";
+    if (DOM.profileUnionLeaveInput) {
+        DOM.profileUnionLeaveInput.checked =
+            Boolean(data.unionLeaveEnabled);
+    }
     DOM.checkbox.checked = Boolean(data.shiftAssigned);
     DOM.profileActiveToggle.checked = data.active !== false;
 
@@ -3003,6 +3995,9 @@ function renderDashboardState() {
     DOM.profileRoleSelect.disabled = !editing;
     DOM.profileGradeSelect.disabled = !editing;
     DOM.profileRotationSelect.disabled = !editing;
+    if (DOM.profileUnionLeaveInput) {
+        DOM.profileUnionLeaveInput.disabled = !editing;
+    }
     DOM.checkbox.disabled = !editing;
     DOM.profileActiveToggle.disabled = !editing;
 
@@ -3024,32 +4019,46 @@ function renderDashboardState() {
         }
     }
 
-    const isReplacementRotation =
-        data.rotationType === "reemplazo";
+    const isReplacementContract =
+        isReplacementDraft(data);
+    const isHonorariaContract =
+        isHonorariaDraft(data);
 
     if (DOM.replacementContractEditor) {
         DOM.replacementContractEditor.classList.toggle(
             "hidden",
-            !isReplacementRotation
+            !isReplacementContract
         );
     }
 
     if (DOM.replacementTargetInput) {
+        const targetOptions =
+            document.getElementById("replacementTargetOptions");
+
+        if (targetOptions) {
+            targetOptions.innerHTML = getProfiles()
+                .filter(item => item.name !== data.name)
+                .map(item =>
+                    `<option value="${escapeHTML(item.name)}"></option>`
+                )
+                .join("");
+        }
+
         DOM.replacementTargetInput.value =
             data.contractReplaces || "";
         DOM.replacementTargetInput.disabled =
-            !editing || !isReplacementRotation;
+            !editing || !isReplacementContract;
     }
 
     if (DOM.replacementReasonSelect) {
         DOM.replacementReasonSelect.value =
             data.contractReason || "";
         DOM.replacementReasonSelect.disabled =
-            !editing || !isReplacementRotation;
+            !editing || !isReplacementContract;
     }
 
     if (DOM.replacementContractStatus) {
-        if (!isReplacementRotation) {
+        if (!isReplacementContract) {
             DOM.replacementContractStatus.textContent = "";
         } else if (editing) {
             DOM.replacementContractStatus.textContent =
@@ -3073,13 +4082,61 @@ function renderDashboardState() {
         }
     }
 
-    renderProfileRotationStatus(data, editing);
-    renderContractHistory(profile);
-    renderProfileHoursSummary(profile);
-    renderProfileDocs(data, editing);
-    renderProfileRecords(profile, editing);
-    renderHheeProfiles();
-    renderReportsProfiles();
+    if (DOM.honorariaContractEditor) {
+        DOM.honorariaContractEditor.classList.toggle(
+            "hidden",
+            !isHonorariaContract
+        );
+    }
+
+    if (DOM.honorariaStartInput) {
+        DOM.honorariaStartInput.value =
+            data.honorariaStart || "";
+        DOM.honorariaStartInput.disabled =
+            !editing || !isHonorariaContract;
+    }
+
+    if (DOM.honorariaEndInput) {
+        DOM.honorariaEndInput.value =
+            data.honorariaEnd || "";
+        DOM.honorariaEndInput.disabled =
+            !editing || !isHonorariaContract;
+    }
+
+    if (DOM.honorariaHourlyRateInput) {
+        DOM.honorariaHourlyRateInput.value =
+            data.honorariaHourlyRate || "";
+        DOM.honorariaHourlyRateInput.disabled =
+            !editing || !isHonorariaContract;
+    }
+
+    if (DOM.honorariaMaxMonthlyHoursInput) {
+        DOM.honorariaMaxMonthlyHoursInput.value =
+            data.honorariaMaxMonthlyHours || "";
+        DOM.honorariaMaxMonthlyHoursInput.disabled =
+            !editing || !isHonorariaContract;
+    }
+
+    if (DOM.honorariaContractStatus) {
+        DOM.honorariaContractStatus.textContent =
+            isHonorariaContract
+                ? data.honorariaStart && data.honorariaEnd
+                    ? `La rotativa se mostrara solamente entre ${formatDisplayDate(data.honorariaStart)} y ${formatDisplayDate(data.honorariaEnd)}.`
+                    : "Completa la vigencia para limitar la aplicacion de la rotativa."
+                : "";
+    }
+
+    if (activeView === "profile") {
+        renderProfileRotationStatus(data, editing);
+        renderContractHistory(profile);
+        renderProfileDocs(data, editing);
+        renderProfileRecords(profile, editing);
+    }
+
+    if (activeView === "hours") {
+        renderProfileHoursSummary(profile);
+        renderHheeProfiles();
+    }
 
     if (DOM.profileEditorHint) {
         DOM.profileEditorHint.textContent =
@@ -3097,14 +4154,16 @@ function renderDashboardState() {
             : "EDITAR";
 
     DOM.openCreateProfileBtn.disabled =
+        !profileCanEdit ||
         profileDraft.mode === PROFILE_MODE.EDIT;
 
     DOM.openEditProfileBtn.disabled =
+        !profileCanEdit ||
         profileDraft.mode === PROFILE_MODE.CREATE ||
         (!profile && profileDraft.mode !== PROFILE_MODE.EDIT);
 
     syncHoursMonthControls(
-        document.body.dataset.activeView === "hours"
+        activeView === "hours"
     );
 
     if (DOM.printHoursReportBtn) {
@@ -3113,16 +4172,19 @@ function renderDashboardState() {
     }
 
     renderLeaveActionLabels();
-    renderDisponibilidadVacaciones();
-    if (typeof window.renderStaffingMedicalChart === "function") {
-        window.renderStaffingMedicalChart();
+    syncEditRestrictedControls();
+
+    if (activeView === "profile") {
+        renderDisponibilidadVacaciones();
     }
+
     syncTurnosSidePanelHeight();
-    if (document.body.dataset.activeView === "hours") {
+    if (activeView === "hours") {
         renderHoursCharts(profile);
     }
     updateHistoryNavState();
     updateTurnChangesNavState();
+    syncWorkspacePermissionUI({ switchIfNeeded: false });
 }
 
 window.renderDashboardState = renderDashboardState;
@@ -3141,6 +4203,61 @@ function renderBotones() {
 
     updateHistoryNavState();
     updateTurnChangesNavState();
+}
+
+let historyToastTimer = null;
+
+function getHistoryToast() {
+    let toast = document.getElementById("historyActionToast");
+
+    if (toast) return toast;
+
+    toast = document.createElement("div");
+    toast.id = "historyActionToast";
+    toast.className = "history-action-toast";
+    toast.setAttribute("role", "status");
+    toast.setAttribute("aria-live", "polite");
+    document.body.appendChild(toast);
+
+    return toast;
+}
+
+function showHistoryActionToast(result, type) {
+    const toast = getHistoryToast();
+    const title = type === "redo"
+        ? "Rehacer"
+        : "Deshacer";
+    const fallback = type === "redo"
+        ? "Se rehizo la ultima accion."
+        : "Se deshizo la ultima accion.";
+    const message =
+        typeof result === "object" && result?.message
+            ? result.message
+            : fallback;
+
+    toast.classList.remove(
+        "history-action-toast--undo",
+        "history-action-toast--redo",
+        "is-visible"
+    );
+    toast.innerHTML = `
+        <strong>${escapeHTML(title)}</strong>
+        <span>${escapeHTML(message)}</span>
+    `;
+
+    void toast.offsetWidth;
+
+    toast.classList.add(
+        type === "redo"
+            ? "history-action-toast--redo"
+            : "history-action-toast--undo",
+        "is-visible"
+    );
+
+    clearTimeout(historyToastTimer);
+    historyToastTimer = setTimeout(() => {
+        toast.classList.remove("is-visible");
+    }, 5200);
 }
 
 function updateHistoryNavState() {
@@ -3171,7 +4288,10 @@ function updateTurnChangesNavState() {
         ? getRotativa(currentProfile)
         : { type: "" };
     const turnChangeConfig = getTurnChangeConfig();
+    const permissionDisabled =
+        !canViewTarget("turnChangesView");
     const disabled =
+        permissionDisabled ||
         !turnChangeConfig.allowSwaps ||
         !currentProfile ||
         !isProfileActive(currentProfile) ||
@@ -3181,7 +4301,9 @@ function updateTurnChangesNavState() {
     button.classList.toggle("is-disabled", disabled);
     button.title = disabled
         ? (
-            !turnChangeConfig.allowSwaps
+            permissionDisabled
+                ? "Tu usuario no tiene permiso para ver Cambios de Turno."
+                : !turnChangeConfig.allowSwaps
                 ? "Cambios de turno desactivados en Ajustes del sistema."
                 : "Cambios de turno no disponible para perfiles desactivados o con rotativa Diurno."
         )
@@ -3191,7 +4313,7 @@ function updateTurnChangesNavState() {
         disabled &&
         document.body.dataset.activeView === "swap"
     ) {
-        setActiveShortcut("calendarPanel");
+        setActiveShortcut(firstViewableTarget());
     }
 }
 
@@ -3223,6 +4345,10 @@ function getViewForTarget(targetId) {
         return "reports";
     }
 
+    if (targetId === "dashboardPanel") {
+        return "dashboard";
+    }
+
     if (targetId === "clockMarksPanel") {
         return "clockmarks";
     }
@@ -3231,12 +4357,12 @@ function getViewForTarget(targetId) {
         return "log";
     }
 
-    if (targetId === "staffingPanel") {
-        return "staffing";
-    }
-
     if (targetId === "staffingWeeklyCalendar") {
         return "weekly";
+    }
+
+    if (targetId === "timelinePanel") {
+        return "timeline";
     }
 
     if (targetId === "taskAssignmentsPanel") {
@@ -3254,12 +4380,87 @@ function getViewForTarget(targetId) {
     return "turnos";
 }
 
+function getTargetForActiveView() {
+    const activeView = document.body.dataset.activeView || "turnos";
+    const activeTile = Array.from(
+        document.querySelectorAll(".nav-tile[data-target]")
+    ).find(button =>
+        getViewForTarget(button.dataset.target) === activeView &&
+        !button.classList.contains("nav-tile--action")
+    );
+
+    return activeTile?.dataset.target || "calendarPanel";
+}
+
+function syncWorkspacePermissionUI(options = {}) {
+    const shouldSwitch = options.switchIfNeeded !== false;
+
+    document
+        .querySelectorAll(".nav-tile[data-target]")
+        .forEach(button => {
+            if (button.classList.contains("nav-tile--action")) return;
+
+            const allowed = canViewTarget(button.dataset.target);
+            const wasLocked =
+                button.dataset.permissionLocked === "true";
+
+            button.classList.toggle(
+                "is-permission-disabled",
+                !allowed
+            );
+            button.dataset.permissionLocked =
+                allowed ? "false" : "true";
+
+            if (!allowed) {
+                button.disabled = true;
+                button.title =
+                    "Tu usuario no tiene permiso para ver este menu.";
+            } else if (wasLocked) {
+                button.disabled = false;
+                button.title = "";
+            }
+        });
+
+    const activeTarget = getTargetForActiveView();
+
+    if (shouldSwitch && !canViewTarget(activeTarget)) {
+        const nextTarget = firstViewableTarget();
+        if (nextTarget && nextTarget !== activeTarget) {
+            setActiveShortcut(nextTarget);
+            return;
+        }
+    }
+
+    const canEditActive = canEditTarget(activeTarget);
+
+    document.body.dataset.activeCanEdit =
+        canEditActive ? "true" : "false";
+    document.body.classList.toggle(
+        "workspace-readonly",
+        !canEditActive
+    );
+
+    window.workspaceCanEditTarget = canEditTarget;
+}
+
 function setDashboardView(view) {
     document.body.dataset.activeView = view;
+    syncMobileTimelinePlacement();
+    if (view !== "turnos") {
+        setMobileLeaveOpen(false);
+        setMobileStaffingOpen(false);
+    }
     syncTurnosSidePanelHeight();
 }
 
-function setActiveShortcut(targetId) {
+function setActiveShortcut(targetId, options = {}) {
+    if (!canViewTarget(targetId)) {
+        alert("Tu usuario no tiene permiso para ingresar a este menu.");
+        syncWorkspacePermissionUI({ switchIfNeeded: false });
+        return;
+    }
+
+    const previousView = document.body.dataset.activeView || "turnos";
     const nextView = getViewForTarget(targetId);
 
     if (nextView === "profile" && selectionMode) {
@@ -3269,9 +4470,11 @@ function setActiveShortcut(targetId) {
     setDashboardView(nextView);
 
     if (nextView === "hours") {
-        syncHoursMonthControls(true);
-        renderHheeProfiles();
-        renderHoursCharts(getPerfilActual());
+        renderDashboardState();
+    }
+
+    if (nextView === "profile") {
+        renderDashboardState();
     }
 
     if (nextView === "log") {
@@ -3287,7 +4490,16 @@ function setActiveShortcut(targetId) {
     }
 
     if (nextView === "reports") {
-        renderReportsProfiles();
+        if (previousView === "turnos") {
+            syncReportsMonthFromCurrent();
+        }
+        renderReportsProfiles({
+            renderDetail: true
+        });
+    }
+
+    if (nextView === "dashboard") {
+        renderDashboardPanel();
     }
 
     if (nextView === "clockmarks") {
@@ -3295,12 +4507,16 @@ function setActiveShortcut(targetId) {
         renderClockMarksPanel();
     }
 
-    if (nextView === "staffing") {
-        renderStaffingPanel();
+    if (nextView === "swap") {
+        renderSwapPanel();
     }
 
     if (nextView === "weekly") {
         renderStaffingWeeklyCalendar();
+    }
+
+    if (nextView === "timeline") {
+        renderTimeline();
     }
 
     if (nextView === "tasks") {
@@ -3316,6 +4532,8 @@ function setActiveShortcut(targetId) {
     }
 
     if (nextView === "turnos") {
+        renderDashboardState();
+        renderCalendar({ deferHeavy: true });
         requestAnimationFrame(scrollInlineStaffingReportToToday);
     }
 
@@ -3327,9 +4545,15 @@ function setActiveShortcut(targetId) {
                 button.dataset.target === targetId
             );
         });
+
+    syncWorkspacePermissionUI({ switchIfNeeded: false });
+    syncAppNavigationHistory(
+        targetId,
+        options.historyMode || "push"
+    );
 }
 
-function renderProfiles() {
+function renderProfiles(options = {}) {
     const profiles = getProfiles();
     const showInactive =
         DOM.showInactiveProfiles?.checked ?? false;
@@ -3432,7 +4656,9 @@ function renderProfiles() {
         DOM.profiles.appendChild(item);
     });
 
-    renderDashboardState();
+    if (options.dashboard !== false) {
+        renderDashboardState();
+    }
 }
 
 function renderHheeProfiles() {
@@ -3616,9 +4842,529 @@ function formatReportPlanillaTitle(date) {
     const month = date.toLocaleString("es-CL", {
         month: "long",
         year: "numeric"
-    });
+    }).replace(/\s+de\s+/i, " ");
 
-    return `PLANILLA "${month.toUpperCase()}"`;
+    return `PLANILLA ${month.toUpperCase()}`;
+}
+
+function getReportsMonthDate() {
+    return new Date(
+        reportsMonthDate.getFullYear(),
+        reportsMonthDate.getMonth(),
+        1
+    );
+}
+
+function syncReportsMonthFromCurrent() {
+    reportsMonthDate = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        1
+    );
+    reportsMonthPickerYear = reportsMonthDate.getFullYear();
+}
+
+function closeReportsMonthPicker() {
+    if (!reportsMonthPicker) return;
+
+    reportsMonthPicker.classList.add("hidden");
+    reportsMonthPickerAnchor?.setAttribute("aria-expanded", "false");
+    reportsMonthPickerAnchor = null;
+}
+
+function ensureReportsMonthPicker() {
+    if (!reportsMonthPicker) {
+        reportsMonthPicker = document.createElement("div");
+        reportsMonthPicker.className =
+            "calendar-month-picker hidden";
+        reportsMonthPicker.setAttribute("role", "dialog");
+        reportsMonthPicker.setAttribute(
+            "aria-label",
+            "Seleccionar mes y a\u00f1o del reporte"
+        );
+        document.body.appendChild(reportsMonthPicker);
+    }
+
+    if (reportsMonthPickerListenersBound) return;
+
+    reportsMonthPickerListenersBound = true;
+    document.addEventListener("click", closeReportsMonthPicker);
+    document.addEventListener("keydown", event => {
+        if (event.key === "Escape") {
+            closeReportsMonthPicker();
+        }
+    });
+    window.addEventListener("resize", positionReportsMonthPicker);
+    window.addEventListener(
+        "scroll",
+        positionReportsMonthPicker,
+        true
+    );
+}
+
+function positionReportsMonthPicker() {
+    const trigger =
+        reportsMonthPickerAnchor ||
+        document.getElementById("reportMonthTrigger");
+
+    if (
+        !trigger ||
+        !reportsMonthPicker ||
+        reportsMonthPicker.classList.contains("hidden")
+    ) {
+        return;
+    }
+
+    const gap = 8;
+    const edge = 12;
+    const triggerRect = trigger.getBoundingClientRect();
+    const pickerRect = reportsMonthPicker.getBoundingClientRect();
+    const left = Math.min(
+        Math.max(
+            edge,
+            triggerRect.left +
+            (triggerRect.width - pickerRect.width) / 2
+        ),
+        window.innerWidth - pickerRect.width - edge
+    );
+    const preferredTop = triggerRect.bottom + gap;
+    const top =
+        preferredTop + pickerRect.height <= window.innerHeight - edge
+            ? preferredTop
+            : Math.max(edge, triggerRect.top - pickerRect.height - gap);
+
+    reportsMonthPicker.style.left = `${Math.round(left)}px`;
+    reportsMonthPicker.style.top = `${Math.round(top)}px`;
+}
+
+async function setReportsMonth(year, month) {
+    reportsMonthDate = new Date(Number(year), Number(month), 1);
+    reportsMonthPickerYear = reportsMonthDate.getFullYear();
+    closeReportsMonthPicker();
+
+    await withBusyState(
+        () => renderReportsDetail(),
+        { label: "Generando reporte..." }
+    );
+}
+
+async function changeReportsMonth(step) {
+    const next = getReportsMonthDate();
+    next.setMonth(next.getMonth() + Number(step || 0));
+    await setReportsMonth(next.getFullYear(), next.getMonth());
+}
+
+function renderReportsMonthPicker() {
+    if (!reportsMonthPicker) return;
+
+    const activeYear = reportsMonthDate.getFullYear();
+    const activeMonth = reportsMonthDate.getMonth();
+
+    reportsMonthPicker.innerHTML = `
+        <div class="calendar-month-picker__year">
+            <button class="calendar-month-picker__year-button" type="button" data-report-year-step="-1" aria-label="A&#241;o anterior">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+            </button>
+            <strong>${reportsMonthPickerYear}</strong>
+            <button class="calendar-month-picker__year-button" type="button" data-report-year-step="1" aria-label="A&#241;o siguiente">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+            </button>
+        </div>
+        <div class="calendar-month-picker__months">
+            ${REPORT_MONTH_NAMES.map((name, month) => `
+                <button
+                    class="calendar-month-picker__month${reportsMonthPickerYear === activeYear && month === activeMonth ? " is-active" : ""}"
+                    type="button"
+                    data-report-month="${month}"
+                >
+                    ${name}
+                </button>
+            `).join("")}
+        </div>
+    `;
+
+    reportsMonthPicker
+        .querySelectorAll("[data-report-year-step]")
+        .forEach(button => {
+            button.onclick = event => {
+                event.stopPropagation();
+                reportsMonthPickerYear += Number(
+                    button.dataset.reportYearStep
+                );
+                renderReportsMonthPicker();
+                positionReportsMonthPicker();
+            };
+        });
+
+    reportsMonthPicker
+        .querySelectorAll("[data-report-month]")
+        .forEach(button => {
+            button.onclick = async event => {
+                event.stopPropagation();
+                await setReportsMonth(
+                    reportsMonthPickerYear,
+                    Number(button.dataset.reportMonth)
+                );
+            };
+        });
+}
+
+function openReportsMonthPicker(trigger) {
+    ensureReportsMonthPicker();
+
+    if (
+        reportsMonthPickerAnchor === trigger &&
+        !reportsMonthPicker.classList.contains("hidden")
+    ) {
+        closeReportsMonthPicker();
+        return;
+    }
+
+    reportsMonthPickerAnchor = trigger;
+    reportsMonthPickerYear = reportsMonthDate.getFullYear();
+    renderReportsMonthPicker();
+    reportsMonthPicker.classList.remove("hidden");
+    trigger.setAttribute("aria-expanded", "true");
+    positionReportsMonthPicker();
+}
+
+function renderReportMonthControls() {
+    if (!DOM.report4TurnoNoAssignmentTitle) return;
+
+    closeReportsMonthPicker();
+
+    DOM.report4TurnoNoAssignmentTitle.innerHTML = `
+        <div class="report-monthbar">
+            <button id="reportPrevMonth" class="report-month-button" type="button" aria-label="Mes anterior reporte">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+            </button>
+            <button id="reportMonthTrigger" class="report-month-trigger" type="button" aria-label="Elegir mes y a&#241;o del reporte" aria-haspopup="dialog" aria-expanded="false">
+                ${escapeHTML(formatReportPlanillaTitle(getReportsMonthDate()))}
+            </button>
+            <button id="reportNextMonth" class="report-month-button" type="button" aria-label="Mes siguiente reporte">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+            </button>
+        </div>
+    `;
+
+    document.getElementById("reportPrevMonth")?.addEventListener(
+        "click",
+        () => changeReportsMonth(-1)
+    );
+    document.getElementById("reportNextMonth")?.addEventListener(
+        "click",
+        () => changeReportsMonth(1)
+    );
+    document.getElementById("reportMonthTrigger")?.addEventListener(
+        "click",
+        event => {
+            event.stopPropagation();
+            openReportsMonthPicker(event.currentTarget);
+        }
+    );
+}
+
+function buildSpecificReportPreviewHTML(profile, date) {
+    if (isReplacementReportProfile(profile.name)) {
+        return buildReplacementReportPreviewHTML(profile, date);
+    }
+
+    if (isDiurnoReportProfile(profile.name)) {
+        return buildDiurnoReportPreviewHTML(profile, date);
+    }
+
+    if (isAssignedShiftReportProfile(profile.name)) {
+        return buildAssignedShiftReportPreviewHTML(profile, date);
+    }
+
+    if (isFourthShiftNoAssignmentProfile(profile.name)) {
+        return buildNoAssignmentReportPreviewHTML(profile, date);
+    }
+
+    return Promise.resolve("");
+}
+
+function printReportPreviewHTML(html, title) {
+    if (!html) {
+        alert("No fue posible generar el reporte para imprimir.");
+        return;
+    }
+
+    const printWindow = window.open(
+        "",
+        "_blank",
+        "width=1100,height=800"
+    );
+
+    if (!printWindow) {
+        alert("Permite las ventanas emergentes para imprimir el reporte.");
+        return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(`
+        <!doctype html>
+        <html lang="es">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>${escapeHTML(title || "Reporte")}</title>
+                <link rel="stylesheet" href="styles.css">
+                <style>
+                    :root {
+                        --accent: #1d6cff;
+                        --panel: #ffffff;
+                        --panel-alt: #ffffff;
+                        --field: #ffffff;
+                        --border: #e5e7eb;
+                        --text: #0f172a;
+                        --text-soft: #1e2f4d;
+                        --text-muted: #64748b;
+                    }
+
+                    *,
+                    *::before,
+                    *::after {
+                        -webkit-print-color-adjust: exact !important;
+                        print-color-adjust: exact !important;
+                        color-adjust: exact !important;
+                    }
+
+                    html,
+                    body {
+                        width: 100%;
+                        min-height: 100%;
+                        margin: 0;
+                        background: #ffffff !important;
+                        color: #111827 !important;
+                    }
+
+                    body::before,
+                    body::after {
+                        display: none !important;
+                    }
+
+                    .report-print-page {
+                        max-width: 1180px;
+                        margin: 0 auto;
+                        padding: 18px;
+                        box-sizing: border-box;
+                        background: #ffffff;
+                    }
+
+                    .report-print-page .report-title-strip {
+                        display: block;
+                    }
+
+                    .report-print-page .no-assignment-report {
+                        display: grid;
+                        gap: 12px;
+                    }
+
+                    .report-print-page .report-title-strip {
+                        padding: 10px 12px;
+                        border-radius: 12px;
+                        background: #0f172a !important;
+                        color: #ffffff !important;
+                        font-weight: 900;
+                        text-align: center;
+                    }
+
+                    .report-print-page .report-section {
+                        display: grid;
+                        gap: 6px;
+                        min-width: 0;
+                    }
+
+                    .report-print-page .report-section h4 {
+                        margin: 0;
+                        padding: 7px 10px;
+                        border-radius: 10px;
+                        background: #1d6cff !important;
+                        color: #ffffff !important;
+                        font-size: 0.82rem;
+                        text-transform: uppercase;
+                    }
+
+                    .report-print-page .report-table-wrap {
+                        overflow: visible;
+                        border-radius: 12px;
+                        border: 1px solid #e5e7eb;
+                        background: #ffffff !important;
+                    }
+
+                    .report-print-page .report-table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        font-size: 0.8rem;
+                    }
+
+                    .report-print-page .report-table th,
+                    .report-print-page .report-table td {
+                        padding: 7px 8px;
+                        border: 1px solid #e5e7eb;
+                        text-align: left;
+                        vertical-align: top;
+                    }
+
+                    .report-print-page .report-table th {
+                        background: #dbeafe !important;
+                        color: #0f172a !important;
+                        font-weight: 800;
+                    }
+
+                    .report-print-page .report-table td {
+                        background: #ffffff !important;
+                        color: #1e2f4d !important;
+                    }
+
+                    .report-print-page .report-worker-data-grid {
+                        display: grid !important;
+                        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+                        gap: 12px !important;
+                    }
+
+                    .report-print-page .report-worker-data-column {
+                        min-width: 0;
+                    }
+
+                    .report-print-page .report-section--worker-data .report-table {
+                        min-width: 0;
+                    }
+
+                    .report-print-page .report-section--worker-data .report-table th:first-child,
+                    .report-print-page .report-section--worker-data .report-table td:first-child {
+                        width: 1%;
+                        padding-right: 22px;
+                        white-space: nowrap;
+                    }
+
+                    .report-print-page .report-row--inhabil td:first-child {
+                        background: #fee2e2 !important;
+                    }
+
+                    .report-print-page .report-signature-footer {
+                        justify-self: end;
+                        width: min(320px, 42%);
+                        min-width: 240px;
+                        margin-top: 24mm;
+                        margin-right: 10mm;
+                        padding: 2mm 0 0;
+                        border-top: 1px solid #1e2f4d;
+                        color: #1e2f4d !important;
+                        font-size: 0.78rem;
+                        font-weight: 650;
+                        line-height: 1.3;
+                        text-align: center;
+                        break-inside: avoid;
+                        page-break-inside: avoid;
+                    }
+
+                    @media print {
+                        @page {
+                            size: A4 landscape;
+                            margin: 12mm;
+                        }
+
+                        html,
+                        body {
+                            width: auto;
+                            min-height: 0;
+                            padding: 0 !important;
+                        }
+
+                        .report-print-page {
+                            max-width: none;
+                            width: 100%;
+                            padding: 4mm;
+                            box-sizing: border-box;
+                            -webkit-box-decoration-break: clone;
+                            box-decoration-break: clone;
+                        }
+
+                        .report-print-page .no-assignment-report {
+                            gap: 8px;
+                        }
+
+                        .report-print-page .report-section {
+                            break-inside: auto;
+                            page-break-inside: auto;
+                        }
+
+                        .report-print-page .report-section h4 {
+                            break-after: avoid;
+                            page-break-after: avoid;
+                        }
+
+                        .report-print-page .report-table-wrap {
+                            break-inside: auto;
+                            page-break-inside: auto;
+                        }
+
+                        .report-print-page .report-worker-data-grid {
+                            display: grid !important;
+                            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+                        }
+
+                        .report-print-page .report-table {
+                            page-break-inside: auto;
+                        }
+
+                        .report-print-page .report-table tr {
+                            break-inside: avoid;
+                            page-break-inside: avoid;
+                        }
+                    }
+                </style>
+            </head>
+            <body class="theme-light">
+                <main class="report-print-page">
+                    ${html}
+                </main>
+            </body>
+        </html>
+    `);
+    printWindow.document.close();
+
+    const runPrint = () => {
+        printWindow.focus();
+        printWindow.print();
+    };
+
+    if (printWindow.document.readyState === "complete") {
+        window.setTimeout(runPrint, 300);
+    } else {
+        printWindow.addEventListener("load", () =>
+            window.setTimeout(runPrint, 300),
+            { once: true }
+        );
+    }
+}
+
+async function printSpecificReportPdf(profile, date) {
+    if (!profile?.name) {
+        alert("Selecciona un trabajador para imprimir el reporte.");
+        return;
+    }
+
+    try {
+        const html = await buildSpecificReportPreviewHTML(profile, date);
+        printReportPreviewHTML(
+            html,
+            `Reporte ${profile.name} ${formatReportPlanillaTitle(date)}`
+        );
+    } catch (error) {
+        console.error(error);
+        alert("No fue posible generar el PDF del reporte.");
+    }
 }
 
 async function renderReportsDetail() {
@@ -3626,8 +5372,10 @@ async function renderReportsDetail() {
 
     const requestId = ++reportsDetailRequest;
     const profile = getPerfilActual();
+    const reportDate = getReportsMonthDate();
 
     if (!profile) {
+        closeReportsMonthPicker();
         DOM.reportsSelectedInfo.textContent =
             "Selecciona un colaborador para ver sus reportes disponibles.";
         DOM.report4TurnoNoAssignmentCard?.classList.add("hidden");
@@ -3643,14 +5391,29 @@ async function renderReportsDetail() {
 
     const rotativa = getRotativa(profile.name);
     const hasShiftAssigned = getShiftAssigned(profile.name);
-    const rotationStatus = [
-        getRotativaLabel(rotativa.type),
-        hasShiftAssigned
-            ? "con asignaci\u00f3n de turno"
-            : "sin asignaci\u00f3n de turno"
-    ].join(" ");
+    const replacementReport =
+        isReplacementReportProfile(profile.name);
+    const rotationStatus = replacementReport
+        ? "Contrato Reemplazo | rotativa heredada"
+        : [
+            getRotativaLabel(rotativa.type),
+            hasShiftAssigned
+                ? "con asignaci\u00f3n de turno"
+                : "sin asignaci\u00f3n de turno"
+        ].join(" ");
     const canShowFourthShiftReport =
         isFourthShiftNoAssignmentProfile(profile.name);
+    const canShowAssignedShiftReport =
+        isAssignedShiftReportProfile(profile.name);
+    const canShowReplacementReport =
+        replacementReport;
+    const canShowDiurnoReport =
+        isDiurnoReportProfile(profile.name);
+    const canShowSpecificReport =
+        canShowFourthShiftReport ||
+        canShowAssignedShiftReport ||
+        canShowReplacementReport ||
+        canShowDiurnoReport;
 
     DOM.reportsSelectedInfo.innerHTML = `
         <span>Trabajador seleccionado</span>
@@ -3660,24 +5423,37 @@ async function renderReportsDetail() {
 
     DOM.report4TurnoNoAssignmentCard?.classList.toggle(
         "hidden",
-        !canShowFourthShiftReport
+        !canShowSpecificReport
     );
 
     if (DOM.report4TurnoNoAssignmentTitle) {
-        DOM.report4TurnoNoAssignmentTitle.textContent =
-            canShowFourthShiftReport
-                ? formatReportPlanillaTitle(currentDate)
-                : "";
+        if (canShowSpecificReport) {
+            renderReportMonthControls();
+        } else {
+            closeReportsMonthPicker();
+            DOM.report4TurnoNoAssignmentTitle.textContent = "";
+        }
     }
 
     if (DOM.downloadNoAssignmentReportBtn) {
         DOM.downloadNoAssignmentReportBtn.onclick = () =>
-            exportNoAssignmentShiftReport(profile, currentDate);
+            canShowReplacementReport
+                ? exportReplacementShiftReport(profile, reportDate)
+                : canShowDiurnoReport
+                ? exportDiurnoShiftReport(profile, reportDate)
+                : canShowAssignedShiftReport
+                ? exportAssignedShiftReport(profile, reportDate)
+                : exportNoAssignmentShiftReport(profile, reportDate);
+    }
+
+    if (DOM.printReportPdfBtn) {
+        DOM.printReportPdfBtn.onclick = () =>
+            printSpecificReportPdf(profile, reportDate);
     }
 
     if (DOM.report4TurnoNoAssignmentPreview) {
         DOM.report4TurnoNoAssignmentPreview.innerHTML =
-            canShowFourthShiftReport
+            canShowSpecificReport
                 ? `<div class="empty-state empty-state--compact">Calculando detalle mensual...</div>`
                 : "";
     }
@@ -3685,22 +5461,22 @@ async function renderReportsDetail() {
     if (DOM.reportsUnavailableHint) {
         DOM.reportsUnavailableHint.classList.toggle(
             "hidden",
-            canShowFourthShiftReport
+            canShowSpecificReport
         );
         DOM.reportsUnavailableHint.textContent =
-            canShowFourthShiftReport
+            canShowSpecificReport
                 ? ""
-                : `No hay reportes espec\u00edficos para este perfil. El archivo "${FOURTH_SHIFT_NO_ASSIGNMENT_REPORT_LABEL}" aparece cuando el trabajador tiene rotativa 3er o 4\u00b0 Turno y no tiene Asignaci\u00f3n de Turno.`;
+                : `No hay reportes espec\u00edficos para este perfil. Los archivos "${FOURTH_SHIFT_NO_ASSIGNMENT_REPORT_LABEL}", "${FOURTH_SHIFT_ASSIGNED_REPORT_LABEL}", "${REPLACEMENT_REPORT_LABEL}" y "${DIURNO_REPORT_LABEL}" aparecen cuando corresponden a la configuraci\u00f3n del trabajador.`;
     }
 
-    if (!canShowFourthShiftReport || !DOM.report4TurnoNoAssignmentPreview) {
+    if (!canShowSpecificReport || !DOM.report4TurnoNoAssignmentPreview) {
         return;
     }
 
     try {
-        const html = await buildNoAssignmentReportPreviewHTML(
+        const html = await buildSpecificReportPreviewHTML(
             profile,
-            currentDate
+            reportDate
         );
 
         if (requestId !== reportsDetailRequest) return;
@@ -3716,7 +5492,7 @@ async function renderReportsDetail() {
     }
 }
 
-function renderReportsProfiles() {
+async function renderReportsProfiles(options = {}) {
     if (!DOM.reportsProfiles) return;
 
     const profiles = getProfiles();
@@ -3790,18 +5566,26 @@ function renderReportsProfiles() {
         content.append(name, meta);
         item.append(avatar, content);
 
-        item.onclick = () => {
-            selectProfileByName(profile.name, {
-                scrollToTop: true
+        item.onclick = async () => {
+            await withBusyState(async () => {
+                selectProfileByName(profile.name, {
+                    scrollToTop: true,
+                    refresh: false
+                });
+                await renderReportsProfiles({
+                    renderDetail: true
+                });
+            }, {
+                label: "Generando reporte..."
             });
-            setActiveShortcut("reportsPanel");
-            renderReportsProfiles();
         };
 
         DOM.reportsProfiles.appendChild(item);
     });
 
-    renderReportsDetail();
+    if (options.renderDetail) {
+        await renderReportsDetail();
+    }
 }
 
 function formatClockMarkDate(keyDay) {
@@ -4293,11 +6077,8 @@ async function renderClockMarksPanel() {
         );
 
     if (DOM.clockMarksSubtitle) {
-        DOM.clockMarksSubtitle.textContent = showAll
-            ? `Mostrando registros de todos los colaboradores en ${formatMonthHeading(monthDate)}.`
-            : currentProfile
-                ? `Mostrando registros de ${currentProfile} en ${formatMonthHeading(monthDate)}.`
-                : "Selecciona un colaborador para revisar sus marcajes.";
+        DOM.clockMarksSubtitle.textContent =
+            "Registros del mes de todos los colaboradores";
     }
 
     if (!records.length) {
@@ -4609,7 +6390,7 @@ function selectProfileByName(profileName, options = {}) {
     availabilityEditMode = false;
     profileDraft.mode = PROFILE_MODE.VIEW;
     setCurrentProfile(profile.name);
-    renderProfiles();
+    renderProfiles({ dashboard: false });
     renderBotones();
 
     if (options.openProfile) {
@@ -4620,7 +6401,9 @@ function selectProfileByName(profileName, options = {}) {
         setActiveShortcut("calendarPanel");
     }
 
-    refreshAll();
+    if (options.refresh !== false) {
+        refreshAll();
+    }
 
     if (options.scrollToTop) {
         requestAnimationFrame(() => {
@@ -4637,8 +6420,11 @@ window.selectProfileByName = selectProfileByName;
 function clearSelectionMode(shouldRefresh = true) {
     selectionMode = null;
     window.selectionMode = null;
+    pendingRotationChange = null;
     compCantidad = 0;
     window.compCantidad = 0;
+    legalCantidad = 0;
+    window.legalCantidad = 0;
     licenseCantidad = 0;
     licenseType = "license";
     window.licenseCantidad = 0;
@@ -4685,6 +6471,8 @@ function activarModo(modo, texto) {
 }
 
 function startCreateMode() {
+    if (!canEditCurrentProfileMenu()) return;
+
     clearSelectionMode(false);
     clearDraftValues();
     availabilityEditMode = false;
@@ -4701,6 +6489,8 @@ function startCreateMode() {
 }
 
 function startEditMode() {
+    if (!canEditCurrentProfileMenu()) return;
+
     const profile = getPerfilActual();
     if (!profile) return;
 
@@ -4721,6 +6511,8 @@ function startEditMode() {
 }
 
 function startReplacementContractEdit(profileName, keyDay) {
+    if (!canEditCurrentProfileMenu()) return;
+
     const profile = getProfiles().find(item =>
         item.name === profileName
     );
@@ -4732,7 +6524,13 @@ function startReplacementContractEdit(profileName, keyDay) {
     setCurrentProfile(profileName);
     loadDraftFromProfile(profile);
     profileDraft.mode = PROFILE_MODE.EDIT;
-    profileDraft.rotationType = "reemplazo";
+    profileDraft.contractType = "Reemplazo";
+    profileDraft.rotationType =
+        profileDraft.rotationType === "libre"
+            ? "libre"
+            : "";
+    profileDraft.rotationStart = "";
+    profileDraft.shiftAssigned = false;
     profileDraft.contractStart =
         calendarKeyToInputDate(keyDay);
     profileDraft.contractEnd = "";
@@ -4775,20 +6573,38 @@ function handleRotationSelectionChange() {
     }
     profileDraft.rotationStart = "";
     profileDraft.rotationFirstTurn = "larga";
-    profileDraft.contractStart = "";
-    profileDraft.contractEnd = "";
-    profileDraft.contractReplaces = "";
-    profileDraft.contractReason = "";
+
+    if (!isReplacementDraft()) {
+        profileDraft.contractStart = "";
+        profileDraft.contractEnd = "";
+        profileDraft.contractReplaces = "";
+        profileDraft.contractReason = "";
+    }
 
     if (!profileDraft.rotationType) {
         clearSelectionMode(false);
-        renderDashboardState();
         refreshAll();
         return;
     }
 
     renderDashboardState();
     setActiveShortcut("profileSection");
+
+    if (profileDraft.rotationType === "libre") {
+        return;
+    }
+
+    if (
+        isHonorariaDraft() &&
+        (
+            !profileDraft.honorariaStart ||
+            !profileDraft.honorariaEnd
+        )
+    ) {
+        alert("Completa primero las fechas del contrato de Honorarios para configurar la rotativa.");
+        return;
+    }
+
     openRotationConfigModal(profileDraft.rotationType);
 }
 
@@ -4802,15 +6618,11 @@ function hasPendingReplacementContract() {
 }
 
 function requiresReplacementContract() {
-    if (profileDraft.rotationType !== "reemplazo") {
+    if (!isReplacementDraft()) {
         return false;
     }
 
     if (profileDraft.mode === PROFILE_MODE.CREATE) {
-        return true;
-    }
-
-    if (hasRotationChanged()) {
         return true;
     }
 
@@ -4828,15 +6640,28 @@ function requiresReplacementContract() {
 
 function validateDraft() {
     const missing = [];
-    const requiresRotationStart =
-        profileDraft.mode === PROFILE_MODE.CREATE ||
-        hasRotationChanged();
+    const shouldRequireRotationStart =
+        (
+            profileDraft.mode === PROFILE_MODE.CREATE ||
+            hasRotationChanged()
+        ) &&
+        requiresRotationStart(profileDraft.rotationType);
     const rutMessage =
         getRutValidationMessage(profileDraft.rut);
 
     if (!profileDraft.name.trim()) missing.push("nombre");
     if (!profileDraft.estamento) missing.push("estamento");
-    if (!profileDraft.rotationType) missing.push("rotativa");
+    if (
+        profileDraft.rotationType === "libre" &&
+        !supportsLibreRotation()
+    ) {
+        alert("La rotativa Libre solo esta disponible para contratos Reemplazo u Honorarios.");
+        return false;
+    }
+
+    if (!isReplacementDraft() && !profileDraft.rotationType) {
+        missing.push("rotativa");
+    }
     if (requiresReplacementContract()) {
         if (!profileDraft.contractStart) {
             missing.push("inicio de contrato");
@@ -4855,17 +6680,35 @@ function validateDraft() {
         }
     }
 
+    if (isHonorariaDraft()) {
+        if (!profileDraft.honorariaStart) {
+            missing.push("inicio del contrato de Honorarios");
+        }
+
+        if (!profileDraft.honorariaEnd) {
+            missing.push("termino del contrato de Honorarios");
+        }
+
+        if (!(Number(profileDraft.honorariaHourlyRate) > 0)) {
+            missing.push("valor de la hora");
+        }
+
+        if (!(Number(profileDraft.honorariaMaxMonthlyHours) > 0)) {
+            missing.push("maximo de horas mensuales");
+        }
+    }
+
     if (
-        profileDraft.rotationType !== "reemplazo" &&
-        requiresRotationStart &&
+        !isReplacementDraft() &&
+        shouldRequireRotationStart &&
         !profileDraft.rotationStart
     ) {
         missing.push("fecha de inicio de rotativa");
     }
 
     if (
-        profileDraft.rotationType !== "reemplazo" &&
-        requiresRotationStart &&
+        !isReplacementDraft() &&
+        shouldRequireRotationStart &&
         requiresRotationFirstTurn(profileDraft.rotationType) &&
         !profileDraft.rotationFirstTurn
     ) {
@@ -4873,7 +6716,7 @@ function validateDraft() {
     }
 
     if (
-        profileDraft.rotationType === "reemplazo" &&
+        isReplacementDraft() &&
         profileDraft.contractStart &&
         profileDraft.contractEnd &&
         compareISODate(
@@ -4883,6 +6726,61 @@ function validateDraft() {
     ) {
         alert("La fecha de termino del contrato no puede ser anterior al inicio.");
         return false;
+    }
+
+    if (
+        isHonorariaDraft() &&
+        profileDraft.honorariaStart &&
+        profileDraft.honorariaEnd &&
+        compareISODate(
+            profileDraft.honorariaEnd,
+            profileDraft.honorariaStart
+        ) < 0
+    ) {
+        alert("La fecha de termino del contrato de Honorarios no puede ser anterior al inicio.");
+        return false;
+    }
+
+    if (
+        isHonorariaDraft() &&
+        profileDraft.honorariaStart &&
+        profileDraft.honorariaEnd &&
+        profileDraft.rotationStart &&
+        (
+            compareISODate(
+                profileDraft.rotationStart,
+                profileDraft.honorariaStart
+            ) < 0 ||
+            compareISODate(
+                profileDraft.rotationStart,
+                profileDraft.honorariaEnd
+            ) > 0
+        )
+    ) {
+        alert("La rotativa del trabajador a Honorarios debe comenzar dentro de la vigencia del contrato.");
+        return false;
+    }
+
+    if (
+        isReplacementDraft() &&
+        profileDraft.contractReplaces.trim()
+    ) {
+        const targetName =
+            profileDraft.contractReplaces.trim();
+
+        if (targetName === profileDraft.name.trim()) {
+            alert("Un trabajador no puede reemplazarse a si mismo.");
+            return false;
+        }
+
+        if (
+            !getProfiles().some(profile =>
+                profile.name === targetName
+            )
+        ) {
+            alert("El trabajador reemplazado debe existir en el listado de perfiles.");
+            return false;
+        }
     }
 
     if (rutMessage) {
@@ -5147,8 +7045,20 @@ function aplicarTercerTurnoDesde(fecha, firstTurn = "larga") {
 async function applyDraftRotation(
     rotationType,
     rotationStart,
-    firstTurn = "larga"
+    firstTurn = "larga",
+    options = {}
 ) {
+    if (rotationType === "libre") {
+        if (options.cleanupStart) {
+            await cleanupFutureSchedule(
+                parseInputDate(options.cleanupStart)
+            );
+        }
+
+        refreshAll();
+        return;
+    }
+
     const startDate = parseInputDate(rotationStart);
 
     await cleanupFutureSchedule(startDate);
@@ -5172,6 +7082,7 @@ async function applyDraftRotation(
 }
 
 async function guardarPerfil() {
+    if (!canEditCurrentProfileMenu()) return;
     if (!validateDraft()) return;
 
     const isCreating =
@@ -5187,8 +7098,13 @@ async function guardarPerfil() {
         profileDraft.profession,
         nextEstamento
     );
+    const replacementContract =
+        isReplacementDraft();
     const nextRotationType =
-        profileDraft.rotationType;
+        replacementContract &&
+        profileDraft.rotationType !== "libre"
+            ? ""
+            : profileDraft.rotationType;
     const nextShiftAssigned =
         (
             nextRotationType === "3turno" ||
@@ -5207,24 +7123,49 @@ async function guardarPerfil() {
         active: profileDraft.active !== false,
         unitEntryDate: profileDraft.unitEntryDate,
         contractType: profileDraft.contractType,
+        honorariaStart: isHonorariaDraft()
+            ? profileDraft.honorariaStart
+            : "",
+        honorariaEnd: isHonorariaDraft()
+            ? profileDraft.honorariaEnd
+            : "",
+        honorariaHourlyRate: isHonorariaDraft()
+            ? Number(profileDraft.honorariaHourlyRate) || 0
+            : 0,
+        honorariaMaxMonthlyHours: isHonorariaDraft()
+            ? Number(profileDraft.honorariaMaxMonthlyHours) || 0
+            : 0,
+        unionLeaveEnabled: Boolean(profileDraft.unionLeaveEnabled),
         estamento: nextEstamento,
         profession: nextProfession,
         grade: profileDraft.grade
     };
     const nextRotationStart =
-        nextRotationType === "reemplazo"
-            ? (
-                profileDraft.contractStart ||
-                profileDraft.rotationStart
-            )
+        replacementContract ||
+        nextRotationType === "libre"
+            ? ""
             : profileDraft.rotationStart;
     const nextRotationFirstTurn =
-        normalizeRotationFirstTurn(profileDraft.rotationFirstTurn);
+        normalizeRotationFirstTurnForType(
+            nextRotationType,
+            profileDraft.rotationFirstTurn
+        );
     const shouldApplyRotation =
-        profileDraft.mode === PROFILE_MODE.CREATE ||
-        hasRotationChanged();
+        (
+            !replacementContract ||
+            nextRotationType === "libre"
+        ) &&
+        (
+            profileDraft.mode === PROFILE_MODE.CREATE ||
+            hasRotationChanged()
+        );
+    const rotationCleanupStart =
+        nextRotationType === "libre" &&
+        isHonorariaDraft()
+            ? profileDraft.honorariaStart
+            : "";
     const shouldSaveReplacementContract =
-        nextRotationType === "reemplazo" &&
+        replacementContract &&
         requiresReplacementContract();
     const nextSnapshot = {
         ...nextProfilePayload,
@@ -5370,13 +7311,24 @@ async function guardarPerfil() {
             await applyDraftRotation(
                 nextRotationType,
                 nextRotationStart,
-                nextRotationFirstTurn
+                nextRotationFirstTurn,
+                {
+                    cleanupStart: rotationCleanupStart
+                }
             );
+
+            const rotationDateText = nextRotationStart
+                ? ` desde ${formatDisplayDate(nextRotationStart)}`
+                : "";
+            const rotationAuditSuffix =
+                nextRotationType === "libre"
+                    ? ". Calendario base libre para carga manual."
+                    : ". Se limpiaron programaciones futuras desde esa fecha.";
 
             addAuditLog(
                 AUDIT_CATEGORY.CALENDAR,
-                "Aplico rotativa base",
-                `${nextName}: ${getRotativaLabel(nextRotationType)} desde ${formatDisplayDate(nextRotationStart)}${requiresRotationFirstTurn(nextRotationType) ? ` iniciando con ${getRotationFirstTurnLabel(nextRotationFirstTurn)}` : ""}. Se limpiaron programaciones futuras desde esa fecha.`,
+                "Aplic\u00f3 rotativa base",
+                `${nextName}: ${getRotativaLabel(nextRotationType)}${rotationDateText}${requiresRotationFirstTurn(nextRotationType) ? ` iniciando con ${getRotationFirstTurnLabel(nextRotationFirstTurn, nextRotationType)}` : ""}${rotationAuditSuffix}`,
                 {
                     profile: nextName,
                     date: nextRotationStart,
@@ -5507,14 +7459,29 @@ async function activarSelectorLegal() {
     const saldo = getLeaveBalances(year, holidays).legal;
 
     if (saldo <= 0) {
-        alert("No quedan dias de feriado legal.");
+        alert("No quedan d\u00edas de feriado legal.");
+        return;
+    }
+
+    const debeAplicarBloque10 =
+        Number(saldo) === 10 &&
+        !await existeBloque10Legal(year);
+
+    if (debeAplicarBloque10) {
+        legalCantidad = 10;
+        window.legalCantidad = 10;
+
+        activarModo(
+            "legal",
+            "Selecciona un d\u00eda h\u00e1bil para iniciar el bloque continuo obligatorio de 10 d\u00edas de F. Legal. Los d\u00edas inh\u00e1biles y ausencias incompatibles quedar\u00e1n bloqueados."
+        );
         return;
     }
 
     const cantidad = await openAmountDialog({
         title: "F. Legal",
-        subtitle: "Indica cuantos dias de feriado legal deseas cargar.",
-        label: "Dias de F. Legal",
+        subtitle: "Indica cu\u00e1ntos d\u00edas de feriado legal deseas cargar.",
+        label: "D\u00edas de F. Legal",
         max: saldo,
         confirmText: "Continuar"
     });
@@ -5530,10 +7497,11 @@ async function activarSelectorLegal() {
     }
 
     legalCantidad = cantidad;
+    window.legalCantidad = cantidad;
 
     activarModo(
         "legal",
-        "Selecciona un dia habil para iniciar el feriado legal. Los dias inhabiles y ausencias incompatibles quedaran bloqueados."
+        "Selecciona un d\u00eda h\u00e1bil para iniciar el feriado legal. Los d\u00edas inh\u00e1biles y ausencias incompatibles quedar\u00e1n bloqueados."
     );
 }
 
@@ -5563,20 +7531,21 @@ function activarSelectorComp() {
 
     activarModo(
         "comp",
-        `Selecciona un dia habil para iniciar el bloque completo de ${formatSaldo(cantidad)} F. Compensatorio. Deben haber pasado 90 dias corridos desde el ultimo F. Legal.`
+        `Selecciona un d\u00eda h\u00e1bil para iniciar el bloque completo de ${formatSaldo(cantidad)} F. Compensatorio. Deben haber pasado 90 d\u00edas corridos desde el \u00faltimo F. Legal.`
     );
 }
 
 function getLicenseTypeLabel(type) {
     if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "Permiso Gremial";
     if (type === "unpaid_leave") return "Permiso sin Goce";
-    return "Licencia Medica";
+    return "Licencia M\u00e9dica";
 }
 
 function openAmountDialog({
     title,
     subtitle,
-    label = "Cantidad de dias",
+    label = "Cantidad de d\u00edas",
     max = null,
     min = 1,
     step = 1,
@@ -5954,7 +7923,7 @@ function openHoursReturnDialog({
 
             fullButton.disabled = !enoughForFullTurn;
             fullButton.title = enoughForFullTurn
-                ? "Cubrir todo el turno con devolucion de horas."
+                ? "Cubrir todo el turno con devoluci\u00f3n de horas."
                 : "Saldo insuficiente para cubrir todo el turno.";
 
             if (!current) {
@@ -6008,7 +7977,7 @@ function openHoursReturnDialog({
             if (!current) return;
 
             if (current.hours <= 0) {
-                alert("Modifica la entrada o salida para usar horas de devolucion.");
+                alert("Modifica la entrada o salida para usar horas de devoluci\u00f3n.");
                 entryInput.focus();
                 return;
             }
@@ -6055,11 +8024,19 @@ function openHoursReturnDialog({
 async function activarSelectorLicencia(type = "license") {
     if (!canModifyCurrentProfile()) return;
 
+    if (
+        type === "union_leave" &&
+        !getPerfilActual()?.unionLeaveEnabled
+    ) {
+        alert("Este trabajador no tiene habilitado Permiso Gremial en su perfil.");
+        return;
+    }
+
     const label = getLicenseTypeLabel(type);
     const cantidad = await openAmountDialog({
         title: label,
-        subtitle: "Indica cuantos dias corridos dura la ausencia.",
-        label: "Dias corridos",
+        subtitle: "Indica cu\u00e1ntos d\u00edas corridos dura la ausencia.",
+        label: "D\u00edas corridos",
         confirmText: "Continuar"
     });
 
@@ -6072,7 +8049,7 @@ async function activarSelectorLicencia(type = "license") {
 
     activarModo(
         "license",
-        `Selecciona el inicio de ${getLicenseTypeLabel(type)}. Se contara en dias corridos.`
+        `Selecciona el inicio de ${getLicenseTypeLabel(type)}. Se contar\u00e1 en d\u00edas corridos.`
     );
 }
 
@@ -6088,7 +8065,7 @@ function activarSelectorAdmin() {
 
     if (saldo < 1) {
         alert(
-            `Saldo insuficiente. El saldo disponible (${formatSaldo(saldo)}) solo permite aplicar 1/2 ADM Manana o 1/2 ADM Tarde.`
+            `Saldo insuficiente. El saldo disponible (${formatSaldo(saldo)}) solo permite aplicar 1/2 ADM Ma\u00f1ana o 1/2 ADM Tarde.`
         );
         return;
     }
@@ -6128,16 +8105,23 @@ async function activarSelectorDevolucionHoras() {
 
     const year = currentDate.getFullYear();
     const holidays = await fetchHolidays(year);
-    const saldo = getLeaveBalances(year, holidays).hoursReturn;
+    const saldo = getLeaveBalances(
+        year,
+        holidays,
+        {
+            month: currentDate.getMonth(),
+            profileName: getCurrentProfile()
+        }
+    ).hoursReturn;
 
     if (saldo <= 0) {
-        alert("No hay horas disponibles para devolucion.");
+        alert("No hay horas disponibles para devoluci\u00f3n.");
         return;
     }
 
     activarModo(
         "hoursreturn",
-        `Selecciona un turno base para aplicar devolucion de horas. Saldo disponible: ${formatSaldo(saldo)} hrs.`
+        `Selecciona un turno base para aplicar devoluci\u00f3n de horas. Saldo disponible: ${formatSaldo(saldo)} hrs.`
     );
 
     DOM.adminInfo.textContent =
@@ -6153,7 +8137,7 @@ function activarSelectorAusenciaInjustificada() {
     );
 
     DOM.adminInfo.textContent =
-        "Solo quedan habilitados los dias con turno real del trabajador. Puedes marcar varios turnos y presionar Cancelar para terminar.";
+        "Solo quedan habilitados los d\u00edas con turno real del trabajador. Puedes marcar varios turnos y presionar Cancelar para terminar.";
 }
 
 function activarSelectorMarcajeReloj() {
@@ -6165,7 +8149,7 @@ function activarSelectorMarcajeReloj() {
     );
 
     DOM.adminInfo.textContent =
-        "Solo quedan habilitados los dias con turno real y sin vacaciones o ausencias.";
+        "Solo quedan habilitados los d\u00edas con turno real y sin vacaciones o ausencias.";
 }
 
 async function handleHoursReturnSelection(fecha) {
@@ -6179,7 +8163,7 @@ async function handleHoursReturnSelection(fecha) {
     const baseState = getTurnoBase(profile, keyDay);
 
     if (!Number(baseState)) {
-        alert("Selecciona un dia con turno base para aplicar la devolucion de horas.");
+        alert("Selecciona un d\u00eda con turno base para aplicar la devoluci\u00f3n de horas.");
         clearSelectionMode();
         return;
     }
@@ -6196,16 +8180,23 @@ async function handleHoursReturnSelection(fecha) {
     }
 
     if (getHourReturn(profile, keyDay)) {
-        alert("Este turno ya tiene una devolucion de horas aplicada.");
+        alert("Este turno ya tiene una devoluci\u00f3n de horas aplicada.");
         clearSelectionMode();
         return;
     }
 
     const balance =
-        getLeaveBalances(fecha.getFullYear(), holidays).hoursReturn;
+        getLeaveBalances(
+            fecha.getFullYear(),
+            holidays,
+            {
+                month: fecha.getMonth(),
+                profileName: profile
+            }
+        ).hoursReturn;
 
     if (balance <= 0) {
-        alert("No hay horas disponibles para devolucion.");
+        alert("No hay horas disponibles para devoluci\u00f3n.");
         clearSelectionMode();
         return;
     }
@@ -6247,7 +8238,7 @@ async function handleHoursReturnSelection(fecha) {
 
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
-        "Aplico devolucion de horas",
+        "Aplic\u00f3 devoluci\u00f3n de horas",
         `${profile}: ${record.fullTurn ? "Devoluci\u00f3n" : "Dev. Parcial"} de ${formatSaldo(record.hours)} hrs. el ${formatDisplayDate(toISODate(fecha))}.`,
         {
             profile,
@@ -6272,7 +8263,7 @@ async function handleClockMarkSelection(fecha) {
     );
 
     if (!state) {
-        alert("Selecciona un dia que tenga turno para modificar sus marcajes.");
+        alert("Selecciona un d\u00eda que tenga turno para modificar sus marcajes.");
         clearSelectionMode();
         return;
     }
@@ -6397,7 +8388,47 @@ function bindProfileForm() {
         if (!isProfileEditing()) return;
         profileDraft.contractType =
             DOM.profileContractTypeSelect.value;
+
+        if (isReplacementDraft()) {
+            profileDraft.rotationType = "";
+            profileDraft.rotationStart = "";
+            profileDraft.rotationFirstTurn = "larga";
+            profileDraft.shiftAssigned = false;
+        } else {
+            profileDraft.contractStart = "";
+            profileDraft.contractEnd = "";
+            profileDraft.contractReplaces = "";
+            profileDraft.contractReason = "";
+        }
+
+        if (!isHonorariaDraft()) {
+            profileDraft.honorariaStart = "";
+            profileDraft.honorariaEnd = "";
+            profileDraft.honorariaHourlyRate = "";
+            profileDraft.honorariaMaxMonthlyHours = "";
+        }
+
+        if (
+            profileDraft.rotationType === "libre" &&
+            !supportsLibreRotation()
+        ) {
+            profileDraft.rotationType = "";
+            profileDraft.rotationStart = "";
+            profileDraft.rotationFirstTurn = "larga";
+        }
+
+        renderDashboardState();
     };
+
+    if (DOM.profileUnionLeaveInput) {
+        DOM.profileUnionLeaveInput.onchange = () => {
+            if (!isProfileEditing()) return;
+
+            profileDraft.unionLeaveEnabled =
+                DOM.profileUnionLeaveInput.checked;
+            renderBotones();
+        };
+    }
 
     DOM.profileRoleSelect.onchange = () => {
         if (!isProfileEditing()) return;
@@ -6461,6 +8492,44 @@ function bindProfileForm() {
             profileDraft.contractReason =
                 DOM.replacementReasonSelect.value;
             renderDashboardState();
+        };
+    }
+
+    if (DOM.honorariaStartInput) {
+        DOM.honorariaStartInput.onchange = () => {
+            if (!isProfileEditing()) return;
+
+            profileDraft.honorariaStart =
+                DOM.honorariaStartInput.value;
+            renderDashboardState();
+        };
+    }
+
+    if (DOM.honorariaEndInput) {
+        DOM.honorariaEndInput.onchange = () => {
+            if (!isProfileEditing()) return;
+
+            profileDraft.honorariaEnd =
+                DOM.honorariaEndInput.value;
+            renderDashboardState();
+        };
+    }
+
+    if (DOM.honorariaHourlyRateInput) {
+        DOM.honorariaHourlyRateInput.oninput = () => {
+            if (!isProfileEditing()) return;
+
+            profileDraft.honorariaHourlyRate =
+                DOM.honorariaHourlyRateInput.value;
+        };
+    }
+
+    if (DOM.honorariaMaxMonthlyHoursInput) {
+        DOM.honorariaMaxMonthlyHoursInput.oninput = () => {
+            if (!isProfileEditing()) return;
+
+            profileDraft.honorariaMaxMonthlyHours =
+                DOM.honorariaMaxMonthlyHoursInput.value;
         };
     }
 
@@ -6559,7 +8628,6 @@ function initializeInactiveProfileToggles() {
         "showInactiveProfiles",
         "hheeShowInactiveProfiles",
         "reportsShowInactiveProfiles",
-        "staffingShowInactiveProfiles",
         "swapShowInactiveProfiles",
         "clockMarksShowInactiveProfiles"
     ].forEach(id => {
@@ -6569,6 +8637,340 @@ function initializeInactiveProfileToggles() {
             input.checked = false;
         }
     });
+}
+
+const MOBILE_LAYOUT_QUERY = "(max-width: 760px)";
+let appNavigationHistoryReady = false;
+let appNavigationHistoryBound = false;
+
+function isAppTarget(targetId) {
+    return Boolean(
+        targetId &&
+        document.getElementById(targetId) &&
+        Array.from(
+            document.querySelectorAll(".nav-tile[data-target]")
+        ).some(button => button.dataset.target === targetId)
+    );
+}
+
+function targetFromHash() {
+    const value = decodeURIComponent(
+        String(window.location.hash || "").replace(/^#/, "")
+    );
+
+    return isAppTarget(value) ? value : "";
+}
+
+function appTargetUrl(targetId) {
+    const url = new URL(window.location.href);
+    url.hash = targetId;
+    return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function syncAppNavigationHistory(targetId, mode = "push") {
+    if (!window.history || !isAppTarget(targetId)) return;
+
+    const state = {
+        ...(window.history.state || {}),
+        proTurnosTarget: targetId
+    };
+    const url = appTargetUrl(targetId);
+    const currentTarget = window.history.state?.proTurnosTarget;
+
+    if (!appNavigationHistoryReady || mode === "replace") {
+        window.history.replaceState(state, "", url);
+        appNavigationHistoryReady = true;
+        return;
+    }
+
+    if (mode === "none" || currentTarget === targetId) {
+        return;
+    }
+
+    window.history.pushState(state, "", url);
+}
+
+function bindAppNavigationHistory() {
+    if (appNavigationHistoryBound) return;
+
+    appNavigationHistoryBound = true;
+    window.addEventListener("popstate", event => {
+        const targetId =
+            event.state?.proTurnosTarget ||
+            targetFromHash() ||
+            firstViewableTarget();
+        const nextTarget =
+            isAppTarget(targetId) && canViewTarget(targetId)
+                ? targetId
+                : firstViewableTarget();
+
+        if (nextTarget) {
+            setActiveShortcut(nextTarget, { historyMode: "none" });
+        }
+    });
+}
+
+function isMobileLayout() {
+    return (
+        window.matchMedia &&
+        window.matchMedia(MOBILE_LAYOUT_QUERY).matches
+    );
+}
+
+function syncMobileTimelinePlacement() {
+    const timelinePanel = document.getElementById("timelinePanel");
+    const staffingPanel = document.getElementById("staffingReportPanel");
+    const primaryGrid = document.querySelector(".primary-grid");
+
+    if (!timelinePanel) {
+        return;
+    }
+
+    if (isMobileLayout()) {
+        if (staffingPanel && timelinePanel.previousElementSibling !== staffingPanel) {
+            staffingPanel.after(timelinePanel);
+        }
+        return;
+    }
+
+    if (primaryGrid && timelinePanel.previousElementSibling !== primaryGrid) {
+        primaryGrid.after(timelinePanel);
+    }
+}
+
+function setMobileMenuOpen(open) {
+    const shouldOpen = Boolean(open && isMobileLayout());
+    document.body.classList.toggle("mobile-menu-open", shouldOpen);
+
+    if (DOM.mobileMenuToggle) {
+        DOM.mobileMenuToggle.setAttribute(
+            "aria-expanded",
+            shouldOpen ? "true" : "false"
+        );
+        DOM.mobileMenuToggle.setAttribute(
+            "aria-label",
+            shouldOpen ? "Cerrar menu" : "Abrir menu"
+        );
+    }
+}
+
+function setMobileLeaveOpen(open) {
+    const shouldOpen =
+        Boolean(open && isMobileLayout()) &&
+        document.body.dataset.activeView === "turnos";
+
+    document.body.classList.toggle("mobile-leave-open", shouldOpen);
+
+    if (DOM.mobileLeaveToggle) {
+        DOM.mobileLeaveToggle.setAttribute(
+            "aria-expanded",
+            shouldOpen ? "true" : "false"
+        );
+    }
+}
+
+function setMobileStaffingOpen(open) {
+    const shouldOpen =
+        Boolean(open && isMobileLayout()) &&
+        document.body.dataset.activeView === "turnos";
+
+    document.body.classList.toggle("mobile-staffing-open", shouldOpen);
+
+    if (DOM.mobileStaffingToggle) {
+        DOM.mobileStaffingToggle.setAttribute(
+            "aria-expanded",
+            shouldOpen ? "true" : "false"
+        );
+    }
+}
+
+function isCalendarDirectEditEnabled() {
+    return calendarDirectEditEnabled;
+}
+
+window.calendarDirectEditEnabled = isCalendarDirectEditEnabled;
+
+function syncCalendarDirectEditToggle() {
+    if (!DOM.calendarDirectEditToggle) return;
+
+    const canEditCalendar = canEditTarget("calendarPanel");
+    if (!canEditCalendar) {
+        calendarDirectEditEnabled = false;
+    }
+
+    const enabled = canEditCalendar && isCalendarDirectEditEnabled();
+    DOM.calendarDirectEditToggle.checked = enabled;
+    DOM.calendarDirectEditToggle.disabled = !canEditCalendar;
+    document.body.classList.toggle(
+        "calendar-direct-edit-off",
+        !enabled
+    );
+}
+
+function bindCalendarDirectEditToggle() {
+    if (!DOM.calendarDirectEditToggle) return;
+
+    syncCalendarDirectEditToggle();
+    DOM.calendarDirectEditToggle.onchange = () => {
+        calendarDirectEditEnabled =
+            DOM.calendarDirectEditToggle.checked;
+        syncCalendarDirectEditToggle();
+
+        if (!calendarDirectEditEnabled) {
+            window.flushCalendarDirectEditRefresh?.({
+                force: true
+            });
+        }
+    };
+}
+
+function bindMobileCalendarSwipe() {
+    const calendar = DOM.calendar;
+    if (!calendar) return;
+
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    let suppressNextCalendarClick = false;
+
+    const canSwipeCalendar = () =>
+        isMobileLayout() &&
+        document.body.dataset.activeView === "turnos";
+
+    calendar.addEventListener(
+        "touchstart",
+        event => {
+            if (!canSwipeCalendar() || event.touches.length !== 1) {
+                tracking = false;
+                return;
+            }
+
+            const touch = event.touches[0];
+            startX = touch.clientX;
+            startY = touch.clientY;
+            tracking = true;
+        },
+        { passive: true }
+    );
+
+    calendar.addEventListener(
+        "touchend",
+        event => {
+            if (!tracking || !canSwipeCalendar()) return;
+
+            tracking = false;
+            const touch = event.changedTouches[0];
+            if (!touch) return;
+
+            const deltaX = touch.clientX - startX;
+            const deltaY = touch.clientY - startY;
+            const horizontal = Math.abs(deltaX);
+            const vertical = Math.abs(deltaY);
+
+            if (horizontal < 55 || horizontal < vertical * 1.35) {
+                return;
+            }
+
+            event.preventDefault();
+            suppressNextCalendarClick = true;
+
+            if (deltaX > 0) {
+                prevMonth({ deferHeavy: true });
+            } else {
+                nextMonth({ deferHeavy: true });
+            }
+
+            window.setTimeout(() => {
+                suppressNextCalendarClick = false;
+            }, 350);
+        },
+        { passive: false }
+    );
+
+    calendar.addEventListener(
+        "click",
+        event => {
+            if (!suppressNextCalendarClick) return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            suppressNextCalendarClick = false;
+        },
+        true
+    );
+}
+
+function bindMobileShellInteractions() {
+    if (DOM.mobileMenuToggle) {
+        DOM.mobileMenuToggle.onclick = event => {
+            event.stopPropagation();
+            setMobileMenuOpen(
+                !document.body.classList.contains("mobile-menu-open")
+            );
+        };
+    }
+
+    if (DOM.mobileLeaveToggle) {
+        DOM.mobileLeaveToggle.onclick = () => {
+            setMobileLeaveOpen(
+                !document.body.classList.contains("mobile-leave-open")
+            );
+        };
+    }
+
+    if (DOM.mobileStaffingToggle) {
+        DOM.mobileStaffingToggle.onclick = () => {
+            setMobileStaffingOpen(
+                !document.body.classList.contains("mobile-staffing-open")
+            );
+        };
+    }
+
+    const leavePanel = document.getElementById("leavePanel");
+    if (leavePanel) {
+        leavePanel.addEventListener("click", event => {
+            const selected = event.target.closest(".legend-action");
+            if (!selected || selected.disabled || !isMobileLayout()) return;
+
+            setMobileLeaveOpen(false);
+            requestAnimationFrame(() => {
+                document.getElementById("calendarPanel")?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "start"
+                });
+            });
+        });
+    }
+
+    document.addEventListener("click", event => {
+        if (
+            !isMobileLayout() ||
+            !document.body.classList.contains("mobile-menu-open")
+        ) {
+            return;
+        }
+
+        const actionbar = document.getElementById("mainNavigation");
+        const clickedMenu =
+            DOM.mobileMenuToggle?.contains(event.target) ||
+            actionbar?.contains(event.target);
+
+        if (!clickedMenu) {
+            setMobileMenuOpen(false);
+        }
+    });
+
+    window.addEventListener("resize", () => {
+        syncMobileTimelinePlacement();
+
+        if (!isMobileLayout()) {
+            setMobileMenuOpen(false);
+            setMobileLeaveOpen(false);
+            setMobileStaffingOpen(false);
+        }
+    });
+
+    bindMobileCalendarSwipe();
 }
 
 function bindShellInteractions() {
@@ -6643,6 +9045,10 @@ function bindShellInteractions() {
         .querySelectorAll(".nav-tile[data-target]")
         .forEach(button => {
             button.onclick = () => {
+                if (button.disabled || button.dataset.permissionLocked === "true") {
+                    return;
+                }
+
                 const target = document.getElementById(
                     button.dataset.target
                 );
@@ -6650,6 +9056,7 @@ function bindShellInteractions() {
                 if (!target) return;
 
                 setActiveShortcut(button.dataset.target);
+                setMobileMenuOpen(false);
                 target.scrollIntoView({
                     behavior: "smooth",
                     block: "start"
@@ -6662,6 +9069,9 @@ function bindShellInteractions() {
         .forEach(button => {
             button.onclick = () => startEditMode();
         });
+
+    bindMobileShellInteractions();
+    bindCalendarDirectEditToggle();
 }
 
 DOM.adminBtn.onclick = activarSelectorAdmin;
@@ -6674,6 +9084,10 @@ DOM.compBtn.onclick = activarSelectorComp;
 DOM.licenseBtn.onclick = () => activarSelectorLicencia("license");
 DOM.professionalLicenseBtn.onclick =
     () => activarSelectorLicencia("professional_license");
+if (DOM.unionLeaveBtn) {
+    DOM.unionLeaveBtn.onclick =
+        () => activarSelectorLicencia("union_leave");
+}
 DOM.unpaidLeaveBtn.onclick =
     () => activarSelectorLicencia("unpaid_leave");
 DOM.hoursReturnBtn.onclick = activarSelectorDevolucionHoras;
@@ -6681,28 +9095,38 @@ DOM.unjustifiedAbsenceBtn.onclick =
     activarSelectorAusenciaInjustificada;
 DOM.clockMarkBtn.onclick = activarSelectorMarcajeReloj;
 
-DOM.prevBtn.onclick = prevMonth;
-DOM.nextBtn.onclick = nextMonth;
+DOM.prevBtn.onclick = () => prevMonth({ deferHeavy: true });
+DOM.nextBtn.onclick = () => nextMonth({ deferHeavy: true });
+if (DOM.calendarRotationButton) {
+    DOM.calendarRotationButton.onclick =
+        openCalendarRotationConfigModal;
+}
 
 DOM.undoBtn.onclick = () => {
-    if (undo()) {
+    const result = undo();
+
+    if (result) {
         addAuditLog(
             AUDIT_CATEGORY.CALENDAR,
-            "Deshizo ultima accion",
-            "El usuario revirtio el ultimo cambio guardado en el historial."
+            "Deshizo \u00faltima acci\u00f3n",
+            "El usuario revirti\u00f3 el \u00faltimo cambio guardado en el historial."
         );
         refreshAll();
+        showHistoryActionToast(result, "undo");
     }
 };
 
 DOM.redoBtn.onclick = () => {
-    if (redo()) {
+    const result = redo();
+
+    if (result) {
         addAuditLog(
             AUDIT_CATEGORY.CALENDAR,
-            "Rehizo ultima accion",
-            "El usuario reaplico el ultimo cambio revertido en el historial."
+            "Rehizo \u00faltima acci\u00f3n",
+            "El usuario reaplic\u00f3 el \u00faltimo cambio revertido en el historial."
         );
         refreshAll();
+        showHistoryActionToast(result, "redo");
     }
 };
 
@@ -6728,6 +9152,11 @@ document.addEventListener("click", async event => {
         Number(celda.dataset.day)
     );
 
+    if (selectionMode === "rotation") {
+        await applyCalendarRotationChange(fecha);
+        return;
+    }
+
     if (selectionMode === "hoursreturn") {
         await handleHoursReturnSelection(fecha);
         return;
@@ -6748,7 +9177,7 @@ document.addEventListener("click", async event => {
 
         if (!aplicado) {
             alert(
-                "No se pudo aplicar esta ausencia. Una Licencia Medica solo puede reemplazarse por una LM Profesional y viceversa; el Permiso sin Goce no puede superponerse sobre licencias existentes."
+                "No se pudo aplicar esta ausencia. Licencia M\u00e9dica, LM Profesional y Permiso Gremial solo pueden reemplazarse entre s\u00ed; el Permiso sin Goce no puede superponerse sobre licencias existentes."
             );
         }
 
@@ -6763,7 +9192,7 @@ document.addEventListener("click", async event => {
 
         if (!aplicado) {
             alert(
-                "No se pudo aplicar la ausencia injustificada. Solo puede marcarse sobre dias con turno real y sin permisos, feriados o licencias ya cargadas."
+                "No se pudo aplicar la ausencia injustificada. Solo puede marcarse sobre d\u00edas con turno real y sin permisos, feriados o licencias ya cargadas."
             );
             return;
         }
@@ -6784,7 +9213,7 @@ document.addEventListener("click", async event => {
             );
         } else {
             alert(
-                "No se pudo aplicar el F. Compensatorio. Debe iniciar en un dia habil, haber pasado 90 dias corridos desde el ultimo F. Legal y el bloque completo no puede cruzarse con licencias, feriados legales, permisos administrativos, medios ADM, permisos sin goce u otros bloqueos incompatibles."
+                "No se pudo aplicar el F. Compensatorio. Debe iniciar en un d\u00eda h\u00e1bil, finalizar dentro del mismo a\u00f1o, respetar el saldo disponible, haber pasado 90 d\u00edas corridos desde el \u00faltimo F. Legal y no cruzarse con licencias, feriados legales, permisos administrativos, medios ADM, permisos sin goce u otros bloqueos incompatibles."
             );
         }
 
@@ -6799,7 +9228,7 @@ document.addEventListener("click", async event => {
 
         if (!aplicado) {
             alert(
-                "No se pudo aplicar el F. Legal en esa fecha. Revisa que el inicio sea habil, que hayan pasado 90 dias desde el ultimo F. Compensatorio y que el rango no tenga ausencias incompatibles."
+                "No se pudo aplicar el F. Legal en esa fecha. Revisa que el inicio sea h\u00e1bil, que el bloque finalice dentro del mismo a\u00f1o y que el rango no tenga ausencias incompatibles."
             );
         } else {
             decrementManualBalance(
@@ -6852,19 +9281,25 @@ document.addEventListener("click", async event => {
 });
 
 window.addEventListener("proturnos:workerRequestsChanged", () => {
-    renderWorkerRequestsPanel();
+    if (document.body.dataset.activeView === "requests") {
+        renderWorkerRequestsPanel();
+    } else {
+        refreshWorkerRequestsNavBadge();
+    }
+
     refreshAll();
-    renderDashboardState();
 });
 
 window.addEventListener("proturnos:memosChanged", () => {
-    renderMemosPanel();
+    if (document.body.dataset.activeView === "memos") {
+        renderMemosPanel();
+    } else {
+        updateMemosNavBadge();
+    }
 });
 
 window.addEventListener("proturnos:auditUndoApplied", () => {
     refreshAll();
-    renderStaffingPanel();
-    renderDashboardState();
 });
 
 initTheme();
@@ -6873,24 +9308,32 @@ initSystemSettings({
     button: DOM.systemSettingsBtn,
     onSaved: () => {
         refreshAll();
-        renderStaffingPanel();
-        renderDashboardState();
     }
 });
 initFirebaseShell({
     userChip: DOM.authUserChip,
     userName: DOM.authUserName,
-    onAuthChange: user => {
+    onAuthChange: async user => {
         if (!user) {
             stopFirebaseAppStateSync();
+            stopWorkspacePermissionListener();
         }
+
+        await loadWorkspacePermissions();
+        syncWorkspacePermissionUI();
+        syncCalendarDirectEditToggle();
 
         if (document.body.dataset.activeView === "kanban") {
             renderKanbanBoard();
         }
     },
-    onWorkspaceChange: workspace => {
+    onWorkspaceChange: async workspace => {
         if (workspace?.id) {
+            await startWorkspacePermissionListener(workspace, () => {
+                syncWorkspacePermissionUI();
+                syncCalendarDirectEditToggle();
+                renderDashboardState();
+            });
             startWorkerRequestsRealtimeSync(workspace);
             startFirebaseAppStateSync(workspace, {
                 onChange: () => {
@@ -6910,12 +9353,16 @@ initFirebaseShell({
                         setCurrentProfile(null);
                     }
 
-                    renderProfiles();
+                    renderProfiles({ dashboard: false });
                     renderBotones();
-                    renderSwapPanel();
-                    renderWorkerRequestsPanel();
-                    renderMemosPanel();
-                    renderStaffingPanel();
+                    if (
+                        document.body.dataset.activeView ===
+                        "requests"
+                    ) {
+                        renderWorkerRequestsPanel();
+                    } else {
+                        refreshWorkerRequestsNavBadge();
+                    }
                     if (document.body.dataset.activeView === "tasks") {
                         renderTaskAssignmentsPanel();
                     }
@@ -6923,12 +9370,15 @@ initFirebaseShell({
                         renderKanbanBoard();
                     }
                     refreshAll();
-                    renderDashboardState();
                 }
             });
         } else {
             stopWorkerRequestsRealtimeSync();
             stopFirebaseAppStateSync();
+            stopWorkspacePermissionListener();
+            await loadWorkspacePermissions(workspace);
+            syncWorkspacePermissionUI();
+            syncCalendarDirectEditToggle();
         }
 
         refreshAll();
@@ -6938,25 +9388,30 @@ initFirebaseShell({
         if (document.body.dataset.activeView === "kanban") {
             renderKanbanBoard();
         }
-        renderDashboardState();
     }
 });
 bindProfileForm();
 initializeInactiveProfileToggles();
 bindShellInteractions();
+loadWorkspacePermissions()
+    .then(() => {
+        syncWorkspacePermissionUI();
+        syncCalendarDirectEditToggle();
+        renderDashboardState();
+    })
+    .catch(error => {
+        console.warn("No se pudieron cargar permisos del entorno.", error);
+    });
 initHoursCharts(getPerfilActual);
-renderStaffingPanel();
-renderSwapPanel();
-renderWorkerRequestsPanel();
-renderMemosPanel();
-renderProfiles();
+updateMemosNavBadge();
+refreshWorkerRequestsNavBadge();
+renderProfiles({ dashboard: false });
 renderBotones();
+bindAppNavigationHistory();
 
-if (getProfiles().length > 0) {
-    setActiveShortcut("calendarPanel");
-    refreshAll();
-} else {
-    setActiveShortcut("profileSection");
-    renderDashboardState();
-    refreshAll();
-}
+const hasProfilesAtStartup = getProfiles().length > 0;
+const startupTarget = hasProfilesAtStartup
+    ? targetFromHash() || "calendarPanel"
+    : "profileSection";
+
+setActiveShortcut(startupTarget, { historyMode: "replace" });

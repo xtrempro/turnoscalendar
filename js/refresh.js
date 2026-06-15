@@ -1,17 +1,34 @@
 import { renderCalendar } from "./calendar.js";
 import { renderTimeline } from "./timeline.js";
 import { renderAuditLogPanel } from "./auditLog.js";
-import { renderMemosPanel } from "./memos.js";
+import {
+    renderMemosPanel,
+    updateMemosNavBadge
+} from "./memos.js";
 
 export function refreshAll(){
-    renderCalendar();
-    renderTimeline();
+    const activeView =
+        document.body.dataset.activeView || "turnos";
 
-    if (typeof window.renderStaffingAnalysis === "function") {
+    if (activeView === "turnos") {
+        renderCalendar({ deferHeavy: true });
+    }
+
+    if (activeView === "timeline") {
+        renderTimeline();
+    }
+
+    if (
+        activeView === "staffing" &&
+        typeof window.renderStaffingAnalysis === "function"
+    ) {
         window.renderStaffingAnalysis();
     }
 
-    if (typeof window.renderSwapPanel === "function") {
+    if (
+        activeView === "swap" &&
+        typeof window.renderSwapPanel === "function"
+    ) {
         window.renderSwapPanel();
     }
 
@@ -19,14 +36,18 @@ export function refreshAll(){
         window.renderDashboardState();
     }
 
-    if (document.body.dataset.activeView === "log") {
+    if (activeView === "log") {
         renderAuditLogPanel();
     }
 
-    renderMemosPanel();
+    if (activeView === "memos") {
+        renderMemosPanel();
+    } else {
+        updateMemosNavBadge();
+    }
 
     if (
-        document.body.dataset.activeView === "clockmarks" &&
+        activeView === "clockmarks" &&
         typeof window.renderClockMarksPanel === "function"
     ) {
         window.renderClockMarksPanel();

@@ -197,8 +197,8 @@ function emptyChart(message) {
 function renderLegend() {
     return `
         <div class="hhee-chart-legend">
-            <span><i class="hhee-color-day"></i> Diurnas</span>
-            <span><i class="hhee-color-night"></i> Nocturnas</span>
+            <span><i class="hhee-color-day"></i> HHEE Diurnas</span>
+            <span><i class="hhee-color-night"></i> HHEE Nocturnas</span>
         </div>
     `;
 }
@@ -268,7 +268,7 @@ function renderHistoryChart(rows, role, years) {
     DOM.hheeHistoryChart.innerHTML = `
         ${renderLegend()}
         <div class="hhee-chart-context">
-            ${role} | Ultimos ${years} ano(s)
+            ${role} | \u00daltimos ${years} a\u00f1o(s)
         </div>
         <div class="hhee-history-bars">
             ${rows.map(row => {
@@ -316,9 +316,6 @@ function renderProfileHistoryChart(rows, profileName, year, month) {
 
     target.innerHTML = `
         ${renderLegend()}
-        <div class="hhee-chart-context">
-            ${escapeHTML(profileName)} | Ultimos 12 meses hasta ${formatMonth(year, month)}
-        </div>
         <div class="hhee-history-bars hhee-profile-history-bars">
             ${rows.map(row => {
                 const total = row.day + row.night;

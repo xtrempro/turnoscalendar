@@ -13,6 +13,16 @@ import { getJSON } from "./persistence.js";
 import { getCachedHolidays } from "./holidays.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import { getReplacementTurnForWorker } from "./replacements.js";
+import {
+    restarTurnoCubierto,
+    turnoExtraCubreTurno
+} from "./rulesEngine.js";
+import {
+    getReplacedProfileForDate,
+    hasHonorariaContractForDate,
+    isHonorariaProfile,
+    isReplacementProfile
+} from "./contracts.js";
 
 /* ======================================================
    TURN ENGINE
@@ -166,24 +176,98 @@ function parseISODate(value) {
 }
 
 function normalizeFirstTurn(value) {
-    return String(value || "").toLowerCase() === "noche"
+    const normalized = String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+
+    if (
+        normalized === "larga2" ||
+        normalized === "largo2" ||
+        normalized === "segunda larga" ||
+        normalized === "segundo largo" ||
+        normalized === "2 larga" ||
+        normalized === "2 largo"
+    ) {
+        return "larga2";
+    }
+
+    if (
+        normalized === "noche2" ||
+        normalized === "segunda noche" ||
+        normalized === "2 noche"
+    ) {
+        return "noche2";
+    }
+
+    if (
+        normalized === "libre2" ||
+        normalized === "segundo libre" ||
+        normalized === "segunda libre" ||
+        normalized === "2 libre"
+    ) {
+        return "libre2";
+    }
+
+    if (
+        normalized === "libre" ||
+        normalized === "libre1" ||
+        normalized === "primer libre" ||
+        normalized === "primera libre" ||
+        normalized === "1 libre"
+    ) {
+        return "libre1";
+    }
+
+    return normalized === "noche"
         ? "noche"
         : "larga";
 }
 
-function rotationSequence(type, firstTurn = "larga") {
-    const startsWithNight = normalizeFirstTurn(firstTurn) === "noche";
+function rotateSequence(sequence, startIndex) {
+    return [
+        ...sequence.slice(startIndex),
+        ...sequence.slice(0, startIndex)
+    ];
+}
+
+function rotationStartIndex(type, firstTurn = "larga") {
+    const normalized = normalizeFirstTurn(firstTurn);
 
     if (type === "3turno") {
-        return startsWithNight
-            ? [TURNO.NOCHE, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE, TURNO.LARGA, TURNO.LARGA]
-            : [TURNO.LARGA, TURNO.LARGA, TURNO.NOCHE, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE];
+        if (normalized === "larga2") return 1;
+        if (normalized === "noche") return 2;
+        if (normalized === "noche2") return 3;
+        if (normalized === "libre1") return 4;
+        if (normalized === "libre2") return 5;
+
+        return 0;
     }
 
     if (type === "4turno") {
-        return startsWithNight
-            ? [TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE, TURNO.LARGA]
-            : [TURNO.LARGA, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE];
+        if (normalized === "noche") return 1;
+        if (normalized === "libre1") return 2;
+        if (normalized === "libre2") return 3;
+
+        return 0;
+    }
+
+    return 0;
+}
+
+function rotationSequence(type, firstTurn = "larga") {
+    if (type === "3turno") {
+        return rotateSequence(
+            [TURNO.LARGA, TURNO.LARGA, TURNO.NOCHE, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE],
+            rotationStartIndex(type, firstTurn)
+        );
+    }
+
+    if (type === "4turno") {
+        return rotateSequence(
+            [TURNO.LARGA, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE],
+            rotationStartIndex(type, firstTurn)
+        );
     }
 
     return [];
@@ -213,7 +297,31 @@ function isBusinessDaySync(date, key) {
     return !getCachedHolidays(date.getFullYear())[key];
 }
 
-function rotativaTurnoBase(nombre, key) {
+function rotativaTurnoBase(nombre, key, visited = new Set()) {
+    if (visited.has(nombre)) return TURNO.LIBRE;
+
+    visited.add(nombre);
+
+    if (getRotativa(nombre).type === "libre") {
+        return TURNO.LIBRE;
+    }
+
+    if (isReplacementProfile(nombre)) {
+        const replacedProfile =
+            getReplacedProfileForDate(nombre, key);
+
+        return replacedProfile
+            ? rotativaTurnoBase(replacedProfile, key, visited)
+            : TURNO.LIBRE;
+    }
+
+    if (
+        isHonorariaProfile(nombre) &&
+        !hasHonorariaContractForDate(nombre, key)
+    ) {
+        return TURNO.LIBRE;
+    }
+
     const rotativa = getRotativa(nombre);
     const date = parseKeyDate(key);
     const start = parseISODate(rotativa.start);
@@ -245,12 +353,14 @@ function turnoDesdeCodigoSwap(valor) {
     return TURNO.LARGA;
 }
 
-function includesLarga(turno) {
+function includesDaytimeStart(turno) {
     const value = Number(turno) || TURNO.LIBRE;
 
     return (
         value === TURNO.LARGA ||
-        value === TURNO.TURNO24
+        value === TURNO.TURNO24 ||
+        value === TURNO.DIURNO ||
+        value === TURNO.DIURNO_NOCHE
     );
 }
 
@@ -279,6 +389,23 @@ export function aplicarCambiosTurno(
     let turno = Number(turnoBase) || TURNO.LIBRE;
     const includeReplacements =
         options.includeReplacements !== false;
+    let replacementTurn =
+        getReplacementTurnForWorker(nombre, key);
+    const entregaExtraSinAlterarBaseDiurno = entregado => {
+        if (
+            turno !== TURNO.DIURNO ||
+            !turnoExtraCubreTurno(replacementTurn, entregado)
+        ) {
+            return false;
+        }
+
+        replacementTurn = restarTurnoCubierto(
+            replacementTurn,
+            entregado
+        );
+
+        return true;
+    };
 
     const swaps = getSwaps();
 
@@ -297,7 +424,12 @@ export function aplicarCambiosTurno(
 
             /* quien entrega pierde su turno */
             if (s.from === nombre) {
-                turno = TURNO.LIBRE;
+                const entregado =
+                    turnoDesdeCodigoSwap(s.turno);
+
+                if (!entregaExtraSinAlterarBaseDiurno(entregado)) {
+                    turno = TURNO.LIBRE;
+                }
             }
 
             /* quien recibe fusiona */
@@ -324,6 +456,10 @@ export function aplicarCambiosTurno(
                     turnoDesdeCodigoSwap(
                         s.turnoDevuelto
                     );
+
+                if (entregaExtraSinAlterarBaseDiurno(devuelve)) {
+                    continue;
+                }
 
                 if (turno === devuelve) {
                     turno = TURNO.LIBRE;
@@ -379,7 +515,7 @@ export function aplicarCambiosTurno(
     if (includeReplacements) {
         turno = fusionarTurnos(
             turno,
-            getReplacementTurnForWorker(nombre, key)
+            replacementTurn
         );
     }
 
@@ -524,12 +660,12 @@ function turnoBloqueadoPorTurno24Invertido(nombre, key, turno) {
 
     return (
         (
-            includesLarga(candidate) &&
+            includesDaytimeStart(candidate) &&
             includesNoche(anterior)
         ) ||
         (
             includesNoche(candidate) &&
-            includesLarga(siguiente)
+            includesDaytimeStart(siguiente)
         )
     );
 }
@@ -616,6 +752,21 @@ export function siguienteTurnoValido(
 }
 
 export function getTurnoBase(nombre, key) {
+    if (isReplacementProfile(nombre)) {
+        return rotativaTurnoBase(nombre, key);
+    }
+
+    if (
+        isHonorariaProfile(nombre) &&
+        !hasHonorariaContractForDate(nombre, key)
+    ) {
+        return TURNO.LIBRE;
+    }
+
+    if (getRotativa(nombre).type === "libre") {
+        return TURNO.LIBRE;
+    }
+
     const baseData = getBaseProfileData(nombre);
     const hasBaseData =
         Object.keys(baseData).length > 0;
@@ -644,6 +795,13 @@ export function getTurnoBase(nombre, key) {
 }
 
 export function getTurnoProgramado(nombre, key) {
+    if (
+        isHonorariaProfile(nombre) &&
+        !hasHonorariaContractForDate(nombre, key)
+    ) {
+        return TURNO.LIBRE;
+    }
+
     const data = getProfileData(nombre);
 
     if (Object.prototype.hasOwnProperty.call(data, key)) {

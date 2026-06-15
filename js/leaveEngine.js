@@ -24,8 +24,6 @@ import {
     saveManualLeaveBalances
 } from "./storage.js";
 
-import { renderTimeline } from "./timeline.js";
-import { analizarStaffingMes } from "./staffing.js";
 import {
     addAuditLog,
     AUDIT_CATEGORY
@@ -44,7 +42,7 @@ import {
     puedeAplicarAdministrativo,
     puedeAplicarAusenciaInjustificada,
     puedeAplicarCompensatorioDesde,
-    puedeIniciarLegal,
+    puedeAplicarLegalDesde,
     puedeReemplazarAusencia
 } from "./rulesEngine.js";
 import { createLeaveMemoTask } from "./memos.js";
@@ -77,16 +75,16 @@ function confirmCancelTurnChanges(profile, keys, label) {
 
     const detail = swaps
         .map(swap =>
-            `- ${swap.from} -> ${swap.to}: cambio ${swap.fecha}, devolucion ${swap.devolucion}`
+            `- ${swap.from} -> ${swap.to}: cambio ${swap.fecha}, devoluci\u00f3n ${swap.devolucion}`
         )
         .join("\n");
     const message = [
-        `La aplicacion de ${label} pasa por sobre ${swaps.length} cambio(s) de turno registrado(s).`,
-        "Si continuas, se anularan esos cambios y ambos trabajadores volveran a sus turnos base.",
+        `La aplicaci\u00f3n de ${label} pasa por sobre ${swaps.length} cambio(s) de turno registrado(s).`,
+        "Si contin\u00faas, se anular\u00e1n esos cambios y ambos trabajadores volver\u00e1n a sus turnos base.",
         "",
         detail,
         "",
-        "Deseas continuar?"
+        "\u00bfDeseas continuar?"
     ].join("\n");
     const accepted =
         typeof window === "undefined" ||
@@ -102,10 +100,11 @@ function confirmCancelTurnChanges(profile, keys, label) {
 
 function absenceLabel(type) {
     if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "Permiso Gremial";
     if (type === "unpaid_leave") return "Permiso sin Goce";
     if (type === "unjustified_absence") return "Ausencia Injustificada";
 
-    return "Licencia Medica";
+    return "Licencia M\u00e9dica";
 }
 
 function parseKey(k){
@@ -208,7 +207,7 @@ export function aplicarAusenciaInjustificada(fecha){
 
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
-        "Aplico ausencia injustificada",
+        "Aplic\u00f3 ausencia injustificada",
         `${currentProfile}: ${formatKey(key)}.`,
         {
             profile: currentProfile,
@@ -217,9 +216,6 @@ export function aplicarAusenciaInjustificada(fecha){
         }
     );
 
-    renderTimeline();
-    analizarStaffingMes();
-
     return true;
 }
 
@@ -227,14 +223,16 @@ export function aplicarAusenciaInjustificada(fecha){
 ADMINISTRATIVO
 ========================================= */
 
-export function totalAdministrativosUsados(){
+export function totalAdministrativosUsados(
+    year = new Date().getFullYear()
+){
 
     const admin = getAdminDays();
     let total = 0;
-    const currentYear = new Date().getFullYear() + "-";
+    const selectedYear = year + "-";
 
     Object.entries(admin).forEach(([key, value])=>{
-        if (!key.startsWith(currentYear)) return;
+        if (!key.startsWith(selectedYear)) return;
 
         if(value === 1) total += 1;
         else total += 0.5;
@@ -334,8 +332,8 @@ export async function aplicarAdministrativo(fecha, cantidad = 1){
 
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
-        "Aplico P. Administrativo",
-        `${currentProfile}: ${cantidad} dia desde ${formatKey(keyFromDate(fecha))}.`,
+        "Aplic\u00f3 P. Administrativo",
+        `${currentProfile}: ${cantidad} d\u00eda desde ${formatKey(keyFromDate(fecha))}.`,
         {
             profile: currentProfile,
             date: isoFromKey(keyFromDate(fecha)),
@@ -352,9 +350,6 @@ export async function aplicarAdministrativo(fecha, cantidad = 1){
         endKey: keys[keys.length - 1],
         sourceType: "admin"
     });
-
-    renderTimeline();
-    analizarStaffingMes();
 
     return true;
 }
@@ -378,7 +373,7 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
             currentProfile,
             [key],
             tipo === "M"
-                ? "1/2 ADM Manana"
+                ? "1/2 ADM Ma\u00f1ana"
                 : "1/2 ADM Tarde"
         )
     ) {
@@ -393,8 +388,8 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
         tipo === "M"
-            ? "Aplico 1/2 ADM Manana"
-            : "Aplico 1/2 ADM Tarde",
+            ? "Aplic\u00f3 1/2 ADM Ma\u00f1ana"
+            : "Aplic\u00f3 1/2 ADM Tarde",
         `${getCurrentProfile()}: ${formatKey(key)}.`,
         {
             profile: getCurrentProfile(),
@@ -409,7 +404,7 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
     createLeaveMemoTask({
         profile: getCurrentProfile(),
         typeLabel: tipo === "M"
-            ? "1/2 ADM Manana"
+            ? "1/2 ADM Ma\u00f1ana"
             : "1/2 ADM Tarde",
         amount: 0.5,
         startKey: key,
@@ -418,9 +413,6 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
             ? "half_admin_morning"
             : "half_admin_afternoon"
     });
-
-    renderTimeline();
-    analizarStaffingMes();
 
     return true;
 }
@@ -533,7 +525,7 @@ export async function validarCantidadLegalAnual(cantidad, year = new Date().getF
         return {
             ok: false,
             saldo,
-            message: "El trabajador aun debe reservar saldo para solicitar 10 F. Legales continuos. Reduce la cantidad o solicita un bloque de al menos 10 dias."
+            message: "El trabajador a\u00fan debe reservar saldo para solicitar 10 F. Legales continuos. Reduce la cantidad o solicita un bloque de al menos 10 d\u00edas."
         };
     }
 
@@ -558,16 +550,16 @@ export async function aplicarLegal(fecha, cantidad){
         await fetchHolidays(year);
 
     const startKey = keyFromDate(fecha);
-    const startIsHab = isBusinessDay(fecha, holidays);
     const cantidadValida =
         await validarCantidadLegalAnual(cantidad, year);
 
     if (!cantidadValida.ok) return false;
 
     if (
-        !puedeIniciarLegal(
+        !puedeAplicarLegalDesde(
             startKey,
-            startIsHab,
+            cantidad,
+            holidays,
             admin,
             legal,
             comp,
@@ -628,8 +620,8 @@ export async function aplicarLegal(fecha, cantidad){
 
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
-        "Aplico F. Legal",
-        `${getCurrentProfile()}: ${cantidad} dia(s) habiles desde ${formatKey(startKey)}.`,
+        "Aplic\u00f3 F. Legal",
+        `${getCurrentProfile()}: ${cantidad} d\u00eda(s) h\u00e1biles desde ${formatKey(startKey)}.`,
         {
             profile: getCurrentProfile(),
             date: isoFromKey(startKey),
@@ -646,9 +638,6 @@ export async function aplicarLegal(fecha, cantidad){
         endKey: nuevos[nuevos.length - 1],
         sourceType: "legal"
     });
-
-    renderTimeline();
-    analizarStaffingMes();
 
     return true;
 }
@@ -704,6 +693,24 @@ export async function aplicarComp(fecha, cantidad = 10){
     const holidays =
         await fetchHolidays(fecha.getFullYear());
     const startKey = keyFromDate(fecha);
+    const saldoCalculado = Math.max(
+        0,
+        10 - contarHabilesEnAno(
+            comp,
+            fecha.getFullYear(),
+            holidays
+        )
+    );
+    const saldoManual = Number(
+        getManualLeaveBalances(fecha.getFullYear()).comp
+    );
+    const saldo = Number.isFinite(saldoManual)
+        ? Math.max(0, saldoManual)
+        : saldoCalculado;
+
+    if (total > saldo) {
+        return false;
+    }
 
     if (
         !puedeAplicarCompensatorioDesde(
@@ -767,8 +774,8 @@ export async function aplicarComp(fecha, cantidad = 10){
 
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
-        "Aplico F. Compensatorio",
-        `${getCurrentProfile()}: bloque de ${total} dia(s) habiles desde ${formatKey(startKey)}.`,
+        "Aplic\u00f3 F. Compensatorio",
+        `${getCurrentProfile()}: bloque de ${total} d\u00eda(s) h\u00e1biles desde ${formatKey(startKey)}.`,
         {
             profile: getCurrentProfile(),
             date: isoFromKey(startKey),
@@ -785,9 +792,6 @@ export async function aplicarComp(fecha, cantidad = 10){
         endKey: nuevos[nuevos.length - 1],
         sourceType: "comp"
     });
-
-    renderTimeline();
-    analizarStaffingMes();
 
     return true;
 }
@@ -1052,8 +1056,8 @@ export async function aplicarLicencia(
 
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
-        `Aplico ${absenceLabel(type)}`,
-        `${getCurrentProfile()}: ${total} dia(s) corridos desde ${formatKey(startKey)}.`,
+        `Aplic\u00f3 ${absenceLabel(type)}`,
+        `${getCurrentProfile()}: ${total} d\u00eda(s) corridos desde ${formatKey(startKey)}.`,
         {
             profile: getCurrentProfile(),
             date: isoFromKey(startKey),
@@ -1072,9 +1076,6 @@ export async function aplicarLicencia(
             sourceType: "unpaid_leave"
         });
     }
-
-    renderTimeline();
-    analizarStaffingMes();
 
     return true;
 }

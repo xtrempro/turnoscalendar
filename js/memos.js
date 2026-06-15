@@ -6,6 +6,7 @@ const STATUS_PENDING = "pending";
 const STATUS_COMPLETED = "completed";
 
 let selectedStatus = STATUS_PENDING;
+let selectedMonth = monthValue();
 
 function escapeHTML(value) {
     return String(value ?? "")
@@ -55,7 +56,7 @@ function normalizeMemo(memo = {}) {
     return {
         id: String(memo.id || sourceId || makeId()),
         sourceId,
-        title: String(memo.title || "Memorandum pendiente"),
+        title: String(memo.title || "Memor\u00e1ndum pendiente"),
         profile: String(memo.profile || ""),
         typeLabel: String(memo.typeLabel || "MEMO"),
         detail: String(memo.detail || ""),
@@ -105,6 +106,41 @@ function formatTimestamp(value) {
         dateStyle: "short",
         timeStyle: "short"
     });
+}
+
+function monthValue(date = new Date()) {
+    return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0")
+    ].join("-");
+}
+
+function keyMonthValue(key) {
+    const date = parseKey(key);
+
+    if (!date || Number.isNaN(date.getTime())) return "";
+
+    return monthValue(date);
+}
+
+function memoMonthValue(memo = {}) {
+    const date = new Date(memo.createdAt);
+
+    if (!Number.isNaN(date.getTime())) {
+        return monthValue(date);
+    }
+
+    return keyMonthValue(memo.startKey || memo.dateKey || memo.endKey);
+}
+
+function filterMemosBySelectedMonth(memos) {
+    if (!selectedMonth) {
+        selectedMonth = monthValue();
+    }
+
+    return memos.filter(memo =>
+        memoMonthValue(memo) === selectedMonth
+    );
 }
 
 function formatISODate(value) {
@@ -195,7 +231,7 @@ export function createMemoTask(task = {}) {
     const memo = normalizeMemo({
         ...task,
         status: task.status || STATUS_PENDING,
-        title: task.title || "Memorandum pendiente",
+        title: task.title || "Memor\u00e1ndum pendiente",
         sourceId:
             task.sourceId ||
             `${task.profile || "sin_perfil"}:${task.typeLabel || "memo"}:${task.startKey || task.dateKey || Date.now()}`
@@ -338,7 +374,7 @@ export function createReplacementContractMemoTask({
     const detail = [
         `Nombre: ${profile}`,
         `Inicio contrato: ${formatISODate(start)}`,
-        `Termino contrato: ${formatISODate(end)}`,
+        `T\u00e9rmino contrato: ${formatISODate(end)}`,
         reason ? `Motivo del reemplazo: ${reason}` : "",
         `Reemplaza a: ${replaces}`
     ].filter(Boolean).join(" | ");
@@ -352,7 +388,7 @@ export function createReplacementContractMemoTask({
             replaces,
             reason
         ].join(":"),
-        title: "Memorandum Pendiente",
+        title: "Memor\u00e1ndum pendiente",
         profile,
         typeLabel: "Contrato de reemplazo",
         detail
@@ -530,7 +566,12 @@ export function renderMemosPanel() {
 
     if (!panel) return;
 
-    const memos = getMemos();
+    if (!selectedMonth) {
+        selectedMonth = monthValue();
+    }
+
+    const allMemos = getMemos();
+    const memos = filterMemosBySelectedMonth(allMemos);
     const pending = memos.filter(memo =>
         memo.status === STATUS_PENDING
     );
@@ -549,9 +590,15 @@ export function renderMemosPanel() {
                     Revisa los memorandum pendientes asociados a permisos y marcajes incompletos.
                 </small>
             </span>
-            <span class="worker-request-counter">
-                ${pending.length} pendiente(s)
-            </span>
+            <div class="worker-request-head-actions">
+                <label class="audit-month-filter">
+                    <span>Mes</span>
+                    <input id="memoMonthFilter" type="month" value="${escapeHTML(selectedMonth)}">
+                </label>
+                <span class="worker-request-counter">
+                    ${pending.length} pendiente(s) del mes
+                </span>
+            </div>
         </div>
 
         <div class="worker-request-filters">
@@ -566,12 +613,21 @@ export function renderMemosPanel() {
                 : `
                     <div class="empty-state empty-state--compact">
                         ${selectedStatus === STATUS_PENDING
-                            ? "No hay memorandum pendientes."
-                            : "No hay memorandum para este filtro."}
+                            ? "No hay memorandum pendientes en este mes."
+                            : "No hay memorandum para este filtro en este mes."}
                     </div>
                 `}
         </div>
     `;
+
+    const monthFilter = document.getElementById("memoMonthFilter");
+
+    if (monthFilter) {
+        monthFilter.onchange = () => {
+            selectedMonth = monthFilter.value || monthValue();
+            renderMemosPanel();
+        };
+    }
 
     panel.querySelectorAll("[data-memo-status]").forEach(button => {
         button.onclick = () => {

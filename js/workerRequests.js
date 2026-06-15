@@ -48,10 +48,11 @@ import { getActiveWorkspace } from "./workspaces.js";
 
 const REQUEST_TYPE_LABELS = {
     admin: "P. Administrativo",
-    half_admin_morning: "1/2 ADM Manana",
+    half_admin_morning: "1/2 ADM Ma\u00f1ana",
     half_admin_afternoon: "1/2 ADM Tarde",
     legal: "F. Legal",
     comp: "F. Compensatorio",
+    union_leave: "Permiso Gremial",
     unpaid_leave: "Permiso sin Goce",
     missing_clock: "Olvido de Marcacion",
     clock_incident: "Incidencia en Marcacion",
@@ -68,6 +69,7 @@ const STATUS_LABELS = {
 };
 
 let selectedStatus = "pending";
+let selectedMonth = monthValue();
 let activeWorkspaceLinkWatchId = "";
 let unsubscribeWorkspaceLinks = null;
 let linkRenderTimer = null;
@@ -132,6 +134,36 @@ function formatTimestamp(value) {
         dateStyle: "short",
         timeStyle: "short"
     });
+}
+
+function monthValue(date = new Date()) {
+    return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0")
+    ].join("-");
+}
+
+function requestMonthValue(request = {}) {
+    const source =
+        request.createdAt ||
+        request.date ||
+        request.changeDate ||
+        request.returnDate;
+    const date = source?.toDate?.() || new Date(source);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    return monthValue(date);
+}
+
+function filterRequestsBySelectedMonth(requests) {
+    if (!selectedMonth) {
+        selectedMonth = monthValue();
+    }
+
+    return requests.filter(request =>
+        requestMonthValue(request) === selectedMonth
+    );
 }
 
 function requestTypeLabel(type) {
@@ -285,6 +317,22 @@ async function applyLeaveRequest(request, profile, date) {
                 date,
                 requestDays(request, 1),
                 "unpaid_leave"
+            );
+        }
+
+        if (request.type === "union_leave") {
+            const selectedProfile = getProfiles().find(item =>
+                item.name === profile
+            );
+
+            if (!selectedProfile?.unionLeaveEnabled) {
+                return false;
+            }
+
+            return aplicarLicencia(
+                date,
+                requestDays(request, 1),
+                "union_leave"
             );
         }
 
@@ -492,7 +540,7 @@ async function applySwapRequest(request, profile) {
     ) {
         return {
             ok: false,
-            message: "La fecha de cambio y devolucion deben pertenecer al mismo mes."
+            message: "La fecha de cambio y devoluci\u00f3n deben pertenecer al mismo mes."
         };
     }
 
@@ -526,7 +574,7 @@ async function applySwapRequest(request, profile) {
     if (motivoDevolucion) {
         return {
             ok: false,
-            message: `No se puede aceptar la fecha de devolucion: ${motivoDevolucion}`
+            message: `No se puede aceptar la fecha de devoluci\u00f3n: ${motivoDevolucion}`
         };
     }
 
@@ -581,6 +629,7 @@ async function applyWorkerRequest(request) {
             "half_admin_afternoon",
             "legal",
             "comp",
+            "union_leave",
             "unpaid_leave"
         ].includes(request.type)
     ) {
@@ -638,11 +687,11 @@ function requestDetailsHTML(request) {
     }
 
     if (request.endDate) {
-        pieces.push(`Termino: ${formatDate(request.endDate)}`);
+        pieces.push(`T\u00e9rmino: ${formatDate(request.endDate)}`);
     }
 
     if (request.days) {
-        pieces.push(`${request.days} dia(s)`);
+        pieces.push(`${request.days} d\u00eda(s)`);
     }
 
     if (request.type === "swap") {
@@ -747,10 +796,25 @@ function updateRequestsNavBadge(count) {
     tile.dataset.alertCount = String(count);
 }
 
+export async function refreshWorkerRequestsNavBadge() {
+    const workerRequests = getWorkerRequests();
+    const linkRequests = await getWorkspaceLinkRequests();
+    const pending = [
+        ...linkRequests,
+        ...workerRequests
+    ].filter(request => request.status === "pending");
+
+    updateRequestsNavBadge(pending.length);
+}
+
 function scheduleWorkerRequestsRender() {
     clearTimeout(linkRenderTimer);
     linkRenderTimer = setTimeout(() => {
-        renderWorkerRequestsPanel();
+        if (document.body.dataset.activeView === "requests") {
+            renderWorkerRequestsPanel();
+        } else {
+            refreshWorkerRequestsNavBadge();
+        }
     }, 80);
 }
 
@@ -1010,12 +1074,20 @@ export async function renderWorkerRequestsPanel() {
 
     if (!panel) return;
 
+    if (!selectedMonth) {
+        selectedMonth = monthValue();
+    }
+
     const workerRequests = getWorkerRequests();
     const linkRequests = await getWorkspaceLinkRequests();
-    const requests = [
+    const allRequests = [
         ...linkRequests,
         ...workerRequests
     ];
+    const requests = filterRequestsBySelectedMonth(allRequests);
+    const allPending = allRequests.filter(request =>
+        request.status === "pending"
+    );
     const pending = requests.filter(request =>
         request.status === "pending"
     );
@@ -1026,7 +1098,7 @@ export async function renderWorkerRequestsPanel() {
         ? requests
         : requests.filter(request => request.status === selectedStatus);
 
-    updateRequestsNavBadge(pending.length);
+    updateRequestsNavBadge(allPending.length);
 
     panel.innerHTML = `
         <div class="section-head section-head--with-action">
@@ -1036,9 +1108,15 @@ export async function renderWorkerRequestsPanel() {
                     Revisa y gestiona solicitudes de trabajadores y enlaces entre unidades.
                 </small>
             </span>
-            <span class="worker-request-counter">
-                ${pending.length} pendiente(s)
-            </span>
+            <div class="worker-request-head-actions">
+                <label class="audit-month-filter">
+                    <span>Mes</span>
+                    <input id="workerRequestMonthFilter" type="month" value="${escapeHTML(selectedMonth)}">
+                </label>
+                <span class="worker-request-counter">
+                    ${pending.length} pendiente(s) del mes
+                </span>
+            </div>
         </div>
 
         <div class="worker-request-filters">
@@ -1054,8 +1132,8 @@ export async function renderWorkerRequestsPanel() {
                 : `
                     <div class="empty-state empty-state--compact">
                         ${selectedStatus === "pending"
-                            ? "No hay solicitudes pendientes."
-                            : "No hay solicitudes para este filtro."}
+                            ? "No hay solicitudes pendientes en este mes."
+                            : "No hay solicitudes para este filtro en este mes."}
                     </div>
                 `}
         </div>
@@ -1064,6 +1142,15 @@ export async function renderWorkerRequestsPanel() {
             ? `<p class="worker-request-footnote">Las solicitudes aceptadas o rechazadas quedan disponibles para auditoria y sincronizacion con la app movil.</p>`
             : ""}
     `;
+
+    const monthFilter = document.getElementById("workerRequestMonthFilter");
+
+    if (monthFilter) {
+        monthFilter.onchange = () => {
+            selectedMonth = monthFilter.value || monthValue();
+            renderWorkerRequestsPanel();
+        };
+    }
 
     panel.querySelectorAll("[data-worker-request-status]").forEach(button => {
         button.onclick = () => {

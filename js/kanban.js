@@ -151,6 +151,31 @@ function deleteCard(cardId) {
     );
 }
 
+function updateCard(cardId, {
+    title,
+    detail,
+    status
+}) {
+    const cleanTitle = String(title || "").trim();
+    if (!cleanTitle) return false;
+
+    const cards = getCards();
+    const index = cards.findIndex(card => card.id === cardId);
+
+    if (index === -1) return false;
+
+    cards[index] = {
+        ...cards[index],
+        title: cleanTitle,
+        detail: String(detail || "").trim(),
+        status: isValidColumn(status) ? status : cards[index].status,
+        updatedAt: new Date().toISOString()
+    };
+
+    saveCards(cards);
+    return true;
+}
+
 function moveCard(cardId, nextStatus) {
     if (!isValidColumn(nextStatus)) return;
 
@@ -191,20 +216,83 @@ function renderCard(card) {
         <article class="kanban-card kanban-card--${escapeHTML(card.color)}" draggable="true" data-kanban-card="${escapeHTML(card.id)}">
             <div class="kanban-card__head">
                 <strong>${escapeHTML(card.title)}</strong>
-                <button class="kanban-card__delete" type="button" aria-label="Eliminar tarjeta" data-kanban-delete="${escapeHTML(card.id)}">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M3 6h18"></path>
-                        <path d="M8 6V4h8v2"></path>
-                        <path d="M19 6l-1 14H6L5 6"></path>
-                        <path d="M10 11v5"></path>
-                        <path d="M14 11v5"></path>
-                    </svg>
-                </button>
+                <span class="kanban-card__actions">
+                    <button class="kanban-card__edit" type="button" aria-label="Editar tarjeta" data-kanban-edit="${escapeHTML(card.id)}">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M12 20h9"></path>
+                            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                        </svg>
+                    </button>
+                    <button class="kanban-card__delete" type="button" aria-label="Eliminar tarjeta" data-kanban-delete="${escapeHTML(card.id)}">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M3 6h18"></path>
+                            <path d="M8 6V4h8v2"></path>
+                            <path d="M19 6l-1 14H6L5 6"></path>
+                            <path d="M10 11v5"></path>
+                            <path d="M14 11v5"></path>
+                        </svg>
+                    </button>
+                </span>
             </div>
             ${card.detail ? `<p>${escapeHTML(card.detail)}</p>` : ""}
             <small>${escapeHTML(formatDate(card.updatedAt))}</small>
         </article>
     `;
+}
+
+function openEditCardDialog(cardId) {
+    const card = getCards().find(item => item.id === cardId);
+    if (!card) return;
+
+    const backdrop = document.createElement("div");
+    const close = () => backdrop.remove();
+
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.innerHTML = `
+        <form class="turn-change-dialog kanban-edit-dialog" data-kanban-edit-form autocomplete="off">
+            <strong>Editar tarjeta</strong>
+            <label class="metric-row metric-row--field">
+                <span class="metric-label">Titulo</span>
+                <input name="title" type="text" maxlength="80" value="${escapeHTML(card.title)}" required>
+            </label>
+            <label class="metric-row metric-row--field">
+                <span class="metric-label">Detalle</span>
+                <textarea name="detail" maxlength="280" rows="4">${escapeHTML(card.detail)}</textarea>
+            </label>
+            <label class="metric-row metric-row--field">
+                <span class="metric-label">Estado</span>
+                <select name="status">
+                    ${KANBAN_COLUMNS.map(column => `
+                        <option value="${escapeHTML(column.key)}" ${column.key === card.status ? "selected" : ""}>${escapeHTML(column.label)}</option>
+                    `).join("")}
+                </select>
+            </label>
+            <div class="turn-change-dialog__actions">
+                <button class="secondary-button" type="button" data-dialog-cancel>Cancelar</button>
+                <button class="primary-button" type="submit">Guardar</button>
+            </div>
+        </form>
+    `;
+
+    document.body.appendChild(backdrop);
+    backdrop.querySelector("[data-dialog-cancel]")?.addEventListener("click", close);
+    backdrop
+        .querySelector("[data-kanban-edit-form]")
+        ?.addEventListener("submit", event => {
+            event.preventDefault();
+
+            const data = new FormData(event.currentTarget);
+            if (
+                updateCard(cardId, {
+                    title: data.get("title"),
+                    detail: data.get("detail"),
+                    status: data.get("status")
+                })
+            ) {
+                close();
+                renderKanbanBoard();
+            }
+        });
 }
 
 function renderColumn(column, cards) {
@@ -284,6 +372,10 @@ function bindKanbanEvents(root) {
             deleteCard(button.dataset.kanbanDelete);
             renderKanbanBoard();
         };
+    });
+
+    root.querySelectorAll("[data-kanban-edit]").forEach(button => {
+        button.onclick = () => openEditCardDialog(button.dataset.kanbanEdit);
     });
 
     root.querySelectorAll("[data-kanban-card]").forEach(card => {

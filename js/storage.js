@@ -595,6 +595,10 @@ function normalizeRotativaType(value){
         return "diurno";
     }
 
+    if (normalized === "libre") {
+        return "libre";
+    }
+
     if (
         normalized === "reemplazo" ||
         normalized === "replacement"
@@ -610,6 +614,44 @@ function normalizeRotationFirstTurn(value) {
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .toLowerCase();
+
+    if (
+        normalized === "larga2" ||
+        normalized === "largo2" ||
+        normalized === "segunda larga" ||
+        normalized === "segundo largo" ||
+        normalized === "2 larga" ||
+        normalized === "2 largo"
+    ) {
+        return "larga2";
+    }
+
+    if (
+        normalized === "noche2" ||
+        normalized === "segunda noche" ||
+        normalized === "2 noche"
+    ) {
+        return "noche2";
+    }
+
+    if (
+        normalized === "libre2" ||
+        normalized === "segundo libre" ||
+        normalized === "segunda libre" ||
+        normalized === "2 libre"
+    ) {
+        return "libre2";
+    }
+
+    if (
+        normalized === "libre" ||
+        normalized === "libre1" ||
+        normalized === "primer libre" ||
+        normalized === "primera libre" ||
+        normalized === "1 libre"
+    ) {
+        return "libre1";
+    }
 
     return normalized === "noche"
         ? "noche"
@@ -677,20 +719,35 @@ export function saveReplacements(data){
 }
 
 const DEFAULT_REPLACEMENT_REQUEST_CONFIG = {
-    expiresMinutes: 60
+    expiresMinutes: 60,
+    enableLinkedUnitSuggestions: true,
+    enableCrossRoleSuggestions: true,
+    enableWorkerAcceptanceRequest: true
+};
+
+const DEFAULT_REPORT_SIGNATURE_CONFIG = {
+    lines: ["", "", "", ""]
 };
 
 export const DEFAULT_TURN_CHANGE_CONFIG = {
     allowSwaps: true,
     allowDifferentTurnTypes: true,
     allowTwentyFourHourShifts: true,
-    allowInvertedTwentyFourHourShifts: true
+    allowInvertedTwentyFourHourShifts: true,
+    limitMonthlySwaps: false,
+    monthlySwapLimit: 2
 };
 
 function normalizeReplacementRequestConfig(config = {}) {
     const expiresMinutes = Number(config.expiresMinutes);
 
     return {
+        enableLinkedUnitSuggestions:
+            config.enableLinkedUnitSuggestions !== false,
+        enableCrossRoleSuggestions:
+            config.enableCrossRoleSuggestions !== false,
+        enableWorkerAcceptanceRequest:
+            config.enableWorkerAcceptanceRequest !== false,
         expiresMinutes:
             Number.isFinite(expiresMinutes) && expiresMinutes > 0
                 ? Math.round(expiresMinutes)
@@ -699,6 +756,8 @@ function normalizeReplacementRequestConfig(config = {}) {
 }
 
 function normalizeTurnChangeConfig(config = {}) {
+    const monthlySwapLimit = Number(config.monthlySwapLimit);
+
     return {
         allowSwaps:
             config.allowSwaps !== false,
@@ -707,8 +766,29 @@ function normalizeTurnChangeConfig(config = {}) {
         allowTwentyFourHourShifts:
             config.allowTwentyFourHourShifts !== false,
         allowInvertedTwentyFourHourShifts:
-            config.allowInvertedTwentyFourHourShifts !== false
+            config.allowInvertedTwentyFourHourShifts !== false,
+        limitMonthlySwaps:
+            config.limitMonthlySwaps === true,
+        monthlySwapLimit:
+            Number.isFinite(monthlySwapLimit) && monthlySwapLimit > 0
+                ? Math.round(monthlySwapLimit)
+                : DEFAULT_TURN_CHANGE_CONFIG.monthlySwapLimit
     };
+}
+
+function normalizeReportSignatureConfig(config = {}) {
+    const source = Array.isArray(config.lines)
+        ? config.lines
+        : [];
+    const lines = DEFAULT_REPORT_SIGNATURE_CONFIG.lines.map(
+        (_line, index) =>
+            String(source[index] ?? "")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 120)
+    );
+
+    return { lines };
 }
 
 function normalizeReplacementRequest(request = {}) {
@@ -774,6 +854,22 @@ export function saveTurnChangeConfig(config) {
     setJSON(
         "turnChangeConfig",
         normalizeTurnChangeConfig(config)
+    );
+}
+
+export function getReportSignatureConfig() {
+    return normalizeReportSignatureConfig(
+        getJSON(
+            "reportSignatureConfig",
+            DEFAULT_REPORT_SIGNATURE_CONFIG
+        )
+    );
+}
+
+export function saveReportSignatureConfig(config) {
+    setJSON(
+        "reportSignatureConfig",
+        normalizeReportSignatureConfig(config)
     );
 }
 
@@ -858,6 +954,14 @@ function normalizeWorkerRequestType(value) {
         key.includes("unpaid")
     ) {
         return "unpaid_leave";
+    }
+
+    if (
+        key.includes("permiso_gremial") ||
+        key.includes("gremial") ||
+        key.includes("union")
+    ) {
+        return "union_leave";
     }
 
     if (
@@ -1087,6 +1191,18 @@ export function setShiftAssigned(value, profile = currentProfile){
 
 export function getValorHora(profile = currentProfile, date = null){
     const profileData = getCompensationProfileAt(profile, date);
+    const isHonoraria = String(profileData?.contractType || "")
+        .trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase() === "honorarios";
+    const honorariaHourlyRate =
+        Math.max(0, Number(profileData?.honorariaHourlyRate) || 0);
+
+    if (isHonoraria && honorariaHourlyRate > 0) {
+        return honorariaHourlyRate;
+    }
+
     const configuredValue = profileData
         ? getGradeHourValue(
             profileData.estamento,

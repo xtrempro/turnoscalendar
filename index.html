@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ProTurnos</title>
-<link rel="icon" type="image/png" href="img/logo-turnosalud.png">
+<title>TurnoPlus</title>
+<link rel="icon" type="image/png" sizes="512x512" href="img/favicon-turnoplus-calendar-gray.png">
 <link rel="stylesheet" href="styles.css">
 </head>
 
@@ -12,13 +12,9 @@
 <div class="app-shell">
     <header class="topbar">
         <div class="brand">
-            <div class="brand-mark" aria-hidden="true">
-                <img class="brand-logo" src="img/logo-turnosalud.png" alt="">
-            </div>
-
-            <div class="brand-copy">
-                <strong>TURNO <span class="brand-accent">SALUD</span></strong>
-                <span>Gesti&#243;n de Turnos Hospitalarios</span>
+            <div class="brand-mark brand-mark--wide">
+                <img class="brand-logo brand-logo--light" src="img/logo-turnoplus-transparent.png" alt="TurnoPlus">
+                <img class="brand-logo brand-logo--dark" src="img/logo-turnoplus-dark.png" alt="" aria-hidden="true">
             </div>
         </div>
 
@@ -59,6 +55,14 @@
                     <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1v.17a2 2 0 1 1-4 0V21a1.7 1.7 0 0 0-1.4-1.6 1.7 1.7 0 0 0-1 .34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1-.4H2.83a2 2 0 1 1 0-4H3a1.7 1.7 0 0 0 1.6-1.4 1.7 1.7 0 0 0-.34-1l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1V2.83a2 2 0 1 1 4 0V3a1.7 1.7 0 0 0 1.4 1.6 1.7 1.7 0 0 0 1-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c0 .38.14.74.4 1 .26.26.62.4 1 .4h.17a2 2 0 1 1 0 4H21c-.38 0-.74.14-1 .4-.26.26-.4.62-.4 1z"></path>
                 </svg>
             </button>
+
+            <button id="mobileMenuToggle" class="icon-button mobile-menu-toggle" type="button" aria-label="Abrir men&#250;" aria-controls="mainNavigation" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="4" y1="7" x2="20" y2="7"></line>
+                    <line x1="4" y1="12" x2="20" y2="12"></line>
+                    <line x1="4" y1="17" x2="20" y2="17"></line>
+                </svg>
+            </button>
         </div>
     </header>
 
@@ -66,8 +70,6 @@
         <main class="dashboard">
             <div class="profile-view-layout">
                 <aside class="panel sidebar">
-            <div class="panel-title">Listado Colaboradores</div>
-
             <label class="field-shell field-shell--icon">
                 <span class="field-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -132,9 +134,8 @@
                             <label class="metric-row metric-row--field">
                                 <span class="metric-label">Celular:</span>
                                 <span class="phone-prefix-field">
-                                    <span>+569(</span>
+                                    <span>+569</span>
                                     <input id="profilePhoneField" type="text" inputmode="numeric" maxlength="8" placeholder="12345678">
-                                    <span>)</span>
                                 </span>
                             </label>
 
@@ -207,6 +208,7 @@
                                     <option value="Planta">Planta</option>
                                     <option value="Contrata">Contrata</option>
                                     <option value="Honorarios">Honorarios</option>
+                                    <option value="Reemplazo">Reemplazo</option>
                                     <option value="Otro">Otro</option>
                                 </select>
                             </label>
@@ -238,7 +240,7 @@
                                     <option value="3turno">3er Turno</option>
                                     <option value="4turno">4&#176; Turno</option>
                                     <option value="diurno">Diurno</option>
-                                    <option value="reemplazo">Reemplazo</option>
+                                    <option value="libre" hidden disabled>Libre</option>
                                 </select>
                             </label>
 
@@ -246,6 +248,13 @@
                                 <span class="metric-label">Asignaci&#243;n de Turno:</span>
                                 <span class="toggle-check">
                                     <input type="checkbox" id="shiftAssigned">
+                                </span>
+                            </label>
+
+                            <label class="metric-row metric-row--field metric-toggle">
+                                <span class="metric-label">Permiso Gremial:</span>
+                                <span class="toggle-check">
+                                    <input type="checkbox" id="profileUnionLeaveField">
                                 </span>
                             </label>
 
@@ -285,7 +294,8 @@
                         <div id="replacementContractEditor" class="replacement-contract-editor hidden">
                             <label class="metric-row metric-row--field">
                                 <span class="metric-label">Reemplaza a:</span>
-                                <input id="replacementTargetField" type="text" placeholder="Nombre del trabajador reemplazado">
+                                <input id="replacementTargetField" type="text" list="replacementTargetOptions" placeholder="Nombre del trabajador reemplazado">
+                                <datalist id="replacementTargetOptions"></datalist>
                             </label>
 
                             <label class="metric-row metric-row--field">
@@ -299,7 +309,33 @@
                             </label>
 
                             <div id="replacementContractStatus" class="profile-status-note profile-status-note--soft">
-                                Configura inicio y termino del contrato desde el modal de rotativa.
+                                Configura inicio y termino del contrato desde el bot&oacute;n Nuevo Contrato.
+                            </div>
+                        </div>
+
+                        <div id="honorariaContractEditor" class="honoraria-contract-editor hidden">
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">Inicio del contrato:</span>
+                                <input id="honorariaStartField" type="date">
+                            </label>
+
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">T&eacute;rmino del contrato:</span>
+                                <input id="honorariaEndField" type="date">
+                            </label>
+
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">Valor de la hora:</span>
+                                <input id="honorariaHourlyRateField" type="number" min="0" step="1" inputmode="decimal" placeholder="0">
+                            </label>
+
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">M&aacute;ximo de horas mensuales:</span>
+                                <input id="honorariaMaxMonthlyHoursField" type="number" min="0" step="0.5" inputmode="decimal" placeholder="0">
+                            </label>
+
+                            <div id="honorariaContractStatus" class="profile-status-note profile-status-note--soft">
+                                La rotativa se aplicar&aacute; &uacute;nicamente dentro de la vigencia del contrato.
                             </div>
                         </div>
 
@@ -319,7 +355,7 @@
                 </section>
             </div>
 
-            <section class="panel actionbar">
+            <section id="mainNavigation" class="panel actionbar" aria-label="Men&#250; principal">
                 <button class="nav-tile is-active" type="button" data-target="calendarPanel">
                     <svg class="nav-icon tone-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                         <rect x="3" y="4" width="18" height="18" rx="3"></rect>
@@ -418,7 +454,7 @@
                         <path d="m7.5 13 2.2 2.2L16.5 9"></path>
                         <path d="M7 18h10"></path>
                     </svg>
-                    <span>MEMOS</span>
+                    <span>Memor&aacute;ndum</span>
                 </button>
 
                 <button id="turnChangesNav" class="nav-tile" type="button" data-target="turnChangesView">
@@ -442,18 +478,6 @@
                     <span>HH.EE</span>
                 </button>
 
-                <button class="nav-tile" type="button" data-target="staffingPanel">
-                    <svg class="nav-icon tone-cyan" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="7.5" r="3.3"></circle>
-                        <path d="M5.8 20a6.2 6.2 0 0 1 12.4 0"></path>
-                        <circle cx="5.2" cy="10" r="2.2"></circle>
-                        <path d="M2 19a4.2 4.2 0 0 1 4.2-4.2"></path>
-                        <circle cx="18.8" cy="10" r="2.2"></circle>
-                        <path d="M22 19a4.2 4.2 0 0 0-4.2-4.2"></path>
-                    </svg>
-                    <span>RRHH</span>
-                </button>
-
                 <button class="nav-tile" type="button" data-target="reportsPanel">
                     <svg class="nav-icon tone-orange" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="6" y1="20" x2="6" y2="10"></line>
@@ -461,6 +485,16 @@
                         <line x1="18" y1="20" x2="18" y2="14"></line>
                     </svg>
                     <span>Reportes</span>
+                </button>
+
+                <button class="nav-tile" type="button" data-target="dashboardPanel">
+                    <svg class="nav-icon tone-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="8" rx="1.6"></rect>
+                        <rect x="14" y="3" width="7" height="5" rx="1.6"></rect>
+                        <rect x="14" y="12" width="7" height="9" rx="1.6"></rect>
+                        <rect x="3" y="15" width="7" height="6" rx="1.6"></rect>
+                    </svg>
+                    <span>Dashboard</span>
                 </button>
 
                 <button class="nav-tile" type="button" data-target="auditLogPanel">
@@ -494,6 +528,26 @@
                 <div class="panel calendar-panel" id="calendarPanel">
                     <div id="selectorInfo" class="hidden"></div>
 
+                    <div class="calendar-header">
+                        <button id="prevBtn" class="icon-button" type="button" aria-label="Mes anterior">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="15 18 9 12 15 6"></polyline>
+                            </svg>
+                        </button>
+
+                        <button id="monthYear" class="calendar-month-trigger" type="button" aria-label="Elegir mes y a&#241;o" aria-haspopup="dialog" aria-expanded="false"></button>
+
+                        <button id="nextBtn" class="icon-button" type="button" aria-label="Mes siguiente">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="9 18 15 12 9 6"></polyline>
+                            </svg>
+                        </button>
+
+                        <button id="calendarRotationButton" class="calendar-rotation-button" type="button">
+                            MODIFICAR ROTATIVA
+                        </button>
+                    </div>
+
                     <form id="topProfileSearchForm" class="profile-viewer calendar-profile-viewer" autocomplete="off">
                         <label for="topProfileSearch">Calendario de</label>
                         <div class="profile-viewer__field">
@@ -505,24 +559,15 @@
                                 </svg>
                             </button>
                         </div>
+                        <label class="calendar-edit-toggle" for="calendarDirectEditToggle">
+                            <span>Editar</span>
+                            <span class="calendar-edit-switch">
+                                <input id="calendarDirectEditToggle" type="checkbox">
+                                <span aria-hidden="true"></span>
+                            </span>
+                        </label>
                         <datalist id="topProfileOptions"></datalist>
                     </form>
-
-                    <div class="calendar-header">
-                        <button id="prevBtn" class="icon-button" type="button" aria-label="Mes anterior">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                <polyline points="15 18 9 12 15 6"></polyline>
-                            </svg>
-                        </button>
-
-                        <h2 id="monthYear"></h2>
-
-                        <button id="nextBtn" class="icon-button" type="button" aria-label="Mes siguiente">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                <polyline points="9 18 15 12 9 6"></polyline>
-                            </svg>
-                        </button>
-                    </div>
 
                     <div class="weekdays">
                         <div>Lun</div>
@@ -538,6 +583,13 @@
                 </div>
 
                 <div class="stacked-panels">
+                    <button id="mobileLeaveToggle" class="mobile-panel-toggle mobile-leave-toggle" type="button" aria-controls="leavePanel" aria-expanded="false">
+                        <span>Permisos / Ausencias</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+
                     <section class="panel leave-panel" id="leavePanel">
                         <div class="legend-list">
                             <button id="adminBtn" class="legend-action" type="button">
@@ -626,6 +678,17 @@
                                 <span>L.M. PROFESIONAL</span>
                             </button>
 
+                            <button id="unionLeaveBtn" class="legend-action hidden" type="button">
+                                <span class="legend-dot tone-red">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M8 21V8a4 4 0 0 1 8 0v13"></path>
+                                        <path d="M5 21h14"></path>
+                                        <path d="M8 13h8"></path>
+                                    </svg>
+                                </span>
+                                <span>PERMISO GREMIAL</span>
+                            </button>
+
                             <button id="unpaidLeaveBtn" class="legend-action" type="button">
                                 <span class="legend-dot tone-muted">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
@@ -656,7 +719,7 @@
                                         <path d="M10 17h4"></path>
                                     </svg>
                                 </span>
-                                <span>AUSENCIA INJUSTIFICADA</span>
+                                <span>AUSENCIA</span>
                             </button>
 
                             <button id="clockMarkBtn" class="legend-action" type="button">
@@ -675,14 +738,19 @@
                         <div id="adminInfo" class="helper-note hidden"></div>
                     </section>
 
+                    <button id="mobileStaffingToggle" class="mobile-panel-toggle mobile-staffing-toggle" type="button" aria-controls="staffingReportPanel" aria-expanded="false">
+                        <span>Resumen RRHH</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+
                     <section class="panel staffing-report-panel" id="staffingReportPanel">
                         <div id="staffingReportInline" class="staffing-report-scroll"></div>
                     </section>
 
                     <section id="hoursView" class="hours-view">
                         <aside class="panel sidebar hhee-sidebar">
-                            <h2 class="panel-title">Listado Colaboradores</h2>
-
                             <label class="field-shell field-shell--icon">
                                 <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                                     <circle cx="11" cy="11" r="7"></circle>
@@ -720,22 +788,6 @@
                         <div class="hhee-content">
                             <div class="hhee-overview-grid">
                                 <section class="panel hours-panel" id="hoursPanel">
-                                    <div class="section-head section-head--with-action">
-                                        <span class="section-head__title">
-                                            <span class="section-icon tone-blue">
-                                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                                    <circle cx="12" cy="12" r="9"></circle>
-                                                    <path d="M12 7v5l3 2"></path>
-                                                </svg>
-                                            </span>
-                                            <h3>Horas Extras</h3>
-                                        </span>
-
-                                        <button id="printHoursReportBtn" class="secondary-button secondary-button--small" type="button">
-                                            Imprimir reporte
-                                        </button>
-                                    </div>
-
                                     <div class="hhee-monthbar">
                                         <button id="hheePrevMonth" class="swap-month-button" type="button" aria-label="Mes anterior HH.EE">
                                             &lt;
@@ -765,10 +817,6 @@
                                     <input id="hheeChartMonth" class="hidden" type="month" aria-hidden="true" tabindex="-1">
 
                                     <article class="hhee-chart-card hhee-chart-card--profile">
-                                        <div class="hhee-chart-card__head">
-                                            <h4>&Uacute;ltimos 12 meses</h4>
-                                            <span>Diurnas vs nocturnas</span>
-                                        </div>
                                         <div id="hheeProfileHistoryChart"></div>
                                     </article>
                                 </section>
@@ -791,8 +839,6 @@
 
             <section id="reportsPanel" class="reports-view">
                 <aside class="panel sidebar reports-sidebar">
-                    <h2 class="panel-title">Listado Colaboradores</h2>
-
                     <label class="field-shell field-shell--icon">
                         <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                             <circle cx="11" cy="11" r="7"></circle>
@@ -833,9 +879,14 @@
                     <article id="report4TurnoNoAssignmentCard" class="report-download-card hidden">
                         <div class="report-preview-heading">
                             <div id="report4TurnoNoAssignmentTitle" class="report-title-strip"></div>
-                            <button id="downloadNoAssignmentReportBtn" class="primary-button report-download-inline" type="button">
-                                Descargar Excel
-                            </button>
+                            <div class="report-preview-actions">
+                                <button id="downloadNoAssignmentReportBtn" class="primary-button report-download-inline" type="button">
+                                    Descargar Excel
+                                </button>
+                                <button id="printReportPdfBtn" class="secondary-button report-download-inline" type="button">
+                                    Imprimir PDF
+                                </button>
+                            </div>
                         </div>
                         <div id="report4TurnoNoAssignmentPreview" class="report-preview-card"></div>
                     </article>
@@ -844,6 +895,8 @@
                 </section>
 
             </section>
+
+            <section id="dashboardPanel" class="panel dashboard-panel"></section>
 
             <section class="secondary-grid">
                 <section id="staffingWeeklyCalendar" class="panel staffing-weekly-calendar staffing-weekly-calendar--view"></section>
@@ -854,59 +907,8 @@
 
                 <section id="agendaPanel" class="agenda-view"></section>
 
-                <section id="staffingView" class="staffing-view">
-                    <aside class="panel sidebar staffing-sidebar">
-                        <h2 class="panel-title">Listado Colaboradores</h2>
-
-                        <label class="field-shell field-shell--icon">
-                            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="11" cy="11" r="7"></circle>
-                                <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
-                            </svg>
-                            <input id="staffingProfileSearch" type="text" placeholder="Buscar...">
-                        </label>
-
-                        <label class="field-shell field-shell--icon">
-                            <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                                <line x1="4" y1="6" x2="20" y2="6"></line>
-                                <line x1="7" y1="12" x2="17" y2="12"></line>
-                                <line x1="10" y1="18" x2="14" y2="18"></line>
-                            </svg>
-                            <select id="staffingFilterRole">
-                                <option value="Todos">Todos</option>
-                                <option value="Profesional">Profesional</option>
-                                <option value="T&#233;cnico">T&#233;cnico</option>
-                                <option value="Administrativo">Administrativo</option>
-                                <option value="Auxiliar">Auxiliar</option>
-                            </select>
-                        </label>
-
-                        <label class="inline-toggle sidebar-toggle">
-                            <span>Mostrar desactivados</span>
-                            <span class="toggle-check">
-                                <input id="staffingShowInactiveProfiles" type="checkbox">
-                            </span>
-                        </label>
-
-                        <div id="staffingProfiles" class="profile-list"></div>
-                        <p id="staffingEmptyProfiles" class="muted hidden"></p>
-                    </aside>
-
-                    <section id="staffingPanel" class="panel staffing-panel">
-                        <div class="section-head">
-                            <h3>RRHH</h3>
-                        </div>
-
-                        <section id="staffingApplicantsPanel" class="staffing-applicants-panel"></section>
-
-                        <div id="replacementContractsLog"></div>
-                    </section>
-                </section>
-
                 <section id="turnChangesView" class="turn-changes-view">
                     <aside class="panel sidebar swap-sidebar">
-                        <h2 class="panel-title">Listado Colaboradores</h2>
-
                         <label class="field-shell field-shell--icon">
                             <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="11" cy="11" r="7"></circle>
@@ -930,13 +932,6 @@
                             </select>
                         </label>
 
-                        <label class="inline-toggle sidebar-toggle">
-                            <span>Mostrar desactivados</span>
-                            <span class="toggle-check">
-                                <input id="swapShowInactiveProfiles" type="checkbox">
-                            </span>
-                        </label>
-
                         <div id="swapProfiles" class="profile-list"></div>
                         <p id="swapEmptyProfiles" class="muted hidden"></p>
                     </aside>
@@ -950,8 +945,6 @@
 
                 <section id="clockMarksPanel" class="clockmarks-view">
                     <aside class="panel sidebar clockmarks-sidebar">
-                        <h2 class="panel-title">Listado Colaboradores</h2>
-
                         <label class="field-shell field-shell--icon">
                             <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                                 <circle cx="11" cy="11" r="7"></circle>
@@ -987,31 +980,25 @@
                     </aside>
 
                     <section class="panel clockmarks-panel">
-                        <div class="clockmarks-header">
-                            <div>
-                                <h3>Marcajes</h3>
-                                <p id="clockMarksSubtitle">Registros del perfil seleccionado.</p>
-                            </div>
+                        <div class="clockmarks-topbar">
+                            <div class="clockmarks-monthbar">
+                                <button id="clockMarksPrevMonth" class="swap-month-button" type="button" aria-label="Mes anterior marcajes">
+                                    &lt;
+                                </button>
 
+                                <strong id="clockMarksMonthLabel">Mes Marcajes</strong>
+
+                                <button id="clockMarksNextMonth" class="swap-month-button" type="button" aria-label="Mes siguiente marcajes">
+                                    &gt;
+                                </button>
+                            </div>
                             <label class="clockmarks-all-toggle">
                                 <span>
                                     <strong>Ver todos</strong>
-                                    <small>Registros del mes de todos los colaboradores</small>
+                                    <small id="clockMarksSubtitle">Registros del mes de todos los colaboradores</small>
                                 </span>
                                 <input id="clockMarksAllWorkersToggle" type="checkbox">
                             </label>
-                        </div>
-
-                        <div class="clockmarks-monthbar">
-                            <button id="clockMarksPrevMonth" class="swap-month-button" type="button" aria-label="Mes anterior marcajes">
-                                &lt;
-                            </button>
-
-                            <strong id="clockMarksMonthLabel">Mes Marcajes</strong>
-
-                            <button id="clockMarksNextMonth" class="swap-month-button" type="button" aria-label="Mes siguiente marcajes">
-                                &gt;
-                            </button>
                         </div>
 
                         <div id="clockMarksList" class="clockmarks-list"></div>

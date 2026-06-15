@@ -36,6 +36,48 @@ service cloud.firestore {
       return isMember(workspaceId) || isLinkedOperator(workspaceId);
     }
 
+    function canMemberWriteWorkspaceState(workspaceId) {
+      let member =
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
+      let permissions = member.permissions;
+
+      return member.role == "owner" ||
+        !("permissions" in member) ||
+        ("turnos" in permissions && permissions.turnos.edit == true) ||
+        ("weekly" in permissions && permissions.weekly.edit == true) ||
+        ("tasks" in permissions && permissions.tasks.edit == true) ||
+        ("kanban" in permissions && permissions.kanban.edit == true) ||
+        ("agenda" in permissions && permissions.agenda.edit == true) ||
+        ("profile" in permissions && permissions.profile.edit == true) ||
+        ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
+        ("requests" in permissions && permissions.requests.edit == true) ||
+        ("memos" in permissions && permissions.memos.edit == true) ||
+        ("swap" in permissions && permissions.swap.edit == true) ||
+        ("hours" in permissions && permissions.hours.edit == true) ||
+        ("staffing" in permissions && permissions.staffing.edit == true) ||
+        ("reports" in permissions && permissions.reports.edit == true) ||
+        ("log" in permissions && permissions.log.edit == true);
+    }
+
+    function workspaceInviteMatches(workspaceId) {
+      return request.resource.data.inviteCode is string &&
+        request.resource.data.inviteCode ==
+          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.inviteCode;
+    }
+
+    function canCreateOwnWorkspaceMember(workspaceId, userId) {
+      return signedIn() &&
+        userId == request.auth.uid &&
+        workspaceExists(workspaceId) &&
+        (
+          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid ||
+          (
+            request.resource.data.role == "member" &&
+            workspaceInviteMatches(workspaceId)
+          )
+        );
+    }
+
     function linkAcceptedAfter(linkId) {
       return existsAfter(/databases/$(database)/documents/workspaceLinks/$(linkId)) &&
         getAfter(/databases/$(database)/documents/workspaceLinks/$(linkId)).data.status == "accepted";
@@ -103,17 +145,18 @@ service cloud.firestore {
 
     match /workspaces/{workspaceId} {
       allow create: if signedIn() &&
-        request.resource.data.ownerUid == request.auth.uid;
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.inviteCode is string;
       allow get: if isMember(workspaceId);
       allow list: if false;
-      allow update: if isMember(workspaceId);
+      allow update: if isOwner(workspaceId) &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["name", "inviteCode", "updatedAt"]);
       allow delete: if isOwner(workspaceId);
 
       match /members/{userId} {
         allow read: if isMember(workspaceId);
-        allow create: if signedIn() &&
-          userId == request.auth.uid &&
-          workspaceExists(workspaceId);
+        allow create: if canCreateOwnWorkspaceMember(workspaceId, userId);
         allow update, delete: if isOwner(workspaceId);
       }
 
@@ -128,15 +171,35 @@ service cloud.firestore {
       }
 
       match /system/appState {
-        allow read, write: if canUseWorkspaceState(workspaceId);
+        allow read: if canUseWorkspaceState(workspaceId);
+        allow write: if isLinkedOperator(workspaceId) ||
+          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
       }
 
       match /appStateChunks/{chunkId} {
-        allow read, write: if canUseWorkspaceState(workspaceId);
+        allow read: if canUseWorkspaceState(workspaceId);
+        allow write: if isLinkedOperator(workspaceId) ||
+          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+      }
+
+      match /system/localStorageSnapshot {
+        allow read, write: if isMember(workspaceId);
+      }
+
+      match /profiles/{profileId} {
+        allow read, write: if isMember(workspaceId);
+      }
+
+      match /replacementRequests/{requestId} {
+        allow read, write: if isMember(workspaceId);
+      }
+
+      match /workerRequests/{requestId} {
+        allow read, write: if isMember(workspaceId);
       }
 
       match /{document=**} {
-        allow read, write: if isMember(workspaceId);
+        allow read, write: if false;
       }
     }
   }

@@ -6,17 +6,13 @@ import {
     siguienteTurnoValido
 } from "./turnEngine.js";
 import {
-    calcularHorasMes,
     calcularHorasMesPerfil,
-    renderSummaryHTML,
     calcularCarryMes
 } from "./hoursEngine.js";
 import {
     getProfileData,
     saveProfileData,
-    getCarry,
     saveCarry,
-    getBlockedDays,
     getAdminDays,
     getLegalDays,
     getAbsences,
@@ -25,6 +21,7 @@ import {
     getCurrentProfile,
     getProfiles,
     getRotativa,
+    getReplacementRequestConfig,
     getTurnChangeConfig,
     isProfileActive,
     profileCanCoverProfile
@@ -51,10 +48,15 @@ import {
     turnoLabel,
     aplicarClaseTurno
 } from "./uiEngine.js";
-import { renderTimeline } from "./timeline.js";
+import {
+    cancelTimelineRender,
+    renderTimeline
+} from "./timeline.js";
 import {
     deshacerCambioTurno,
-    getCambioTurnoRecibido
+    getCambioTurnoCalendario,
+    getCambiosTurnoCalendario,
+    swapCodeLabel
 } from "./swaps.js";
 import {
     codeToTurno,
@@ -69,7 +71,6 @@ import {
     getPendingReplacementRequestsForShift,
     getReplacementForCoveredShift,
     getReplacementForWorkerShift,
-    renderReplacementLogHTML,
     saveReplacement,
     turnoToCode,
     turnoReplacementLabel,
@@ -79,6 +80,11 @@ import {
     hasContractForDate,
     isReplacementProfile
 } from "./contracts.js";
+import {
+    getHonorariaExcessForKey,
+    getHonorariaLimitMessage,
+    getHonorariaMonthlySummary
+} from "./honoraria.js";
 import {
     addAuditLog,
     AUDIT_CATEGORY
@@ -93,7 +99,11 @@ import {
     getHourReturns,
     hourReturnCalendarLabel
 } from "./hourReturns.js";
-import { TURNO } from "./constants.js";
+import { withBusyState } from "./busy.js";
+import {
+    TURNO,
+    TURNO_CLASS
+} from "./constants.js";
 import {
     exportLocalSnapshot,
     getJSON,
@@ -109,12 +119,371 @@ import {
 export let currentDate = new Date();
 
 const CALENDAR_AUDIT_DELAY_MS = 60000;
+const CALENDAR_DIRECT_EDIT_REFRESH_DELAY_MS = 30000;
+const CALENDAR_HEAVY_UPDATE_DELAY_MS = 450;
 const calendarAuditTimers = new Map();
 const calendarAuditDrafts = new Map();
 let linkedReplacementStatus = "";
+let calendarRenderRequest = 0;
+let calendarNavigationRequest = 0;
+let calendarHeavyUpdateRequest = 0;
+let calendarHeavyUpdateTimer = 0;
+let calendarDirectEditRefreshTimer = 0;
+let calendarDirectEditRefreshRequest = 0;
+let calendarDirectEditHistoryTimer = 0;
+let calendarDirectEditHistoryOpen = false;
+let calendarPickerYear = currentDate.getFullYear();
+let calendarMonthPicker = null;
+
+const CALENDAR_MONTH_NAMES = [
+    "Enero",
+    "Febrero",
+    "Marzo",
+    "Abril",
+    "Mayo",
+    "Junio",
+    "Julio",
+    "Agosto",
+    "Septiembre",
+    "Octubre",
+    "Noviembre",
+    "Diciembre"
+];
+
+function closeCalendarMonthPicker() {
+    if (!calendarMonthPicker) return;
+
+    calendarMonthPicker.classList.add("hidden");
+    document
+        .getElementById("monthYear")
+        ?.setAttribute("aria-expanded", "false");
+}
+
+function positionCalendarMonthPicker() {
+    const trigger = document.getElementById("monthYear");
+
+    if (
+        !trigger ||
+        !calendarMonthPicker ||
+        calendarMonthPicker.classList.contains("hidden")
+    ) {
+        return;
+    }
+
+    const gap = 8;
+    const edge = 12;
+    const triggerRect = trigger.getBoundingClientRect();
+    const pickerRect = calendarMonthPicker.getBoundingClientRect();
+    const left = Math.min(
+        Math.max(
+            edge,
+            triggerRect.left +
+            (triggerRect.width - pickerRect.width) / 2
+        ),
+        window.innerWidth - pickerRect.width - edge
+    );
+    const preferredTop = triggerRect.bottom + gap;
+    const top = preferredTop + pickerRect.height <= window.innerHeight - edge
+        ? preferredTop
+        : Math.max(edge, triggerRect.top - pickerRect.height - gap);
+
+    calendarMonthPicker.style.left = `${Math.round(left)}px`;
+    calendarMonthPicker.style.top = `${Math.round(top)}px`;
+}
+
+function renderCalendarMonthPicker() {
+    if (!calendarMonthPicker) return;
+
+    const activeYear = currentDate.getFullYear();
+    const activeMonth = currentDate.getMonth();
+
+    calendarMonthPicker.innerHTML = `
+        <div class="calendar-month-picker__year">
+            <button class="calendar-month-picker__year-button" type="button" data-calendar-year-step="-1" aria-label="A&#241;o anterior">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+            </button>
+            <strong>${calendarPickerYear}</strong>
+            <button class="calendar-month-picker__year-button" type="button" data-calendar-year-step="1" aria-label="A&#241;o siguiente">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+            </button>
+        </div>
+        <div class="calendar-month-picker__months">
+            ${CALENDAR_MONTH_NAMES.map((name, month) => `
+                <button
+                    class="calendar-month-picker__month${calendarPickerYear === activeYear && month === activeMonth ? " is-active" : ""}"
+                    type="button"
+                    data-calendar-month="${month}"
+                >
+                    ${name}
+                </button>
+            `).join("")}
+        </div>
+    `;
+
+    calendarMonthPicker
+        .querySelectorAll("[data-calendar-year-step]")
+        .forEach(button => {
+            button.onclick = event => {
+                event.stopPropagation();
+                calendarPickerYear += Number(button.dataset.calendarYearStep);
+                renderCalendarMonthPicker();
+                positionCalendarMonthPicker();
+            };
+        });
+
+    calendarMonthPicker
+        .querySelectorAll("[data-calendar-month]")
+        .forEach(button => {
+            button.onclick = async event => {
+                event.stopPropagation();
+                await goToCalendarMonth(
+                    calendarPickerYear,
+                    Number(button.dataset.calendarMonth),
+                    { deferHeavy: true }
+                );
+            };
+        });
+}
+
+function setupCalendarMonthPicker(trigger) {
+    if (!trigger || trigger.dataset.monthPickerBound === "true") {
+        return;
+    }
+
+    trigger.dataset.monthPickerBound = "true";
+    calendarMonthPicker = document.createElement("div");
+    calendarMonthPicker.className =
+        "calendar-month-picker hidden";
+    calendarMonthPicker.setAttribute("role", "dialog");
+    calendarMonthPicker.setAttribute(
+        "aria-label",
+        "Seleccionar mes y a\u00f1o"
+    );
+    document.body.appendChild(calendarMonthPicker);
+
+    trigger.addEventListener("click", event => {
+        event.stopPropagation();
+
+        if (!calendarMonthPicker.classList.contains("hidden")) {
+            closeCalendarMonthPicker();
+            return;
+        }
+
+        calendarPickerYear = currentDate.getFullYear();
+        renderCalendarMonthPicker();
+        calendarMonthPicker.classList.remove("hidden");
+        trigger.setAttribute("aria-expanded", "true");
+        positionCalendarMonthPicker();
+    });
+
+    document.addEventListener("click", closeCalendarMonthPicker);
+    document.addEventListener("keydown", event => {
+        if (event.key === "Escape") {
+            closeCalendarMonthPicker();
+        }
+    });
+    window.addEventListener("resize", positionCalendarMonthPicker);
+    window.addEventListener(
+        "scroll",
+        positionCalendarMonthPicker,
+        true
+    );
+}
+
+function deferAfterPaint(callback) {
+    if (typeof window === "undefined") {
+        callback();
+        return;
+    }
+
+    const run = () => window.setTimeout(callback, 0);
+
+    if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(run);
+        });
+    } else {
+        run();
+    }
+}
+
+function cancelCalendarHeavyUpdates() {
+    clearTimeout(calendarHeavyUpdateTimer);
+    calendarHeavyUpdateTimer = 0;
+    calendarHeavyUpdateRequest++;
+    cancelTimelineRender();
+}
+
+function runCalendarHeavyUpdates(options = {}, context = null) {
+    if (calendarDirectEditRefreshTimer) {
+        cancelTimelineRender();
+        return;
+    }
+
+    const requestId = ++calendarHeavyUpdateRequest;
+    const update = async () => {
+        calendarHeavyUpdateTimer = 0;
+
+        if (requestId !== calendarHeavyUpdateRequest) {
+            return;
+        }
+
+        const activeView =
+            document.body.dataset.activeView || "turnos";
+
+        if (
+            activeView === "turnos" ||
+            activeView === "timeline"
+        ) {
+            await renderTimeline();
+        }
+
+        if (requestId !== calendarHeavyUpdateRequest) {
+            return;
+        }
+
+        await new Promise(resolve => {
+            window.setTimeout(resolve, 120);
+        });
+
+        if (requestId !== calendarHeavyUpdateRequest) {
+            return;
+        }
+
+        if (
+            context &&
+            context.profile &&
+            context.profile === getCurrentProfile() &&
+            context.y === currentDate.getFullYear() &&
+            context.m === currentDate.getMonth()
+        ) {
+            const carryOut = calcularCarryMes(
+                context.y,
+                context.m,
+                context.days,
+                context.holidays,
+                context.data
+            );
+            const next = new Date(context.y, context.m + 1, 1);
+
+            saveCarry(
+                next.getFullYear(),
+                next.getMonth(),
+                carryOut
+            );
+        }
+
+        if (requestId !== calendarHeavyUpdateRequest) {
+            return;
+        }
+
+        if (
+            activeView === "turnos" &&
+            typeof window.renderInlineStaffingAnalysis === "function"
+        ) {
+            window.renderInlineStaffingAnalysis();
+        }
+    };
+
+    if (options.deferHeavy) {
+        cancelTimelineRender();
+        clearTimeout(calendarHeavyUpdateTimer);
+        calendarHeavyUpdateTimer = window.setTimeout(
+            () => void update(),
+            CALENDAR_HEAVY_UPDATE_DELAY_MS
+        );
+        return;
+    }
+
+    void update();
+}
+
+function keepCalendarDirectEditHistoryOpen(label) {
+    if (
+        !calendarDirectEditHistoryOpen &&
+        typeof window.pushUndoState === "function"
+    ) {
+        window.pushUndoState(label);
+    }
+
+    calendarDirectEditHistoryOpen = true;
+    clearTimeout(calendarDirectEditHistoryTimer);
+    calendarDirectEditHistoryTimer = window.setTimeout(() => {
+        calendarDirectEditHistoryOpen = false;
+        calendarDirectEditHistoryTimer = 0;
+    }, CALENDAR_DIRECT_EDIT_REFRESH_DELAY_MS);
+}
+
+function closeCalendarDirectEditHistory() {
+    clearTimeout(calendarDirectEditHistoryTimer);
+    calendarDirectEditHistoryTimer = 0;
+    calendarDirectEditHistoryOpen = false;
+}
+
+function cancelCalendarDirectEditRefresh() {
+    clearTimeout(calendarDirectEditRefreshTimer);
+    calendarDirectEditRefreshTimer = 0;
+    calendarDirectEditRefreshRequest++;
+    calendarRenderRequest++;
+    cancelCalendarHeavyUpdates();
+    closeCalendarDirectEditHistory();
+}
+
+async function flushCalendarDirectEditRefresh(options = {}) {
+    const expectedRequest =
+        Number(options.requestId) || 0;
+    const force = options.force === true;
+
+    if (
+        expectedRequest &&
+        expectedRequest !== calendarDirectEditRefreshRequest
+    ) {
+        return;
+    }
+
+    if (!calendarDirectEditRefreshTimer && !force) return;
+
+    clearTimeout(calendarDirectEditRefreshTimer);
+    calendarDirectEditRefreshTimer = 0;
+    calendarDirectEditRefreshRequest++;
+    calendarRenderRequest++;
+    cancelCalendarHeavyUpdates();
+    closeCalendarDirectEditHistory();
+    await renderCalendar({ deferHeavy: true });
+}
+
+function scheduleCalendarDirectEditRefresh() {
+    clearTimeout(calendarDirectEditRefreshTimer);
+    calendarDirectEditRefreshRequest++;
+    calendarRenderRequest++;
+    cancelCalendarHeavyUpdates();
+    const requestId = calendarDirectEditRefreshRequest;
+
+    calendarDirectEditRefreshTimer = window.setTimeout(
+        () => void flushCalendarDirectEditRefresh({
+            requestId
+        }),
+        CALENDAR_DIRECT_EDIT_REFRESH_DELAY_MS
+    );
+}
+
+window.flushCalendarDirectEditRefresh =
+    flushCalendarDirectEditRefresh;
 
 function key(y, m, d) {
     return `${y}-${m}-${d}`;
+}
+
+function dateFromKeyDay(keyDay) {
+    const [year, month, day] = String(keyDay || "")
+        .split("-")
+        .map(Number);
+
+    return new Date(year || 0, month || 0, day || 1);
 }
 
 function scheduleCalendarAuditLog({
@@ -183,6 +552,7 @@ function buildDayCell({
     keyDay,
     label,
     badge,
+    badges,
     title,
     isWeekendDay,
     isHoliday,
@@ -203,15 +573,40 @@ function buildDayCell({
         div.classList.add("holiday");
     }
 
+    const today = new Date();
+    if (
+        today.getFullYear() === Number(year) &&
+        today.getMonth() === Number(month) &&
+        today.getDate() === Number(day)
+    ) {
+        div.classList.add("today");
+    }
+
     if (isDraftSelected) {
         div.classList.add("draft-selected");
     }
+
+    const visibleBadges = Array.isArray(badges)
+        ? badges.filter(Boolean)
+        : (badge ? [badge] : []);
+
+    if (visibleBadges.length > 1) {
+        div.classList.add("has-multiple-badges");
+    }
+
+    const badgeHTML = visibleBadges.length
+        ? `
+            <span class="day-badges">
+                ${visibleBadges.map(item => `<span class="day-badge">${escapeHTML(item)}</span>`).join("")}
+            </span>
+        `
+        : "";
 
     div.innerHTML = `
         <span class="day-number">${day}</span>
         <span class="day-label-stack">
             <span class="day-label">${label || ""}</span>
-            ${badge ? `<span class="day-badge">${badge}</span>` : ""}
+            ${badgeHTML}
         </span>
     `;
 
@@ -370,6 +765,59 @@ function keyToISODate(keyDay) {
     return `${parts[0]}-${String(Number(parts[1]) + 1).padStart(2, "0")}-${String(Number(parts[2])).padStart(2, "0")}`;
 }
 
+function formatISODateForHover(value) {
+    const parts = String(value || "").split("-");
+
+    if (parts.length !== 3) return String(value || "");
+
+    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+}
+
+function formatISODateForSwapHover(value) {
+    const parts = String(value || "")
+        .split("-")
+        .map(Number);
+
+    if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) {
+        return formatISODateForHover(value);
+    }
+
+    return new Intl.DateTimeFormat(
+        "es-CL",
+        {
+            day: "numeric",
+            month: "long"
+        }
+    ).format(new Date(parts[0], parts[1] - 1, parts[2]));
+}
+
+function turnChangeHoverTitle(marker, profileName) {
+    const swap = marker?.swap;
+    const perspective = marker?.perspective;
+
+    if (!swap) return "";
+
+    if (perspective) {
+        return [
+            !perspective.changeSkipped &&
+                `Cambia su turno base de ${perspective.changeTurnLabel} del ${formatISODateForSwapHover(perspective.changeDate)} con ${perspective.counterpart}`,
+            !perspective.returnSkipped &&
+                `Devuelve el turno el ${formatISODateForSwapHover(perspective.returnDate)} realizando ${perspective.returnTurnLabel}`
+        ].filter(Boolean).join("\n");
+    }
+
+    return [
+        `Cambio de turno: ${marker.label}`,
+        `Trabajador seleccionado: ${profileName}`,
+        `Entrega turno: ${swap.from}`,
+        `Recibe turno: ${swap.to}`,
+        `Fecha cambio: ${formatISODateForHover(swap.fecha)}`,
+        `Turno cambio: ${swapCodeLabel(swap.turno)}`,
+        `Fecha devoluci\u00f3n: ${formatISODateForHover(swap.devolucion)}`,
+        `Turno devoluci\u00f3n: ${swapCodeLabel(swap.turnoDevuelto)}`
+    ].filter(Boolean).join("\n");
+}
+
 function remoteFusionReplacementTurn(snapshot, profileName, keyDay, state) {
     const iso = keyToISODate(keyDay);
     const replacements =
@@ -468,6 +916,43 @@ function remoteActualState(snapshot, profileName, keyDay) {
         keyDay,
         withSwaps
     );
+}
+
+function previewDirectTurnChange(cell, nextTurn, date, holidays = {}) {
+    if (!cell) return;
+
+    Object.values(TURNO_CLASS)
+        .filter(Boolean)
+        .forEach(className => {
+            cell.classList.remove(className);
+        });
+
+    cell.classList.remove(
+        "needs-extra-reason",
+        "clock-extra-day",
+        "clock-incident-day",
+        "clock-severe-day"
+    );
+
+    aplicarClaseTurno(cell, nextTurn);
+    cell.classList.add("calendar-direct-edit-feedback");
+    cell.dataset.directTurnState = String(nextTurn);
+
+    const label = cell.querySelector(".day-label");
+    if (label) {
+        label.textContent = turnoLabel(nextTurn) || "";
+    }
+
+    cell.querySelectorAll(".day-badge").forEach(badge => {
+        badge.remove();
+    });
+
+    const hours = calcHours(date, nextTurn, holidays);
+    cell.title = `Diurnas: ${hours.d} | Nocturnas: ${hours.n}`;
+
+    window.setTimeout(() => {
+        cell.classList.remove("calendar-direct-edit-feedback");
+    }, 160);
 }
 
 function remoteTurnChangeConfig(snapshot) {
@@ -726,7 +1211,21 @@ function escapeHTML(value) {
 }
 
 function refreshStaffingAnalysisPanel() {
-    if (typeof window.renderStaffingAnalysis === "function") {
+    const activeView =
+        document.body.dataset.activeView || "turnos";
+
+    if (
+        activeView === "turnos" &&
+        typeof window.renderInlineStaffingAnalysis === "function"
+    ) {
+        window.renderInlineStaffingAnalysis();
+        return;
+    }
+
+    if (
+        activeView === "staffing" &&
+        typeof window.renderStaffingAnalysis === "function"
+    ) {
         window.renderStaffingAnalysis();
     }
 }
@@ -1071,8 +1570,21 @@ function replacementDialogHTML({
     selectedRequestWorkers,
     linkedStatus = ""
 }) {
-    const forceMode = scope === "all-local";
-    const linkedMode = scope === "linked";
+    const replacementConfig = getReplacementRequestConfig();
+    const allowLinkedSuggestions =
+        replacementConfig.enableLinkedUnitSuggestions !== false;
+    const allowCrossRoleSuggestions =
+        replacementConfig.enableCrossRoleSuggestions !== false;
+    const allowWorkerAcceptanceRequest =
+        replacementConfig.enableWorkerAcceptanceRequest !== false;
+    const forceMode =
+        allowCrossRoleSuggestions && scope === "all-local";
+    const linkedMode =
+        allowLinkedSuggestions && scope === "linked";
+    const isRequestMode =
+        allowWorkerAcceptanceRequest &&
+        !linkedMode &&
+        requestMode;
     const pendingByWorker = new Map(
         (pendingRequests || []).map(request => [request.worker, request])
     );
@@ -1094,7 +1606,7 @@ function replacementDialogHTML({
             const checked =
                 selectedWorkers.has(candidate.profile.name);
 
-            if (requestMode) {
+            if (isRequestMode) {
                 return `
                 <label class="replacement-candidate replacement-candidate--request ${candidate.isForced ? "replacement-candidate--forced" : ""} ${pendingRequest ? "is-disabled" : ""}">
                     <input
@@ -1178,7 +1690,7 @@ function replacementDialogHTML({
             </div>
         `
         : "";
-    const bulkActions = requestMode
+    const bulkActions = isRequestMode
         ? `
             <div class="replacement-bulk-actions">
                 <label>
@@ -1191,6 +1703,28 @@ function replacementDialogHTML({
             </div>
         `
         : "";
+    const toolbarButtons = [
+        allowCrossRoleSuggestions
+            ? `
+                <button class="secondary-button" type="button" data-action="toggle-force">
+                    ${forceMode
+                        ? "Volver a profesiones/estamentos compatibles"
+                        : "Mostrar personal de otras profesiones y/o estamentos"
+                    }
+                </button>
+            `
+            : "",
+        allowLinkedSuggestions
+            ? `
+                <button class="ghost-button" type="button" data-action="linked-units">
+                    ${linkedMode
+                        ? "Volver a personal de esta unidad"
+                        : "Buscar sugerencias en unidades enlazadas"
+                    }
+                </button>
+            `
+            : ""
+    ].filter(Boolean).join("");
 
     return `
         <div class="turn-change-dialog replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="replacementDialogTitle">
@@ -1199,36 +1733,23 @@ function replacementDialogHTML({
                 ${escapeHTML(profileName)} requiere cobertura para ${escapeHTML(turnoReplacementLabel(neededTurn))}
                 por ${escapeHTML(absenceType)}.
             </p>
-            <div class="replacement-dialog-toolbar">
-                <button class="secondary-button" type="button" data-action="toggle-force">
-                    ${forceMode
-                        ? "Volver a profesiones/estamentos compatibles"
-                        : "Mostrar personal de otras profesiones y/o estamentos"
-                    }
-                </button>
-                <button class="ghost-button" type="button" data-action="linked-units">
-                    ${linkedMode
-                        ? "Volver a personal de esta unidad"
-                        : "Buscar sugerencias en unidades enlazadas"
-                    }
-                </button>
-            </div>
+            ${toolbarButtons ? `
+                <div class="replacement-dialog-toolbar">
+                    ${toolbarButtons}
+                </div>
+            ` : ""}
             ${linkedMode ? `
                 <div class="replacement-dialog-note">
                     Sugerencias de unidades enlazadas activas: se muestran trabajadores compatibles y disponibles segun su unidad. Al asignar, se registra como prestamo en ambos entornos.
                 </div>
-            ` : `
+            ` : allowWorkerAcceptanceRequest ? `
             <label class="replacement-request-toggle">
-                <input type="checkbox" data-action="request-mode" ${requestMode ? "checked" : ""}>
+                <input type="checkbox" data-action="request-mode" ${isRequestMode ? "checked" : ""}>
                 <span>
                     <strong>Solicitar aceptacion al trabajador</strong>
-                    <small>
-                        En vez de asignar el turno de inmediato, crea una solicitud
-                        para la app movil o WhatsApp.
-                    </small>
                 </span>
             </label>
-            `}
+            ` : ""}
             ${bulkActions}
             ${pendingList}
             ${forceMode ? `
@@ -1272,6 +1793,31 @@ async function openReplacementDialog(profileName, keyDay) {
     let scope = "compatible";
     let requestMode = false;
     let selectedRequestWorkers = new Set();
+    const normalizeReplacementDialogState = () => {
+        const replacementConfig = getReplacementRequestConfig();
+
+        if (
+            scope === "linked" &&
+            replacementConfig.enableLinkedUnitSuggestions === false
+        ) {
+            scope = "compatible";
+        }
+
+        if (
+            scope === "all-local" &&
+            replacementConfig.enableCrossRoleSuggestions === false
+        ) {
+            scope = "compatible";
+        }
+
+        if (
+            scope === "linked" ||
+            replacementConfig.enableWorkerAcceptanceRequest === false
+        ) {
+            requestMode = false;
+            selectedRequestWorkers = new Set();
+        }
+    };
     const backdrop = document.createElement("div");
     backdrop.className = "turn-change-dialog-backdrop";
 
@@ -1375,18 +1921,21 @@ async function openReplacementDialog(profileName, keyDay) {
             .querySelector("[data-action='cancel']")
             .onclick = close;
 
-        backdrop
-            .querySelector("[data-action='toggle-force']")
-            .onclick = async () => {
+        const toggleForceButton =
+            backdrop.querySelector("[data-action='toggle-force']");
+        if (toggleForceButton) {
+            toggleForceButton.onclick = async () => {
                 scope = scope === "all-local"
                     ? "compatible"
                     : "all-local";
                 await renderContent();
             };
+        }
 
-        backdrop
-            .querySelector("[data-action='linked-units']")
-            .onclick = async () => {
+        const linkedUnitsButton =
+            backdrop.querySelector("[data-action='linked-units']");
+        if (linkedUnitsButton) {
+            linkedUnitsButton.onclick = async () => {
                 scope = scope === "linked"
                     ? "compatible"
                     : "linked";
@@ -1394,6 +1943,7 @@ async function openReplacementDialog(profileName, keyDay) {
                 selectedRequestWorkers = new Set();
                 await renderContent();
             };
+        }
 
         const requestToggle =
             backdrop.querySelector("[data-action='request-mode']");
@@ -1576,76 +2126,87 @@ async function openReplacementDialog(profileName, keyDay) {
                 button.onclick = async () => {
                     if (button.disabled) return;
 
-                    if (typeof window.pushUndoState === "function") {
-                        window.pushUndoState(
-                            requestMode
-                                ? "Crear solicitud de reemplazo"
-                                : "Asignar reemplazo"
-                        );
-                    }
-
-                    if (requestMode) {
-                        const request = createReplacementRequest({
-                            worker: button.dataset.worker,
-                            replaced: profileName,
-                            keyDay,
-                            turno: neededTurn,
-                            absenceType,
-                            scope,
-                            source: scope === "all-local"
-                                ? "forced_replacement_request"
-                                : "replacement_request",
-                            ...replacementCoverageFromDataset(
-                                button.dataset
-                            )
-                        });
-                        const whatsappUrl =
-                            buildReplacementRequestWhatsAppUrl(request);
-
-                        if (request.channel === "whatsapp") {
-                            if (whatsappUrl) {
-                                window.open(
-                                    whatsappUrl,
-                                    "_blank",
-                                    "noopener"
-                                );
-                            } else {
-                                alert(
-                                    "La solicitud quedo pendiente, pero este trabajador no tiene celular registrado para preparar el WhatsApp."
-                                );
-                            }
+                    await withBusyState(async () => {
+                        if (typeof window.pushUndoState === "function") {
+                            window.pushUndoState(
+                                requestMode
+                                    ? "Crear solicitud de reemplazo"
+                                    : "Asignar reemplazo"
+                            );
                         }
 
-                        await renderContent();
-                        return;
-                    }
+                        if (
+                            requestMode &&
+                            getReplacementRequestConfig()
+                                .enableWorkerAcceptanceRequest !== false
+                        ) {
+                            const request = createReplacementRequest({
+                                worker: button.dataset.worker,
+                                replaced: profileName,
+                                keyDay,
+                                turno: neededTurn,
+                                absenceType,
+                                scope,
+                                source: scope === "all-local"
+                                    ? "forced_replacement_request"
+                                    : "replacement_request",
+                                ...replacementCoverageFromDataset(
+                                    button.dataset
+                                )
+                            });
+                            const whatsappUrl =
+                                buildReplacementRequestWhatsAppUrl(request);
 
-                    if (button.dataset.workerWorkspaceId) {
-                        await saveLinkedUnitReplacement(button);
-                    } else {
-                        saveReplacement({
-                            worker: button.dataset.worker,
-                            replaced: profileName,
-                            keyDay,
-                            turno: neededTurn,
-                            absenceType,
-                            source: scope === "all-local"
-                                ? "forced_replacement"
-                                : "replacement",
-                            ...replacementCoverageFromDataset(
-                                button.dataset
-                            )
-                        });
-                    }
+                            if (request.channel === "whatsapp") {
+                                if (whatsappUrl) {
+                                    window.open(
+                                        whatsappUrl,
+                                        "_blank",
+                                        "noopener"
+                                    );
+                                } else {
+                                    alert(
+                                        "La solicitud quedo pendiente, pero este trabajador no tiene celular registrado para preparar el WhatsApp."
+                                    );
+                                }
+                            }
 
-                    close();
-                    await renderCalendar();
-                    refreshStaffingAnalysisPanel();
+                            await renderContent();
+                            return;
+                        }
+
+                        if (button.dataset.workerWorkspaceId) {
+                            await saveLinkedUnitReplacement(button);
+                        } else {
+                            saveReplacement({
+                                worker: button.dataset.worker,
+                                replaced: profileName,
+                                keyDay,
+                                turno: neededTurn,
+                                absenceType,
+                                source: scope === "all-local"
+                                    ? "forced_replacement"
+                                    : "replacement",
+                                ...replacementCoverageFromDataset(
+                                    button.dataset
+                                )
+                            });
+                        }
+
+                        close();
+                        await renderCalendar();
+                        refreshStaffingAnalysisPanel();
+                    }, {
+                        label: requestMode
+                            ? "Creando solicitud..."
+                            : "Guardando reemplazo..."
+                    });
                 };
             });
     };
 
-    const renderContent = async () => {
+    const renderContent = async () => withBusyState(async () => {
+        normalizeReplacementDialogState();
         expireReplacementRequests();
 
         const candidates =
@@ -1696,7 +2257,9 @@ async function openReplacementDialog(profileName, keyDay) {
             backdrop.querySelector(".replacement-candidate") ||
             backdrop.querySelector("[data-action='cancel']")
         )?.focus();
-    };
+    }, {
+        label: "Calculando sugerencias..."
+    });
 
     document.addEventListener("keydown", onKeydown);
     document.body.appendChild(backdrop);
@@ -2150,15 +2713,23 @@ async function clickDia(
     admin,
     legal,
     comp,
-    absences
+    absences,
+    options = {}
 ) {
+    if (
+        typeof window.workspaceCanEditTarget === "function" &&
+        !window.workspaceCanEditTarget("calendarPanel")
+    ) {
+        return true;
+    }
+
     if (!isProfileActive(getCurrentProfile())) {
         alert("Este perfil esta desactivado. Reactivalo desde Perfil para modificar su calendario.");
         return true;
     }
 
     const turnChange =
-        getCambioTurnoRecibido(getCurrentProfile(), keyDay);
+        getCambioTurnoCalendario(getCurrentProfile(), keyDay)?.swap;
 
     if (turnChange) {
         return handleTurnChangeDayClick(turnChange);
@@ -2203,53 +2774,91 @@ async function clickDia(
         return;
     }
 
+    const directEditEnabled =
+        typeof window.calendarDirectEditEnabled === "function"
+            ? window.calendarDirectEditEnabled()
+            : true;
+
+    if (!directEditEnabled) {
+        return;
+    }
+
     const baseTurno = getTurnoBase(
         getCurrentProfile(),
         keyDay
     );
+    const previewState = Number(
+        options.cell?.dataset.directTurnState
+    );
+    const currentState = Number.isFinite(previewState)
+        ? previewState
+        : state;
     const nuevo = siguienteTurnoValido(
         getCurrentProfile(),
         keyDay,
-        state,
+        currentState,
         isHab,
         {
             baseTurno
         }
     );
 
-    if (typeof window.pushUndoState === "function") {
-        window.pushUndoState(
-            `Cambio ${keyDay}: ${turnoLabel(state)} -> ${turnoLabel(nuevo)}`
-        );
-    }
+    previewDirectTurnChange(
+        options.cell,
+        nuevo,
+        options.date || dateFromKeyDay(keyDay),
+        options.holidays || {}
+    );
 
+    keepCalendarDirectEditHistoryOpen(
+        `Edicion directa de turnos desde ${keyDay}`
+    );
     data[keyDay] = nuevo;
     saveProfileData(data);
     scheduleCalendarAuditLog({
         profile: getCurrentProfile(),
         keyDay,
-        previousTurn: state,
+        previousTurn: currentState,
         nextTurn: nuevo
     });
-
-    await renderCalendar();
-    refreshStaffingAnalysisPanel();
+    scheduleCalendarDirectEditRefresh();
 }
 
-export async function renderCalendar() {
+export async function renderCalendar(options = {}) {
+    if (
+        calendarDirectEditRefreshTimer &&
+        options.allowDuringDirectEdit !== true
+    ) {
+        return;
+    }
+
     const cal = document.getElementById("calendar");
-    const summary = document.getElementById("summary");
     const monthYear = document.getElementById("monthYear");
+    const renderRequest = ++calendarRenderRequest;
 
     if (!cal) return;
 
-    cal.replaceChildren();
-
+    const calendarPanel = cal.closest(".calendar-panel");
     const activeProfile = getCurrentProfile();
     const activeProfileEnabled =
         isProfileActive(activeProfile);
     const y = currentDate.getFullYear();
     const m = currentDate.getMonth();
+
+    cal.classList.remove("has-multiple-badge-days");
+    calendarPanel?.classList.remove("has-multiple-badge-days");
+
+    if (monthYear) {
+        monthYear.innerText = currentDate.toLocaleString(
+            "es-CL",
+            {
+                month: "long",
+                year: "numeric"
+            }
+        );
+        setupCalendarMonthPicker(monthYear);
+    }
+
     const holidays = await fetchHolidays(y);
     const first =
         (new Date(y, m, 1).getDay() + 6) % 7;
@@ -2260,18 +2869,15 @@ export async function renderCalendar() {
             ? window.getProfileDraftSelectionKey()
             : "";
 
-    if (monthYear) {
-        monthYear.innerText = currentDate.toLocaleString(
-            "es-CL",
-            {
-                month: "long",
-                year: "numeric"
-            }
-        );
-    }
+    if (renderRequest !== calendarRenderRequest) return;
+
+    const fragment = document.createDocumentFragment();
+    let hasMultipleBadgeDays = false;
 
     for (let i = 0; i < first; i++) {
-        cal.innerHTML += "<div class=\"calendar-spacer\"></div>";
+        const spacer = document.createElement("div");
+        spacer.className = "calendar-spacer";
+        fragment.appendChild(spacer);
     }
 
     if (!activeProfile) {
@@ -2291,34 +2897,28 @@ export async function renderCalendar() {
                 isDraftSelected: draftKey === keyDay
             });
 
-            cal.appendChild(div);
+            fragment.appendChild(div);
         }
 
-        if (summary) {
-            summary.innerHTML = `
-                <div class="empty-state empty-state--compact">
-                    Aun no hay horas extras para mostrar.
-                </div>
-            `;
-        }
+        cal.replaceChildren(fragment);
 
-        renderTimeline();
-
-        if (typeof window.renderDashboardState === "function") {
-            window.renderDashboardState();
-        }
+        runCalendarHeavyUpdates(options);
 
         return;
     }
 
     const data = getProfileData();
-    const blocked = getBlockedDays();
     const admin = getAdminDays();
     const legal = getLegalDays();
     const comp = getCompDays();
     const absences = getAbsences();
-    const carryIn = getCarry(y, m);
     const hourReturns = getHourReturns(activeProfile);
+    const honorariaSummary = getHonorariaMonthlySummary(
+        activeProfile,
+        y,
+        m,
+        holidays
+    );
 
     for (let d = 1; d <= days; d++) {
         const keyDay = key(y, m, d);
@@ -2335,6 +2935,9 @@ export async function renderCalendar() {
         const isHoliday = holidays[keyDay];
         const isHab = isBusinessDay(date, holidays);
 
+        const turnChangeMarkers =
+            getCambiosTurnoCalendario(activeProfile, keyDay);
+        const turnChangeMarker = turnChangeMarkers[0] || null;
         const hourReturn = hourReturns[keyDay] || null;
         const label = hourReturn
             ? hourReturnCalendarLabel(hourReturn)
@@ -2347,8 +2950,7 @@ export async function renderCalendar() {
             absences,
             turnoLabel
         );
-        const turnChange =
-            getCambioTurnoRecibido(activeProfile, keyDay);
+        const turnChange = turnChangeMarker?.swap || null;
         const coveredReplacement =
             getReplacementForCoveredShift(activeProfile, keyDay);
         const workerReplacement =
@@ -2398,12 +3000,24 @@ export async function renderCalendar() {
             !turnChange &&
             !replacementContractError &&
             pendingManualExtra;
+        const honorariaExcess =
+            getHonorariaExcessForKey(
+                honorariaSummary,
+                keyDay
+            );
+        const showHonorariaLimitBadge =
+            Boolean(honorariaExcess) &&
+            !replacementContractError &&
+            !severeClockIncident &&
+            !needsReplacement;
         const badge = replacementContractError
             ? "X"
             : severeClockIncident
                 ? "!!!"
                 : needsReplacement
                     ? "!"
+                    : showHonorariaLimitBadge
+                        ? "!"
                     : showExtraReason || showClockExtraReason
                     ? "?"
                     : simpleClockIncident
@@ -2414,7 +3028,10 @@ export async function renderCalendar() {
                                     ? "Prestamo"
                                     : (workerReplacement.reason ? "Motivo" : "Reemplazo")
                             )
-                            : (showTurnChangeBadge ? "CCTT" : "");
+                            : (
+                                turnChangeMarker?.label ||
+                                (showTurnChangeBadge ? "CCTT" : "")
+                            );
         const replacementTitle = workerReplacement
             ? (
                 workerReplacement.replaced
@@ -2422,6 +3039,17 @@ export async function renderCalendar() {
                     : `Motivo HHEE: ${workerReplacement.reason || workerReplacement.absenceType || "sin detalle"}.`
             )
             : "";
+        const turnChangeTitle = Array.from(new Set(
+            turnChangeMarkers
+                .map(marker => turnChangeHoverTitle(marker, activeProfile))
+                .filter(Boolean)
+        )).join("\n\n");
+        const turnChangeBadges =
+            turnChangeMarkers.map(marker => marker.label);
+
+        if (turnChangeBadges.length > 1) {
+            hasMultipleBadgeDays = true;
+        }
 
         const div = buildDayCell({
             day: d,
@@ -2430,6 +3058,9 @@ export async function renderCalendar() {
             keyDay,
             label,
             badge,
+            badges: turnChangeBadges.length
+                ? turnChangeBadges
+                : undefined,
             title: (() => {
                 const hrs = calcHours(date, state, holidays);
                 if (!activeProfileEnabled) {
@@ -2438,6 +3069,8 @@ export async function renderCalendar() {
 
                 const suffix = needsReplacement
                     ? " | Requiere reemplazo de turno base"
+                    : honorariaExcess
+                        ? ` | ${getHonorariaLimitMessage(honorariaSummary)}`
                     : showExtraReason
                         ? " | Requiere motivo de horas extras"
                         : showClockExtraReason
@@ -2450,25 +3083,33 @@ export async function renderCalendar() {
                             ? " | No tiene contrato vigente en la fecha seleccionada"
                             : "";
 
-                if (showExtraReason) {
-                    return `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
-                }
+                const baseTitle = (() => {
+                    if (showExtraReason) {
+                        return `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
+                    }
 
-                if (replacementContractError) {
-                    return "No tiene contrato vigente en la fecha seleccionada.";
-                }
+                    if (replacementContractError) {
+                        return "No tiene contrato vigente en la fecha seleccionada.";
+                    }
 
-                return replacementTitle ||
-                    `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
+                    return replacementTitle ||
+                        `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
+                })();
+
+                return turnChangeTitle
+                    ? `${turnChangeTitle}\n${baseTitle}`
+                    : baseTitle;
             })(),
             isWeekendDay,
             isHoliday: Boolean(isHoliday),
             isDraftSelected: draftKey === keyDay
         });
 
-        if (showTurnChangeBadge) {
+        if (turnChangeMarker) {
             div.classList.add("turn-change-day");
-            div.dataset.swapId = String(turnChange.id);
+            div.dataset.swapId = String(
+                turnChangeMarker.swap.id
+            );
         }
 
         if (!activeProfileEnabled) {
@@ -2477,6 +3118,10 @@ export async function renderCalendar() {
 
         if (needsReplacement) {
             div.classList.add("needs-replacement");
+        }
+
+        if (honorariaExcess) {
+            div.classList.add("honoraria-limit-day");
         }
 
         if (showExtraReason) {
@@ -2540,6 +3185,7 @@ export async function renderCalendar() {
             getShiftAssigned(),
             {
                 compCantidad: window.compCantidad || 0,
+                legalCantidad: window.legalCantidad || 0,
                 licenseCantidad: window.licenseCantidad || 0,
                 licenseType: window.licenseType || "license",
                 rotativa: getRotativa(activeProfile),
@@ -2572,6 +3218,15 @@ export async function renderCalendar() {
                     activeProfile,
                     keyDay
                 );
+                return;
+            }
+
+            if (
+                showHonorariaLimitBadge &&
+                event.target.closest(".day-badge")
+            ) {
+                event.stopPropagation();
+                alert(getHonorariaLimitMessage(honorariaSummary));
                 return;
             }
 
@@ -2614,79 +3269,112 @@ export async function renderCalendar() {
                 admin,
                 legal,
                 comp,
-                absences
+                absences,
+                {
+                    cell: div,
+                    date,
+                    holidays
+                }
             );
         };
 
-        cal.appendChild(div);
+        fragment.appendChild(div);
     }
 
-    const carryOut = calcularCarryMes(
+    cal.replaceChildren(fragment);
+    cal.classList.toggle(
+        "has-multiple-badge-days",
+        hasMultipleBadgeDays
+    );
+    calendarPanel?.classList.toggle(
+        "has-multiple-badge-days",
+        hasMultipleBadgeDays
+    );
+
+    runCalendarHeavyUpdates(options, {
+        profile: activeProfile,
         y,
         m,
         days,
         holidays,
         data
-    );
-
-    const next = new Date(y, m + 1, 1);
-
-    saveCarry(
-        next.getFullYear(),
-        next.getMonth(),
-        carryOut
-    );
-
-    const stats = calcularHorasMes(
-        y,
-        m,
-        days,
-        holidays,
-        data,
-        blocked,
-        carryIn
-    );
-
-    if (summary) {
-        summary.innerHTML =
-            renderSummaryHTML(stats) +
-            renderReplacementLogHTML(
-                activeProfile,
-                y,
-                m,
-                holidays
-            );
-    }
-
-    renderTimeline();
-
-    if (typeof window.renderDashboardState === "function") {
-        window.renderDashboardState();
-    }
+    });
 }
 
-function syncShellPanels() {
-    if (typeof window.renderSwapPanel === "function") {
-        window.renderSwapPanel();
+function syncShellPanels(options = {}) {
+    const sync = () => {
+        if (
+            options.navigationRequest &&
+            options.navigationRequest !== calendarNavigationRequest
+        ) {
+            return;
+        }
+
+        if (
+            document.body.dataset.activeView === "swap" &&
+            typeof window.renderSwapPanel === "function"
+        ) {
+            window.renderSwapPanel();
+        }
+
+        if (typeof window.renderDashboardState === "function") {
+            window.renderDashboardState();
+        }
+    };
+
+    if (options.deferHeavy) {
+        deferAfterPaint(sync);
+        return;
     }
 
-    if (typeof window.renderStaffingAnalysis === "function") {
-        window.renderStaffingAnalysis();
-    }
-
-    if (typeof window.renderDashboardState === "function") {
-        window.renderDashboardState();
-    }
+    sync();
 }
 
-export function prevMonth() {
-    currentDate.setMonth(currentDate.getMonth() - 1);
-    renderCalendar();
-    syncShellPanels();
+export async function goToCalendarMonth(year, month, options = {}) {
+    const navigationRequest = ++calendarNavigationRequest;
+    const renderOptions = {
+        ...options,
+        deferHeavy: true,
+        navigationRequest
+    };
+
+    cancelCalendarHeavyUpdates();
+    cancelCalendarDirectEditRefresh();
+    closeCalendarMonthPicker();
+    currentDate.setFullYear(Number(year), Number(month), 1);
+    await renderCalendar(renderOptions);
+
+    if (navigationRequest !== calendarNavigationRequest) {
+        return;
+    }
+
+    syncShellPanels(renderOptions);
 }
 
-export function nextMonth() {
-    currentDate.setMonth(currentDate.getMonth() + 1);
-    renderCalendar();
-    syncShellPanels();
+export async function prevMonth(options = {}) {
+    const target = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth() - 1,
+        1
+    );
+
+    await goToCalendarMonth(
+        target.getFullYear(),
+        target.getMonth(),
+        options
+    );
+}
+
+export async function nextMonth(options = {}) {
+    const target = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth() + 1,
+        1
+    );
+
+    await goToCalendarMonth(
+        target.getFullYear(),
+        target.getMonth(),
+        options
+    );
 }

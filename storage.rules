@@ -11,9 +11,17 @@ service firebase.storage {
         firestore.exists(/databases/(default)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
     }
 
+    function allowedFile() {
+      return request.resource.size < 10 * 1024 * 1024 &&
+        request.resource.contentType.matches(
+          "image/.*|application/pdf|application/msword|application/vnd.openxmlformats-officedocument.wordprocessingml.document|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet|text/plain"
+        );
+    }
+
     match /workspaces/{workspaceId}/{allPaths=**} {
-      allow read, write: if isWorkspaceMember(workspaceId);
+      allow read: if isWorkspaceMember(workspaceId);
+      allow create, update: if isWorkspaceMember(workspaceId) && allowedFile();
+      allow delete: if isWorkspaceMember(workspaceId);
     }
   }
 }
-

@@ -25,6 +25,7 @@ export const DOM = {
     profileProfessionCustomInput: document.getElementById("profileProfessionCustomField"),
     profileProfessionOptions: document.getElementById("profileProfessionOptions"),
     profileRotationSelect: document.getElementById("profileRotationField"),
+    profileUnionLeaveInput: document.getElementById("profileUnionLeaveField"),
     shiftAssignedRow: document.getElementById("shiftAssignedRow"),
     profileGradeSelect: document.getElementById("profileGradeField"),
     profileRotationStatus: document.getElementById("profileRotationStatus"),
@@ -32,6 +33,12 @@ export const DOM = {
     replacementTargetInput: document.getElementById("replacementTargetField"),
     replacementReasonSelect: document.getElementById("replacementReasonField"),
     replacementContractStatus: document.getElementById("replacementContractStatus"),
+    honorariaContractEditor: document.getElementById("honorariaContractEditor"),
+    honorariaStartInput: document.getElementById("honorariaStartField"),
+    honorariaEndInput: document.getElementById("honorariaEndField"),
+    honorariaHourlyRateInput: document.getElementById("honorariaHourlyRateField"),
+    honorariaMaxMonthlyHoursInput: document.getElementById("honorariaMaxMonthlyHoursField"),
+    honorariaContractStatus: document.getElementById("honorariaContractStatus"),
     profileContractHistory: document.getElementById("profileContractHistory"),
     profileEditorHint: document.getElementById("profileEditorHint"),
     profileRecordsPanel: document.getElementById("profileRecordsPanel"),
@@ -40,6 +47,8 @@ export const DOM = {
     checkbox: document.getElementById("shiftAssigned"),
     authUserChip: document.getElementById("authUserChip"),
     authUserName: document.getElementById("authUserName"),
+    mobileMenuToggle: document.getElementById("mobileMenuToggle"),
+    mobileStaffingToggle: document.getElementById("mobileStaffingToggle"),
     themeToggle: document.getElementById("themeToggle"),
     systemSettingsBtn: document.getElementById("systemSettingsBtn"),
 
@@ -54,6 +63,7 @@ export const DOM = {
     compBtnLabel: document.getElementById("compBtnLabel"),
     licenseBtn: document.getElementById("licenseBtn"),
     professionalLicenseBtn: document.getElementById("professionalLicenseBtn"),
+    unionLeaveBtn: document.getElementById("unionLeaveBtn"),
     unpaidLeaveBtn: document.getElementById("unpaidLeaveBtn"),
     hoursReturnBtn: document.getElementById("hoursReturnBtn"),
     hoursReturnBtnLabel: document.getElementById("hoursReturnBtnLabel"),
@@ -63,8 +73,10 @@ export const DOM = {
     /* navegacion */
     prevBtn: document.getElementById("prevBtn"),
     nextBtn: document.getElementById("nextBtn"),
+    calendarRotationButton: document.getElementById("calendarRotationButton"),
     undoBtn: document.getElementById("undoBtn"),
     redoBtn: document.getElementById("redoBtn"),
+    mobileLeaveToggle: document.getElementById("mobileLeaveToggle"),
 
     /* paneles */
     selectorInfo: document.getElementById("selectorInfo"),
@@ -80,7 +92,9 @@ export const DOM = {
     report4TurnoNoAssignmentTitle: document.getElementById("report4TurnoNoAssignmentTitle"),
     report4TurnoNoAssignmentPreview: document.getElementById("report4TurnoNoAssignmentPreview"),
     downloadNoAssignmentReportBtn: document.getElementById("downloadNoAssignmentReportBtn"),
+    printReportPdfBtn: document.getElementById("printReportPdfBtn"),
     reportsUnavailableHint: document.getElementById("reportsUnavailableHint"),
+    dashboardPanel: document.getElementById("dashboardPanel"),
     teamTimeline: document.getElementById("teamTimeline"),
     swapPanel: document.getElementById("swapPanel"),
     workerRequestsPanel: document.getElementById("workerRequestsPanel"),
@@ -121,5 +135,6 @@ export const DOM = {
     /* buscador superior */
     topProfileSearchForm: document.getElementById("topProfileSearchForm"),
     topProfileSearchInput: document.getElementById("topProfileSearch"),
-    topProfileOptions: document.getElementById("topProfileOptions")
+    topProfileOptions: document.getElementById("topProfileOptions"),
+    calendarDirectEditToggle: document.getElementById("calendarDirectEditToggle")
 };

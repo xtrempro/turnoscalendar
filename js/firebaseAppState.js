@@ -6,6 +6,7 @@ import {
     replaceLocalSnapshot,
     setRaw
 } from "./persistence.js";
+import { canEditAnyMenu } from "./workspacePermissions.js";
 
 const CLIENT_ID_KEY = "proturnos_firebase_client_id";
 const CHUNK_SIZE = 450000;
@@ -117,7 +118,8 @@ async function uploadAppState() {
     if (
         !activeWorkspaceId ||
         applyingRemoteState ||
-        waitingInitialState
+        waitingInitialState ||
+        !canEditAnyMenu()
     ) {
         return;
     }
@@ -211,7 +213,8 @@ function scheduleAppStateUpload() {
     if (
         !activeWorkspaceId ||
         applyingRemoteState ||
-        waitingInitialState
+        waitingInitialState ||
+        !canEditAnyMenu()
     ) {
         return;
     }

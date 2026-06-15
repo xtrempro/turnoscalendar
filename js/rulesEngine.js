@@ -211,21 +211,30 @@ export function getAbsenceType(absence) {
     if (!absence) return "";
 
     if (typeof absence === "string") {
-        return normalizeText(absence).replace(/\s+/g, "_");
+        const normalized = normalizeText(absence).replace(/\s+/g, "_");
+
+        return normalized.includes("gremial")
+            ? "union_leave"
+            : normalized;
     }
 
-    return normalizeText(
+    const normalized = normalizeText(
         absence.type ||
         absence.kind ||
         absence.code ||
         absence.label ||
         ""
     ).replace(/\s+/g, "_");
+
+    return normalized.includes("gremial")
+        ? "union_leave"
+        : normalized;
 }
 
 function isMedicalAbsenceType(type) {
     return (
         type === "license" ||
+        type === "union_leave" ||
         type === "professional_license"
     );
 }
@@ -304,6 +313,12 @@ function bloqueaAdministrativoPorAusencia(absence) {
 }
 
 function bloqueaCompensatorioPorAusencia(absence) {
+    if (!absence) return false;
+
+    return !esAusenciaInjustificada(absence);
+}
+
+function bloqueaLegalPorAusencia(absence) {
     if (!absence) return false;
 
     return !esAusenciaInjustificada(absence);
@@ -391,6 +406,63 @@ export function puedeIniciarLegal(
     }
 
     return true;
+}
+
+export function puedeAplicarLegalDesde(
+    keyDay,
+    cantidad,
+    holidays,
+    admin,
+    legal,
+    comp,
+    absences
+) {
+    const total = Number(cantidad);
+
+    if (!total || total <= 0 || !Number.isInteger(total)) {
+        return false;
+    }
+
+    const start = parseKey(keyDay);
+
+    if (
+        Number.isNaN(start.getTime()) ||
+        !isBusinessDay(start, holidays)
+    ) {
+        return false;
+    }
+
+    const startYear = start.getFullYear();
+    let usados = 0;
+    let guard = 0;
+    const cursor = new Date(start);
+
+    while (usados < total && guard < 370) {
+        if (cursor.getFullYear() !== startYear) {
+            return false;
+        }
+
+        const currentKey =
+            `${cursor.getFullYear()}-${cursor.getMonth()}-${cursor.getDate()}`;
+
+        if (
+            admin[currentKey] ||
+            legal[currentKey] ||
+            comp[currentKey] ||
+            bloqueaLegalPorAusencia(absences[currentKey])
+        ) {
+            return false;
+        }
+
+        if (isBusinessDay(cursor, holidays)) {
+            usados++;
+        }
+
+        cursor.setDate(cursor.getDate() + 1);
+        guard++;
+    }
+
+    return usados === total;
 }
 
 export function puedeAplicarAusenciaInjustificada(
@@ -491,11 +563,16 @@ export function puedeAplicarCompensatorioDesde(
         return false;
     }
 
+    const startYear = start.getFullYear();
     let usados = 0;
     let guard = 0;
     const cursor = new Date(start);
 
     while (usados < total && guard < 370) {
+        if (cursor.getFullYear() !== startYear) {
+            return false;
+        }
+
         const currentKey =
             `${cursor.getFullYear()}-${cursor.getMonth()}-${cursor.getDate()}`;
 
@@ -613,6 +690,8 @@ export function obtenerLabelDia(
 
         if (absenceType === "professional_license") {
             label = "LMP";
+        } else if (absenceType === "union_leave") {
+            label = "PG";
         } else if (absenceType === "unpaid_leave") {
             label = "PSG";
         } else if (absenceType === "license") {
@@ -684,6 +763,8 @@ export function aplicarClasesEspeciales(
 
         if (absenceType === "professional_license") {
             div.classList.add("professional-license-day");
+        } else if (absenceType === "union_leave") {
+            div.classList.add("union-leave-day");
         } else if (absenceType === "unpaid_leave") {
             div.classList.add("unpaid-leave-day");
         } else if (absenceType === "license") {
@@ -766,9 +847,10 @@ export function estaBloqueadoModo(
     }
 
     if (selectionMode === "legal") {
-        return hasHourReturn || !puedeIniciarLegal(
+        return hasHourReturn || !puedeAplicarLegalDesde(
             keyDay,
-            isHab,
+            options.legalCantidad || 0,
+            options.holidays || {},
             admin,
             legal,
             comp,

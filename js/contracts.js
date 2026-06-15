@@ -86,8 +86,72 @@ export function addReplacementContract(profileName, contract) {
     return nextContract;
 }
 
+export function isReplacementContractType(value) {
+    return String(value || "")
+        .trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase() === "reemplazo";
+}
+
+export function isHonorariaContractType(value) {
+    return String(value || "")
+        .trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase() === "honorarios";
+}
+
+export function getHonorariaContract(profileOrName) {
+    const profile = typeof profileOrName === "string"
+        ? getProfiles().find(item => item.name === profileOrName)
+        : profileOrName;
+
+    if (!isHonorariaContractType(profile?.contractType)) {
+        return null;
+    }
+
+    return {
+        start: String(profile.honorariaStart || ""),
+        end: String(profile.honorariaEnd || ""),
+        hourlyRate: Math.max(
+            0,
+            Number(profile.honorariaHourlyRate) || 0
+        ),
+        maxMonthlyHours: Math.max(
+            0,
+            Number(profile.honorariaMaxMonthlyHours) || 0
+        )
+    };
+}
+
+export function isHonorariaProfile(profileName) {
+    return Boolean(getHonorariaContract(profileName));
+}
+
+export function hasHonorariaContractForDate(profileName, keyDay) {
+    const contract = getHonorariaContract(profileName);
+    const iso = keyToISO(keyDay);
+
+    return Boolean(
+        contract &&
+        iso &&
+        contract.start &&
+        contract.end &&
+        contract.start <= iso &&
+        contract.end >= iso
+    );
+}
+
 export function isReplacementProfile(profileName) {
-    return getRotativa(profileName).type === "reemplazo";
+    const profile = getProfiles().find(item =>
+        item.name === profileName
+    );
+
+    return (
+        isReplacementContractType(profile?.contractType) ||
+        getRotativa(profileName).type === "reemplazo"
+    );
 }
 
 export function getContractForDate(profileName, keyDay) {
@@ -106,6 +170,10 @@ export function getContractForDate(profileName, keyDay) {
 
 export function hasContractForDate(profileName, keyDay) {
     return Boolean(getContractForDate(profileName, keyDay));
+}
+
+export function getReplacedProfileForDate(profileName, keyDay) {
+    return getContractForDate(profileName, keyDay)?.replaces || "";
 }
 
 export function getAllReplacementContracts() {

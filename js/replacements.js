@@ -1,20 +1,28 @@
 import {
     getProfiles,
     getReplacements,
+    getRotativa,
     saveReplacements,
     getReplacementRequests,
     saveReplacementRequests,
     getReplacementRequestConfig
 } from "./storage.js";
+import {
+    aplicarCambiosTurno,
+    getTurnoBase,
+    getTurnoProgramado
+} from "./turnEngine.js";
 import { getJSON } from "./persistence.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import {
     getTurnoComponentes,
     getAbsenceType,
+    getTurnoExtraAgregado,
+    restarTurnoCubierto,
     turnoDesdeComponentes,
     tieneAusencia
 } from "./rulesEngine.js";
-import { calcHours } from "./calculations.js";
+import { calcHours, isBusinessDay } from "./calculations.js";
 import { getClockExtraHours } from "./clockMarks.js";
 import {
     addAuditLog,
@@ -50,6 +58,17 @@ function normalizeHours(hours) {
     const n = Math.max(0, Number(hours.n) || 0);
 
     return d || n ? { d, n } : null;
+}
+
+function diurnoExtensionHours(date, holidays = {}) {
+    if (!isBusinessDay(date, holidays)) {
+        return { d: 0, n: 0 };
+    }
+
+    return {
+        d: date.getDay() === 5 ? 4 : 3,
+        n: 0
+    };
 }
 
 export function codeToTurno(code) {
@@ -177,8 +196,18 @@ export function getReplacementOvertimeHours(
     turno,
     holidays = {}
 ) {
-    return normalizeHours(replacement?.overtimeHours) ||
-        calcHours(date, turno, holidays);
+    const savedHours = normalizeHours(replacement?.overtimeHours);
+
+    if (
+        !savedHours &&
+        replacement?.worker &&
+        getRotativa(replacement?.worker).type === "diurno" &&
+        Number(turno) === TURNO.MEDIA_TARDE
+    ) {
+        return diurnoExtensionHours(date, holidays);
+    }
+
+    return savedHours || calcHours(date, turno, holidays);
 }
 
 export function getAbsenceLabelForProfileDate(profile, keyDay) {
@@ -204,8 +233,12 @@ export function getAbsenceLabelForProfileDate(profile, keyDay) {
         return "Permiso sin Goce";
     }
 
+    if (absenceType === "union_leave") {
+        return "Permiso Gremial";
+    }
+
     if (absenceType === "license") {
-        return "Licencia Medica";
+        return "Licencia M\u00e9dica";
     }
 
     if (absenceType) {
@@ -709,7 +742,95 @@ function formatHours(hours) {
     return chunks.length ? chunks.join(" / ") : "0h";
 }
 
-export function renderReplacementLogHTML(profile, year, month, holidays = {}) {
+function getPendingManualExtraTurn(profile, keyDay) {
+    const baseWithSwaps = aplicarCambiosTurno(
+        profile,
+        keyDay,
+        getTurnoBase(profile, keyDay),
+        { includeReplacements: false }
+    );
+    const actualWithSwaps = aplicarCambiosTurno(
+        profile,
+        keyDay,
+        getTurnoProgramado(profile, keyDay),
+        { includeReplacements: false }
+    );
+    const extraTurn = getTurnoExtraAgregado(
+        baseWithSwaps,
+        actualWithSwaps
+    );
+
+    return restarTurnoCubierto(
+        extraTurn,
+        getBackedTurnForWorker(profile, keyDay)
+    );
+}
+
+function getUnbackedOvertimeLogEntries(
+    profile,
+    year,
+    month,
+    holidays = {}
+) {
+    const days = new Date(year, month + 1, 0).getDate();
+    const entries = [];
+
+    for (let day = 1; day <= days; day++) {
+        const keyDay = `${year}-${month}-${day}`;
+        const date = new Date(year, month, day);
+        const iso = isoFromKey(keyDay);
+        const pendingTurn =
+            getPendingManualExtraTurn(profile, keyDay);
+
+        if (pendingTurn) {
+            const hours = getReplacementOvertimeHours(
+                { worker: profile },
+                date,
+                pendingTurn,
+                holidays
+            );
+
+            if (hours.d || hours.n) {
+                entries.push({
+                    date: iso,
+                    label: turnoReplacementLabel(pendingTurn),
+                    hours,
+                    detail: "No se ha asignado respaldo."
+                });
+            }
+        }
+
+        if (getClockExtraBackupForWorker(profile, keyDay)) {
+            continue;
+        }
+
+        const state = aplicarCambiosTurno(
+            profile,
+            keyDay,
+            getTurnoProgramado(profile, keyDay)
+        );
+        const clockHours = getClockExtraHours(
+            profile,
+            keyDay,
+            date,
+            state,
+            holidays
+        );
+
+        if (clockHours.d || clockHours.n) {
+            entries.push({
+                date: iso,
+                label: "Marcaje reloj control",
+                hours: clockHours,
+                detail: "No se ha asignado respaldo."
+            });
+        }
+    }
+
+    return entries;
+}
+
+function renderBackedReplacementLogHTML(profile, year, month, holidays = {}) {
     const records =
         getReplacementLogForWorkerMonth(profile, year, month);
 
@@ -725,7 +846,6 @@ export function renderReplacementLogHTML(profile, year, month, holidays = {}) {
 
     return `
         <div class="replacement-log">
-            <strong>Respaldos de HHEE</strong>
             ${records.map(record => {
                 const key = keyFromISO(record.date);
                 const date = parseKey(key);
@@ -785,6 +905,131 @@ export function renderReplacementLogHTML(profile, year, month, holidays = {}) {
                     </div>
                 `;
             }).join("")}
+        </div>
+    `;
+}
+
+function renderBackedOvertimeLogItem(record, profiles, holidays) {
+    const key = keyFromISO(record.date);
+    const date = parseKey(key);
+    const isClockExtra =
+        record.source === "clock_extra";
+    const turno = codeToTurno(record.turno);
+    const savedClockHours = record.clockHours || null;
+    const needsClockRecalculation =
+        isClockExtra &&
+        (
+            !savedClockHours ||
+            (
+                !Number(savedClockHours.d) &&
+                !Number(savedClockHours.n)
+            )
+        );
+    const hours = isClockExtra
+        ? (
+            needsClockRecalculation
+                ? getClockExtraHours(
+                    record.worker,
+                    key,
+                    date,
+                    turno,
+                    holidays
+                )
+                : savedClockHours
+        )
+        : getReplacementOvertimeHours(
+            record,
+            date,
+            turno,
+            holidays
+        );
+    const label = isClockExtra
+        ? (record.clockLabel || "Marcaje reloj control")
+        : turnoReplacementLabel(turno);
+    const replacedProfile = profiles.find(
+        profileItem => profileItem.name === record.replaced
+    );
+    const estamento = replacedProfile?.estamento
+        ? ` - ${replacedProfile.estamento}`
+        : "";
+    const unitText = record.isLoan
+        ? ` Prestamo en ${record.hostWorkspaceName || "otra unidad"}.`
+        : "";
+    const detail = record.replaced
+        ? `${record.isLoan ? "Prestamo cubriendo a" : "Reemplaza a"} ${record.replaced}${estamento} por ${record.absenceType || "ausencia"}.${unitText}`
+        : `Motivo: ${record.reason || record.absenceType || "sin detalle"}.`;
+
+    return `
+        <div class="replacement-log__item">
+            <span>${formatDate(record.date)} - ${label}</span>
+            <span>${formatHours(hours)}</span>
+            <small>${detail}</small>
+        </div>
+    `;
+}
+
+function renderUnbackedOvertimeLogItem(entry) {
+    return `
+        <div class="replacement-log__item">
+            <span>${formatDate(entry.date)} - ${entry.label}</span>
+            <span>${formatHours(entry.hours)}</span>
+            <small>${entry.detail}</small>
+        </div>
+    `;
+}
+
+export function renderReplacementLogHTML(profile, year, month, holidays = {}) {
+    const records =
+        getReplacementLogForWorkerMonth(profile, year, month);
+    const pendingEntries =
+        getUnbackedOvertimeLogEntries(
+            profile,
+            year,
+            month,
+            holidays
+        );
+
+    if (!pendingEntries.length) {
+        return renderBackedReplacementLogHTML(
+            profile,
+            year,
+            month,
+            holidays
+        );
+    }
+
+    const profiles = getProfiles();
+    const items = [
+        ...records.map((record, index) => ({
+            date: record.date,
+            order: index,
+            html: renderBackedOvertimeLogItem(
+                record,
+                profiles,
+                holidays
+            )
+        })),
+        ...pendingEntries.map((entry, index) => ({
+            date: entry.date,
+            order: records.length + index,
+            html: renderUnbackedOvertimeLogItem(entry)
+        }))
+    ].sort((a, b) =>
+        a.date.localeCompare(b.date) ||
+        a.order - b.order
+    );
+
+    if (!items.length) {
+        return `
+            <div class="replacement-log replacement-log--empty">
+                Sin registros de HHEE en este mes.
+            </div>
+        `;
+    }
+
+    return `
+        <div class="replacement-log">
+            ${items.map(item => item.html).join("")}
         </div>
     `;
 }

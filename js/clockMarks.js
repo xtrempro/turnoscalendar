@@ -278,7 +278,7 @@ function getHalfAdminScheduledSegments(profile, keyDay, date) {
 
         return [{
             id: "half_admin_morning",
-            label: "1/2 ADM Manana",
+            label: "1/2 ADM Ma\u00f1ana",
             start: assignedSchedule
                 ? dateAt(date, 14)
                 : dateAt(
@@ -601,7 +601,7 @@ export function getScheduledSegmentsForState(date, state, holidays = {}) {
     if (turno === TURNO.MEDIA_MANANA) {
         return [{
             id: "half_morning",
-            label: "1/2 ADM Manana",
+            label: "1/2 ADM Ma\u00f1ana",
             start: dateAt(date, 8),
             end: dateAt(date, 14)
         }];
@@ -896,9 +896,9 @@ function segmentTitle(segment) {
     if (segment.id === "larga") return "Turno Larga";
     if (segment.id === "turno24") return "Turno 24";
     if (segment.id === "turno18") return "Turno 18 horas";
-    if (segment.id === "half_morning") return "1/2 ADM Manana";
+    if (segment.id === "half_morning") return "1/2 ADM Ma\u00f1ana";
     if (segment.id === "half_afternoon") return "1/2 ADM Tarde";
-    if (segment.id === "half_admin_morning") return "1/2 ADM Manana";
+    if (segment.id === "half_admin_morning") return "1/2 ADM Ma\u00f1ana";
     if (segment.id === "half_admin_afternoon") return "1/2 ADM Tarde";
 
     return `Turno ${segment.label}`;

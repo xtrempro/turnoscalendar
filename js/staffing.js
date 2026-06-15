@@ -9,16 +9,20 @@ import {
 } from "./storage.js";
 import {
     aplicarCambiosTurno,
+    getTurnoBase,
     getTurnoProgramado
 } from "./turnEngine.js";
 import { ESTAMENTO, TURNO } from "./constants.js";
 import { currentDate } from "./calendar.js";
 import { getJSON, setJSON } from "./persistence.js";
+import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import {
     formatContractDate,
-    getAllReplacementContracts
+    getAllReplacementContracts,
+    getReplacedProfileForDate,
+    isReplacementProfile
 } from "./contracts.js";
 import {
     getAbsenceType,
@@ -35,9 +39,13 @@ import { getHourReturn } from "./hourReturns.js";
 
 const KEY = "staffing_config";
 const APPLICANTS_KEY = "staffing_applicants";
+const REMINDERS_KEY = "staffing_custom_reminders";
 
 let staffingViewBound = false;
 let staffingWeekDate = null;
+let staffingAnalysisRequest = 0;
+let staffingWeeklyStickyCleanup = null;
+let lastInlineStaffingReport = null;
 
 const STAFFING_DATE_REMINDERS = [
     { month: 4, day: 12, label: "D\u00eda de la Enfermera(o)" },
@@ -226,6 +234,12 @@ function normalizeStaffingRotativa(type) {
     return value;
 }
 
+function isStaffingModality(type) {
+    return STAFFING_MODALITIES.some(modality =>
+        modality.key === normalizeStaffingRotativa(type)
+    );
+}
+
 function sanitizeStaffingAmount(value) {
     const number = Number(value);
 
@@ -260,9 +274,19 @@ function normalizeStaffingConfig(config = {}) {
     return normalized;
 }
 
-function getStaffingProfileModality(profile) {
+function getStaffingProfileModality(profile, keyDay = "") {
+    const replacedProfileName =
+        keyDay && isReplacementProfile(profile.name)
+            ? getReplacedProfileForDate(profile.name, keyDay)
+            : "";
+    const inheritedRotativa =
+        replacedProfileName
+            ? getRotativa(replacedProfileName)?.type
+            : "";
+
     return normalizeStaffingRotativa(
         getRotativa(profile.name)?.type ||
+        inheritedRotativa ||
         profile.rotativaActual ||
         profile.rotation
     );
@@ -321,6 +345,8 @@ export function syncStaffingConfigForProfileChange(
     if (
         !previousModality ||
         !nextModality ||
+        !isStaffingModality(previousModality) ||
+        !isStaffingModality(nextModality) ||
         !isProfessionBasedStaffing(previousEstamento) ||
         !isProfessionBasedStaffing(nextEstamento)
     ) {
@@ -604,6 +630,261 @@ function normalizeSearch(value) {
         .toLowerCase();
 }
 
+const STAFFING_REMINDER_RECURRENCES = new Set([
+    "once",
+    "yearly",
+    "monthly"
+]);
+
+const STAFFING_REMINDER_VISIBILITIES = new Set([
+    "all",
+    "private"
+]);
+
+const STAFFING_REMINDER_RECURRENCE_LABELS = {
+    once: "Una sola vez",
+    yearly: "Anual en la misma fecha",
+    monthly: "Mensual"
+};
+
+const STAFFING_REMINDER_VISIBILITY_LABELS = {
+    all: "Todos los usuarios",
+    private: "Solo quien lo crea"
+};
+
+function reminderDateParts(value) {
+    const match = String(value || "")
+        .match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (!match) return null;
+
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const date = new Date(year, month, day);
+
+    if (
+        date.getFullYear() !== year ||
+        date.getMonth() !== month ||
+        date.getDate() !== day
+    ) {
+        return null;
+    }
+
+    return { year, month, day };
+}
+
+function normalizeReminderDateISO(value) {
+    const parts = reminderDateParts(value);
+
+    if (!parts) return "";
+
+    return [
+        parts.year,
+        String(parts.month + 1).padStart(2, "0"),
+        String(parts.day).padStart(2, "0")
+    ].join("-");
+}
+
+function currentReminderOwner() {
+    const user = getCurrentFirebaseUser();
+    const fallbackName =
+        typeof document !== "undefined"
+            ? document.getElementById("authUserName")?.textContent?.trim()
+            : "";
+    const uid = user?.uid || "";
+    const email = user?.email || "";
+
+    return {
+        uid,
+        email,
+        name:
+            user?.displayName ||
+            email ||
+            fallbackName ||
+            "Usuario local",
+        key: uid
+            ? `uid:${uid}`
+            : email
+                ? `email:${email.toLowerCase()}`
+                : "local_user"
+    };
+}
+
+function normalizeStaffingReminder(reminder, index = 0) {
+    const recurrence = STAFFING_REMINDER_RECURRENCES.has(
+        reminder?.recurrence
+    )
+        ? reminder.recurrence
+        : "once";
+    const visibility = STAFFING_REMINDER_VISIBILITIES.has(
+        reminder?.visibility
+    )
+        ? reminder.visibility
+        : "all";
+    const description = String(
+        reminder?.description || reminder?.label || ""
+    ).trim();
+    const owner = currentReminderOwner();
+    const createdByKey =
+        String(reminder?.createdByKey || "").trim() ||
+        (
+            reminder?.createdByUid
+                ? `uid:${reminder.createdByUid}`
+                : (
+                    reminder?.createdByEmail
+                        ? `email:${String(reminder.createdByEmail).toLowerCase()}`
+                        : owner.key
+                )
+        );
+
+    return {
+        id: String(
+            reminder?.id ||
+            `staffing_reminder_${Date.now()}_${index}`
+        ),
+        dateISO: normalizeReminderDateISO(
+            reminder?.dateISO || reminder?.date || ""
+        ),
+        description,
+        visibility,
+        recurrence,
+        createdByKey,
+        createdByUid: String(reminder?.createdByUid || ""),
+        createdByEmail: String(reminder?.createdByEmail || ""),
+        createdByName: String(reminder?.createdByName || ""),
+        createdAt: reminder?.createdAt || new Date().toISOString(),
+        updatedAt: reminder?.updatedAt || reminder?.createdAt || ""
+    };
+}
+
+function getStaffingCustomReminders() {
+    const reminders = getJSON(REMINDERS_KEY, []);
+
+    if (!Array.isArray(reminders)) return [];
+
+    return reminders
+        .map(normalizeStaffingReminder)
+        .filter(reminder => reminder.dateISO && reminder.description);
+}
+
+function saveStaffingCustomReminders(reminders) {
+    setJSON(
+        REMINDERS_KEY,
+        reminders
+            .map(normalizeStaffingReminder)
+            .filter(reminder => reminder.dateISO && reminder.description)
+    );
+}
+
+function isStaffingReminderVisible(reminder) {
+    if (reminder.visibility !== "private") return true;
+
+    const owner = currentReminderOwner();
+
+    if (reminder.createdByKey) {
+        return reminder.createdByKey === owner.key;
+    }
+
+    if (reminder.createdByUid && owner.uid) {
+        return reminder.createdByUid === owner.uid;
+    }
+
+    if (reminder.createdByEmail && owner.email) {
+        return (
+            reminder.createdByEmail.toLowerCase() ===
+            owner.email.toLowerCase()
+        );
+    }
+
+    return owner.key === "local_user";
+}
+
+function getVisibleStaffingCustomReminders() {
+    return getStaffingCustomReminders()
+        .filter(isStaffingReminderVisible);
+}
+
+function reportDateIsBeforeReminderStart(year, month, day, parts) {
+    if (year !== parts.year) return year < parts.year;
+    if (month !== parts.month) return month < parts.month;
+
+    return day < parts.day;
+}
+
+function staffingReminderMatchesDate(reminder, year, month, day) {
+    const parts = reminderDateParts(reminder.dateISO);
+
+    if (!parts) return false;
+
+    if (reportDateIsBeforeReminderStart(year, month, day, parts)) {
+        return false;
+    }
+
+    if (reminder.recurrence === "monthly") {
+        return parts.day === day;
+    }
+
+    if (reminder.recurrence === "yearly") {
+        return parts.month === month && parts.day === day;
+    }
+
+    return (
+        parts.year === year &&
+        parts.month === month &&
+        parts.day === day
+    );
+}
+
+function addStaffingCustomReminder(data) {
+    const owner = currentReminderOwner();
+    const reminder = normalizeStaffingReminder({
+        ...data,
+        id: `staffing_reminder_${Date.now()}_${Math.random()
+            .toString(36)
+            .slice(2, 8)}`,
+        createdByKey: owner.key,
+        createdByUid: owner.uid,
+        createdByEmail: owner.email,
+        createdByName: owner.name,
+        createdAt: new Date().toISOString()
+    });
+    const reminders = getStaffingCustomReminders();
+
+    saveStaffingCustomReminders([...reminders, reminder]);
+
+    addAuditLog(
+        AUDIT_CATEGORY.STAFFING,
+        "Agrega recordatorio",
+        `${reminder.dateISO} | ${reminder.description}`
+    );
+
+    return reminder;
+}
+
+function staffingReminderDefaultDate() {
+    const today = new Date();
+    const year =
+        lastInlineStaffingReport?.year ??
+        currentDate.getFullYear();
+    const month =
+        lastInlineStaffingReport?.month ??
+        currentDate.getMonth();
+    const monthDays = new Date(year, month + 1, 0).getDate();
+    const day = (
+        today.getFullYear() === year &&
+        today.getMonth() === month
+    )
+        ? Math.min(today.getDate(), monthDays)
+        : 1;
+
+    return [
+        year,
+        String(month + 1).padStart(2, "0"),
+        String(day).padStart(2, "0")
+    ].join("-");
+}
+
 function readFileAsDataURL(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -716,8 +997,13 @@ function birthdayDetailsForDay(month, day) {
         }));
 }
 
-function reminderDetailsForDay(month, day) {
-    return STAFFING_DATE_REMINDERS
+function reminderDetailsForDay(
+    year,
+    month,
+    day,
+    customReminders = getVisibleStaffingCustomReminders()
+) {
+    const fixedReminders = STAFFING_DATE_REMINDERS
         .filter(reminder =>
             reminder.month === month &&
             reminder.day === day
@@ -726,15 +1012,39 @@ function reminderDetailsForDay(month, day) {
             tipo: "reminder",
             label: reminder.label
         }));
+
+    const userReminders = customReminders
+        .filter(reminder =>
+            staffingReminderMatchesDate(reminder, year, month, day)
+        )
+        .map(reminder => ({
+            tipo: "reminder",
+            label: reminder.description,
+            custom: true,
+            visibility: reminder.visibility,
+            recurrence: reminder.recurrence
+        }));
+
+    return [
+        ...fixedReminders,
+        ...userReminders
+    ];
 }
 
-function withBirthdayDetails(data, month) {
+function withBirthdayDetails(data, year, month) {
+    const customReminders = getVisibleStaffingCustomReminders();
+
     return data.map(item => ({
         ...item,
         detalle: [
             ...item.detalle,
             ...birthdayDetailsForDay(month, item.dia),
-            ...reminderDetailsForDay(month, item.dia)
+            ...reminderDetailsForDay(
+                year,
+                month,
+                item.dia,
+                customReminders
+            )
         ]
     }));
 }
@@ -763,6 +1073,7 @@ function formatShortDate(date) {
 function isMedicalType(type) {
     return (
         type === "license" ||
+        type === "union_leave" ||
         type === "professional_license"
     );
 }
@@ -944,7 +1255,7 @@ export function renderStaffingMedicalChart() {
         <section class="medical-chart-card">
             <div class="medical-chart-head">
                 <div>
-                    <h4>Licencias ultimos 2 anos</h4>
+                    <h4>Licencias \u00faltimos 2 a\u00f1os</h4>
                     <p>
                         ${selectedProfile.name} vs ${peers.length} trabajador(es)
                         ${selectedProfile.estamento} | ${firstLabel} - ${latestLabel}
@@ -1538,6 +1849,7 @@ function absenceCacheKey(profileName, keyDay) {
 
 function absenceLabelFromType(type) {
     if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "Permiso Gremial";
     if (type === "unpaid_leave") return "Permiso sin Goce";
     if (type === "license") return "Licencia M\u00e9dica";
     if (type === "unjustified_absence") {
@@ -1634,11 +1946,11 @@ function replacementAddsStaffingCoverage(replacement) {
         Boolean(replacement.replaced);
 }
 
-function staffingGroupMatches(profile, row) {
+function staffingGroupMatches(profile, row, keyDay = "") {
     const estamento = normalizeStaffingEstamento(profile.estamento);
 
     if (estamento !== row.estamento) return false;
-    if (getStaffingProfileModality(profile) !== row.modality) {
+    if (getStaffingProfileModality(profile, keyDay) !== row.modality) {
         return false;
     }
 
@@ -1704,7 +2016,7 @@ function getProfileStaffingCoverage(
     const dayKey = key(y, m, d);
     const beforeSegments = new Set();
     const ownCoverage =
-        staffingGroupMatches(profile, row);
+        staffingGroupMatches(profile, row, dayKey);
 
     if (ownCoverage) {
         turnSegmentsForStaffing(
@@ -1792,7 +2104,7 @@ function profileWeeklyShiftContext(
     const m = date.getMonth();
     const d = date.getDate();
     const dayKey = key(y, m, d);
-    const modality = getStaffingProfileModality(profile);
+    const modality = getStaffingProfileModality(profile, dayKey);
     const isDiurno = modality === "diurno";
     const turno = getStaffingTurno(profile, y, m, d, options);
     const displaysAsLong =
@@ -1993,17 +2305,58 @@ function renderWeeklyProfessionFilterOptions(professions, selected) {
     `).join("");
 }
 
+const WEEKLY_SHIFTS = [
+    { key: "diurno", label: "Diurno" },
+    { key: "larga", label: "Larga" },
+    { key: "noche", label: "Noche" }
+];
+
 const WEEKLY_LEAVE_ROWS = [
     { key: "license", label: "Licencia M\u00e9dica" },
     { key: "professional_license", label: "LM Profesional" },
+    { key: "union_leave", label: "Permiso Gremial" },
     { key: "admin", label: "P. Administrativo" },
     { key: "legal", label: "F. Legal" },
     { key: "comp", label: "F. Compensatorio" },
     { key: "half_morning", label: "1/2 ADM Ma\u00f1ana" },
     { key: "half_afternoon", label: "1/2 ADM Tarde" },
     { key: "unpaid_leave", label: "Permiso sin Goce" },
+    { key: "unjustified_absence", label: "Ausencia injustificada" },
     { key: "hour_return", label: "Devoluci\u00f3n de Hora" }
 ];
+
+function weeklyTypeFilterOptions(leaveRows = []) {
+    return [
+        { value: "Todos", label: "Todos" },
+        ...WEEKLY_SHIFTS.map(shift => ({
+            value: `shift:${shift.key}`,
+            label: shift.label
+        })),
+        ...leaveRows.map(row => ({
+            value: `leave:${row.key}`,
+            label: row.label
+        }))
+    ];
+}
+
+function normalizeWeeklyTypeFilter(value, options) {
+    const clean = String(value || "Todos");
+    const availableOptions = options || weeklyTypeFilterOptions();
+
+    return availableOptions.some(option =>
+        option.value === clean
+    )
+        ? clean
+        : "Todos";
+}
+
+function renderWeeklyTypeFilterOptions(selected, options) {
+    return options.map(option => `
+        <option value="${escapeHTML(option.value)}" ${option.value === selected ? "selected" : ""}>
+            ${escapeHTML(option.label)}
+        </option>
+    `).join("");
+}
 
 async function weeklyHolidayMap(days) {
     const years = [...new Set(
@@ -2088,6 +2441,14 @@ function weeklySegmentSummary(segments) {
     return "";
 }
 
+function weeklyClassModifier(value) {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+}
+
 function renderWeeklyProfileChip(item) {
     if (item.type === "replacement-slot") {
         const label = item.absence?.label
@@ -2137,7 +2498,30 @@ function renderStaffingWeeklyCell(
 
     return `
         <article class="staffing-weekly-cell staffing-weekly-cell--${shift.key}${isInhabil ? " staffing-weekly-cell--inhabil" : ""}">
-            <div class="staffing-weekly-cell__shift">${escapeHTML(shift.label)}</div>
+            <div class="staffing-weekly-cell__shift">
+                <span>${escapeHTML(shift.label)}</span>
+                ${
+                    shift.key === "noche"
+                        ? `
+                            <svg class="staffing-weekly-cell__shift-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M21 12.79A9 9 0 1 1 11.21 3A7 7 0 0 0 21 12.79z"></path>
+                            </svg>
+                        `
+                        : `
+                            <svg class="staffing-weekly-cell__shift-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="4"></circle>
+                                <path d="M12 2v2"></path>
+                                <path d="M12 20v2"></path>
+                                <path d="M4.93 4.93l1.41 1.41"></path>
+                                <path d="M17.66 17.66l1.41 1.41"></path>
+                                <path d="M2 12h2"></path>
+                                <path d="M20 12h2"></path>
+                                <path d="M6.34 17.66l-1.41 1.41"></path>
+                                <path d="M17.66 6.34l1.41-1.41"></path>
+                            </svg>
+                        `
+                }
+            </div>
             <div class="staffing-weekly-people">
                 ${
                     people.length
@@ -2212,9 +2596,15 @@ function weeklyLeaveRows(
     days,
     absenceCache,
     roleFilter,
-    professionFilter
+    professionFilter,
+    options = {}
 ) {
-    return WEEKLY_LEAVE_ROWS
+    const forcedRowKey = options.rowKey || "";
+    const sourceRows = forcedRowKey
+        ? WEEKLY_LEAVE_ROWS.filter(row => row.key === forcedRowKey)
+        : WEEKLY_LEAVE_ROWS;
+
+    return sourceRows
         .map(row => ({
             ...row,
             days: days.map(day => ({
@@ -2229,13 +2619,16 @@ function weeklyLeaveRows(
             }))
         }))
         .filter(row =>
+            forcedRowKey ||
             row.days.some(day => day.people.length)
         );
 }
 
 function renderStaffingWeeklyLeaveCell(row, day, isInhabil) {
+    const leaveClass = weeklyClassModifier(row.key);
+
     return `
-        <article class="staffing-weekly-cell staffing-weekly-cell--leave${isInhabil ? " staffing-weekly-cell--inhabil" : ""}">
+        <article class="staffing-weekly-cell staffing-weekly-cell--leave${leaveClass ? ` staffing-weekly-cell--leave-${leaveClass}` : ""}${isInhabil ? " staffing-weekly-cell--inhabil" : ""}">
             <div class="staffing-weekly-cell__shift">${escapeHTML(row.label)}</div>
             <div class="staffing-weekly-people">
                 ${
@@ -2246,6 +2639,152 @@ function renderStaffingWeeklyLeaveCell(row, day, isInhabil) {
             </div>
         </article>
     `;
+}
+
+function bindStaffingWeeklyScrollSync(target) {
+    const dayRows = [
+        ...target.querySelectorAll(
+            ".staffing-weekly-days, .staffing-weekly-mobile-days"
+        )
+    ];
+    const grid = target.querySelector(".staffing-weekly-grid");
+
+    if (!dayRows.length || !grid) {
+        return;
+    }
+
+    let syncing = false;
+    const syncScroll = source => {
+        if (syncing) {
+            return;
+        }
+
+        syncing = true;
+        const left = source.scrollLeft;
+        [...dayRows, grid].forEach(element => {
+            if (element !== source) {
+                element.scrollLeft = left;
+            }
+        });
+        window.requestAnimationFrame(() => {
+            syncing = false;
+        });
+    };
+
+    dayRows.forEach(row => {
+        row.addEventListener("scroll", () => syncScroll(row), {
+            passive: true
+        });
+    });
+    grid.addEventListener("scroll", () => syncScroll(grid), {
+        passive: true
+    });
+}
+
+function bindStaffingWeeklyMobileSticky(target) {
+    if (typeof staffingWeeklyStickyCleanup === "function") {
+        staffingWeeklyStickyCleanup();
+        staffingWeeklyStickyCleanup = null;
+    }
+
+    const header = target.querySelector(".staffing-weekly-mobile-days");
+    if (!header) return;
+
+    const placeholder = document.createElement("div");
+    placeholder.className = "staffing-weekly-mobile-days-placeholder";
+    placeholder.setAttribute("aria-hidden", "true");
+    header.before(placeholder);
+
+    let frame = 0;
+
+    const reset = () => {
+        placeholder.style.height = "0px";
+        header.classList.remove("staffing-weekly-mobile-days--fixed");
+        header.style.removeProperty("top");
+        header.style.removeProperty("left");
+        header.style.removeProperty("width");
+    };
+
+    const topOffset = () => {
+        const topbar = document.querySelector(".topbar");
+        if (!topbar || window.innerWidth > 760) return 0;
+
+        const style = window.getComputedStyle(topbar);
+        if (style.position !== "sticky" && style.position !== "fixed") {
+            return 0;
+        }
+
+        const rect = topbar.getBoundingClientRect();
+        return rect.top <= 1 && rect.bottom > 0
+            ? Math.round(rect.bottom)
+            : 0;
+    };
+
+    const update = () => {
+        frame = 0;
+
+        if (
+            !header.isConnected ||
+            document.body.dataset.activeView !== "weekly" ||
+            window.innerWidth > 760
+        ) {
+            reset();
+            return;
+        }
+
+        const stickyTop = topOffset();
+        const panelRect = target.getBoundingClientRect();
+        const anchorRect = placeholder.getBoundingClientRect();
+        const headerHeight = header.offsetHeight || 0;
+        const shouldFix =
+            anchorRect.top <= stickyTop &&
+            panelRect.bottom > stickyTop + headerHeight + 8;
+
+        if (!shouldFix) {
+            reset();
+            return;
+        }
+
+        const viewportWidth =
+            document.documentElement.clientWidth || window.innerWidth;
+        const left = Math.max(0, Math.round(panelRect.left));
+        const width = Math.max(
+            0,
+            Math.min(Math.round(panelRect.width), viewportWidth - left)
+        );
+
+        placeholder.style.height = `${headerHeight}px`;
+        header.classList.add("staffing-weekly-mobile-days--fixed");
+        header.style.top = `${stickyTop}px`;
+        header.style.left = `${left}px`;
+        header.style.width = `${width}px`;
+    };
+
+    const requestUpdate = () => {
+        if (!frame) {
+            frame = window.requestAnimationFrame(update);
+        }
+    };
+
+    window.addEventListener("scroll", requestUpdate, { passive: true });
+    window.addEventListener("resize", requestUpdate, { passive: true });
+    window.addEventListener("orientationchange", requestUpdate, {
+        passive: true
+    });
+
+    staffingWeeklyStickyCleanup = () => {
+        if (frame) {
+            window.cancelAnimationFrame(frame);
+            frame = 0;
+        }
+        window.removeEventListener("scroll", requestUpdate);
+        window.removeEventListener("resize", requestUpdate);
+        window.removeEventListener("orientationchange", requestUpdate);
+        reset();
+        placeholder.remove();
+    };
+
+    requestUpdate();
 }
 
 export async function renderStaffingWeeklyCalendar() {
@@ -2267,17 +2806,67 @@ export async function renderStaffingWeeklyCalendar() {
     const days = staffingWeekDays(getStaffingWeekDate());
     const holidays = await weeklyHolidayMap(days);
     const absenceCache = new Map();
-    const leaveRows = weeklyLeaveRows(
+    const allLeaveRows = weeklyLeaveRows(
         days,
         absenceCache,
         roleFilter,
         professionFilter
     );
-    const shifts = [
-        { key: "diurno", label: "Diurno" },
-        { key: "larga", label: "Larga" },
-        { key: "noche", label: "Noche" }
-    ];
+    const typeOptions = weeklyTypeFilterOptions(allLeaveRows);
+    const typeFilter = normalizeWeeklyTypeFilter(
+        target.querySelector("#staffingWeeklyFilterType")?.value ||
+        "Todos",
+        typeOptions
+    );
+    const selectedShiftKey = typeFilter.startsWith("shift:")
+        ? typeFilter.slice("shift:".length)
+        : "";
+    const selectedLeaveKey = typeFilter.startsWith("leave:")
+        ? typeFilter.slice("leave:".length)
+        : "";
+    const visibleShifts = selectedLeaveKey
+        ? []
+        : WEEKLY_SHIFTS.filter(shift =>
+            !selectedShiftKey || shift.key === selectedShiftKey
+        );
+    const visibleLeaveRows = selectedShiftKey
+        ? []
+        : selectedLeaveKey
+            ? allLeaveRows.filter(row => row.key === selectedLeaveKey)
+            : allLeaveRows;
+    const weeklyRowsHTML = `
+        ${visibleShifts.map(shift =>
+            days.map(day =>
+                renderStaffingWeeklyCell(
+                    day,
+                    shift,
+                    absenceCache,
+                    roleFilter,
+                    professionFilter,
+                    weeklyIsInhabil(day, holidays)
+                )
+            ).join("")
+        ).join("")}
+        ${visibleLeaveRows.map(row =>
+            row.days.map(day =>
+                renderStaffingWeeklyLeaveCell(
+                    row,
+                    day,
+                    weeklyIsInhabil(day.date, holidays)
+                )
+            ).join("")
+        ).join("")}
+    `;
+    const weeklyEmptyHTML = `
+        <div class="staffing-weekly-empty-state">
+            Sin registros para el filtro seleccionado.
+        </div>
+    `;
+    const dayHeadersHTML = days.map(day => `
+        <div class="staffing-weekly-day${weeklyIsInhabil(day, holidays) ? " staffing-weekly-day--inhabil" : ""}">
+            <strong>${escapeHTML(formatFullWeekday(day))} ${escapeHTML(formatShortDate(day))}</strong>
+        </div>
+    `).join("");
 
     target.innerHTML = `
         <div class="staffing-weekly-sticky">
@@ -2296,6 +2885,12 @@ export async function renderStaffingWeeklyCalendar() {
                         ${renderWeeklyProfessionFilterOptions(availableProfessions, professionFilter)}
                     </select>
                 </label>
+                <label>
+                    <span>Filtrar tipo</span>
+                    <select id="staffingWeeklyFilterType">
+                        ${renderWeeklyTypeFilterOptions(typeFilter, typeOptions)}
+                    </select>
+                </label>
                 <span class="staffing-weekly-nav">
                     <button class="secondary-button secondary-button--small" type="button" data-staffing-week-prev>
                         Anterior
@@ -2306,37 +2901,19 @@ export async function renderStaffingWeeklyCalendar() {
                 </span>
             </div>
             <div class="staffing-weekly-days">
-                ${days.map(day => `
-                    <div class="staffing-weekly-day${weeklyIsInhabil(day, holidays) ? " staffing-weekly-day--inhabil" : ""}">
-                        <strong>${escapeHTML(formatFullWeekday(day))} ${escapeHTML(formatShortDate(day))}</strong>
-                    </div>
-                `).join("")}
+                ${dayHeadersHTML}
             </div>
         </div>
+        <div class="staffing-weekly-mobile-days">
+            ${dayHeadersHTML}
+        </div>
         <div class="staffing-weekly-grid">
-            ${shifts.map(shift =>
-                days.map(day =>
-                    renderStaffingWeeklyCell(
-                        day,
-                        shift,
-                        absenceCache,
-                        roleFilter,
-                        professionFilter,
-                        weeklyIsInhabil(day, holidays)
-                    )
-                ).join("")
-            ).join("")}
-            ${leaveRows.map(row =>
-                row.days.map(day =>
-                    renderStaffingWeeklyLeaveCell(
-                        row,
-                        day,
-                        weeklyIsInhabil(day.date, holidays)
-                    )
-                ).join("")
-            ).join("")}
+            ${weeklyRowsHTML.trim() || weeklyEmptyHTML}
         </div>
     `;
+
+    bindStaffingWeeklyScrollSync(target);
+    bindStaffingWeeklyMobileSticky(target);
 
     target
         .querySelector("[data-staffing-week-prev]")
@@ -2349,6 +2926,9 @@ export async function renderStaffingWeeklyCalendar() {
         ?.addEventListener("change", renderStaffingWeeklyCalendar);
     target
         .querySelector("#staffingWeeklyFilterProfession")
+        ?.addEventListener("change", renderStaffingWeeklyCalendar);
+    target
+        .querySelector("#staffingWeeklyFilterType")
         ?.addEventListener("change", renderStaffingWeeklyCalendar);
     target
         .querySelectorAll("[data-weekly-replacement-profile]")
@@ -2381,6 +2961,36 @@ function uniqueAbsences(absences) {
     });
 }
 
+function getPendingReplacementTarget(profile, keyDay) {
+    const admin = getJSON(`admin_${profile.name}`, {});
+    const legal = getJSON(`legal_${profile.name}`, {});
+    const comp = getJSON(`comp_${profile.name}`, {});
+    const absences = getJSON(`absences_${profile.name}`, {});
+    const baseTurn = getTurnoBase(profile.name, keyDay);
+
+    if (
+        !requiereReemplazoTurnoBase(
+            keyDay,
+            baseTurn,
+            admin,
+            legal,
+            comp,
+            absences
+        )
+    ) {
+        return null;
+    }
+
+    if (getReplacementForCoveredShift(profile.name, keyDay)) {
+        return null;
+    }
+
+    return {
+        profile: profile.name,
+        keyDay
+    };
+}
+
 function contarRequerimiento(
     profiles,
     row,
@@ -2390,6 +3000,7 @@ function contarRequerimiento(
     shiftKind,
     absenceCache
 ) {
+    const dayKey = key(y, m, d);
     const checkSegments = checkSegmentsForShift(shiftKind);
     const segmentCounts = new Map(
         checkSegments.map(segment => [segment, 0])
@@ -2425,7 +3036,9 @@ function contarRequerimiento(
             if (absenceAffectsShift) {
                 absences.push({
                     profile: profile.name,
-                    label: coverage.absence.label
+                    label: coverage.absence.label,
+                    replacementTarget:
+                        getPendingReplacementTarget(profile, dayKey)
                 });
             }
         });
@@ -2450,7 +3063,7 @@ function contarRequerimiento(
 function sugerirReemplazo(profiles, row, y, m, d, absenceCache){
     const dayKey = key(y, m, d);
     const libres = profiles
-        .filter(profile => staffingGroupMatches(profile, row))
+        .filter(profile => staffingGroupMatches(profile, row, dayKey))
         .filter(profile =>
             !getProfileStaffingAbsence(
                 profile.name,
@@ -2530,6 +3143,9 @@ export function analizarMes(year, month, holidays = {}){
                             coverage.missingSegments
                         ),
                         absences: coverage.absences,
+                        replacementTargets: coverage.absences
+                            .map(item => item.replacementTarget)
+                            .filter(Boolean),
                         cantidad: row.required - real,
                         sugerencia: sugerirReemplazo(
                             profiles,
@@ -2565,7 +3181,6 @@ export function analizarMes(year, month, holidays = {}){
 
 export function renderStaffingPanel(){
     bindStaffingView();
-    renderStaffingProfiles();
     renderApplicantsPanel();
     renderStaffingAnalysis();
 }
@@ -2596,6 +3211,28 @@ function formatAbsenceReason(detail) {
     return ` por ausencia: ${summary}${extra}`;
 }
 
+function detailReplacementTarget(detail) {
+    return (detail.replacementTargets || [])[0] || null;
+}
+
+function renderStaffingPill(detail, className, content) {
+    const target = detailReplacementTarget(detail);
+
+    if (!target) {
+        return `
+            <span class="staffing-pill ${className}">
+                ${content}
+            </span>
+        `;
+    }
+
+    return `
+        <button class="staffing-pill ${className} staffing-pill--action" type="button" data-staffing-replacement-profile="${escapeHTML(target.profile)}" data-staffing-replacement-key="${escapeHTML(target.keyDay)}" title="Buscar reemplazo">
+            ${content}
+        </button>
+    `;
+}
+
 function renderDetailBadge(detail){
     if (detail.tipo === "birthday") {
         return `
@@ -2606,22 +3243,36 @@ function renderDetailBadge(detail){
     }
 
     if (detail.tipo === "reminder") {
+        const meta = detail.custom
+            ? [
+                STAFFING_REMINDER_VISIBILITY_LABELS[detail.visibility],
+                STAFFING_REMINDER_RECURRENCE_LABELS[detail.recurrence]
+            ]
+                .filter(Boolean)
+                .join(" | ")
+            : "";
+        const title = meta
+            ? ` title="${escapeHTML(meta)}"`
+            : "";
+
         return `
-            <span class="staffing-pill staffing-pill--reminder">
+            <span class="staffing-pill staffing-pill--reminder"${title}>
                 Recordatorio: ${escapeHTML(detail.label)}
             </span>
         `;
     }
 
     if (detail.tipo === "faltante") {
-        return `
-            <span class="staffing-pill staffing-pill--bad">
-                Falta ${detail.cantidad} ${escapeHTML(detail.groupLabel || detail.estamento)}
-                en turno ${escapeHTML(formatShiftLabel(detail, "Diurno"))}
-                ${escapeHTML(formatAbsenceReason(detail))}
-                ${detail.sugerencia ? ` - Sugerido: ${escapeHTML(detail.sugerencia)}` : ""}
-            </span>
-        `;
+        return renderStaffingPill(
+            detail,
+            "staffing-pill--bad",
+            `
+            Falta ${detail.cantidad} ${escapeHTML(detail.groupLabel || detail.estamento)}
+            en turno ${escapeHTML(formatShiftLabel(detail, "Diurno"))}
+            ${escapeHTML(formatAbsenceReason(detail))}
+            ${detail.sugerencia ? ` - Sugerido: ${escapeHTML(detail.sugerencia)}` : ""}
+            `
+        );
     }
 
     if (detail.tipo === "exceso") {
@@ -2633,20 +3284,196 @@ function renderDetailBadge(detail){
         `;
     }
 
+    return renderStaffingPill(
+        detail,
+        "staffing-pill--night",
+        `
+        Falta ${detail.cantidad} ${escapeHTML(detail.groupLabel || detail.estamento)}
+        en turno ${escapeHTML(formatShiftLabel(detail, "Noche"))}
+        ${escapeHTML(formatAbsenceReason(detail))}
+        `
+    );
+}
+
+function bindStaffingReplacementAlerts(container) {
+    if (!container) return;
+
+    container
+        .querySelectorAll("[data-staffing-replacement-profile][data-staffing-replacement-key]")
+        .forEach(button => {
+            button.onclick = async event => {
+                event.preventDefault();
+                event.stopPropagation();
+
+                if (typeof window.openReplacementDialog !== "function") {
+                    alert("No se pudo abrir el cuadro de reemplazos.");
+                    return;
+                }
+
+                await window.openReplacementDialog(
+                    button.dataset.staffingReplacementProfile,
+                    button.dataset.staffingReplacementKey
+                );
+            };
+        });
+}
+
+function renderStaffingReportToolbar() {
     return `
-        <span class="staffing-pill staffing-pill--night">
-            Falta ${detail.cantidad} ${escapeHTML(detail.groupLabel || detail.estamento)}
-            en turno ${escapeHTML(formatShiftLabel(detail, "Noche"))}
-            ${escapeHTML(formatAbsenceReason(detail))}
-        </span>
+        <div class="staffing-report-toolbar">
+            <button class="staffing-report-reminder-button" type="button" data-staffing-reminder-add title="Agregar recordatorio" aria-label="Agregar recordatorio">
+                +
+            </button>
+        </div>
     `;
 }
 
-function mostrarResultado(data){
+function closeStaffingReminderDialog(backdrop, keyHandler) {
+    if (keyHandler) {
+        document.removeEventListener("keydown", keyHandler);
+    }
+
+    backdrop?.remove();
+}
+
+function rerenderLastInlineStaffingReport() {
+    if (!lastInlineStaffingReport) return;
+
+    renderInlineStaffingReport(
+        lastInlineStaffingReport.data,
+        lastInlineStaffingReport.year,
+        lastInlineStaffingReport.month
+    );
+}
+
+function openStaffingReminderDialog() {
+    const existing = document.querySelector(
+        "[data-staffing-reminder-dialog]"
+    );
+
+    existing?.remove();
+
+    const backdrop = document.createElement("div");
+    const defaultDate = staffingReminderDefaultDate();
+
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.dataset.staffingReminderDialog = "true";
+    backdrop.innerHTML = `
+        <form class="turn-change-dialog staffing-reminder-dialog" data-staffing-reminder-form autocomplete="off" role="dialog" aria-modal="true" aria-labelledby="staffingReminderTitle">
+            <strong id="staffingReminderTitle">Agregar recordatorio</strong>
+            <p>Selecciona la fecha, visibilidad y periodicidad del recordatorio.</p>
+            <div class="staffing-reminder-fields">
+                <label class="staffing-reminder-field">
+                    <span>Fecha</span>
+                    <input type="date" name="dateISO" value="${escapeHTML(defaultDate)}" required>
+                </label>
+                <label class="staffing-reminder-field">
+                    <span>Descripci&oacute;n</span>
+                    <textarea name="description" rows="3" maxlength="240" placeholder="Ej: Revisar cobertura especial." required></textarea>
+                </label>
+                <label class="staffing-reminder-field">
+                    <span>Visibilidad</span>
+                    <select name="visibility">
+                        <option value="all">Todos los usuarios del entorno</option>
+                        <option value="private">S&oacute;lo quien lo crea</option>
+                    </select>
+                </label>
+                <label class="staffing-reminder-field">
+                    <span>Periodicidad</span>
+                    <select name="recurrence">
+                        <option value="once">Una sola vez</option>
+                        <option value="yearly">Anual en la misma fecha</option>
+                        <option value="monthly">Mensual</option>
+                    </select>
+                </label>
+            </div>
+            <div class="turn-change-dialog__actions staffing-reminder-actions">
+                <button class="secondary-button" type="button" data-staffing-reminder-cancel>Cancelar</button>
+                <button class="primary-button" type="submit">Guardar</button>
+            </div>
+        </form>
+    `;
+
+    const keyHandler = event => {
+        if (event.key === "Escape") {
+            closeStaffingReminderDialog(backdrop, keyHandler);
+        }
+    };
+
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) {
+            closeStaffingReminderDialog(backdrop, keyHandler);
+        }
+    });
+
+    backdrop
+        .querySelector("[data-staffing-reminder-cancel]")
+        ?.addEventListener("click", () => {
+            closeStaffingReminderDialog(backdrop, keyHandler);
+        });
+
+    backdrop
+        .querySelector("[data-staffing-reminder-form]")
+        ?.addEventListener("submit", event => {
+            event.preventDefault();
+
+            const formData = new FormData(event.currentTarget);
+            const dateISO = normalizeReminderDateISO(
+                formData.get("dateISO")
+            );
+            const description = String(
+                formData.get("description") || ""
+            ).trim();
+            const visibility = String(
+                formData.get("visibility") || "all"
+            );
+            const recurrence = String(
+                formData.get("recurrence") || "once"
+            );
+
+            if (!dateISO || !description) {
+                alert("Completa fecha y descripcion.");
+                return;
+            }
+
+            addStaffingCustomReminder({
+                dateISO,
+                description,
+                visibility,
+                recurrence
+            });
+            closeStaffingReminderDialog(backdrop, keyHandler);
+            rerenderLastInlineStaffingReport();
+
+            if (document.body.dataset.activeView === "staffing") {
+                renderStaffingAnalysis();
+            }
+        });
+
+    document.body.appendChild(backdrop);
+    document.addEventListener("keydown", keyHandler);
+    backdrop.querySelector("textarea")?.focus();
+}
+
+function bindStaffingReportToolbar(container) {
+    container
+        ?.querySelector("[data-staffing-reminder-add]")
+        ?.addEventListener("click", event => {
+            event.preventDefault();
+            openStaffingReminderDialog();
+        });
+}
+
+function mostrarResultado(
+    data,
+    year = currentDate.getFullYear(),
+    month = currentDate.getMonth()
+){
     const div = document.getElementById("staffingResult");
     if (!div) return;
 
-    const issues = data.filter(item => item.detalle.length);
+    const reportData = withBirthdayDetails(data, year, month);
+    const issues = reportData.filter(item => item.detalle.length);
 
     if (!issues.length) {
         div.innerHTML = `
@@ -2654,6 +3481,7 @@ function mostrarResultado(data){
                 Cobertura completa para el mes visible.
             </div>
         `;
+        bindStaffingReplacementAlerts(div);
         return;
     }
 
@@ -2667,6 +3495,8 @@ function mostrarResultado(data){
             </article>
         `)
         .join("");
+
+    bindStaffingReplacementAlerts(div);
 }
 
 function getStaffingReportScrollTarget(div, day) {
@@ -2727,24 +3557,34 @@ function renderInlineStaffingReport(
     const div = document.getElementById("staffingReportInline");
     if (!div) return;
 
+    lastInlineStaffingReport = {
+        data,
+        year,
+        month
+    };
     div.dataset.staffingReportYear = year;
     div.dataset.staffingReportMonth = month;
 
-    const reportData = withBirthdayDetails(data, month);
+    const reportData = withBirthdayDetails(data, year, month);
     const issues = reportData.filter(item => item.detalle.length);
 
     if (!issues.length) {
         div.innerHTML = `
+            ${renderStaffingReportToolbar()}
             <div class="staffing-report-empty">
                 Cobertura completa para el mes visible.
             </div>
         `;
+        bindStaffingReportToolbar(div);
+        bindStaffingReplacementAlerts(div);
         scrollInlineStaffingReportIfVisible();
         return;
     }
 
-    div.innerHTML = issues
-        .map(item => `
+    div.innerHTML = `
+        ${renderStaffingReportToolbar()}
+        ${issues
+            .map(item => `
             <article class="staffing-report-day" data-staffing-report-day="${item.dia}">
                 <strong>D&iacute;a ${item.dia}</strong>
                 <div class="staffing-report-pills">
@@ -2752,8 +3592,11 @@ function renderInlineStaffingReport(
                 </div>
             </article>
         `)
-        .join("");
+            .join("")}
+    `;
 
+    bindStaffingReportToolbar(div);
+    bindStaffingReplacementAlerts(div);
     scrollInlineStaffingReportIfVisible();
 }
 
@@ -2791,14 +3634,48 @@ export function renderReplacementContractsLog(){
 
 export async function analizarStaffingMes(
     year = currentDate.getFullYear(),
-    month = currentDate.getMonth()
+    month = currentDate.getMonth(),
+    options = {}
 ){
+    const requestId = options.latestOnly
+        ? ++staffingAnalysisRequest
+        : 0;
     const holidays = await fetchHolidays(year);
+
+    if (
+        options.latestOnly &&
+        requestId !== staffingAnalysisRequest
+    ) {
+        return [];
+    }
+
+    if (
+        options.activeView &&
+        document.body.dataset.activeView !== options.activeView
+    ) {
+        return [];
+    }
+
     const data = analizarMes(year, month, holidays);
 
-    mostrarResultado(data);
+    if (options.renderPanel !== false) {
+        mostrarResultado(data, year, month);
+    }
+
     renderInlineStaffingReport(data, year, month);
     return data;
+}
+
+export async function renderInlineStaffingAnalysis(){
+    return await analizarStaffingMes(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        {
+            renderPanel: false,
+            latestOnly: true,
+            activeView: "turnos"
+        }
+    );
 }
 
 export async function renderStaffingAnalysis(){
@@ -2810,10 +3687,16 @@ export async function renderStaffingAnalysis(){
 
     return await analizarStaffingMes(
         currentDate.getFullYear(),
-        currentDate.getMonth()
+        currentDate.getMonth(),
+        {
+            latestOnly: true,
+            activeView: "staffing"
+        }
     );
 }
 
 window.renderStaffingAnalysis = renderStaffingAnalysis;
+window.renderInlineStaffingAnalysis =
+    renderInlineStaffingAnalysis;
 window.renderStaffingPanel = renderStaffingPanel;
 window.renderStaffingMedicalChart = renderStaffingMedicalChart;

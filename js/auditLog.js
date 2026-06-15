@@ -312,6 +312,7 @@ function getLeaveUndoType(log) {
     if (action.includes("f. legal")) return "legal";
     if (action.includes("f. compensatorio")) return "comp";
     if (action.includes("lm profesional")) return "professional_license";
+    if (action.includes("permiso gremial")) return "union_leave";
     if (action.includes("permiso sin goce")) return "unpaid_leave";
     if (action.includes("ausencia injustificada")) {
         return "unjustified_absence";
@@ -508,6 +509,7 @@ async function undoLeaveAbsenceLog(log) {
         );
     } else if (
         type === "license" ||
+        type === "union_leave" ||
         type === "professional_license" ||
         type === "unpaid_leave" ||
         type === "unjustified_absence"

@@ -7,6 +7,8 @@ import { getTurnoReal } from "./turnEngine.js";
 import { getAbsenceType } from "./rulesEngine.js";
 import { getHourReturn } from "./hourReturns.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
+import { fetchHolidays } from "./holidays.js";
+import { isBusinessDay } from "./calculations.js";
 
 const TASKS_KEY = "weekly_task_assignment_tasks";
 const ASSIGNMENTS_KEY = "weekly_task_assignment_entries";
@@ -27,8 +29,11 @@ const SHIFT_CONFIG = {
 let currentWeekStart = weekStartMonday(new Date());
 let selectedRoles = null;
 let selectedProfessions = null;
+let openTaskFilterGroup = "";
+let unbindTaskFilterOutside = null;
 let draggedTask = null;
 let draggedWorker = null;
+let renderToken = 0;
 
 function escapeHTML(value) {
     return String(value ?? "")
@@ -105,6 +110,27 @@ function weekKey(start = currentWeekStart) {
     return isoFromDate(start);
 }
 
+async function holidayMapForDays(days) {
+    const years = [...new Set(
+        days.map(day => day.getFullYear())
+    )];
+    const maps = await Promise.all(
+        years.map(year => fetchHolidays(year))
+    );
+
+    return Object.assign({}, ...maps);
+}
+
+function isInhabilDay(day, holidays = {}) {
+    return !isBusinessDay(day, holidays);
+}
+
+function inhabilClass(day, holidays, className) {
+    return isInhabilDay(day, holidays)
+        ? ` ${className}`
+        : "";
+}
+
 function addDays(date, amount) {
     const next = new Date(date);
 
@@ -117,9 +143,7 @@ function getTasks() {
 
     return (Array.isArray(raw) ? raw : [])
         .map((task, index) => {
-            const defaultWorkers = Array.isArray(task?.defaultWorkers)
-                ? task.defaultWorkers
-                : [task?.defaultWorker];
+            const defaultWorkerRules = normalizeTaskDefaultRules(task);
 
             return {
                 id: String(task?.id || `task_${Date.now()}_${index}`),
@@ -129,10 +153,9 @@ function getTasks() {
                     ? Number(task.order)
                     : index,
                 defaultWorkers: uniqueValues(
-                    defaultWorkers.map(worker =>
-                        String(worker || "").trim()
-                    )
+                    defaultWorkerRules.map(rule => rule.workerName)
                 ),
+                defaultWorkerRules,
                 createdAt: task?.createdAt || new Date().toISOString()
             };
         })
@@ -203,6 +226,50 @@ function uniqueValues(values) {
         .sort((a, b) => a.localeCompare(b, "es"));
 }
 
+function normalizeDefaultInterval(value) {
+    const numberValue = Math.floor(Number(value));
+
+    return Number.isFinite(numberValue) &&
+        numberValue >= 1 &&
+        numberValue <= 10
+        ? numberValue
+        : 1;
+}
+
+function normalizeTaskDefaultRules(task) {
+    const rules = new Map();
+    const defaultWorkers = Array.isArray(task?.defaultWorkers)
+        ? task.defaultWorkers
+        : [task?.defaultWorker];
+    const addRule = (workerName, interval = 1, anchorKeyDay = "") => {
+        const cleanWorker = String(workerName || "").trim();
+
+        if (!cleanWorker) return;
+
+        rules.set(cleanWorker, {
+            workerName: cleanWorker,
+            interval: normalizeDefaultInterval(interval),
+            anchorKeyDay: String(anchorKeyDay || "")
+        });
+    };
+
+    defaultWorkers.forEach(worker => addRule(worker));
+
+    if (Array.isArray(task?.defaultWorkerRules)) {
+        task.defaultWorkerRules.forEach(rule => {
+            addRule(
+                rule?.workerName || rule?.worker || rule?.name,
+                rule?.interval,
+                rule?.anchorKeyDay || rule?.anchor || rule?.startKeyDay
+            );
+        });
+    }
+
+    return [...rules.values()].sort((a, b) =>
+        a.workerName.localeCompare(b.workerName, "es")
+    );
+}
+
 function availableRoles() {
     return uniqueValues(
         getProfiles()
@@ -244,8 +311,9 @@ function readMap(prefix, profileName) {
 }
 
 function absenceLabelForType(type) {
-    if (type === "license") return "Licencia Medica";
+    if (type === "license") return "Licencia M\u00e9dica";
     if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "Permiso Gremial";
     if (type === "unpaid_leave") return "Permiso sin Goce";
     if (type === "unjustified_absence") return "Ausencia injustificada";
 
@@ -259,7 +327,7 @@ function absenceDetail(profileName, keyDay) {
     const absences = readMap("absences", profileName);
 
     if (admin[keyDay] === 1) return "P. Administrativo";
-    if (admin[keyDay] === "0.5M") return "1/2 ADM Manana";
+    if (admin[keyDay] === "0.5M") return "1/2 ADM Ma\u00f1ana";
     if (admin[keyDay] === "0.5T") return "1/2 ADM Tarde";
     if (admin[keyDay] === 0.5) return "1/2 ADM";
     if (legal[keyDay]) return "F. Legal";
@@ -278,9 +346,8 @@ function hasBlockingAbsence(profileName, keyDay) {
     return Boolean(absenceDetail(profileName, keyDay));
 }
 
-function isAvailableForShift(profile, keyDay, shift) {
+function isScheduledForShift(profile, keyDay, shift) {
     if (!profile || !isProfileActive(profile)) return false;
-    if (hasBlockingAbsence(profile.name, keyDay)) return false;
 
     const state = getProfileShift(profile, keyDay);
 
@@ -301,31 +368,125 @@ function isAvailableForShift(profile, keyDay, shift) {
     ].includes(state);
 }
 
+function isAvailableForShift(profile, keyDay, shift) {
+    if (!isScheduledForShift(profile, keyDay, shift)) return false;
+    return !hasBlockingAbsence(profile.name, keyDay);
+}
+
 function assignmentWorkers(entry) {
     return Array.isArray(entry?.workers)
         ? entry.workers.filter(Boolean)
         : [];
 }
 
+function assignmentRemovedDefaults(entry) {
+    return uniqueValues(
+        Array.isArray(entry?.removedDefaults)
+            ? entry.removedDefaults.map(worker =>
+                String(worker || "").trim()
+            )
+            : []
+    );
+}
+
 function taskDefaultWorkers(task) {
-    return Array.isArray(task?.defaultWorkers)
-        ? task.defaultWorkers.filter(Boolean)
-        : [];
+    return taskDefaultRules(task).map(rule => rule.workerName);
+}
+
+function taskDefaultRules(task) {
+    return Array.isArray(task?.defaultWorkerRules)
+        ? task.defaultWorkerRules
+        : normalizeTaskDefaultRules(task);
+}
+
+function isValidDate(date) {
+    return date instanceof Date && !Number.isNaN(date.getTime());
+}
+
+function countScheduledTurns(profile, shift, startDate, endDate) {
+    if (!isValidDate(startDate) || !isValidDate(endDate)) return 0;
+    if (endDate < startDate) return 0;
+
+    const cursor = new Date(
+        startDate.getFullYear(),
+        startDate.getMonth(),
+        startDate.getDate()
+    );
+    const end = new Date(
+        endDate.getFullYear(),
+        endDate.getMonth(),
+        endDate.getDate()
+    );
+    let count = 0;
+
+    while (cursor <= end) {
+        if (isScheduledForShift(profile, keyFromDate(cursor), shift)) {
+            count += 1;
+        }
+        cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return count;
+}
+
+function shouldApplyDefaultRule(rule, profile, keyDay, shift) {
+    if (!isScheduledForShift(profile, keyDay, shift)) return false;
+
+    const interval = normalizeDefaultInterval(rule?.interval);
+
+    if (interval <= 1) return true;
+
+    const anchor = parseKey(rule?.anchorKeyDay);
+    const target = parseKey(keyDay);
+
+    if (!isValidDate(anchor) || !isValidDate(target)) return false;
+
+    const scheduledCount = countScheduledTurns(
+        profile,
+        shift,
+        anchor,
+        target
+    );
+
+    return scheduledCount > 0 && (scheduledCount - 1) % interval === 0;
+}
+
+function defaultWorkersForCell(task, keyDay) {
+    return taskDefaultRules(task)
+        .filter(rule => {
+            const profile = profileByName(rule.workerName);
+
+            return shouldApplyDefaultRule(
+                rule,
+                profile,
+                keyDay,
+                task.shift
+            ) && isAvailableForShift(profile, keyDay, task.shift);
+        })
+        .map(rule => rule.workerName);
 }
 
 function applyDefaultAssignments(days, tasks, assignments) {
     let changed = false;
 
     tasks.forEach(task => {
-        taskDefaultWorkers(task).forEach(defaultWorker => {
-            const profile = profileByName(defaultWorker);
+        taskDefaultRules(task).forEach(rule => {
+            const profile = profileByName(rule.workerName);
 
             if (!profile) return;
 
             days.forEach(day => {
                 const keyDay = keyFromDate(day);
 
-                if (!isAvailableForShift(profile, keyDay, task.shift)) return;
+                if (
+                    !shouldApplyDefaultRule(
+                        rule,
+                        profile,
+                        keyDay,
+                        task.shift
+                    ) ||
+                    !isAvailableForShift(profile, keyDay, task.shift)
+                ) return;
 
                 const cellKey = assignmentKey(task.shift, task.id, keyDay);
                 const entry = getCellEntry(
@@ -335,12 +496,16 @@ function applyDefaultAssignments(days, tasks, assignments) {
                     keyDay
                 );
                 const workers = assignmentWorkers(entry);
+                const removedDefaults = assignmentRemovedDefaults(entry);
 
-                if (workers.includes(defaultWorker)) return;
+                if (
+                    workers.includes(rule.workerName) ||
+                    removedDefaults.includes(rule.workerName)
+                ) return;
 
                 assignments[cellKey] = {
                     ...entry,
-                    workers: [...workers, defaultWorker]
+                    workers: [...workers, rule.workerName]
                 };
                 changed = true;
             });
@@ -377,14 +542,10 @@ function cleanAssignmentsForWeek(days, tasks) {
             availableWorkers.length !== assignmentWorkers(entry).length
         ) {
             changed = true;
-            if (availableWorkers.length || entry?.note) {
-                assignments[cellKey] = {
-                    ...entry,
-                    workers: availableWorkers
-                };
-            } else {
-                delete assignments[cellKey];
-            }
+            persistEntryOrDelete(assignments, cellKey, {
+                ...entry,
+                workers: availableWorkers
+            });
         }
     });
 
@@ -399,7 +560,8 @@ function cleanAssignmentsForWeek(days, tasks) {
 function getCellEntry(assignments, shift, taskId, keyDay) {
     return assignments[assignmentKey(shift, taskId, keyDay)] || {
         workers: [],
-        note: ""
+        note: "",
+        removedDefaults: []
     };
 }
 
@@ -432,16 +594,49 @@ function candidateProfiles(shift, keyDay, roles, professions) {
         .sort((a, b) => a.name.localeCompare(b.name, "es"));
 }
 
-function renderFilterChips(name, options, selected, action) {
+function filterSummaryLabel(options, selected) {
+    if (!selected || selected.length === options.length) {
+        return "Todos";
+    }
+
+    if (!selected.length) {
+        return "Sin selecci\u00f3n";
+    }
+
+    if (selected.length === 1) {
+        return selected[0];
+    }
+
+    return `${selected.length} seleccionados`;
+}
+
+function renderMultiSelectFilter(
+    name,
+    options,
+    selected,
+    action,
+    openAction = openTaskFilterGroup
+) {
+    const normalizedSelected = selected || options;
+    const isOpen = openAction === action;
+
     return `
-        <div class="task-assignment-filter-list" data-filter-group="${escapeHTML(action)}">
-            ${options.map(option => `
-                <label class="task-assignment-filter-chip">
-                    <input type="checkbox" name="${escapeHTML(name)}" value="${escapeHTML(option)}" ${selectionMatches(option, selected) ? "checked" : ""}>
-                    <span>${escapeHTML(option)}</span>
-                </label>
-            `).join("")}
-        </div>
+        <details class="task-assignment-multiselect" data-filter-group="${escapeHTML(action)}" ${isOpen ? "open" : ""}>
+            <summary>
+                <span>${escapeHTML(filterSummaryLabel(options, selected))}</span>
+                <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                    <path d="M5 7.5 10 12.5 15 7.5"></path>
+                </svg>
+            </summary>
+            <div class="task-assignment-multiselect__menu">
+                ${options.map(option => `
+                    <label class="task-assignment-multiselect__option">
+                        <input type="checkbox" name="${escapeHTML(name)}" value="${escapeHTML(option)}" ${normalizedSelected.includes(option) ? "checked" : ""}>
+                        <span>${escapeHTML(option)}</span>
+                    </label>
+                `).join("")}
+            </div>
+        </details>
     `;
 }
 
@@ -451,6 +646,41 @@ function selectedValues(root, selector, options) {
         .map(input => input.value);
 
     return values.length === options.length ? null : values;
+}
+
+function closeMultiSelectsOutside(root, event, clearOpenGroup) {
+    const target = event?.target;
+
+    root
+        .querySelectorAll(".task-assignment-multiselect[open]")
+        .forEach(control => {
+            if (target && control.contains(target)) return;
+            control.open = false;
+        });
+
+    if (
+        root.querySelector(".task-assignment-multiselect[open]")
+    ) {
+        return;
+    }
+
+    clearOpenGroup();
+}
+
+function bindMultiSelectOutsideClose(root, clearOpenGroup) {
+    const handlePointerDown = event => {
+        closeMultiSelectsOutside(root, event, clearOpenGroup);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+
+    return () => {
+        document.removeEventListener(
+            "pointerdown",
+            handlePointerDown,
+            true
+        );
+    };
 }
 
 function birthdayProfiles(date) {
@@ -497,6 +727,9 @@ function absenceProfiles(date) {
 
 function renderWorkerChip(profileName, task, keyDay) {
     const profile = profileByName(profileName);
+    const configuredClass = taskDefaultWorkers(task).includes(profileName)
+        ? " is-configured"
+        : "";
 
     if (
         profile &&
@@ -511,12 +744,15 @@ function renderWorkerChip(profileName, task, keyDay) {
 
     return `
         <span class="task-assignment-worker-chip" draggable="true" data-worker-drag="${escapeHTML(profileName)}" data-worker-task="${escapeHTML(task.id)}" data-worker-shift="${escapeHTML(task.shift)}" data-worker-day="${escapeHTML(keyDay)}" title="Arrastrar a otra tarea del mismo turno y d&iacute;a">
-            ${escapeHTML(profileName)}
+            <span class="task-assignment-worker-chip__name">${escapeHTML(profileName)}</span>
+            <button class="task-assignment-worker-edit${configuredClass}" type="button" data-worker-default-config="${escapeHTML(profileName)}" data-worker-task="${escapeHTML(task.id)}" data-worker-shift="${escapeHTML(task.shift)}" data-worker-day="${escapeHTML(keyDay)}" title="Editar trabajador predefinido" aria-label="Editar trabajador predefinido">
+                &#9998;
+            </button>
         </span>
     `;
 }
 
-function renderAssignmentCell(assignments, task, day) {
+function renderAssignmentCell(assignments, task, day, holidays = {}) {
     const keyDay = keyFromDate(day);
     const entry = getCellEntry(
         assignments,
@@ -529,7 +765,7 @@ function renderAssignmentCell(assignments, task, day) {
         .filter(Boolean);
 
     return `
-        <div class="task-assignment-cell" data-task-cell="${escapeHTML(task.id)}" data-shift="${escapeHTML(task.shift)}" data-day="${escapeHTML(keyDay)}">
+        <div class="task-assignment-cell${inhabilClass(day, holidays, "task-assignment-cell--inhabil")}" data-task-cell="${escapeHTML(task.id)}" data-shift="${escapeHTML(task.shift)}" data-day="${escapeHTML(keyDay)}">
             <button class="task-assignment-add" type="button" title="Asignar trabajadores">
                 +
             </button>
@@ -542,21 +778,11 @@ function renderAssignmentCell(assignments, task, day) {
 }
 
 function renderTaskControl(task) {
-    const configClass = taskDefaultWorkers(task).length
-        ? " is-configured"
-        : "";
-
     return `
         <div class="task-assignment-task-card" draggable="true" data-task-drag="${escapeHTML(task.id)}" data-shift="${escapeHTML(task.shift)}">
             <div class="task-assignment-task-card__top">
                 <span class="task-assignment-drag" aria-hidden="true">::</span>
                 <span class="task-assignment-task-actions">
-                    <button class="ghost-button task-assignment-config${configClass}" type="button" data-task-config="${escapeHTML(task.id)}" title="Configurar tarea" aria-label="Configurar tarea">
-                        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                            <circle cx="12" cy="12" r="3.2"></circle>
-                            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 0 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.3 7A2 2 0 0 1 7.1 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 0 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"></path>
-                        </svg>
-                    </button>
                     <button class="ghost-button task-assignment-delete" type="button" data-task-delete="${escapeHTML(task.id)}" title="Eliminar tarea">
                         &times;
                     </button>
@@ -567,22 +793,24 @@ function renderTaskControl(task) {
     `;
 }
 
-function renderBoard(shift, tasks, days, assignments) {
+function renderBoard(shift, tasks, days, assignments, holidays = {}) {
     const config = SHIFT_CONFIG[shift];
     const sectionTasks = tasks.filter(task => task.shift === shift);
 
     return `
         <section class="task-assignment-section task-assignment-section--${escapeHTML(config.className)}">
+            <div class="task-assignment-section-title">
+                ${escapeHTML(config.label)}
+            </div>
             <div class="task-assignment-board">
                 <div class="task-assignment-task-head">
-                    <strong>${escapeHTML(config.label)}</strong>
                     <form class="task-assignment-task-form" data-task-add-form="${escapeHTML(shift)}" autocomplete="off">
                         <input name="title" type="text" maxlength="80" placeholder="Nueva tarea">
                         <button class="task-assignment-task-add" type="submit" aria-label="Agregar tarea">+</button>
                     </form>
                 </div>
                 ${days.map(day => `
-                    <div class="task-assignment-day-head">
+                    <div class="task-assignment-day-head${inhabilClass(day, holidays, "task-assignment-day-head--inhabil")}">
                         <strong>${escapeHTML(formatWeekday(day))}</strong>
                         <span>${escapeHTML(formatShortDate(day))}</span>
                     </div>
@@ -597,7 +825,8 @@ function renderBoard(shift, tasks, days, assignments) {
                                 renderAssignmentCell(
                                     assignments,
                                     task,
-                                    day
+                                    day,
+                                    holidays
                                 )
                             ).join("")}
                         `).join("")
@@ -612,7 +841,7 @@ function renderBoard(shift, tasks, days, assignments) {
     `;
 }
 
-function renderEventsBoard(days) {
+function renderEventsBoard(days, holidays = {}) {
     return `
         <section class="task-assignment-events">
             <div class="task-assignment-events-grid">
@@ -624,7 +853,7 @@ function renderEventsBoard(days) {
                     const birthdays = birthdayProfiles(day);
 
                     return `
-                        <div class="task-assignment-event-day">
+                        <div class="task-assignment-event-day${inhabilClass(day, holidays, "task-assignment-event-day--inhabil")}">
                             <strong>${escapeHTML(formatWeekday(day))}</strong>
                             <span>${escapeHTML(formatShortDate(day))}</span>
                             <div class="task-assignment-event-list">
@@ -648,7 +877,7 @@ function renderEventsBoard(days) {
     `;
 }
 
-function renderShell() {
+function renderShell(holidays = {}) {
     const days = weekDays();
     const tasks = getTasks();
     const assignments = cleanAssignmentsForWeek(days, tasks);
@@ -657,33 +886,27 @@ function renderShell() {
 
     return `
         <div class="task-assignment-shell">
-            <div class="section-head section-head--with-action task-assignment-head">
-                <span class="section-head__title">
-                    <h3>Asignaci&oacute;n de Tareas</h3>
-                    <span class="staffing-weekly-range">
-                        ${escapeHTML(formatShortDate(days[0]))} al ${escapeHTML(formatShortDate(days[6]))}
-                    </span>
-                </span>
+            <section class="task-assignment-controls">
+                <div class="task-assignment-view-filters">
+                    <div>
+                        <strong>Estamentos</strong>
+                        ${renderMultiSelectFilter("taskRole", roles, selectedRoles, "roles")}
+                    </div>
+                    <div>
+                        <strong>Profesiones</strong>
+                        ${renderMultiSelectFilter("taskProfession", professions, selectedProfessions, "professions")}
+                    </div>
+                </div>
                 <span class="task-assignment-toolbar">
                     <button class="secondary-button secondary-button--small" type="button" data-task-week-prev>Anterior</button>
                     <button class="secondary-button secondary-button--small" type="button" data-task-week-current>Semana actual</button>
                     <button class="secondary-button secondary-button--small" type="button" data-task-week-next>Siguiente</button>
                     <button class="primary-button secondary-button--small" type="button" data-task-export>Descargar Excel</button>
                 </span>
-            </div>
-            <section class="task-assignment-view-filters">
-                <div>
-                    <strong>Estamentos</strong>
-                    ${renderFilterChips("taskRole", roles, selectedRoles, "roles")}
-                </div>
-                <div>
-                    <strong>Profesiones</strong>
-                    ${renderFilterChips("taskProfession", professions, selectedProfessions, "professions")}
-                </div>
             </section>
-            ${renderBoard("day", tasks, days, assignments)}
-            ${renderBoard("night", tasks, days, assignments)}
-            ${renderEventsBoard(days)}
+            ${renderBoard("day", tasks, days, assignments, holidays)}
+            ${renderBoard("night", tasks, days, assignments, holidays)}
+            ${renderEventsBoard(days, holidays)}
         </div>
     `;
 }
@@ -721,21 +944,154 @@ function updateTaskTitle(taskId, title) {
     );
 }
 
-function updateTaskDefaultWorkers(taskId, workerNames) {
+function workerDefaultRule(task, workerName) {
+    return taskDefaultRules(task)
+        .find(rule => rule.workerName === workerName) || null;
+}
+
+function taskWithDefaultWorkerRule(
+    task,
+    workerName,
+    enabled,
+    interval,
+    anchorKeyDay
+) {
+    const defaultWorkerRules = normalizeTaskDefaultRules({
+        defaultWorkers: [],
+        defaultWorkerRules: [
+            ...taskDefaultRules(task)
+                .filter(rule => rule.workerName !== workerName),
+            ...(enabled
+                ? [{
+                    workerName,
+                    interval: normalizeDefaultInterval(interval),
+                    anchorKeyDay
+                }]
+                : [])
+        ]
+    });
+
+    return {
+        ...task,
+        defaultWorkerRules,
+        defaultWorkers: uniqueValues(
+            defaultWorkerRules.map(rule => rule.workerName)
+        )
+    };
+}
+
+function updateTaskDefaultWorkerRule(
+    taskId,
+    workerName,
+    enabled,
+    interval,
+    anchorKeyDay
+) {
+    const cleanWorker = String(workerName || "").trim();
+
+    if (!cleanWorker) return;
+
     saveTasks(
         getTasks().map(task =>
             task.id === taskId
-                ? {
-                    ...task,
-                    defaultWorkers: uniqueValues(
-                        workerNames.map(worker =>
-                            String(worker || "").trim()
-                        )
-                    )
-                }
+                ? taskWithDefaultWorkerRule(
+                    task,
+                    cleanWorker,
+                    enabled,
+                    interval,
+                    anchorKeyDay
+                )
                 : task
         )
     );
+}
+
+function clearRemovedDefaultForCell(shift, taskId, keyDay, workerName) {
+    const assignments = getWeekAssignments();
+    const cellKey = assignmentKey(shift, taskId, keyDay);
+    const entry = assignments[cellKey];
+
+    if (!entry) return;
+
+    const removedDefaults = assignmentRemovedDefaults(entry)
+        .filter(name => name !== workerName);
+
+    if (removedDefaults.length === assignmentRemovedDefaults(entry).length) {
+        return;
+    }
+
+    persistEntryOrDelete(assignments, cellKey, {
+        ...entry,
+        removedDefaults
+    });
+    saveWeekAssignments(assignments);
+}
+
+function syncWorkerDefaultForCurrentWeek(taskId, workerName, preserveKeyDay) {
+    const task = getTasks().find(item => item.id === taskId);
+    const assignments = getWeekAssignments();
+    let changed = false;
+
+    if (!task) return;
+
+    weekDays().forEach(day => {
+        const keyDay = keyFromDate(day);
+
+        if (keyDay === preserveKeyDay) return;
+
+        const cellKey = assignmentKey(task.shift, task.id, keyDay);
+        const entry = getCellEntry(
+            assignments,
+            task.shift,
+            task.id,
+            keyDay
+        );
+        const workers = assignmentWorkers(entry);
+        const removedDefaults = assignmentRemovedDefaults(entry);
+        const shouldApply = defaultWorkersForCell(task, keyDay)
+            .includes(workerName);
+        const nextWorkers = shouldApply
+            ? uniqueValues([...workers, workerName])
+            : workers.filter(name => name !== workerName);
+        const nextRemovedDefaults = shouldApply
+            ? removedDefaults.filter(name => name !== workerName)
+            : removedDefaults;
+
+        if (
+            nextWorkers.length === workers.length &&
+            nextWorkers.every((name, index) => name === workers[index]) &&
+            nextRemovedDefaults.length === removedDefaults.length &&
+            nextRemovedDefaults.every((name, index) =>
+                name === removedDefaults[index]
+            )
+        ) return;
+
+        persistEntryOrDelete(assignments, cellKey, {
+            ...entry,
+            workers: nextWorkers,
+            removedDefaults: nextRemovedDefaults
+        });
+        changed = true;
+    });
+
+    if (changed) saveWeekAssignments(assignments);
+}
+
+function renderDefaultIntervalOptions(selectedInterval) {
+    const selected = normalizeDefaultInterval(selectedInterval);
+
+    return Array.from({ length: 10 }, (_item, index) => {
+        const value = index + 1;
+        const label = value === 1
+            ? "Cada turno"
+            : `Cada ${value} turnos`;
+
+        return `
+            <option value="${value}" ${value === selected ? "selected" : ""}>
+                ${escapeHTML(label)}
+            </option>
+        `;
+    }).join("");
 }
 
 function deleteTask(taskId) {
@@ -798,11 +1154,13 @@ function canMoveWorkerToCell(cell, payload) {
 function persistEntryOrDelete(assignments, cellKey, entry) {
     const workers = assignmentWorkers(entry);
     const note = String(entry?.note || "").trim();
+    const removedDefaults = assignmentRemovedDefaults(entry);
 
-    if (workers.length || note) {
+    if (workers.length || note || removedDefaults.length) {
         assignments[cellKey] = {
             workers,
-            note
+            note,
+            removedDefaults
         };
         return;
     }
@@ -814,6 +1172,8 @@ function moveWorkerAssignment(payload, targetCell) {
     if (!canMoveWorkerToCell(targetCell, payload)) return false;
 
     const assignments = getWeekAssignments();
+    const tasks = getTasks();
+    const sourceTask = tasks.find(task => task.id === payload.taskId);
     const fromKey = assignmentKey(
         payload.shift,
         payload.taskId,
@@ -841,60 +1201,66 @@ function moveWorkerAssignment(payload, targetCell) {
         targetCell.dataset.day
     );
     const toWorkers = assignmentWorkers(toEntry);
+    const sourceRemovedDefaults = assignmentRemovedDefaults(fromEntry);
+    const sourceDefaults = sourceTask
+        ? defaultWorkersForCell(sourceTask, payload.keyDay)
+        : [];
+    const nextSourceRemovedDefaults = sourceDefaults.includes(
+        payload.workerName
+    )
+        ? uniqueValues([...sourceRemovedDefaults, payload.workerName])
+        : sourceRemovedDefaults;
 
     persistEntryOrDelete(assignments, fromKey, {
         ...fromEntry,
-        workers: fromWorkers.filter(name => name !== payload.workerName)
+        workers: fromWorkers.filter(name => name !== payload.workerName),
+        removedDefaults: nextSourceRemovedDefaults
     });
 
     persistEntryOrDelete(assignments, toKey, {
         ...toEntry,
         workers: toWorkers.includes(payload.workerName)
             ? toWorkers
-            : [...toWorkers, payload.workerName]
+            : [...toWorkers, payload.workerName],
+        removedDefaults: assignmentRemovedDefaults(toEntry)
+            .filter(name => name !== payload.workerName)
     });
 
     saveWeekAssignments(assignments);
     return true;
 }
 
-function openTaskConfigDialog(taskId) {
+function openWorkerDefaultDialog({ taskId, workerName, shift, keyDay }) {
     const task = getTasks().find(item => item.id === taskId);
-    if (!task) return;
+    const cleanWorker = String(workerName || "").trim();
 
-    const selectedWorkers = new Set(taskDefaultWorkers(task));
-    const profiles = getProfiles()
-        .filter(isProfileActive)
-        .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    if (!task || !cleanWorker) return;
+
+    const date = parseKey(keyDay);
+    const rule = workerDefaultRule(task, cleanWorker);
     const backdrop = document.createElement("div");
     const close = () => backdrop.remove();
 
     backdrop.className = "task-assignment-dialog-backdrop";
     backdrop.innerHTML = `
-        <section class="task-assignment-dialog task-assignment-config-dialog">
+        <section class="task-assignment-dialog task-assignment-worker-default-dialog">
             <div class="task-assignment-dialog__head">
                 <div>
-                    <h3>${escapeHTML(task.title)}</h3>
-                    <span>Trabajadores preestablecidos</span>
+                    <h3>${escapeHTML(cleanWorker)}</h3>
+                    <span>${escapeHTML(task.title)} | ${escapeHTML(formatWeekday(date))} ${escapeHTML(formatShortDate(date))}</span>
                 </div>
                 <button class="icon-button" type="button" data-dialog-close aria-label="Cerrar">&times;</button>
             </div>
-            <div class="task-assignment-default-worker-field">
-                <span>Trabajadores</span>
-                <div class="task-assignment-default-worker-list">
-                    ${profiles.length
-                        ? profiles.map(profile => `
-                            <label class="task-assignment-candidate">
-                                <input type="checkbox" data-default-worker value="${escapeHTML(profile.name)}" ${selectedWorkers.has(profile.name) ? "checked" : ""}>
-                                <span>
-                                    <strong>${escapeHTML(profile.name)}</strong>
-                                    <small>${escapeHTML(profile.estamento || "Sin estamento")} | ${escapeHTML(profileProfession(profile))}</small>
-                                </span>
-                            </label>
-                        `).join("")
-                        : `<div class="empty-state empty-state--compact">Sin trabajadores activos.</div>`}
-                </div>
-            </div>
+            <label class="task-assignment-worker-default-toggle">
+                <input type="checkbox" data-worker-default-enabled checked>
+                <span>Predefinido para esta tarea</span>
+            </label>
+            <label class="task-assignment-worker-default-field">
+                <span>Periodicidad</span>
+                <select data-worker-default-interval>
+                    ${renderDefaultIntervalOptions(rule?.interval || 1)}
+                </select>
+            </label>
             <div class="task-assignment-dialog__actions">
                 <button class="secondary-button" type="button" data-dialog-cancel>Cancelar</button>
                 <button class="primary-button" type="button" data-dialog-save>Guardar</button>
@@ -903,14 +1269,37 @@ function openTaskConfigDialog(taskId) {
     `;
 
     document.body.appendChild(backdrop);
+
+    const enabledInput = backdrop.querySelector("[data-worker-default-enabled]");
+    const intervalSelect = backdrop.querySelector("[data-worker-default-interval]");
+    const syncState = () => {
+        intervalSelect.disabled = !enabledInput.checked;
+    };
+
+    enabledInput.addEventListener("change", syncState);
+    syncState();
+
     backdrop.querySelector("[data-dialog-close]")?.addEventListener("click", close);
     backdrop.querySelector("[data-dialog-cancel]")?.addEventListener("click", close);
     backdrop.querySelector("[data-dialog-save]")?.addEventListener("click", () => {
-        updateTaskDefaultWorkers(
+        updateTaskDefaultWorkerRule(
             task.id,
-            [...backdrop.querySelectorAll("[data-default-worker]:checked")]
-                .map(input => input.value)
+            cleanWorker,
+            enabledInput.checked,
+            intervalSelect.value,
+            keyDay
         );
+        syncWorkerDefaultForCurrentWeek(task.id, cleanWorker, keyDay);
+
+        if (enabledInput.checked) {
+            clearRemovedDefaultForCell(
+                shift,
+                task.id,
+                keyDay,
+                cleanWorker
+            );
+        }
+
         close();
         renderTaskAssignmentsPanel();
     });
@@ -964,12 +1353,28 @@ function bindShellEvents(root) {
         });
 
     root
-        .querySelectorAll("[data-task-config]")
-        .forEach(button => {
-            button.onclick = () => {
-                openTaskConfigDialog(button.dataset.taskConfig);
-            };
+        .querySelectorAll(".task-assignment-multiselect[data-filter-group]")
+        .forEach(control => {
+            control.addEventListener("toggle", () => {
+                if (control.open) {
+                    openTaskFilterGroup = control.dataset.filterGroup;
+                } else if (
+                    openTaskFilterGroup === control.dataset.filterGroup
+                ) {
+                    openTaskFilterGroup = "";
+                }
+            });
         });
+
+    if (unbindTaskFilterOutside) {
+        unbindTaskFilterOutside();
+    }
+    unbindTaskFilterOutside = bindMultiSelectOutsideClose(
+        root,
+        () => {
+            openTaskFilterGroup = "";
+        }
+    );
 
     root
         .querySelectorAll("[data-task-drag]")
@@ -1028,6 +1433,14 @@ function bindShellEvents(root) {
         .querySelectorAll("[data-worker-drag]")
         .forEach(chip => {
             chip.ondragstart = event => {
+                if (
+                    event.target instanceof Element &&
+                    event.target.closest("[data-worker-default-config]")
+                ) {
+                    event.preventDefault();
+                    return;
+                }
+
                 draggedTask = null;
                 draggedWorker = {
                     workerName: chip.dataset.workerDrag,
@@ -1050,6 +1463,24 @@ function bindShellEvents(root) {
                 chip.classList.remove("is-dragging");
                 draggedWorker = null;
             };
+        });
+
+    root
+        .querySelectorAll("[data-worker-default-config]")
+        .forEach(button => {
+            button.addEventListener("click", event => {
+                event.preventDefault();
+                event.stopPropagation();
+                openWorkerDefaultDialog({
+                    workerName: button.dataset.workerDefaultConfig,
+                    taskId: button.dataset.workerTask,
+                    shift: button.dataset.workerShift,
+                    keyDay: button.dataset.workerDay
+                });
+            });
+            button.addEventListener("dragstart", event => {
+                event.preventDefault();
+            });
         });
 
     root
@@ -1092,6 +1523,7 @@ function bindShellEvents(root) {
     root
         .querySelector("[data-filter-group='roles']")
         ?.addEventListener("change", () => {
+            openTaskFilterGroup = "roles";
             selectedRoles = selectedValues(
                 root,
                 "[name='taskRole']",
@@ -1103,6 +1535,7 @@ function bindShellEvents(root) {
     root
         .querySelector("[data-filter-group='professions']")
         ?.addEventListener("change", () => {
+            openTaskFilterGroup = "professions";
             selectedProfessions = selectedValues(
                 root,
                 "[name='taskProfession']",
@@ -1151,13 +1584,21 @@ function openAssignmentDialog({ shift, taskId, keyDay }) {
     const professions = availableProfessions();
     let dialogRoles = null;
     let dialogProfessions = null;
+    let openDialogFilterGroup = "";
+    let unbindDialogFilterOutside = null;
     let note = entry.note || "";
     const backdrop = document.createElement("div");
 
     backdrop.className = "task-assignment-dialog-backdrop";
     document.body.appendChild(backdrop);
 
-    const close = () => backdrop.remove();
+    const close = () => {
+        if (unbindDialogFilterOutside) {
+            unbindDialogFilterOutside();
+            unbindDialogFilterOutside = null;
+        }
+        backdrop.remove();
+    };
     const collectDialogFilters = () => {
         dialogRoles = selectedValues(
             backdrop,
@@ -1203,11 +1644,11 @@ function openAssignmentDialog({ shift, taskId, keyDay }) {
                 <div class="task-assignment-dialog__filters">
                     <div>
                         <strong>Estamento</strong>
-                        ${renderFilterChips("dialogTaskRole", roles, dialogRoles, "dialog-roles")}
+                        ${renderMultiSelectFilter("dialogTaskRole", roles, dialogRoles, "dialog-roles", openDialogFilterGroup)}
                     </div>
                     <div>
                         <strong>Profesi&oacute;n</strong>
-                        ${renderFilterChips("dialogTaskProfession", professions, dialogProfessions, "dialog-professions")}
+                        ${renderMultiSelectFilter("dialogTaskProfession", professions, dialogProfessions, "dialog-professions", openDialogFilterGroup)}
                     </div>
                 </div>
                 <div class="task-assignment-candidates" data-candidate-list>
@@ -1239,15 +1680,45 @@ function openAssignmentDialog({ shift, taskId, keyDay }) {
 
         backdrop.querySelector("[data-dialog-close]")?.addEventListener("click", close);
         backdrop.querySelector("[data-dialog-cancel]")?.addEventListener("click", close);
+        backdrop
+            .querySelectorAll(".task-assignment-multiselect[data-filter-group]")
+            .forEach(control => {
+                control.addEventListener("toggle", () => {
+                    if (control.open) {
+                        openDialogFilterGroup = control.dataset.filterGroup;
+                    } else if (
+                        openDialogFilterGroup ===
+                        control.dataset.filterGroup
+                    ) {
+                        openDialogFilterGroup = "";
+                    }
+                });
+            });
+        if (unbindDialogFilterOutside) {
+            unbindDialogFilterOutside();
+        }
+        unbindDialogFilterOutside = bindMultiSelectOutsideClose(
+            backdrop,
+            () => {
+                openDialogFilterGroup = "";
+            }
+        );
         backdrop.querySelector("[data-dialog-save]")?.addEventListener("click", () => {
             collectVisibleWorkers();
             const nextWorkers = [...selectedWorkers];
             const nextNote = note.trim();
+            const nextRemovedDefaults = defaultWorkersForCell(task, keyDay)
+                .filter(worker => !selectedWorkers.has(worker));
 
-            if (nextWorkers.length || nextNote) {
+            if (
+                nextWorkers.length ||
+                nextNote ||
+                nextRemovedDefaults.length
+            ) {
                 assignments[cellKey] = {
                     workers: nextWorkers,
-                    note: nextNote
+                    note: nextNote,
+                    removedDefaults: nextRemovedDefaults
                 };
             } else {
                 delete assignments[cellKey];
@@ -1262,6 +1733,10 @@ function openAssignmentDialog({ shift, taskId, keyDay }) {
             .querySelectorAll("[name='dialogTaskRole'], [name='dialogTaskProfession']")
             .forEach(input => {
                 input.addEventListener("change", () => {
+                    openDialogFilterGroup =
+                        input.name === "dialogTaskRole"
+                            ? "dialog-roles"
+                            : "dialog-professions";
                     collectVisibleWorkers();
                     collectDialogFilters();
                     render();
@@ -1324,7 +1799,7 @@ function eventsExcelTable(days) {
                         const absences = absenceProfiles(day)
                             .map(item => `${item.profile.name} | ${item.label}`);
                         const birthdays = birthdayProfiles(day)
-                            .map(profile => `${profile.name} | Cumpleanos`);
+                            .map(profile => `${profile.name} | Cumplea\u00f1os`);
 
                         return `<td>${escapeHTML([...absences, ...birthdays].join(" / "))}</td>`;
                     }).join("")}
@@ -1353,7 +1828,7 @@ function exportTaskAssignmentsExcel() {
                 </style>
             </head>
             <body>
-                <h1>Asignacion de Tareas - ${escapeHTML(formatShortDate(days[0]))} al ${escapeHTML(formatShortDate(days[6]))}</h1>
+                <h1>Asignaci\u00f3n de Tareas - ${escapeHTML(formatShortDate(days[0]))} al ${escapeHTML(formatShortDate(days[6]))}</h1>
                 ${excelTableForShift("day", tasks, days, assignments)}
                 ${excelTableForShift("night", tasks, days, assignments)}
                 ${eventsExcelTable(days)}
@@ -1374,11 +1849,17 @@ function exportTaskAssignmentsExcel() {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-export function renderTaskAssignmentsPanel() {
+export async function renderTaskAssignmentsPanel() {
     const root = document.getElementById("taskAssignmentsPanel");
 
     if (!root) return;
 
-    root.innerHTML = renderShell();
+    const token = ++renderToken;
+    const days = weekDays();
+    const holidays = await holidayMapForDays(days);
+
+    if (token !== renderToken) return;
+
+    root.innerHTML = renderShell(holidays);
     bindShellEvents(root);
 }
