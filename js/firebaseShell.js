@@ -13,6 +13,7 @@ import {
     prepareWorkspaceInvitation,
     setActiveWorkspace
 } from "./workspaces.js";
+import { replaceLocalSnapshot } from "./persistence.js";
 import {
     acceptWorkspaceLink,
     listWorkspaceLinks,
@@ -598,13 +599,17 @@ async function handleAction(action, backdrop, sourceButton = null) {
                 setLoginGateActive(true);
             }
 
-            await signOutFirebase();
             setActiveWorkspace(null);
             currentWorkspace = null;
             workspaceList = [];
-            closeModal(backdrop, { force: true });
             updateTopbar();
-            options.onWorkspaceChange?.(currentWorkspace);
+            await options.onWorkspaceChange?.(currentWorkspace);
+            replaceLocalSnapshot({}, { silent: true });
+            await signOutFirebase();
+
+            if (!loginGateEnabled) {
+                closeModal(backdrop, { force: true });
+            }
             return;
         }
 
@@ -666,11 +671,13 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
             currentWorkspace =
                 await createWorkspace(currentUser, input?.value);
+            await options.onWorkspaceChange?.(null);
+            replaceLocalSnapshot({}, { silent: true });
             await refreshWorkspaces();
             await refreshLinkedUnits();
             linkedUnitState.message = "";
             updateTopbar();
-            options.onWorkspaceChange?.(currentWorkspace);
+            await options.onWorkspaceChange?.(currentWorkspace);
             renderSignedInModal(backdrop);
             return;
         }

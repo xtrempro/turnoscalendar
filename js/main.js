@@ -2,7 +2,8 @@ import {
     prevMonth,
     nextMonth,
     currentDate,
-    renderCalendar
+    renderCalendar,
+    goToCalendarMonth
 } from "./calendar.js";
 import {
     pushHistory,
@@ -29,6 +30,28 @@ import {
     startFirebaseAppStateSync,
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
+import {
+    startFirebaseReplacementRequestSync,
+    stopFirebaseReplacementRequestSync
+} from "./firebaseReplacementRequests.js";
+import {
+    startFirebaseWorkerRequestSync,
+    stopFirebaseWorkerRequestSync
+} from "./firebaseWorkerRequests.js";
+import {
+    scheduleWorkerAppDataPublish,
+    startWorkerAppDataSync,
+    stopWorkerAppDataSync
+} from "./workerAppDataSync.js";
+import {
+    startWorkerAvailabilitySync,
+    stopWorkerAvailabilitySync
+} from "./workerAvailability.js";
+import {
+    initSupervisorMessages,
+    startSupervisorMessages,
+    stopSupervisorMessages
+} from "./supervisorMessages.js";
 import {
     buildAssignedShiftReportPreviewHTML,
     buildDiurnoReportPreviewHTML,
@@ -125,6 +148,7 @@ import {
     startWorkerRequestsRealtimeSync,
     stopWorkerRequestsRealtimeSync
 } from "./workerRequests.js";
+import { openWorkerAppInviteDialog } from "./workerAppInvites.js";
 import {
     createReplacementContractMemoTask,
     renderMemosPanel,
@@ -182,6 +206,7 @@ const PROFILE_MODE = {
 };
 
 const THEME_KEY = "proturnos_theme";
+const PROFILE_BIRTH_DATE_DEFAULT = "2000-01-01";
 
 let selectionMode = null;
 let pendingRotationChange = null;
@@ -1476,7 +1501,7 @@ function clearDraftValues(){
     profileDraft.email = "";
     profileDraft.rut = "";
     profileDraft.phone = "";
-    profileDraft.birthDate = "";
+    profileDraft.birthDate = PROFILE_BIRTH_DATE_DEFAULT;
     profileDraft.docs = [];
     profileDraft.active = true;
     profileDraft.unit = "";
@@ -1576,6 +1601,77 @@ function hasRotationChanged() {
                 )
         )
     );
+}
+
+function getDraftUnitEntryDate() {
+    return normalizeStoredStart(profileDraft.unitEntryDate || "");
+}
+
+function isBeforeDraftUnitEntryDate(value) {
+    const unitEntryDate = getDraftUnitEntryDate();
+
+    return Boolean(
+        value &&
+        unitEntryDate &&
+        compareISODate(value, unitEntryDate) < 0
+    );
+}
+
+function rotationStartBeforeUnitEntryMessage(
+    value,
+    unitEntryDate = getDraftUnitEntryDate()
+) {
+    return `La rotativa no puede comenzar el ${formatDisplayDate(value)} porque la fecha de ingreso a la unidad es ${formatDisplayDate(unitEntryDate)}.`;
+}
+
+function shouldRequireUnitEntryForRotation() {
+    return Boolean(
+        !isReplacementDraft() &&
+        requiresRotationStart(profileDraft.rotationType) &&
+        (
+            profileDraft.mode === PROFILE_MODE.CREATE ||
+            hasRotationChanged()
+        )
+    );
+}
+
+function isFirstProfileRotationConfig(type = profileDraft.rotationType) {
+    if (profileDraft.mode === PROFILE_MODE.CREATE) {
+        return true;
+    }
+
+    if (profileDraft.mode !== PROFILE_MODE.EDIT) {
+        return !profileDraft.rotationStart;
+    }
+
+    return (
+        !profileDraft.originalRotationType ||
+        (
+            requiresRotationStart(profileDraft.originalRotationType) &&
+            !profileDraft.originalRotationStart
+        )
+    );
+}
+
+function getRotationConfigDefaultStart(type = profileDraft.rotationType) {
+    if (!requiresRotationStart(type)) {
+        return "";
+    }
+
+    const unitEntryDate = getDraftUnitEntryDate();
+    const candidate = isFirstProfileRotationConfig(type)
+        ? unitEntryDate
+        : toInputDate(new Date());
+
+    if (
+        unitEntryDate &&
+        candidate &&
+        compareISODate(candidate, unitEntryDate) < 0
+    ) {
+        return unitEntryDate;
+    }
+
+    return candidate;
 }
 
 function hasGradeValueChanged() {
@@ -2198,11 +2294,14 @@ function handleContractDatePick(key) {
 }
 
 function getRotationModalMonth(type) {
+    const defaultStart = getRotationConfigDefaultStart(type);
     const source =
         type === "reemplazo"
             ? profileDraft.contractStart ||
-                profileDraft.rotationStart
-            : profileDraft.rotationStart;
+                profileDraft.rotationStart ||
+                getDraftUnitEntryDate()
+            : profileDraft.rotationStart ||
+                defaultStart;
     const date = source
         ? parseInputDate(source)
         : new Date();
@@ -2220,9 +2319,13 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
     const profile = getPerfilActual();
     const isReplacement = type === "reemplazo";
     const isHonoraria = !isReplacement && isHonorariaDraft();
+    const defaultRotationStart =
+        getRotationConfigDefaultStart(type);
     const state = {
         monthDate: getRotationModalMonth(type),
-        rotationStart: profileDraft.rotationStart,
+        rotationStart: isReplacement
+            ? profileDraft.rotationStart
+            : profileDraft.rotationStart || defaultRotationStart,
         firstTurn: normalizeRotationFirstTurnForType(
             type,
             profileDraft.rotationFirstTurn
@@ -2233,11 +2336,197 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         contractReason: profileDraft.contractReason || ""
     };
     const backdrop = document.createElement("div");
+    let monthPicker = null;
+    let monthPickerAnchor = null;
+    let monthPickerYear = state.monthDate.getFullYear();
+    let monthPickerListenersBound = false;
+    const handleRotationMonthPickerOutsideClick = () => {
+        closeRotationMonthPicker();
+    };
+    const handleRotationMonthPickerKeydown = event => {
+        if (event.key === "Escape") {
+            closeRotationMonthPicker();
+        }
+    };
 
     backdrop.className = "turn-change-dialog-backdrop";
     document.body.appendChild(backdrop);
 
-    const close = () => backdrop.remove();
+    const close = () => {
+        closeRotationMonthPicker();
+        if (monthPickerListenersBound) {
+            monthPickerListenersBound = false;
+            document.removeEventListener(
+                "click",
+                handleRotationMonthPickerOutsideClick
+            );
+            document.removeEventListener(
+                "keydown",
+                handleRotationMonthPickerKeydown
+            );
+            window.removeEventListener(
+                "resize",
+                positionRotationMonthPicker
+            );
+            window.removeEventListener(
+                "scroll",
+                positionRotationMonthPicker,
+                true
+            );
+        }
+        monthPicker?.remove();
+        monthPicker = null;
+        backdrop.remove();
+    };
+    const closeRotationMonthPicker = () => {
+        if (!monthPicker) return;
+
+        monthPicker.classList.add("hidden");
+        monthPickerAnchor?.setAttribute("aria-expanded", "false");
+        monthPickerAnchor = null;
+    };
+    const positionRotationMonthPicker = () => {
+        if (
+            !monthPickerAnchor ||
+            !monthPicker ||
+            monthPicker.classList.contains("hidden")
+        ) {
+            return;
+        }
+
+        const gap = 8;
+        const edge = 12;
+        const triggerRect = monthPickerAnchor.getBoundingClientRect();
+        const pickerRect = monthPicker.getBoundingClientRect();
+        const left = Math.min(
+            Math.max(
+                edge,
+                triggerRect.left +
+                    (triggerRect.width - pickerRect.width) / 2
+            ),
+            window.innerWidth - pickerRect.width - edge
+        );
+        const preferredTop = triggerRect.bottom + gap;
+        const top =
+            preferredTop + pickerRect.height <= window.innerHeight - edge
+                ? preferredTop
+                : Math.max(edge, triggerRect.top - pickerRect.height - gap);
+
+        monthPicker.style.left = `${Math.round(left)}px`;
+        monthPicker.style.top = `${Math.round(top)}px`;
+    };
+    const ensureRotationMonthPicker = () => {
+        if (monthPicker) return;
+
+        monthPicker = document.createElement("div");
+        monthPicker.className = "calendar-month-picker hidden";
+        monthPicker.setAttribute("role", "dialog");
+        monthPicker.setAttribute(
+            "aria-label",
+            "Seleccionar mes y a\u00f1o de rotativa"
+        );
+        document.body.appendChild(monthPicker);
+
+        monthPicker.addEventListener("click", event => {
+            event.stopPropagation();
+        });
+        if (!monthPickerListenersBound) {
+            monthPickerListenersBound = true;
+            document.addEventListener(
+                "click",
+                handleRotationMonthPickerOutsideClick
+            );
+            document.addEventListener(
+                "keydown",
+                handleRotationMonthPickerKeydown
+            );
+            window.addEventListener("resize", positionRotationMonthPicker);
+            window.addEventListener(
+                "scroll",
+                positionRotationMonthPicker,
+                true
+            );
+        }
+    };
+    const renderRotationMonthPicker = () => {
+        if (!monthPicker) return;
+
+        const activeYear = state.monthDate.getFullYear();
+        const activeMonth = state.monthDate.getMonth();
+
+        monthPicker.innerHTML = `
+            <div class="calendar-month-picker__year">
+                <button class="calendar-month-picker__year-button" type="button" data-rotation-modal-year-step="-1" aria-label="A&#241;o anterior">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                </button>
+                <strong>${monthPickerYear}</strong>
+                <button class="calendar-month-picker__year-button" type="button" data-rotation-modal-year-step="1" aria-label="A&#241;o siguiente">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="9 18 15 12 9 6"></polyline>
+                    </svg>
+                </button>
+            </div>
+            <div class="calendar-month-picker__months">
+                ${REPORT_MONTH_NAMES.map((name, month) => `
+                    <button
+                        class="calendar-month-picker__month${monthPickerYear === activeYear && month === activeMonth ? " is-active" : ""}"
+                        type="button"
+                        data-rotation-modal-month="${month}"
+                    >
+                        ${name}
+                    </button>
+                `).join("")}
+            </div>
+        `;
+
+        monthPicker
+            .querySelectorAll("[data-rotation-modal-year-step]")
+            .forEach(button => {
+                button.onclick = event => {
+                    event.stopPropagation();
+                    monthPickerYear += Number(
+                        button.dataset.rotationModalYearStep
+                    );
+                    renderRotationMonthPicker();
+                    positionRotationMonthPicker();
+                };
+            });
+
+        monthPicker
+            .querySelectorAll("[data-rotation-modal-month]")
+            .forEach(button => {
+                button.onclick = event => {
+                    event.stopPropagation();
+                    state.monthDate = new Date(
+                        monthPickerYear,
+                        Number(button.dataset.rotationModalMonth),
+                        1
+                    );
+                    closeRotationMonthPicker();
+                    render();
+                };
+            });
+    };
+    const openRotationMonthPicker = trigger => {
+        ensureRotationMonthPicker();
+
+        if (
+            monthPickerAnchor === trigger &&
+            !monthPicker.classList.contains("hidden")
+        ) {
+            closeRotationMonthPicker();
+            return;
+        }
+
+        monthPickerAnchor = trigger;
+        monthPickerYear = state.monthDate.getFullYear();
+        renderRotationMonthPicker();
+        monthPicker.classList.remove("hidden");
+        trigger.setAttribute("aria-expanded", "true");
+        positionRotationMonthPicker();
+    };
     const pickDate = key => {
         const selected = calendarKeyToInputDate(key);
 
@@ -2253,6 +2542,11 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 state.contractEnd = selected;
             }
         } else {
+            if (isBeforeDraftUnitEntryDate(selected)) {
+                alert(rotationStartBeforeUnitEntryMessage(selected));
+                return;
+            }
+
             if (
                 isHonoraria &&
                 (
@@ -2314,6 +2608,11 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         } else {
             if (!state.rotationStart) {
                 alert("Debes seleccionar desde que fecha comenzara la rotativa.");
+                return;
+            }
+
+            if (isBeforeDraftUnitEntryDate(state.rotationStart)) {
+                alert(rotationStartBeforeUnitEntryMessage(state.rotationStart));
                 return;
             }
 
@@ -2381,10 +2680,20 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                     compareISODate(iso, profileDraft.honorariaStart) < 0 ||
                     compareISODate(iso, profileDraft.honorariaEnd) > 0
                 );
+            const beforeUnitEntry =
+                !isReplacement &&
+                isBeforeDraftUnitEntryDate(iso);
 
             cell.type = "button";
             cell.className = "profile-mini-day is-pickable";
             cell.dataset.key = key;
+
+            if (beforeUnitEntry) {
+                cell.classList.add("is-contract-disabled");
+                cell.disabled = true;
+                cell.title =
+                    `Anterior al ingreso a la unidad (${formatDisplayDate(getDraftUnitEntryDate())}).`;
+            }
 
             if (outsideHonorariaContract) {
                 cell.classList.add("is-contract-disabled");
@@ -2434,6 +2743,8 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         return `${html}</div>`;
     };
     const render = () => {
+        closeRotationMonthPicker();
+
         const heading = state.monthDate.toLocaleString(
             "es-CL",
             {
@@ -2497,7 +2808,9 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
 
                 <div class="profile-mini-head rotation-modal-head">
                     <button type="button" data-action="prev" aria-label="Mes anterior">&lt;</button>
-                    <strong>${heading}</strong>
+                    <button class="profile-mini-month-trigger" type="button" data-action="pick-month" aria-label="Elegir mes y a&#241;o" aria-haspopup="dialog" aria-expanded="false">
+                        ${escapeHTML(heading)}
+                    </button>
                     <button type="button" data-action="next" aria-label="Mes siguiente">&gt;</button>
                 </div>
 
@@ -2537,7 +2850,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             });
     };
 
-    backdrop.addEventListener("click", event => {
+    backdrop.addEventListener("click", async event => {
         if (event.target === backdrop) {
             close();
             return;
@@ -2549,7 +2862,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 : event.target.parentElement;
         const dayButton =
             targetElement?.closest(".profile-mini-day");
-        if (dayButton?.dataset.key) {
+        if (dayButton?.dataset.key && !dayButton.disabled) {
             pickDate(dayButton.dataset.key);
             return;
         }
@@ -2578,6 +2891,12 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 1
             );
             render();
+            return;
+        }
+
+        if (action === "pick-month") {
+            event.stopPropagation();
+            openRotationMonthPicker(actionButton);
             return;
         }
 
@@ -2684,7 +3003,7 @@ function openCalendarRotationConfigModal() {
         render();
     });
 
-    backdrop.addEventListener("click", event => {
+    backdrop.addEventListener("click", async event => {
         if (event.target === backdrop) {
             close();
             return;
@@ -2729,6 +3048,13 @@ function openCalendarRotationConfigModal() {
             };
 
             close();
+            const today = new Date();
+
+            await goToCalendarMonth(
+                today.getFullYear(),
+                today.getMonth(),
+                { deferHeavy: true }
+            );
             activarModo(
                 "rotation",
                 `Modificar rotativa: selecciona en el calendario desde que dia comenzara ${getRotativaLabel(pendingRotationChange.type)}.`
@@ -2750,6 +3076,8 @@ async function applyCalendarRotationChange(fecha) {
 
     const startISO = toInputDate(fecha);
     const type = pending.type;
+    const unitEntryDate =
+        normalizeStoredStart(profile.unitEntryDate || "");
     const firstTurn =
         requiresRotationFirstTurn(type)
             ? normalizeRotationFirstTurnForType(type, pending.firstTurn)
@@ -2760,6 +3088,20 @@ async function applyCalendarRotationChange(fecha) {
         !profileSupportsLibreRotation(profile)
     ) {
         alert("La rotativa Libre solo esta disponible para contratos Reemplazo u Honorarios.");
+        return;
+    }
+
+    if (
+        unitEntryDate &&
+        startISO &&
+        compareISODate(startISO, unitEntryDate) < 0
+    ) {
+        alert(
+            rotationStartBeforeUnitEntryMessage(
+                startISO,
+                unitEntryDate
+            )
+        );
         return;
     }
 
@@ -3341,6 +3683,9 @@ function renderProfileRotationMiniCalendar() {
                 compareISODate(iso, profileDraft.honorariaStart) < 0 ||
                 compareISODate(iso, profileDraft.honorariaEnd) > 0
             );
+        const beforeUnitEntry =
+            !isReplacementContract &&
+            isBeforeDraftUnitEntryDate(iso);
 
         if (selectedKey === key) {
             cell.classList.add("is-selected");
@@ -3369,10 +3714,16 @@ function renderProfileRotationMiniCalendar() {
             }
         }
 
-        if (canPick && !outsideHonorariaContract) {
+        if (canPick && !outsideHonorariaContract && !beforeUnitEntry) {
             cell.classList.add("is-pickable");
         } else {
             cell.disabled = true;
+        }
+
+        if (beforeUnitEntry) {
+            cell.classList.add("is-contract-disabled");
+            cell.title =
+                `Anterior al ingreso a la unidad (${formatDisplayDate(getDraftUnitEntryDate())}).`;
         }
 
         if (outsideHonorariaContract) {
@@ -3438,8 +3789,14 @@ function renderProfileRotationMiniCalendar() {
                 }
 
                 const date = parseKey(button.dataset.key);
+                const startISO = toInputDate(date);
 
-                profileDraft.rotationStart = toInputDate(date);
+                if (isBeforeDraftUnitEntryDate(startISO)) {
+                    alert(rotationStartBeforeUnitEntryMessage(startISO));
+                    return;
+                }
+
+                profileDraft.rotationStart = startISO;
                 renderDashboardState();
             };
         });
@@ -3969,6 +4326,7 @@ function renderDashboardState() {
     DOM.profileRutInput.value = data.rut || "";
     syncRutValidity(false);
     DOM.profilePhoneInput.value = data.phone || "";
+    delete DOM.profileBirthDateInput.dataset.birthDatePickerDefault;
     DOM.profileBirthDateInput.value = data.birthDate || "";
     DOM.profileUnitEntryDateInput.value = data.unitEntryDate || "";
     DOM.profileContractTypeSelect.value = data.contractType || "";
@@ -4161,6 +4519,18 @@ function renderDashboardState() {
         !profileCanEdit ||
         profileDraft.mode === PROFILE_MODE.CREATE ||
         (!profile && profileDraft.mode !== PROFILE_MODE.EDIT);
+
+    if (DOM.workerAppInviteBtn) {
+        const canInviteWorker =
+            profileCanEdit &&
+            Boolean(profile) &&
+            profileDraft.mode === PROFILE_MODE.VIEW;
+
+        DOM.workerAppInviteBtn.disabled = !canInviteWorker;
+        DOM.workerAppInviteBtn.title = canInviteWorker
+            ? "Enviar enlace para la app del trabajador"
+            : "Selecciona un trabajador guardado para enviar el enlace";
+    }
 
     syncHoursMonthControls(
         activeView === "hours"
@@ -6595,6 +6965,19 @@ function handleRotationSelectionChange() {
     }
 
     if (
+        requiresRotationStart(profileDraft.rotationType) &&
+        !getDraftUnitEntryDate()
+    ) {
+        alert("Ingresa primero la fecha de ingreso a la unidad para configurar la rotativa.");
+        profileDraft.rotationType = "";
+        profileDraft.rotationStart = "";
+        profileDraft.rotationFirstTurn = "larga";
+        DOM.profileRotationSelect.value = "";
+        renderDashboardState();
+        return;
+    }
+
+    if (
         isHonorariaDraft() &&
         (
             !profileDraft.honorariaStart ||
@@ -6651,6 +7034,12 @@ function validateDraft() {
 
     if (!profileDraft.name.trim()) missing.push("nombre");
     if (!profileDraft.estamento) missing.push("estamento");
+    if (
+        shouldRequireUnitEntryForRotation() &&
+        !getDraftUnitEntryDate()
+    ) {
+        missing.push("fecha de ingreso a la unidad");
+    }
     if (
         profileDraft.rotationType === "libre" &&
         !supportsLibreRotation()
@@ -6713,6 +7102,15 @@ function validateDraft() {
         !profileDraft.rotationFirstTurn
     ) {
         missing.push("turno inicial de rotativa");
+    }
+
+    if (
+        !isReplacementDraft() &&
+        profileDraft.rotationStart &&
+        isBeforeDraftUnitEntryDate(profileDraft.rotationStart)
+    ) {
+        alert(rotationStartBeforeUnitEntryMessage(profileDraft.rotationStart));
+        return false;
     }
 
     if (
@@ -8324,6 +8722,44 @@ function initTheme() {
     };
 }
 
+function primeBirthDatePickerDefault() {
+    const field = DOM.profileBirthDateInput;
+
+    if (
+        !field ||
+        !isProfileEditing() ||
+        field.disabled ||
+        field.value ||
+        profileDraft.birthDate
+    ) {
+        return;
+    }
+
+    field.value = PROFILE_BIRTH_DATE_DEFAULT;
+    field.dataset.birthDatePickerDefault = "true";
+}
+
+function commitBirthDateInput() {
+    if (!isProfileEditing()) return;
+
+    delete DOM.profileBirthDateInput.dataset.birthDatePickerDefault;
+    profileDraft.birthDate = DOM.profileBirthDateInput.value;
+}
+
+function clearUnusedBirthDatePickerDefault() {
+    const field = DOM.profileBirthDateInput;
+
+    if (
+        field?.dataset.birthDatePickerDefault === "true" &&
+        !profileDraft.birthDate &&
+        field.value === PROFILE_BIRTH_DATE_DEFAULT
+    ) {
+        field.value = "";
+    }
+
+    delete field?.dataset.birthDatePickerDefault;
+}
+
 function bindProfileForm() {
     DOM.profileNameInput.oninput = () => {
         if (!isProfileEditing()) return;
@@ -8355,10 +8791,16 @@ function bindProfileForm() {
         profileDraft.phone = phone;
     };
 
-    DOM.profileBirthDateInput.onchange = () => {
-        if (!isProfileEditing()) return;
-        profileDraft.birthDate = DOM.profileBirthDateInput.value;
-    };
+    DOM.profileBirthDateInput.onpointerdown =
+        primeBirthDatePickerDefault;
+    DOM.profileBirthDateInput.onfocus =
+        primeBirthDatePickerDefault;
+    DOM.profileBirthDateInput.oninput =
+        commitBirthDateInput;
+    DOM.profileBirthDateInput.onchange =
+        commitBirthDateInput;
+    DOM.profileBirthDateInput.onblur =
+        clearUnusedBirthDatePickerDefault;
 
     DOM.profileDocsInput.onchange = async () => {
         if (!isProfileEditing()) return;
@@ -8584,6 +9026,11 @@ function bindProfileForm() {
 
         startEditMode();
     };
+
+    if (DOM.workerAppInviteBtn) {
+        DOM.workerAppInviteBtn.onclick = () =>
+            openWorkerAppInviteDialog(getPerfilActual());
+    }
 
     if (DOM.availabilityEditBtn) {
         DOM.availabilityEditBtn.onclick = handleAvailabilityEdit;
@@ -9290,6 +9737,16 @@ window.addEventListener("proturnos:workerRequestsChanged", () => {
     refreshAll();
 });
 
+window.addEventListener("proturnos:replacementRequestsChanged", () => {
+    if (document.body.dataset.activeView === "requests") {
+        renderWorkerRequestsPanel();
+    } else {
+        refreshWorkerRequestsNavBadge();
+    }
+
+    refreshAll();
+});
+
 window.addEventListener("proturnos:memosChanged", () => {
     if (document.body.dataset.activeView === "memos") {
         renderMemosPanel();
@@ -9302,6 +9759,42 @@ window.addEventListener("proturnos:auditUndoApplied", () => {
     refreshAll();
 });
 
+function syncWorkspaceStateViews() {
+    const profiles = getProfiles();
+    const current = getCurrentProfile();
+
+    if (
+        profiles.length &&
+        !profiles.some(profile =>
+            profile.name === current
+        )
+    ) {
+        setCurrentProfile(profiles[0].name);
+    }
+
+    if (!profiles.length) {
+        setCurrentProfile(null);
+    }
+
+    renderProfiles({ dashboard: false });
+    renderBotones();
+    if (
+        document.body.dataset.activeView ===
+        "requests"
+    ) {
+        renderWorkerRequestsPanel();
+    } else {
+        refreshWorkerRequestsNavBadge();
+    }
+    if (document.body.dataset.activeView === "tasks") {
+        renderTaskAssignmentsPanel();
+    }
+    if (document.body.dataset.activeView === "kanban") {
+        renderKanbanBoard();
+    }
+    refreshAll();
+}
+
 initTheme();
 initTurnosSidePanelSync();
 initSystemSettings({
@@ -9310,12 +9803,21 @@ initSystemSettings({
         refreshAll();
     }
 });
+initSupervisorMessages({
+    button: DOM.floatingMessagesBtn,
+    badge: DOM.floatingMessagesBadge
+});
 initFirebaseShell({
     userChip: DOM.authUserChip,
     userName: DOM.authUserName,
     onAuthChange: async user => {
         if (!user) {
             stopFirebaseAppStateSync();
+            stopFirebaseReplacementRequestSync();
+            stopFirebaseWorkerRequestSync();
+            stopWorkerAppDataSync();
+            stopWorkerAvailabilitySync();
+            stopSupervisorMessages();
             stopWorkspacePermissionListener();
         }
 
@@ -9335,45 +9837,41 @@ initFirebaseShell({
                 renderDashboardState();
             });
             startWorkerRequestsRealtimeSync(workspace);
+            startWorkerAppDataSync(workspace);
+            startWorkerAvailabilitySync(workspace, {
+                onChange: () => {
+                    refreshAll();
+                    scheduleWorkerAppDataPublish(300);
+                }
+            });
+            startSupervisorMessages(workspace);
+            startFirebaseWorkerRequestSync(workspace, {
+                onChange: () => {
+                    window.dispatchEvent(
+                        new CustomEvent("proturnos:workerRequestsChanged")
+                    );
+                }
+            });
+            startFirebaseReplacementRequestSync(workspace, {
+                onChange: () => {
+                    window.dispatchEvent(
+                        new CustomEvent("proturnos:replacementRequestsChanged")
+                    );
+                }
+            });
             startFirebaseAppStateSync(workspace, {
                 onChange: () => {
-                    const profiles = getProfiles();
-                    const current = getCurrentProfile();
-
-                    if (
-                        profiles.length &&
-                        !profiles.some(profile =>
-                            profile.name === current
-                        )
-                    ) {
-                        setCurrentProfile(profiles[0].name);
-                    }
-
-                    if (!profiles.length) {
-                        setCurrentProfile(null);
-                    }
-
-                    renderProfiles({ dashboard: false });
-                    renderBotones();
-                    if (
-                        document.body.dataset.activeView ===
-                        "requests"
-                    ) {
-                        renderWorkerRequestsPanel();
-                    } else {
-                        refreshWorkerRequestsNavBadge();
-                    }
-                    if (document.body.dataset.activeView === "tasks") {
-                        renderTaskAssignmentsPanel();
-                    }
-                    if (document.body.dataset.activeView === "kanban") {
-                        renderKanbanBoard();
-                    }
-                    refreshAll();
+                    syncWorkspaceStateViews();
+                    scheduleWorkerAppDataPublish(300);
                 }
             });
         } else {
             stopWorkerRequestsRealtimeSync();
+            stopFirebaseReplacementRequestSync();
+            stopFirebaseWorkerRequestSync();
+            stopWorkerAppDataSync();
+            stopWorkerAvailabilitySync();
+            stopSupervisorMessages();
             stopFirebaseAppStateSync();
             stopWorkspacePermissionListener();
             await loadWorkspacePermissions(workspace);
@@ -9381,7 +9879,7 @@ initFirebaseShell({
             syncCalendarDirectEditToggle();
         }
 
-        refreshAll();
+        syncWorkspaceStateViews();
         if (document.body.dataset.activeView === "tasks") {
             renderTaskAssignmentsPanel();
         }

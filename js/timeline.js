@@ -45,6 +45,7 @@ import {
     getHourReturn,
     hourReturnTimelineMarker
 } from "./hourReturns.js";
+import { getBlockedDayForProfile } from "./workerAvailability.js";
 
 const timelineFilterState = {
     anchorProfile: "",
@@ -466,6 +467,14 @@ function timelineCellBackground(color, isInhabil) {
     return `linear-gradient(rgba(239, 68, 68, 0.18), rgba(239, 68, 68, 0.18)), ${color}`;
 }
 
+function timelineBlockedDayBackground(isInhabil) {
+    const overlay = isInhabil
+        ? "rgba(71, 85, 105, 0.28)"
+        : "rgba(100, 116, 139, 0.24)";
+
+    return `linear-gradient(135deg, ${overlay}, rgba(148, 163, 184, 0.22)), var(--timeline-empty)`;
+}
+
 async function buildTimelineRows(
     grupo,
     actual,
@@ -738,9 +747,13 @@ export async function renderTimeline(){
             const color = getColor(profile.name, key);
             const date = new Date(year, month, d);
             const isInhabil = !isBusinessDay(date, holidays);
+            const workerBlockedDay =
+                getBlockedDayForProfile(profile.name, key);
             const hourReturn =
                 getHourReturn(profile.name, key);
-            const background = hourReturn
+            const background = workerBlockedDay
+                ? timelineBlockedDayBackground(isInhabil)
+                : hourReturn
                 ? "linear-gradient(135deg, #0f766e, #14b8a6)"
                 : timelineCellBackground(color, isInhabil);
             const contractError =
@@ -821,12 +834,19 @@ export async function renderTimeline(){
                                     : `Motivo HHEE: ${replacement.reason || replacement.absenceType || "sin detalle"}`
                             )
                             : "";
+            const titleText = [
+                title,
+                workerBlockedDay
+                    ? workerBlockedDay.message ||
+                        "El trabajador solicito no hacer reemplazos ni cambios de turno en esta fecha."
+                    : ""
+            ].filter(Boolean).join(" ");
 
             html += `
                 <td
-                    class="mini ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
+                    class="mini ${workerBlockedDay ? "worker-blocked-mini" : ""} ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
                     style="background:${background}"
-                    title="${title}"
+                    title="${escapeHtml(titleText)}"
                     ${contractError ? `data-contract-error-profile="${profile.name}" data-contract-error-key="${key}"` : ""}
                     ${showHonorariaLimit ? `data-honoraria-limit-profile="${profile.name}" data-honoraria-limit-key="${key}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
                     ${needsReplacement ? `data-replacement-profile="${profile.name}" data-replacement-key="${key}"` : ""}

@@ -802,6 +802,8 @@ function normalizeReplacementRequest(request = {}) {
         status: String(request.status || "pending"),
         worker: String(request.worker || ""),
         workerProfileId: String(request.workerProfileId || ""),
+        workerUid: String(request.workerUid || request.uid || ""),
+        workerEmail: String(request.workerEmail || ""),
         replaced: String(request.replaced || ""),
         replacedProfileId: String(request.replacedProfileId || ""),
         date: String(request.date || ""),

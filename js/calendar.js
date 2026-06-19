@@ -115,6 +115,7 @@ import {
     readFirebaseWorkspaceState,
     writeFirebaseWorkspaceState
 } from "./firebaseWorkspaceState.js";
+import { getBlockedDayForProfile } from "./workerAvailability.js";
 
 export let currentDate = new Date();
 
@@ -1262,6 +1263,13 @@ function replacementCandidateCoverageAttrs(candidate) {
     return attrs.join(" ");
 }
 
+function replacementCandidateWarning(candidate) {
+    if (!candidate?.blockedDay) return "";
+
+    return candidate.blockedDay.message ||
+        "El trabajador solicito no hacer reemplazos ni cambios de turno en esta fecha.";
+}
+
 function replacementCoverageFromDataset(dataset = {}) {
     const coverage = {};
     const hasCustomOvertime =
@@ -1515,6 +1523,8 @@ async function getReplacementCandidates(
             );
             const hheeDiurnas = Number(stats.hheeDiurnas) || 0;
             const hheeNocturnas = Number(stats.hheeNocturnas) || 0;
+            const blockedDay =
+                getBlockedDayForProfile(profile.name, keyDay);
 
             return {
                 profile,
@@ -1524,6 +1534,7 @@ async function getReplacementCandidates(
                 overtimeHours,
                 isForced:
                     !profileCanCoverProfile(profile, baseProfile),
+                blockedDay,
                 hheeDiurnas,
                 hheeNocturnas,
                 hhee: hheeDiurnas + hheeNocturnas
@@ -1544,6 +1555,10 @@ async function getReplacementCandidates(
         .sort((a, b) => {
             if (a.isDiurnoLongCoverage !== b.isDiurnoLongCoverage) {
                 return a.isDiurnoLongCoverage ? 1 : -1;
+            }
+
+            if (Boolean(a.blockedDay) !== Boolean(b.blockedDay)) {
+                return a.blockedDay ? 1 : -1;
             }
 
             if (a.isFree !== b.isFree) {
@@ -1605,10 +1620,11 @@ function replacementDialogHTML({
                 pendingByWorker.get(candidate.profile.name);
             const checked =
                 selectedWorkers.has(candidate.profile.name);
+            const warning = replacementCandidateWarning(candidate);
 
             if (isRequestMode) {
                 return `
-                <label class="replacement-candidate replacement-candidate--request ${candidate.isForced ? "replacement-candidate--forced" : ""} ${pendingRequest ? "is-disabled" : ""}">
+                <label class="replacement-candidate replacement-candidate--request ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${pendingRequest ? "is-disabled" : ""}">
                     <input
                         class="replacement-candidate-checkbox"
                         type="checkbox"
@@ -1622,11 +1638,13 @@ function replacementDialogHTML({
                         <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
                         ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
                         <small>${pendingRequest ? "Solicitud pendiente" : candidate.isFree ? "Libre ese dia" : `Turno actual: ${escapeHTML(turnoReplacementLabel(candidate.currentState))}`}</small>
+                        ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                     </span>
                     <span>
                         ${pendingRequest ? "<em>Pendiente</em>" : ""}
                         ${candidate.isLinked ? "<em>Unidad enlazada</em>" : ""}
                         ${candidate.isForced ? "<em>Forzado</em>" : ""}
+                        ${candidate.blockedDay ? "<em>Dia bloqueado</em>" : ""}
                         <b>${formatCandidateHours(candidate.hhee)} HHEE</b>
                         <small class="replacement-candidate-hours">
                             D: ${formatCandidateHours(candidate.hheeDiurnas)}h · N: ${formatCandidateHours(candidate.hheeNocturnas)}h
@@ -1638,7 +1656,7 @@ function replacementDialogHTML({
 
             return `
             <button
-                class="replacement-candidate ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.isLinked ? "replacement-candidate--linked" : ""} ${pendingRequest ? "is-disabled" : ""}"
+                class="replacement-candidate ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.isLinked ? "replacement-candidate--linked" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${pendingRequest ? "is-disabled" : ""}"
                 type="button"
                 data-worker="${escapeHTML(candidate.profile.name)}"
                 data-worker-workspace-id="${escapeHTML(candidate.workspaceId || "")}"
@@ -1651,11 +1669,13 @@ function replacementDialogHTML({
                     <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
                     ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
                     <small>${pendingRequest ? "Solicitud pendiente" : candidate.isFree ? "Libre ese dia" : `Turno actual: ${escapeHTML(turnoReplacementLabel(candidate.currentState))}`}</small>
+                    ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                 </span>
                 <span>
                     ${pendingRequest ? "<em>Pendiente</em>" : ""}
                     ${candidate.isLinked ? "<em>Unidad enlazada</em>" : ""}
                     ${candidate.isForced ? "<em>Forzado</em>" : ""}
+                    ${candidate.blockedDay ? "<em>Dia bloqueado</em>" : ""}
                     <b>${formatCandidateHours(candidate.hhee)} HHEE</b>
                     <small class="replacement-candidate-hours">
                         D: ${formatCandidateHours(candidate.hheeDiurnas)}h · N: ${formatCandidateHours(candidate.hheeNocturnas)}h
@@ -3044,8 +3064,13 @@ export async function renderCalendar(options = {}) {
                 .map(marker => turnChangeHoverTitle(marker, activeProfile))
                 .filter(Boolean)
         )).join("\n\n");
+        const workerBlockedDay =
+            getBlockedDayForProfile(activeProfile, keyDay);
         const turnChangeBadges =
-            turnChangeMarkers.map(marker => marker.label);
+            [
+                ...(workerBlockedDay ? ["No disp."] : []),
+                ...turnChangeMarkers.map(marker => marker.label)
+            ];
 
         if (turnChangeBadges.length > 1) {
             hasMultipleBadgeDays = true;
@@ -3069,6 +3094,8 @@ export async function renderCalendar(options = {}) {
 
                 const suffix = needsReplacement
                     ? " | Requiere reemplazo de turno base"
+                    : workerBlockedDay
+                        ? ` | ${workerBlockedDay.message}`
                     : honorariaExcess
                         ? ` | ${getHonorariaLimitMessage(honorariaSummary)}`
                     : showExtraReason
@@ -3110,6 +3137,10 @@ export async function renderCalendar(options = {}) {
             div.dataset.swapId = String(
                 turnChangeMarker.swap.id
             );
+        }
+
+        if (workerBlockedDay) {
+            div.classList.add("worker-blocked-day");
         }
 
         if (!activeProfileEnabled) {

@@ -28,6 +28,7 @@ import {
     addAuditLog,
     AUDIT_CATEGORY
 } from "./auditLog.js";
+import { getWorkerAppLinkForProfile } from "./workerAppDataSync.js";
 
 function keyFromISO(value) {
     const parts = String(value || "").split("-");
@@ -368,9 +369,9 @@ function whatsappPhone(value) {
     return digits;
 }
 
-function workerHasMobileApp(profile = {}) {
+function workerHasMobileApp(profile = {}, appLink = null) {
     return Boolean(
-        profile.mobileAppEnabled ||
+        appLink?.uid ||
         profile.mobileAppUid ||
         profile.appUid
     );
@@ -424,13 +425,19 @@ function buildReplacementRequest(data) {
     const id = requestId();
     const workerProfile = getProfileByName(data.worker);
     const replacedProfile = getProfileByName(data.replaced);
+    const appLink = getWorkerAppLinkForProfile(workerProfile);
     const config = getReplacementRequestConfig();
     const createdAt = new Date();
     const expiresAt = new Date(
         createdAt.getTime() +
         config.expiresMinutes * 60 * 1000
     );
-    const channel = workerHasMobileApp(workerProfile)
+    const workerUid =
+        appLink?.uid ||
+        workerProfile?.mobileAppUid ||
+        workerProfile?.appUid ||
+        "";
+    const channel = workerHasMobileApp(workerProfile, appLink)
         ? "app"
         : "whatsapp";
     const absenceType =
@@ -444,6 +451,11 @@ function buildReplacementRequest(data) {
         status: "pending",
         worker: data.worker,
         workerProfileId: workerProfile?.id || "",
+        workerUid,
+        workerEmail:
+            workerProfile?.email ||
+            appLink?.workerEmail ||
+            "",
         replaced: data.replaced || "",
         replacedProfileId: replacedProfile?.id || "",
         keyDay: data.keyDay,

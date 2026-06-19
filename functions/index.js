@@ -1,0 +1,569 @@
+const admin = require("firebase-admin");
+const logger = require("firebase-functions/logger");
+const { setGlobalOptions } = require("firebase-functions/v2");
+const {
+  onDocumentCreated,
+  onDocumentUpdated
+} = require("firebase-functions/v2/firestore");
+
+admin.initializeApp();
+setGlobalOptions({ region: "southamerica-west1" });
+
+const db = admin.firestore();
+const WORKER_APP_BASE_URL = "https://turnoplusfuncionarios.web.app/";
+const APP_URL = `${WORKER_APP_BASE_URL}?screen=solicitudes`;
+const APP_ICON = `${WORKER_APP_BASE_URL}img/logo-turnoplus.png`;
+const APP_BADGE = `${WORKER_APP_BASE_URL}img/favicon-turnoplus-calendar.png`;
+const INVALID_TOKEN_CODES = new Set([
+  "messaging/invalid-argument",
+  "messaging/invalid-registration-token",
+  "messaging/registration-token-not-registered"
+]);
+
+exports.notifyReplacementRequestCreated = onDocumentCreated(
+  "workspaces/{workspaceId}/replacementRequests/{requestId}",
+  async (event) => {
+    const request = event.data?.data() || {};
+    const { workspaceId, requestId } = event.params;
+
+    if (
+      request.status !== "pending" ||
+      request.channel !== "app" ||
+      !request.workerUid
+    ) {
+      return;
+    }
+
+    const title = `Turno extra ${request.turnoLabel || ""}`.trim();
+    const body = [
+      request.date ? `Fecha ${formatDateCL(request.date)}` : "",
+      request.replaced ? `cubre a ${request.replaced}` : "",
+      request.absenceType ? `motivo: ${request.absenceType}` : ""
+    ].filter(Boolean).join(". ");
+
+    const result = await sendWorkerPush({
+      workspaceId,
+      uid: request.workerUid,
+      category: "overtime",
+      title,
+      body: body || "Tienes una solicitud de turno extra pendiente.",
+      data: {
+        type: "replacement_request_created",
+        category: "overtime",
+        requestId,
+        workspaceId,
+        screen: "solicitudes",
+        url: APP_URL,
+        tag: `replacement-${requestId}`,
+        requireInteraction: "true"
+      }
+    });
+
+    await event.data.ref.set({
+      notificationStatus: result.sent > 0 ? "push_sent" : "push_not_sent",
+      pushSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      pushSentCount: result.sent,
+      pushError: result.error || ""
+    }, { merge: true });
+  }
+);
+
+exports.notifyWorkerRequestResolved = onDocumentUpdated(
+  "workspaces/{workspaceId}/workerRequests/{requestId}",
+  async (event) => {
+    const before = event.data?.before?.data() || {};
+    const after = event.data?.after?.data() || {};
+    const { workspaceId, requestId } = event.params;
+
+    if (
+      before.status === after.status ||
+      before.status !== "pending" ||
+      !["accepted", "rejected"].includes(after.status) ||
+      after.source !== "worker_app" ||
+      !after.createdByUid
+    ) {
+      return;
+    }
+
+    const accepted = after.status === "accepted";
+    const title = accepted ? "Solicitud aceptada" : "Solicitud rechazada";
+    const isSwap = after.type === "swap";
+    const body = accepted
+      ? `${requestTypeLabel(after.type)} fue aceptada por supervisor.`
+      : `${requestTypeLabel(after.type)} fue rechazada por supervisor.`;
+    const recipients = uniqueValues([
+      after.createdByUid,
+      isSwap ? after.targetUid : ""
+    ]);
+    const category = isSwap
+      ? "swaps"
+      : accepted
+        ? "leaveApproved"
+        : "leaveCancelled";
+    const results = await Promise.all(recipients.map(uid =>
+      sendWorkerPush({
+        workspaceId,
+        uid,
+        category,
+        title,
+        body,
+        data: {
+          type: "worker_request_resolved",
+          category,
+          requestId,
+          workspaceId,
+          status: after.status,
+          screen: "solicitudes",
+          url: APP_URL,
+          tag: `worker-request-${requestId}`
+        }
+      })
+    ));
+    const sent = results.reduce((total, result) => total + result.sent, 0);
+    const error = results.find((result) => result.error)?.error || "";
+
+    if (isSwap && after.swapRequestId) {
+      await db
+        .collection("workspaces")
+        .doc(workspaceId)
+        .collection("workerSwapRequests")
+        .doc(after.swapRequestId)
+        .set({
+          status: accepted ? "supervisor_accepted" : "supervisor_rejected",
+          supervisorResponseAt: admin.firestore.FieldValue.serverTimestamp(),
+          supervisorRequestId: requestId
+        }, { merge: true });
+    }
+
+    await event.data.after.ref.set({
+      pushResponseSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      pushResponseSentCount: sent,
+      pushResponseError: error
+    }, { merge: true });
+  }
+);
+
+exports.notifyWorkerSwapRequestCreated = onDocumentCreated(
+  "workspaces/{workspaceId}/workerSwapRequests/{requestId}",
+  async (event) => {
+    const request = event.data?.data() || {};
+    const { workspaceId, requestId } = event.params;
+
+    if (
+      request.status !== "pending_colleague" ||
+      request.source !== "worker_app" ||
+      request.type !== "swap" ||
+      !request.targetUid
+    ) {
+      return;
+    }
+
+    const body = [
+      request.from ? `${request.from} solicita cambio directo` : "Solicitud de cambio directo",
+      request.fecha ? `turno ${formatDateCL(request.fecha)}` : "",
+      request.devolucion ? `devolucion ${formatDateCL(request.devolucion)}` : ""
+    ].filter(Boolean).join(". ");
+
+    const result = await sendWorkerPush({
+      workspaceId,
+      uid: request.targetUid,
+      category: "swaps",
+      title: "Cambio de turno",
+      body: body || "Tienes una solicitud de cambio de turno pendiente.",
+      data: {
+        type: "worker_swap_request_created",
+        category: "swaps",
+        requestId,
+        workspaceId,
+        screen: "solicitudes",
+        url: APP_URL,
+        tag: `worker-swap-${requestId}`,
+        requireInteraction: "true"
+      }
+    });
+
+    await event.data.ref.set({
+      notificationStatus: result.sent > 0 ? "push_sent" : "push_not_sent",
+      pushSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      pushSentCount: result.sent,
+      pushError: result.error || ""
+    }, { merge: true });
+  }
+);
+
+exports.processWorkerSwapResponse = onDocumentUpdated(
+  "workspaces/{workspaceId}/workerSwapRequests/{requestId}",
+  async (event) => {
+    const before = event.data?.before?.data() || {};
+    const after = event.data?.after?.data() || {};
+    const { workspaceId, requestId } = event.params;
+
+    if (
+      before.status !== "pending_colleague" ||
+      !["colleague_accepted", "colleague_rejected"].includes(after.status) ||
+      after.source !== "worker_app" ||
+      after.type !== "swap"
+    ) {
+      return;
+    }
+
+    if (after.status === "colleague_rejected") {
+      const result = await sendWorkerPush({
+        workspaceId,
+        uid: after.createdByUid,
+        category: "swaps",
+        title: "Cambio rechazado",
+        body: `${after.to || "El trabajador"} rechazo el cambio de turno.`,
+        data: {
+          type: "worker_swap_rejected_by_colleague",
+          category: "swaps",
+          requestId,
+          workspaceId,
+          screen: "solicitudes",
+          url: APP_URL,
+          tag: `worker-swap-${requestId}`
+        }
+      });
+
+      await event.data.after.ref.set({
+        requesterPushSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        requesterPushSentCount: result.sent,
+        requesterPushError: result.error || ""
+      }, { merge: true });
+      return;
+    }
+
+    const supervisorRequestId = after.supervisorRequestId || `swap_${requestId}`;
+    const createdAt = new Date().toISOString();
+    const workerRequestRef = db
+      .collection("workspaces")
+      .doc(workspaceId)
+      .collection("workerRequests")
+      .doc(supervisorRequestId);
+
+    await workerRequestRef.set({
+      id: supervisorRequestId,
+      type: "swap",
+      title: "Cambio directo",
+      profile: after.from || after.profile || "",
+      from: after.from || after.profile || "",
+      to: after.to || after.targetProfile || "",
+      targetProfile: after.to || after.targetProfile || "",
+      targetUid: after.targetUid || "",
+      createdByUid: after.createdByUid || "",
+      createdByEmail: after.createdByEmail || "",
+      source: "worker_app",
+      status: "pending",
+      date: after.fecha || after.date || "",
+      fecha: after.fecha || after.date || "",
+      returnDate: after.devolucion || after.returnDate || "",
+      devolucion: after.devolucion || after.returnDate || "",
+      ownTurnLabel: after.ownTurnLabel || "",
+      returnTurnLabel: after.returnTurnLabel || "",
+      detail: after.detail || "",
+      swapRequestId: requestId,
+      colleagueAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    await event.data.after.ref.set({
+      status: "pending_supervisor",
+      supervisorRequestId,
+      supervisorSubmittedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    await sendWorkerPush({
+      workspaceId,
+      uid: after.createdByUid,
+      category: "swaps",
+      title: "Cambio aceptado por colega",
+      body: "La solicitud fue enviada al supervisor para aprobacion.",
+      data: {
+        type: "worker_swap_sent_to_supervisor",
+        category: "swaps",
+        requestId,
+        supervisorRequestId,
+        workspaceId,
+        screen: "solicitudes",
+        url: APP_URL,
+        tag: `worker-swap-${requestId}`
+      }
+    });
+  }
+);
+
+exports.notifySupervisorMessageCreated = onDocumentCreated(
+  "workspaces/{workspaceId}/workerMessages/{workerUid}/messages/{messageId}",
+  async (event) => {
+    const message = event.data?.data() || {};
+    const { workspaceId, workerUid, messageId } = event.params;
+
+    if (
+      message.sender !== "supervisor" ||
+      !workerUid ||
+      !message.text
+    ) {
+      return;
+    }
+
+    const result = await sendWorkerPush({
+      workspaceId,
+      uid: workerUid,
+      category: "messages",
+      title: "Mensaje de supervisor",
+      body: String(message.text).slice(0, 140),
+      data: {
+        type: "supervisor_message_created",
+        category: "messages",
+        messageId,
+        workspaceId,
+        screen: "mensajes",
+        url: `${WORKER_APP_BASE_URL}?screen=mensajes`,
+        tag: `supervisor-message-${messageId}`,
+        requireInteraction: "true",
+        vibrate: "true"
+      }
+    });
+
+    await event.data.ref.set({
+      pushSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      pushSentCount: result.sent,
+      pushError: result.error || "",
+      pushStatus: result.sent > 0 ? "push_sent" : "push_not_sent"
+    }, { merge: true });
+  }
+);
+
+exports.notifyWorkerPeerMessageCreated = onDocumentCreated(
+  "workspaces/{workspaceId}/workerPeerThreads/{threadId}/messages/{messageId}",
+  async (event) => {
+    const message = event.data?.data() || {};
+    const { workspaceId, threadId, messageId } = event.params;
+    const senderUid = String(message.senderUid || "");
+    const targetUid = String(message.targetUid || "");
+    const text = String(message.text || "").trim();
+    const senderName = String(message.senderName || "trabajador").trim();
+
+    if (
+      !senderUid ||
+      !targetUid ||
+      senderUid === targetUid ||
+      !text
+    ) {
+      return;
+    }
+
+    const result = await sendWorkerPush({
+      workspaceId,
+      uid: targetUid,
+      category: "messages",
+      title: `Mensaje de ${senderName}`,
+      body: text.slice(0, 140),
+      data: {
+        type: "worker_peer_message_created",
+        category: "messages",
+        messageId,
+        threadId,
+        senderUid,
+        targetUid,
+        workspaceId,
+        screen: "mensajes",
+        url: `${WORKER_APP_BASE_URL}?screen=mensajes&peer=${encodeURIComponent(senderUid)}`,
+        tag: `worker-peer-message-${messageId}`,
+        requireInteraction: "true",
+        vibrate: "true"
+      }
+    });
+
+    await event.data.ref.set({
+      pushSentAt: admin.firestore.FieldValue.serverTimestamp(),
+      pushSentCount: result.sent,
+      pushError: result.error || "",
+      pushStatus: result.sent > 0 ? "push_sent" : "push_not_sent"
+    }, { merge: true });
+  }
+);
+
+async function sendWorkerPush({ workspaceId, uid, category, title, body, data }) {
+  const tokens = await getWorkerTokens(workspaceId, uid, category);
+
+  if (!tokens.length) {
+    logger.info("Sin tokens push activos para trabajador.", {
+      workspaceId,
+      uid,
+      category
+    });
+    return { sent: 0, error: "Sin tokens activos o permitidos." };
+  }
+
+  let sent = 0;
+  let firstError = "";
+
+  await Promise.all(tokens.map(async (item) => {
+    try {
+      await admin.messaging().send(buildMessage(item, {
+        title,
+        body,
+        data
+      }));
+      sent += 1;
+    } catch (error) {
+      firstError ||= error.message || String(error);
+      logger.warn("No se pudo enviar push FCM.", {
+        workspaceId,
+        uid,
+        category,
+        code: error.code,
+        message: error.message
+      });
+
+      if (INVALID_TOKEN_CODES.has(error.code)) {
+        await item.ref.set({
+          active: false,
+          disabledAt: admin.firestore.FieldValue.serverTimestamp(),
+          lastError: error.code || error.message || "invalid_token"
+        }, { merge: true });
+      }
+    }
+  }));
+
+  logger.info("Push FCM procesado.", {
+    workspaceId,
+    uid,
+    category,
+    tokenCount: tokens.length,
+    sent,
+    error: sent ? "" : firstError
+  });
+
+  return { sent, error: sent ? "" : firstError };
+}
+
+async function getWorkerTokens(workspaceId, uid, category) {
+  const snapshot = await db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("workerPushTokens")
+    .doc(uid)
+    .collection("tokens")
+    .where("active", "==", true)
+    .get();
+
+  return snapshot.docs
+    .map((doc) => ({
+      ref: doc.ref,
+      id: doc.id,
+      ...doc.data()
+    }))
+    .filter((item) => item.token && tokenAllows(item, category));
+}
+
+function buildMessage(tokenInfo, payload) {
+  const settings = tokenInfo.settings || {};
+  const alertMode = settings.alertMode === "vibration" ? "vibration" : "sound";
+  const silent = false;
+  const vibrate = [320, 120, 320, 120, 220];
+  const data = stringifyData({
+    ...payload.data,
+    title: payload.title,
+    body: payload.body,
+    icon: APP_ICON,
+    badge: APP_BADGE,
+    alertMode,
+    vibrate: "true",
+    silent: "false",
+    requireInteraction: payload.data?.requireInteraction || "false"
+  });
+
+  return {
+    token: tokenInfo.token,
+    notification: {
+      title: payload.title || "TurnoPlus",
+      body: payload.body || "Nueva notificacion."
+    },
+    data,
+    webpush: {
+      headers: {
+        Urgency: "high",
+        TTL: "300"
+      },
+      notification: {
+        title: payload.title || "TurnoPlus",
+        body: payload.body || "Nueva notificacion.",
+        icon: APP_ICON,
+        badge: APP_BADGE,
+        tag: data.tag || data.requestId || "turnoplus-notification",
+        renotify: true,
+        requireInteraction: data.requireInteraction === "true",
+        silent,
+        vibrate,
+        data
+      },
+      fcmOptions: {
+        link: data.url || APP_URL
+      }
+    }
+  };
+}
+
+function tokenAllows(tokenInfo, category) {
+  const settings = tokenInfo.settings || {};
+  const categories = settings.categories || {};
+  const alertWindow = settings.alertWindow || "24/7";
+
+  if (category && categories[category] === false) return false;
+  if (alertWindow === "Nunca") return false;
+
+  if (alertWindow === "08:00 a 21:00") {
+    const hour = Number(new Intl.DateTimeFormat("es-CL", {
+      timeZone: "America/Santiago",
+      hour: "2-digit",
+      hour12: false
+    }).format(new Date()));
+
+    return hour >= 8 && hour < 21;
+  }
+
+  return true;
+}
+
+function uniqueValues(values) {
+  return [...new Set(
+    values
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  )];
+}
+
+function stringifyData(value) {
+  return Object.fromEntries(
+    Object.entries(value || {}).map(([key, entry]) => [
+      key,
+      String(entry ?? "")
+    ])
+  );
+}
+
+function formatDateCL(value) {
+  const [year, month, day] = String(value || "").split("-");
+
+  if (!year || !month || !day) return String(value || "");
+  return `${day}-${month}-${year}`;
+}
+
+function requestTypeLabel(type) {
+  const labels = {
+    legal: "F. Legal",
+    admin: "P. Administrativo",
+    comp: "P. Compensatorio",
+    half_admin_morning: "1/2 ADM manana",
+    half_admin_afternoon: "1/2 ADM tarde",
+    unpaid_leave: "Permiso sin goce",
+    clock_incident: "Incidencia de marcaje",
+    missing_clock: "Incidencia de marcaje",
+    swap: "Cambio de turno"
+  };
+
+  return labels[type] || "Solicitud";
+}

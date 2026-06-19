@@ -8,7 +8,7 @@ export const FIREBASE_SDK_BASE_URL =
 
 export const FIREBASE_CONFIG = {
     apiKey: "AIzaSyCG7KarKpMMGzTHIXnRit9E2CGpGgjf6_k",
-    authDomain: "calendarioturnos-7c4d9.firebaseapp.com",
+    authDomain: "auth.turnoplus.cl",
     projectId: "calendarioturnos-7c4d9",
     storageBucket: "calendarioturnos-7c4d9.firebasestorage.app",
     messagingSenderId: "1034511206564",

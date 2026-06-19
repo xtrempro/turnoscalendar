@@ -8,6 +8,7 @@ export const DOM = {
     showInactiveProfiles: document.getElementById("showInactiveProfiles"),
     openCreateProfileBtn: document.getElementById("openCreateProfile"),
     openEditProfileBtn: document.getElementById("openEditProfile"),
+    workerAppInviteBtn: document.getElementById("workerAppInviteBtn"),
 
     /* formulario perfil */
     profileNameInput: document.getElementById("profileNameField"),
@@ -51,6 +52,8 @@ export const DOM = {
     mobileStaffingToggle: document.getElementById("mobileStaffingToggle"),
     themeToggle: document.getElementById("themeToggle"),
     systemSettingsBtn: document.getElementById("systemSettingsBtn"),
+    floatingMessagesBtn: document.getElementById("floatingMessagesBtn"),
+    floatingMessagesBadge: document.getElementById("floatingMessagesBadge"),
 
     /* botones turnos */
     adminBtn: document.getElementById("adminBtn"),

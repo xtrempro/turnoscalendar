@@ -19,6 +19,7 @@ import {
     getCurrentProfile,
     getManualLeaveBalances,
     getProfiles,
+    getReplacementRequests,
     getWorkerRequests,
     saveManualLeaveBalances,
     saveWorkerRequests,
@@ -57,6 +58,7 @@ const REQUEST_TYPE_LABELS = {
     missing_clock: "Olvido de Marcacion",
     clock_incident: "Incidencia en Marcacion",
     swap: "Cambio de Turno",
+    replacement_request: "Turno Extra",
     workspace_link: "Enlace de Unidad",
     unknown: "Solicitud"
 };
@@ -174,6 +176,22 @@ function statusLabel(status) {
     return STATUS_LABELS[status] || status || "Pendiente";
 }
 
+function displayStatusLabel(request) {
+    if (isReplacementRequest(request) && request.status === "pending") {
+        return "Enviada";
+    }
+
+    if (
+        !isWorkspaceLinkRequest(request) &&
+        request.source === "worker_app" &&
+        request.status === "pending"
+    ) {
+        return "Solicitud recibida";
+    }
+
+    return statusLabel(request.status);
+}
+
 function timestampISO(value) {
     const date = value?.toDate?.() || new Date(value);
 
@@ -186,6 +204,34 @@ function timestampISO(value) {
 
 function isWorkspaceLinkRequest(request = {}) {
     return request.kind === "workspace_link";
+}
+
+function isReplacementRequest(request = {}) {
+    return request.kind === "replacement_request";
+}
+
+function replacementRequestToPanelRequest(request = {}) {
+    return {
+        ...request,
+        kind: "replacement_request",
+        type: "replacement_request",
+        profile: request.worker || "Trabajador",
+        date: request.date || "",
+        note: [
+            request.turnoLabel
+                ? `Turno solicitado: ${request.turnoLabel}`
+                : "",
+            request.replaced
+                ? `Cubre a: ${request.replaced}`
+                : "",
+            request.absenceType
+                ? `Motivo: ${request.absenceType}`
+                : "",
+            request.channel === "app"
+                ? "Canal: app trabajador"
+                : "Canal: WhatsApp"
+        ].filter(Boolean).join(" | ")
+    };
 }
 
 function requestDays(request, fallback = 1) {
@@ -682,6 +728,26 @@ function requestDetailsHTML(request) {
         return pieces.join(" | ");
     }
 
+    if (isReplacementRequest(request)) {
+        if (request.date) {
+            pieces.push(`Fecha: ${formatDate(request.date)}`);
+        }
+
+        if (request.turnoLabel) {
+            pieces.push(`Turno: ${request.turnoLabel}`);
+        }
+
+        if (request.replaced) {
+            pieces.push(`Cubre a: ${request.replaced}`);
+        }
+
+        if (request.expiresAt && request.status === "pending") {
+            pieces.push(`Caduca: ${formatTimestamp(request.expiresAt)}`);
+        }
+
+        return pieces.join(" | ");
+    }
+
     if (request.date) {
         pieces.push(`Fecha: ${formatDate(request.date)}`);
     }
@@ -717,10 +783,14 @@ function requestDetailsHTML(request) {
 }
 
 function requestCardHTML(request) {
-    const pending = request.status === "pending";
+    const pending = request.status === "pending" &&
+        !isReplacementRequest(request);
     const title = isWorkspaceLinkRequest(request)
         ? request.fromWorkspaceName || "Unidad solicitante"
-        : request.profile || "Sin trabajador";
+        : isReplacementRequest(request)
+            ? request.worker || "Trabajador"
+            : request.profile || "Sin trabajador";
+    const statusText = displayStatusLabel(request);
 
     return `
         <article class="worker-request-card worker-request-card--${escapeHTML(request.status)}">
@@ -741,7 +811,7 @@ function requestCardHTML(request) {
 
                 <div class="worker-request-card__meta">
                     <span class="worker-request-status worker-request-status--${escapeHTML(request.status)}">
-                        ${escapeHTML(statusLabel(request.status))}
+                        ${escapeHTML(statusText)}
                     </span>
                     <time>${escapeHTML(formatTimestamp(request.createdAt))}</time>
                 </div>
@@ -798,10 +868,13 @@ function updateRequestsNavBadge(count) {
 
 export async function refreshWorkerRequestsNavBadge() {
     const workerRequests = getWorkerRequests();
+    const replacementRequests = getReplacementRequests()
+        .map(replacementRequestToPanelRequest);
     const linkRequests = await getWorkspaceLinkRequests();
     const pending = [
         ...linkRequests,
-        ...workerRequests
+        ...workerRequests,
+        ...replacementRequests
     ].filter(request => request.status === "pending");
 
     updateRequestsNavBadge(pending.length);
@@ -1079,10 +1152,13 @@ export async function renderWorkerRequestsPanel() {
     }
 
     const workerRequests = getWorkerRequests();
+    const replacementRequests = getReplacementRequests()
+        .map(replacementRequestToPanelRequest);
     const linkRequests = await getWorkspaceLinkRequests();
     const allRequests = [
         ...linkRequests,
-        ...workerRequests
+        ...workerRequests,
+        ...replacementRequests
     ];
     const requests = filterRequestsBySelectedMonth(allRequests);
     const allPending = allRequests.filter(request =>

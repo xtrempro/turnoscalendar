@@ -21,6 +21,7 @@ let servicesCache = null;
 let onStateChanged = () => {};
 let lastUploadedHash = "";
 let lastAppliedHash = "";
+let syncGeneration = 0;
 
 function stateDocPath(workspaceId) {
     return [
@@ -132,6 +133,7 @@ async function uploadAppState() {
     syncInFlight = true;
 
     try {
+        const workspaceId = activeWorkspaceId;
         const stateString = currentLocalStateString();
         const stateHash = hashString(stateString);
 
@@ -145,18 +147,23 @@ async function uploadAppState() {
             db,
             firestoreModule
         } = await services();
+
+        if (workspaceId !== activeWorkspaceId) return;
+
         const batch = firestoreModule.writeBatch(db);
         const chunkCollection =
-            chunksCollection(db, firestoreModule, activeWorkspaceId);
+            chunksCollection(db, firestoreModule, workspaceId);
         const existingChunks =
             await firestoreModule.getDocs(chunkCollection);
+
+        if (workspaceId !== activeWorkspaceId) return;
 
         chunks.forEach((chunk, index) => {
             batch.set(
                 firestoreModule.doc(
                     db,
                     "workspaces",
-                    activeWorkspaceId,
+                    workspaceId,
                     "appStateChunks",
                     chunkDocId(index)
                 ),
@@ -177,7 +184,7 @@ async function uploadAppState() {
         batch.set(
             firestoreModule.doc(
                 db,
-                ...stateDocPath(activeWorkspaceId)
+                ...stateDocPath(workspaceId)
             ),
             {
                 chunkCount: chunks.length,
@@ -190,7 +197,11 @@ async function uploadAppState() {
             { merge: true }
         );
 
+        if (workspaceId !== activeWorkspaceId) return;
+
         await batch.commit();
+
+        if (workspaceId !== activeWorkspaceId) return;
 
         lastUploadedHash = stateHash;
         dispatchStatus({
@@ -223,13 +234,13 @@ function scheduleAppStateUpload() {
     syncTimer = setTimeout(uploadAppState, 900);
 }
 
-async function readRemoteStateString(expectedChunkCount) {
+async function readRemoteStateString(workspaceId, expectedChunkCount) {
     const {
         db,
         firestoreModule
     } = await services();
     const snap = await firestoreModule.getDocs(
-        chunksCollection(db, firestoreModule, activeWorkspaceId)
+        chunksCollection(db, firestoreModule, workspaceId)
     );
     const chunks = snap.docs
         .map(docSnap => ({
@@ -254,7 +265,14 @@ async function readRemoteStateString(expectedChunkCount) {
     return chunks.map(chunk => chunk.text).join("");
 }
 
-async function applyRemoteState(manifest) {
+async function applyRemoteState(manifest, workspaceId, generation) {
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) {
+        return;
+    }
+
     const remoteHash = String(manifest?.hash || "");
 
     if (
@@ -269,9 +287,17 @@ async function applyRemoteState(manifest) {
     }
 
     const stateString = await readRemoteStateString(
+        workspaceId,
         manifest?.chunkCount || 0
     );
     const snapshot = JSON.parse(stateString || "{}");
+
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) {
+        return;
+    }
 
     applyingRemoteState = true;
 
@@ -289,17 +315,52 @@ async function applyRemoteState(manifest) {
     onStateChanged(snapshot);
 }
 
-async function handleRemoteSnapshot(docSnap) {
+async function applyEmptyRemoteState(workspaceId, generation) {
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) {
+        return;
+    }
+
+    const stateString = stableSnapshotString({});
+
+    applyingRemoteState = true;
+
+    try {
+        replaceLocalSnapshot({}, { silent: true });
+        lastAppliedHash = hashString(stateString);
+    } finally {
+        applyingRemoteState = false;
+    }
+
+    dispatchStatus({
+        type: "app-state-applied",
+        hash: lastAppliedHash,
+        empty: true
+    });
+    onStateChanged({});
+}
+
+async function handleRemoteSnapshot(docSnap, workspaceId, generation) {
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) {
+        return;
+    }
+
     waitingInitialState = false;
 
     if (!docSnap.exists()) {
         lastAppliedHash = "";
+        await applyEmptyRemoteState(workspaceId, generation);
         scheduleAppStateUpload();
         return;
     }
 
     try {
-        await applyRemoteState(docSnap.data());
+        await applyRemoteState(docSnap.data(), workspaceId, generation);
     } catch (error) {
         console.warn("No se pudo aplicar estado remoto Firebase.", error);
         dispatchStatus({
@@ -326,6 +387,8 @@ export async function startFirebaseAppStateSync(
 
     stopFirebaseAppStateSync();
     activeWorkspaceId = workspaceId;
+    syncGeneration++;
+    const generation = syncGeneration;
 
     if (!activeWorkspaceId) return;
 
@@ -340,11 +403,17 @@ export async function startFirebaseAppStateSync(
         unsubscribeState = firestoreModule.onSnapshot(
             firestoreModule.doc(
                 db,
-                ...stateDocPath(activeWorkspaceId)
+                ...stateDocPath(workspaceId)
             ),
-            handleRemoteSnapshot,
+            docSnap =>
+                handleRemoteSnapshot(docSnap, workspaceId, generation),
             error => {
-                waitingInitialState = false;
+                if (
+                    workspaceId === activeWorkspaceId &&
+                    generation === syncGeneration
+                ) {
+                    waitingInitialState = false;
+                }
                 console.warn("No se pudo leer estado Firebase.", error);
             }
         );
@@ -372,6 +441,7 @@ export function stopFirebaseAppStateSync() {
     waitingInitialState = false;
     lastUploadedHash = "";
     lastAppliedHash = "";
+    syncGeneration++;
 }
 
 if (typeof window !== "undefined") {

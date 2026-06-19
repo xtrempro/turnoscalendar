@@ -20,6 +20,7 @@ import {
 import { getTurnoBase } from "./turnEngine.js";
 import { isReplacementProfile } from "./contracts.js";
 import { getReplacementTurnForWorker } from "./replacements.js";
+import { getBlockedDayForProfile } from "./workerAvailability.js";
 
 function keyFromISO(value) {
     const parts = String(value || "").split("-");
@@ -723,6 +724,14 @@ export function getSwapDateBlockReason({
 
     if (profileHasSwapAbsence(receiver, keyDay)) {
         return `${receiver} tiene permiso, vacaciones o licencia en esta fecha.`;
+    }
+
+    if (getBlockedDayForProfile(giver, keyDay)) {
+        return `${giver} pidio no realizar cambios de turno ni horas extras en esta fecha.`;
+    }
+
+    if (getBlockedDayForProfile(receiver, keyDay)) {
+        return `${receiver} pidio no realizar cambios de turno ni horas extras en esta fecha.`;
     }
 
     if (activeSwapConflictsProfileDate(giver, keyDay)) {

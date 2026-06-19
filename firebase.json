@@ -14,6 +14,7 @@
       "*.log",
       "*.map",
       "firebase-debug.log",
+      "functions/**",
       "PROJECT_CONTEXT.md",
       "firebase.rules",
       "storage.rules"
@@ -82,6 +83,9 @@
         "destination": "/index.html"
       }
     ]
+  },
+  "functions": {
+    "source": "functions"
   },
   "firestore": {
     "rules": "firebase.rules"

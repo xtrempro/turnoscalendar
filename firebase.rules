@@ -36,6 +36,39 @@ service cloud.firestore {
       return isMember(workspaceId) || isLinkedOperator(workspaceId);
     }
 
+    function isLinkedWorker(workspaceId, userId) {
+      return signedIn() &&
+        request.auth.uid == userId &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId));
+    }
+
+    function workerLinkExists(workspaceId, userId) {
+      return exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId));
+    }
+
+    function isCurrentLinkedWorker(workspaceId) {
+      return signedIn() &&
+        workerLinkExists(workspaceId, request.auth.uid);
+    }
+
+    function canAccessWorkerPeerThread(workspaceId, threadId) {
+      return isMember(workspaceId) ||
+        (
+          isCurrentLinkedWorker(workspaceId) &&
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)) &&
+          request.auth.uid in get(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids
+        );
+    }
+
+    function canAccessWorkerPeerThreadAfter(workspaceId, threadId) {
+      return isMember(workspaceId) ||
+        (
+          isCurrentLinkedWorker(workspaceId) &&
+          existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)) &&
+          request.auth.uid in getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids
+        );
+    }
+
     function canMemberWriteWorkspaceState(workspaceId) {
       let member =
         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
@@ -93,6 +126,44 @@ service cloud.firestore {
         isMember(getAfter(/databases/$(database)/documents/workspaceLinks/$(request.resource.data.linkId)).data.toWorkspaceId);
     }
 
+    function workerInviteNotExpired() {
+      return !("expiresAt" in resource.data) ||
+        resource.data.expiresAt > request.time;
+    }
+
+    function canReadWorkerInvite(inviteId) {
+      return signedIn() &&
+        resource.data.token == inviteId &&
+        resource.data.status == "pending" &&
+        workerInviteNotExpired();
+    }
+
+    function canAcceptWorkerInvite(workspaceId, inviteId) {
+      return canReadWorkerInvite(inviteId) &&
+        request.resource.data.workspaceId == workspaceId &&
+        request.resource.data.token == inviteId &&
+        request.resource.data.status == "accepted" &&
+        request.resource.data.workerUid == request.auth.uid &&
+        request.resource.data.workerEmail == request.auth.token.email &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status",
+          "workerUid",
+          "workerEmail",
+          "workerDisplayName",
+          "acceptedAt",
+          "updatedAt"
+        ]);
+    }
+
+    function acceptedWorkerInviteAfter(workspaceId, inviteId, userId) {
+      return existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)) &&
+        getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.workspaceId == workspaceId &&
+        getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.token == inviteId &&
+        getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.status == "accepted" &&
+        getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.workerUid == userId &&
+        getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.workerEmail == request.auth.token.email;
+    }
+
     function linkIdentityUnchanged() {
       return request.resource.data.fromWorkspaceId == resource.data.fromWorkspaceId &&
         request.resource.data.toWorkspaceId == resource.data.toWorkspaceId &&
@@ -120,6 +191,10 @@ service cloud.firestore {
       match /workspaces/{workspaceId} {
         allow read, write: if signedIn() && request.auth.uid == userId;
       }
+
+      match /workerLinks/{workspaceId} {
+        allow read, write: if signedIn() && request.auth.uid == userId;
+      }
     }
 
     match /workspaceLinks/{linkId} {
@@ -141,6 +216,16 @@ service cloud.firestore {
         );
 
       allow delete: if false;
+    }
+
+    match /workerAppEmailInvites/{emailKey}/items/{inviteId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() &&
+        request.resource.data.workspaceId is string &&
+        isMember(request.resource.data.workspaceId);
+      allow delete: if signedIn() &&
+        resource.data.workspaceId is string &&
+        isMember(resource.data.workspaceId);
     }
 
     match /workspaces/{workspaceId} {
@@ -191,11 +276,289 @@ service cloud.firestore {
       }
 
       match /replacementRequests/{requestId} {
-        allow read, write: if isMember(workspaceId);
+        allow read: if isMember(workspaceId) ||
+          (signedIn() && resource.data.workerUid == request.auth.uid);
+        allow create, delete: if isMember(workspaceId);
+        allow update: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            resource.data.workerUid == request.auth.uid &&
+            request.resource.data.workerUid == resource.data.workerUid &&
+            resource.data.status == "pending" &&
+            request.resource.data.status in ["accepted", "rejected"] &&
+            request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              "status",
+              "acceptedAt",
+              "rejectedAt",
+              "responseAt",
+              "notificationStatus",
+              "updatedAt"
+            ])
+          );
+      }
+
+      match /workerBlockedDays/{blockedDayId} {
+        allow read: if isMember(workspaceId) ||
+          (signedIn() && resource.data.workerUid == request.auth.uid);
+        allow create, update: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            request.resource.data.workerUid == request.auth.uid &&
+            request.resource.data.workspaceId == workspaceId &&
+            request.resource.data.source == "worker_app" &&
+            request.resource.data.date is string &&
+            request.resource.data.status == "active" &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow delete: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            resource.data.workerUid == request.auth.uid &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
       }
 
       match /workerRequests/{requestId} {
-        allow read, write: if isMember(workspaceId);
+        allow read: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            (
+              resource.data.createdByUid == request.auth.uid ||
+              resource.data.targetUid == request.auth.uid
+            ) &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow create: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            request.resource.data.createdByUid == request.auth.uid &&
+            request.resource.data.status in ["pending", "active"] &&
+            request.resource.data.source == "worker_app" &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow update, delete: if isMember(workspaceId);
+      }
+
+      match /workerSwapCandidates/{userId} {
+        allow read: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow create, update, delete: if isLinkedOperator(workspaceId) ||
+          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+      }
+
+      match /workerMessageDirectory/{userId} {
+        allow read: if isMember(workspaceId) ||
+          isCurrentLinkedWorker(workspaceId);
+        allow create, update, delete: if isLinkedOperator(workspaceId) ||
+          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+      }
+
+      match /workerPeerThreads/{threadId} {
+        allow read: if canAccessWorkerPeerThread(workspaceId, threadId);
+        allow create: if isMember(workspaceId) ||
+          (
+            isCurrentLinkedWorker(workspaceId) &&
+            request.resource.data.workspaceId == workspaceId &&
+            request.resource.data.createdByUid == request.auth.uid &&
+            request.resource.data.targetUid is string &&
+            request.resource.data.targetUid != request.auth.uid &&
+            workerLinkExists(workspaceId, request.resource.data.targetUid) &&
+            request.resource.data.participantUids is list &&
+            request.resource.data.participantUids.size() == 2 &&
+            request.auth.uid in request.resource.data.participantUids &&
+            request.resource.data.targetUid in request.resource.data.participantUids
+          );
+        allow update: if isMember(workspaceId) ||
+          (
+            isCurrentLinkedWorker(workspaceId) &&
+            request.auth.uid in resource.data.participantUids &&
+            request.resource.data.workspaceId == resource.data.workspaceId &&
+            request.resource.data.participantUids == resource.data.participantUids
+          );
+        allow delete: if isMember(workspaceId);
+
+        match /messages/{messageId} {
+          allow read: if canAccessWorkerPeerThread(workspaceId, threadId);
+          allow create: if isMember(workspaceId) ||
+            (
+              isCurrentLinkedWorker(workspaceId) &&
+              canAccessWorkerPeerThreadAfter(workspaceId, threadId) &&
+              request.resource.data.workspaceId == workspaceId &&
+              request.resource.data.threadId == threadId &&
+              request.resource.data.senderUid == request.auth.uid &&
+              request.resource.data.targetUid is string &&
+              request.resource.data.targetUid != request.auth.uid &&
+              request.resource.data.targetUid in getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids &&
+              workerLinkExists(workspaceId, request.resource.data.targetUid)
+            );
+          allow update, delete: if isMember(workspaceId);
+        }
+      }
+
+      match /workerSwapRequests/{requestId} {
+        allow read: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            (
+              resource.data.createdByUid == request.auth.uid ||
+              resource.data.targetUid == request.auth.uid
+            ) &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow create: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            request.resource.data.createdByUid == request.auth.uid &&
+            request.resource.data.targetUid is string &&
+            request.resource.data.targetUid != request.auth.uid &&
+            request.resource.data.workspaceId == workspaceId &&
+            request.resource.data.source == "worker_app" &&
+            request.resource.data.type == "swap" &&
+            request.resource.data.status == "pending_colleague" &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid)) &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.resource.data.targetUid))
+          );
+        allow update: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            resource.data.targetUid == request.auth.uid &&
+            request.resource.data.targetUid == resource.data.targetUid &&
+            request.resource.data.createdByUid == resource.data.createdByUid &&
+            resource.data.status == "pending_colleague" &&
+            request.resource.data.status in ["colleague_accepted", "colleague_rejected"] &&
+            request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              "status",
+              "colleagueAcceptedAt",
+              "colleagueRejectedAt",
+              "colleagueResponseAt",
+              "rejectReason",
+              "notificationStatus",
+              "updatedAt"
+            ]) &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow delete: if isMember(workspaceId);
+      }
+
+      match /workerAppInvites/{inviteId} {
+        allow create: if isMember(workspaceId) &&
+          request.resource.data.workspaceId == workspaceId &&
+          request.resource.data.token == inviteId &&
+          request.resource.data.status == "pending";
+        allow get: if isMember(workspaceId) ||
+          canReadWorkerInvite(inviteId);
+        allow list: if isMember(workspaceId);
+        allow update: if isMember(workspaceId) ||
+          canAcceptWorkerInvite(workspaceId, inviteId);
+        allow delete: if isMember(workspaceId);
+      }
+
+      match /workerLinks/{userId} {
+        allow read: if isMember(workspaceId) ||
+          (signedIn() && request.auth.uid == userId);
+        allow create, update: if (
+          isMember(workspaceId) &&
+          request.resource.data.uid == userId
+        ) || (
+          signedIn() &&
+          request.auth.uid == userId &&
+          request.resource.data.uid == userId &&
+          request.resource.data.workspaceId == workspaceId &&
+          request.resource.data.inviteId is string &&
+          acceptedWorkerInviteAfter(
+            workspaceId,
+            request.resource.data.inviteId,
+            userId
+          )
+        );
+        allow delete: if isMember(workspaceId);
+      }
+
+      match /workerPushTokens/{userId} {
+        allow read: if isMember(workspaceId) ||
+          (signedIn() && request.auth.uid == userId);
+        allow create, update: if signedIn() &&
+          request.auth.uid == userId &&
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId)) &&
+          request.resource.data.uid == userId &&
+          request.resource.data.workspaceId == workspaceId;
+        allow delete: if isMember(workspaceId) ||
+          (signedIn() && request.auth.uid == userId);
+
+        match /tokens/{tokenId} {
+          allow read: if isMember(workspaceId) ||
+            (signedIn() && request.auth.uid == userId);
+          allow create, update: if signedIn() &&
+            request.auth.uid == userId &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId)) &&
+            request.resource.data.uid == userId &&
+            request.resource.data.workspaceId == workspaceId &&
+            request.resource.data.token is string &&
+            request.resource.data.active is bool;
+          allow delete: if isMember(workspaceId) ||
+            (signedIn() && request.auth.uid == userId);
+        }
+      }
+
+      match /workerMessages/{userId} {
+        allow read: if isMember(workspaceId) ||
+          (signedIn() && request.auth.uid == userId);
+        allow create, update: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            request.auth.uid == userId &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId)) &&
+            request.resource.data.uid == userId &&
+            request.resource.data.workspaceId == workspaceId
+          );
+        allow delete: if isMember(workspaceId);
+
+        match /messages/{messageId} {
+          allow read: if isMember(workspaceId) ||
+            (signedIn() && request.auth.uid == userId);
+          allow create: if isMember(workspaceId) ||
+            (
+              signedIn() &&
+              request.auth.uid == userId &&
+              exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId)) &&
+              request.resource.data.workerUid == userId &&
+              request.resource.data.workspaceId == workspaceId
+            );
+          allow update, delete: if isMember(workspaceId);
+        }
+      }
+
+      match /workerAppData/{userId} {
+        allow get: if canUseWorkspaceState(workspaceId) ||
+          (signedIn() && request.auth.uid == userId);
+        allow list: if canUseWorkspaceState(workspaceId);
+        allow create: if isLinkedOperator(workspaceId) ||
+          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId)) ||
+          (
+            isLinkedWorker(workspaceId, userId) &&
+            request.resource.data.keys().hasOnly([
+              "blockedDayDates",
+              "blockedDays",
+              "blockedDaysUpdatedAt",
+              "updatedAt"
+            ])
+          );
+        allow update: if isLinkedOperator(workspaceId) ||
+          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId)) ||
+          (
+            isLinkedWorker(workspaceId, userId) &&
+            request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              "blockedDayDates",
+              "blockedDays",
+              "blockedDaysUpdatedAt",
+              "updatedAt"
+            ])
+          );
+        allow delete: if isLinkedOperator(workspaceId) ||
+          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
       }
 
       match /{document=**} {
