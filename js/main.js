@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import {
     prevMonth,
     nextMonth,
@@ -974,15 +975,6 @@ function openAttachment(doc) {
     }
 
     setTimeout(() => URL.revokeObjectURL(url), 60000);
-}
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
 }
 
 function getProfileLogs(profileName) {

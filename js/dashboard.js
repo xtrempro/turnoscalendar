@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import {
     getCompensationProfileAt,
     getProfileData,
@@ -63,15 +64,6 @@ const dashboardState = {
 
 let renderRequest = 0;
 const holidayCache = new Map();
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function normalizeText(value) {
     return String(value || "")

@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import {
     getCurrentProfile,
@@ -82,15 +83,6 @@ const CATEGORY_DEFS = [
         tone: "green"
     }
 ];
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function categoryDef(category) {
     return CATEGORY_DEFS.find(item => item.key === category) ||

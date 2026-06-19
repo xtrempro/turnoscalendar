@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import {
     getCurrentFirebaseUser,
     getFirebaseServices
@@ -8,15 +9,6 @@ const WORKER_APP_URL = "https://turnoplusfuncionarios.web.app/";
 const WORKER_APP_DOWNLOAD_URL =
     "https://play.google.com/store/apps/details?id=cl.turnoplus.trabajador";
 const INVITE_DURATION_DAYS = 14;
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function sanitizeDigits(value, maxLength = Infinity) {
     return String(value || "")

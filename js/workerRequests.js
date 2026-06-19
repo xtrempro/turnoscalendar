@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import { TURNO_LABEL } from "./constants.js";
 import { pushHistory } from "./history.js";
 import {
@@ -75,15 +76,6 @@ let selectedMonth = monthValue();
 let activeWorkspaceLinkWatchId = "";
 let unsubscribeWorkspaceLinks = null;
 let linkRenderTimer = null;
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function parseISODate(value) {
     const match = String(value || "")

@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import {
     getBaseProfileData,
     getManualLeaveBalances,
@@ -90,15 +91,6 @@ function formatDate(value) {
     if (parts.length !== 3) return value || "";
 
     return `${parts[2]}-${parts[1]}-${parts[0]}`;
-}
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
 }
 
 function displayReportText(value) {

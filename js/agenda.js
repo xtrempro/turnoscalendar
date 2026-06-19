@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 
 const STORAGE_KEY = "agenda_contacts";
@@ -5,15 +6,6 @@ const NEW_CONTACT_ID = "__new_contact__";
 
 let selectedContactId = NEW_CONTACT_ID;
 let agendaSearch = "";
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function normalizeSearch(value) {
     return String(value || "")

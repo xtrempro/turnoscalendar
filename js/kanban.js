@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
@@ -20,15 +21,6 @@ const CARD_COLORS = [
 
 let draggedCardId = "";
 const migratedLocalKeys = new Set();
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function isValidColumn(status) {
     return KANBAN_COLUMNS.some(column => column.key === status);

@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
 import { getJSON, setJSON } from "./persistence.js";
 
@@ -7,15 +8,6 @@ const STATUS_COMPLETED = "completed";
 
 let selectedStatus = STATUS_PENDING;
 let selectedMonth = monthValue();
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function makeId(prefix = "memo") {
     return `${prefix}_${Date.now()}_${Math.random()

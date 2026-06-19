@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import {
     getCurrentProfile,
     getProfiles,
@@ -611,15 +612,6 @@ function parseKey(keyDay) {
         month: Number(parts[1]),
         day: Number(parts[2])
     };
-}
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
 }
 
 function normalizeSearch(value) {

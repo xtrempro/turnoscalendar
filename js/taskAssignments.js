@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import {
     getProfiles,
@@ -34,15 +35,6 @@ let unbindTaskFilterOutside = null;
 let draggedTask = null;
 let draggedWorker = null;
 let renderToken = 0;
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function normalizeText(value) {
     return String(value || "")

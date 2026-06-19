@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import { getCurrentFirebaseUser, getFirebaseServices } from "./firebaseClient.js";
 import { getWorkerAppLinks } from "./workerAppDataSync.js";
 
@@ -10,15 +11,6 @@ let unreadCount = 0;
 let floatingButton = null;
 let floatingBadge = null;
 let dialog = null;
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function initials(value) {
     return String(value || "")

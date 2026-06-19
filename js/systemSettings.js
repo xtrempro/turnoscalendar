@@ -1,3 +1,4 @@
+import { escapeHTML } from "./htmlUtils.js";
 import {
     DEFAULT_GRADE_HOUR_CONFIG,
     getGradeHourConfig,
@@ -59,15 +60,6 @@ let memberPermissionDraft = [];
 let memberPermissionLoading = false;
 let memberPermissionError = "";
 let onSettingsSaved = null;
-
-function escapeHTML(value) {
-    return String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-}
 
 function formatRate(value) {
     return Number(value || 0).toFixed(2);
