@@ -41,10 +41,15 @@ function createInviteToken() {
         .join("");
 }
 
-function getWorkerAppInviteUrl(workspaceId, token) {
+function getWorkerAppInviteUrl(workspaceId, token, email = "") {
     const url = new URL(WORKER_APP_URL);
     url.searchParams.set("workspace", workspaceId);
     url.searchParams.set("invite", token);
+
+    if (email) {
+        url.searchParams.set("email", email);
+    }
+
     return url.toString();
 }
 
@@ -296,7 +301,7 @@ export async function openWorkerAppInviteDialog(profile) {
 
     const { db, firestoreModule } = await getFirebaseServices();
     const token = createInviteToken();
-    const inviteUrl = getWorkerAppInviteUrl(workspace.id, token);
+    const inviteUrl = getWorkerAppInviteUrl(workspace.id, token, email);
     const now = firestoreModule.serverTimestamp();
     const expiresAt = new Date(
         Date.now() + INVITE_DURATION_DAYS * 24 * 60 * 60 * 1000
