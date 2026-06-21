@@ -92,8 +92,10 @@ import {
 import {
     addAuditLog,
     AUDIT_CATEGORY,
-    getLeaveApplicationInfo
+    getLeaveApplicationInfo,
+    undoAuditLogEntry
 } from "./auditLog.js";
+import { notifyWorkerApp } from "./workerAppDataSync.js";
 import {
     getClockExtraHours,
     hasClockExtra,
@@ -911,6 +913,159 @@ function leaveApplicationHoverTitle(
         `Aplicado: ${info?.createdAtLabel || "Sin registro"}`,
         `Usuario: ${info?.actorName || "No registrado"}`
     ].join("\n");
+}
+
+function leaveDateLabelFromKey(keyDay) {
+    const [y, m, d] = String(keyDay || "").split("-").map(Number);
+    const date = new Date(y, m, d);
+
+    if (Number.isNaN(date.getTime())) return String(keyDay || "");
+
+    return date.toLocaleDateString("es-CL", {
+        weekday: "long",
+        day: "2-digit",
+        month: "long",
+        year: "numeric"
+    });
+}
+
+async function notifyAffectedWorkersOfLeaveCancellation(result, label) {
+    const tasks = [];
+
+    if (result.profile) {
+        tasks.push(
+            notifyWorkerApp(
+                result.profile,
+                `Tu supervisor anulo ${label}. Revisa tu calendario actualizado en la app.`
+            )
+        );
+    }
+
+    (result.canceledReplacements || []).forEach(replacement => {
+        if (!replacement?.worker) return;
+
+        const date = replacement.date || "la fecha asignada";
+        const turn = replacement.turno || "turno";
+
+        tasks.push(
+            notifyWorkerApp(
+                replacement.worker,
+                `Se anulo tu turno extra del ${date} (${turn}) porque se anulo ${label} de ${result.profile}.`
+            )
+        );
+    });
+
+    await Promise.all(tasks);
+}
+
+function openLeaveDetailDialog({
+    profile,
+    keyDay,
+    admin,
+    legal,
+    comp,
+    absences
+}) {
+    const type = leaveTypeForDay(keyDay, admin, legal, comp, absences);
+
+    if (!type) return;
+
+    const label = leaveLabelForType(type);
+    const info = type === "half_admin"
+        ? null
+        : getLeaveApplicationInfo({
+            profile,
+            keyDay,
+            type,
+            sourceMap: leaveSourceMapForType(
+                type,
+                admin,
+                legal,
+                comp,
+                absences
+            )
+        });
+    const canUndo = Boolean(info?.canUndo && info?.logId);
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.innerHTML = `
+        <section class="turn-change-dialog leave-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="leaveDetailTitle">
+            <strong id="leaveDetailTitle">${escapeHTML(label)}</strong>
+            <div class="leave-detail-rows">
+                <div><span>Trabajador</span><b>${escapeHTML(profile)}</b></div>
+                <div><span>Fecha</span><b>${escapeHTML(leaveDateLabelFromKey(keyDay))}</b></div>
+                <div><span>Aplicado</span><b>${escapeHTML(info?.createdAtLabel || "Sin registro")}</b></div>
+                <div><span>Por</span><b>${escapeHTML(info?.actorName || "No registrado")}</b></div>
+            </div>
+            <p class="leave-detail-note">
+                ${canUndo
+                    ? "Anular quitara el permiso/ausencia, cancelara los reemplazos asociados, notificara a los trabajadores afectados y dejara el registro del LOG marcado como anulado."
+                    : "Este permiso no tiene un registro en el LOG que permita anularlo automaticamente."}
+            </p>
+            <div class="turn-change-dialog__actions">
+                ${canUndo
+                    ? `<button class="leave-detail-undo" type="button" data-action="undo">Anular permiso</button>`
+                    : ""}
+                <button class="ghost-button" type="button" data-action="close">Cerrar</button>
+            </div>
+        </section>
+    `;
+
+    const close = () => {
+        document.removeEventListener("keydown", onKeydown);
+        backdrop.remove();
+    };
+    const onKeydown = event => {
+        if (event.key === "Escape") close();
+    };
+
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) close();
+    });
+    backdrop
+        .querySelector("[data-action='close']")
+        ?.addEventListener("click", close);
+    backdrop
+        .querySelector("[data-action='undo']")
+        ?.addEventListener("click", async event => {
+            const button = event.currentTarget;
+            const confirmed = window.confirm(
+                `Deseas anular ${label} de ${profile}? Se cancelaran los reemplazos asociados y se notificara a los trabajadores.`
+            );
+
+            if (!confirmed) return;
+
+            button.disabled = true;
+            button.textContent = "Anulando...";
+
+            try {
+                const result = await undoAuditLogEntry(info.logId, {
+                    source: "calendar"
+                });
+
+                if (!result?.ok) {
+                    button.disabled = false;
+                    button.textContent = "Anular permiso";
+                    alert(
+                        "No se pudo anular automaticamente. Es posible que el registro haya cambiado."
+                    );
+                    return;
+                }
+
+                await notifyAffectedWorkersOfLeaveCancellation(result, label);
+                close();
+                await renderCalendar({ deferHeavy: true });
+            } catch (error) {
+                console.error(error);
+                button.disabled = false;
+                button.textContent = "Anular permiso";
+                alert("Ocurrio un error al anular el permiso.");
+            }
+        });
+
+    document.addEventListener("keydown", onKeydown);
+    document.body.appendChild(backdrop);
 }
 
 function remoteFusionReplacementTurn(snapshot, profileName, keyDay, state) {
@@ -2881,6 +3036,14 @@ async function clickDia(
             absences
         )
     ) {
+        openLeaveDetailDialog({
+            profile: getCurrentProfile(),
+            keyDay,
+            admin,
+            legal,
+            comp,
+            absences
+        });
         return;
     }
 

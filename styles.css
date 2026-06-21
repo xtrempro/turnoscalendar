@@ -3958,6 +3958,62 @@ body.auth-gate-active .app-shell {
     gap: 10px;
 }
 
+.leave-detail-dialog {
+    width: min(460px, 100%);
+}
+
+.leave-detail-rows {
+    display: grid;
+    gap: 8px;
+    margin: 6px 0 4px;
+}
+
+.leave-detail-rows > div {
+    display: grid;
+    grid-template-columns: minmax(0, 110px) minmax(0, 1fr);
+    gap: 10px;
+    align-items: baseline;
+}
+
+.leave-detail-rows span {
+    color: var(--text-soft);
+    font-size: 0.82rem;
+}
+
+.leave-detail-rows b {
+    color: var(--text);
+    text-transform: capitalize;
+}
+
+.leave-detail-note {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.leave-detail-undo {
+    min-height: 44px;
+    padding: 0 16px;
+    border: 1px solid #dc2626;
+    border-radius: 14px;
+    background: #dc2626;
+    color: #ffffff;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.leave-detail-undo:hover:not(:disabled) {
+    background: #b91c1c;
+    border-color: #b91c1c;
+}
+
+.leave-detail-undo:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 .worker-app-invite-dialog {
     width: min(520px, 100%);
 }

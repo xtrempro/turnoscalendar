@@ -1,7 +1,10 @@
 import { keyFromDate, toISODate } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import { TURNO } from "./constants.js";
-import { getFirebaseServices } from "./firebaseClient.js";
+import {
+    getCurrentFirebaseUser,
+    getFirebaseServices
+} from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { getJSON } from "./persistence.js";
 import {
@@ -121,6 +124,86 @@ export function getWorkerAppLinks() {
         ...link,
         profile: findProfileForLink(link, profiles)
     }));
+}
+
+function notificationMessageId() {
+    if (globalThis.crypto?.randomUUID) {
+        return globalThis.crypto.randomUUID();
+    }
+
+    return `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Envia una notificacion a la app del trabajador escribiendo un mensaje de
+ * supervisor en su hilo (lo que dispara la push existente). Si el trabajador no
+ * tiene la app enlazada, no hace nada y devuelve false.
+ */
+export async function notifyWorkerApp(profileName, text) {
+    const message = String(text || "").trim();
+
+    if (!profileName || !message) return false;
+
+    const link = getWorkerAppLinkForProfile(profileName);
+    const workspace = getActiveWorkspace();
+
+    if (!link?.uid || !workspace?.id) return false;
+
+    try {
+        const user = getCurrentFirebaseUser();
+        const { db, firestoreModule } = await getFirebaseServices();
+        const threadRef = firestoreModule.doc(
+            db,
+            "workspaces",
+            workspace.id,
+            "workerMessages",
+            link.uid
+        );
+        const messageRef = firestoreModule.doc(
+            firestoreModule.collection(threadRef, "messages"),
+            notificationMessageId()
+        );
+        const now = firestoreModule.serverTimestamp();
+
+        await firestoreModule.writeBatch(db)
+            .set(
+                threadRef,
+                {
+                    uid: link.uid,
+                    workspaceId: workspace.id,
+                    workspaceName: workspace.name || link.workspaceName || "",
+                    profileName: link.profileName || profileName,
+                    profileRut: link.profileRut || "",
+                    workerEmail: link.workerEmail || "",
+                    lastMessage: message,
+                    lastSender: "supervisor",
+                    unreadForWorker: true,
+                    unreadForSupervisor: false,
+                    updatedAt: now
+                },
+                { merge: true }
+            )
+            .set(messageRef, {
+                id: messageRef.id,
+                workspaceId: workspace.id,
+                workerUid: link.uid,
+                profileName: link.profileName || profileName,
+                profileRut: link.profileRut || "",
+                text: message,
+                sender: "supervisor",
+                senderUid: user?.uid || "",
+                senderName: user?.displayName || user?.email || "Supervisor",
+                createdAt: now,
+                readBySupervisor: true,
+                readByWorker: false
+            })
+            .commit();
+
+        return true;
+    } catch (error) {
+        console.warn("No se pudo notificar al trabajador.", error);
+        return false;
+    }
 }
 
 function classNameForDay(state, hasLeave) {

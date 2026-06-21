@@ -493,6 +493,8 @@ export function getLeaveApplicationInfo({
     const actorName = logActorName(log);
 
     return {
+        logId: log.id,
+        canUndo: canUndoAuditLog(log),
         createdAt: log.createdAt,
         createdAtLabel: formatTimestamp(log.createdAt),
         actorName: actorName || "No registrado"
@@ -1040,24 +1042,28 @@ export function addAuditLog(category, action, details = "", meta = {}) {
     }
 }
 
-async function undoAuditLogEntry(logId) {
+export async function undoAuditLogEntry(logId, options = {}) {
     const log = getAuditLogs().find(item => item.id === logId);
 
-    if (!log || !canUndoAuditLog(log)) return false;
+    if (!log || !canUndoAuditLog(log)) return { ok: false };
 
     const result = log.category === AUDIT_CATEGORY.OVERTIME
         ? cancelReplacementFromLog(log)
         : await undoLeaveAbsenceLog(log);
 
-    if (!result?.ok) return false;
+    if (!result?.ok) return { ok: false };
+
+    const cancellationSource = options.source === "calendar"
+        ? "el calendario"
+        : "el menu LOG";
 
     updateLog(logId, entry => ({
         ...entry,
         canceledAt: new Date().toISOString(),
         canceledBy: getCurrentActorLabel(),
         cancellationDetails: result.canceledReplacements?.length
-            ? `Accion anulada desde el menu LOG. Se anularon ${result.canceledReplacements.length} reemplazo(s)/HHEE asociado(s).`
-            : "Accion anulada desde el menu LOG."
+            ? `Accion anulada desde ${cancellationSource}. Se anularon ${result.canceledReplacements.length} reemplazo(s)/HHEE asociado(s).`
+            : `Accion anulada desde ${cancellationSource}.`
     }));
 
     window.dispatchEvent(
@@ -1066,7 +1072,12 @@ async function undoAuditLogEntry(logId) {
         })
     );
 
-    return true;
+    return {
+        ok: true,
+        profile: String(log.profile || log.meta?.profile || ""),
+        action: String(log.action || ""),
+        canceledReplacements: result.canceledReplacements || []
+    };
 }
 
 export function renderAuditLogPanel() {
@@ -1164,9 +1175,9 @@ export function renderAuditLogPanel() {
 
             if (!confirmed) return;
 
-            const ok = await undoAuditLogEntry(button.dataset.auditUndo);
+            const result = await undoAuditLogEntry(button.dataset.auditUndo);
 
-            if (!ok) {
+            if (!result?.ok) {
                 window.alert(
                     "No se pudo anular automaticamente. Es posible que la accion ya no exista en el calendario o haya sido modificada despues."
                 );
