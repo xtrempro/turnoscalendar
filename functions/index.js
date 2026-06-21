@@ -58,7 +58,7 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
     const workerName = String(invite.profileName || "trabajador").trim();
     const unit = String(invite.workspaceName || "TurnoPlus").trim();
     const inviteUrl = String(invite.inviteUrl || "");
-    const downloadUrl = String(invite.appDownloadUrl || WORKER_APP_BASE_URL);
+    const installUrl = String(invite.appInstallUrl || WORKER_APP_BASE_URL);
 
     // Para correos no-Gmail: el boton del correo ES el enlace de ingreso
     // passwordless (un correo, un clic). Para Gmail, el enlace abre la app y se
@@ -86,7 +86,7 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
       workerName,
       unit,
       ctaUrl,
-      downloadUrl,
+      installUrl,
       isGoogleEmail
     });
 
@@ -677,11 +677,11 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
-function buildInviteEmail({ workerName, unit, ctaUrl, downloadUrl, isGoogleEmail }) {
+function buildInviteEmail({ workerName, unit, ctaUrl, installUrl, isGoogleEmail }) {
   const safeName = escapeHtml(workerName);
   const safeUnit = escapeHtml(unit);
   const safeCta = escapeHtml(ctaUrl);
-  const safeDownload = escapeHtml(downloadUrl);
+  const safeInstall = escapeHtml(installUrl);
   const ctaLabel = isGoogleEmail ? "Enlazar mi app" : "Entrar a mi app";
   const accessNote = isGoogleEmail
     ? "Toca el boton para abrir la app e iniciar sesion con tu cuenta Google."
@@ -693,7 +693,7 @@ function buildInviteEmail({ workerName, unit, ctaUrl, downloadUrl, isGoogleEmail
     isGoogleEmail
       ? `Abre este enlace e inicia sesion con tu cuenta Google: ${ctaUrl}`
       : `Entra directo con este enlace (es personal, no lo compartas): ${ctaUrl}`,
-    `Si aun no tienes la app, instalala desde: ${downloadUrl}`,
+    `Para tenerla como app en tu celular: abre ${installUrl} y, en el menu del navegador, elige "Agregar a pantalla de inicio" o "Instalar app".`,
     "Si no esperabas esta invitacion, puedes ignorar este correo."
   ].join("\n\n");
 
@@ -709,9 +709,10 @@ function buildInviteEmail({ workerName, unit, ctaUrl, downloadUrl, isGoogleEmail
       <p style="font-size: 14px; color: #52606d;">Si el boton no funciona, copia y pega este enlace en tu navegador:<br>
         <a href="${safeCta}">${safeCta}</a>
       </p>
-      <p style="font-size: 14px; color: #52606d;">Si aun no tienes la app instalada, descargala aqui:<br>
-        <a href="${safeDownload}">${safeDownload}</a>
-      </p>
+      <div style="font-size: 14px; color: #52606d; background: #f1f5f9; border-radius: 10px; padding: 12px 14px; margin-top: 8px;">
+        <strong>Instalala como app en tu celular</strong><br>
+        Abre <a href="${safeInstall}">${safeInstall}</a> en tu navegador y elige <strong>"Agregar a pantalla de inicio"</strong> o <strong>"Instalar app"</strong>. Asi la tendras como una app normal, sin pasar por una tienda.
+      </div>
       <hr style="border: none; border-top: 1px solid #e4e7eb; margin: 24px 0;">
       <p style="font-size: 12px; color: #9aa5b1;">Si no esperabas esta invitacion, puedes ignorar este correo.</p>
     </div>

@@ -7,8 +7,6 @@ import { getActiveWorkspace } from "./workspaces.js";
 import { getWorkerAppLinkForProfile } from "./workerAppDataSync.js";
 
 const WORKER_APP_URL = "https://turnoplusfuncionarios.web.app/";
-const WORKER_APP_DOWNLOAD_URL =
-    "https://play.google.com/store/apps/details?id=cl.turnoplus.trabajador";
 const INVITE_DURATION_DAYS = 14;
 
 function sanitizeDigits(value, maxLength = Infinity) {
@@ -81,8 +79,8 @@ function inviteMessage(profile, workspace, inviteUrl) {
     return [
         `Hola ${name}.`,
         `Te enviamos una invitacion para enlazar tu aplicacion TurnoPlus Trabajador con ${unit}.`,
-        `Abre este enlace e inicia sesion con tu correo Google: ${inviteUrl}`,
-        `Si aun no tienes la app, puedes instalarla desde: ${WORKER_APP_DOWNLOAD_URL}`
+        `Abre este enlace para ingresar a tu app: ${inviteUrl}`,
+        `Para tenerla como app en tu celular, abre ${WORKER_APP_URL} y elige "Agregar a pantalla de inicio" o "Instalar app".`
     ].join("\n\n");
 }
 
@@ -325,7 +323,7 @@ export async function openWorkerAppInviteDialog(profile) {
         phoneE164,
         status: "pending",
         inviteUrl,
-        appDownloadUrl: WORKER_APP_DOWNLOAD_URL,
+        appInstallUrl: WORKER_APP_URL,
         createdByUid: user.uid,
         createdByEmail: user.email || "",
         createdByName: user.displayName || "",
