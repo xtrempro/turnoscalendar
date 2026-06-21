@@ -3,12 +3,14 @@ import {
     exportLocalSnapshot,
     getRaw,
     isInternalKey,
+    removeKey,
     replaceLocalSnapshot,
     setRaw
 } from "./persistence.js";
 import { canEditAnyMenu } from "./workspacePermissions.js";
 
 const CLIENT_ID_KEY = "proturnos_firebase_client_id";
+const LOCAL_DIRTY_KEY = "proturnos_appstate_dirty_at";
 const CHUNK_SIZE = 450000;
 
 let activeWorkspaceId = "";
@@ -57,6 +59,20 @@ function getClientId() {
     setRaw(CLIENT_ID_KEY, nextId);
 
     return nextId;
+}
+
+function markLocalDirty() {
+    setRaw(LOCAL_DIRTY_KEY, String(Date.now()));
+}
+
+function getLocalDirtyAt() {
+    return Number(getRaw(LOCAL_DIRTY_KEY, "0")) || 0;
+}
+
+function clearLocalDirtyIfSynced(uploadedHash) {
+    if (hashString(currentLocalStateString()) === uploadedHash) {
+        removeKey(LOCAL_DIRTY_KEY);
+    }
 }
 
 function stableSnapshotString(snapshot = {}) {
@@ -204,6 +220,7 @@ async function uploadAppState() {
         if (workspaceId !== activeWorkspaceId) return;
 
         lastUploadedHash = stateHash;
+        clearLocalDirtyIfSynced(stateHash);
         dispatchStatus({
             type: "app-state-uploaded",
             chunkCount: chunks.length,
@@ -284,6 +301,25 @@ async function applyRemoteState(manifest, workspaceId, generation) {
         )
     ) {
         return;
+    }
+
+    // Si lo local tiene cambios sin subir mas recientes que lo remoto (p. ej.
+    // un guardado reciente seguido de un refresco antes de sincronizar), no se
+    // debe sobrescribir lo local: se conserva y se sube en su lugar.
+    const localDirtyAt = getLocalDirtyAt();
+
+    if (localDirtyAt) {
+        const localHash = hashString(currentLocalStateString());
+        const remoteUpdatedAt = Date.parse(manifest?.updatedAtISO || "") || 0;
+
+        if (
+            localHash !== lastUploadedHash &&
+            remoteUpdatedAt &&
+            localDirtyAt > remoteUpdatedAt
+        ) {
+            scheduleAppStateUpload();
+            return;
+        }
     }
 
     const stateString = await readRemoteStateString(
@@ -450,6 +486,7 @@ if (typeof window !== "undefined") {
 
         if (keys.length && keys.every(isInternalKey)) return;
 
+        markLocalDirty();
         scheduleAppStateUpload();
     });
 }

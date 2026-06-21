@@ -2,7 +2,8 @@ const LOCAL_DRIVER = "local";
 const INTERNAL_KEYS = new Set([
     "proturnos_theme",
     "firebaseActiveWorkspace",
-    "proturnos_firebase_client_id"
+    "proturnos_firebase_client_id",
+    "proturnos_appstate_dirty_at"
 ]);
 const INTERNAL_KEY_PREFIXES = [
     "firebase:",
