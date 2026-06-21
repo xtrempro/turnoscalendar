@@ -5,6 +5,17 @@ const {
   onDocumentCreated,
   onDocumentUpdated
 } = require("firebase-functions/v2/firestore");
+const { defineSecret, defineString } = require("firebase-functions/params");
+
+// API key de Resend. Configurar con: firebase functions:secrets:set RESEND_API_KEY
+const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
+// Remitente verificado en Resend. Para produccion, verificar un dominio propio
+// y usar algo como "TurnoPlus <noreply@tudominio.cl>". Configurable en
+// functions/.env (MAIL_FROM=...). Por defecto usa el remitente de pruebas de
+// Resend, que solo entrega a la propia cuenta del API key.
+const MAIL_FROM = defineString("MAIL_FROM", {
+  default: "TurnoPlus <onboarding@resend.dev>"
+});
 
 admin.initializeApp();
 setGlobalOptions({ region: "southamerica-west1" });
@@ -19,6 +30,94 @@ const INVALID_TOKEN_CODES = new Set([
   "messaging/invalid-registration-token",
   "messaging/registration-token-not-registered"
 ]);
+
+exports.sendWorkerAppInviteEmail = onDocumentCreated(
+  {
+    document: "workspaces/{workspaceId}/workerAppInvites/{token}",
+    secrets: [RESEND_API_KEY]
+  },
+  async (event) => {
+    const invite = event.data?.data() || {};
+    const email = String(invite.email || "").trim();
+
+    if (invite.status !== "pending" || !email) {
+      return;
+    }
+
+    const apiKey = RESEND_API_KEY.value();
+
+    if (!apiKey) {
+      logger.warn("RESEND_API_KEY no configurada; no se envia el correo.");
+      await event.data.ref.set(
+        { emailStatus: "skipped_no_api_key" },
+        { merge: true }
+      );
+      return;
+    }
+
+    const workerName = String(invite.profileName || "trabajador").trim();
+    const unit = String(invite.workspaceName || "TurnoPlus").trim();
+    const inviteUrl = String(invite.inviteUrl || "");
+    const downloadUrl = String(invite.appDownloadUrl || WORKER_APP_BASE_URL);
+    const { html, text } = buildInviteEmail({
+      workerName,
+      unit,
+      inviteUrl,
+      downloadUrl
+    });
+
+    try {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from: MAIL_FROM.value(),
+          to: [email],
+          subject: "Invitacion a TurnoPlus Trabajador",
+          html,
+          text
+        })
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`Resend ${response.status}: ${detail}`);
+      }
+
+      const result = await response.json().catch(() => ({}));
+
+      await event.data.ref.set(
+        {
+          emailStatus: "sent",
+          emailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+          emailProviderId: result?.id || "",
+          emailError: ""
+        },
+        { merge: true }
+      );
+
+      logger.info("Correo de invitacion enviado.", {
+        email,
+        id: result?.id || ""
+      });
+    } catch (error) {
+      logger.error("No se pudo enviar correo de invitacion.", {
+        email,
+        message: error.message
+      });
+      await event.data.ref.set(
+        {
+          emailStatus: "error",
+          emailError: String(error.message || error).slice(0, 500)
+        },
+        { merge: true }
+      );
+    }
+  }
+);
 
 exports.notifyReplacementRequestCreated = onDocumentCreated(
   "workspaces/{workspaceId}/replacementRequests/{requestId}",
@@ -543,6 +642,51 @@ function stringifyData(value) {
       String(entry ?? "")
     ])
   );
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function buildInviteEmail({ workerName, unit, inviteUrl, downloadUrl }) {
+  const safeName = escapeHtml(workerName);
+  const safeUnit = escapeHtml(unit);
+  const safeInvite = escapeHtml(inviteUrl);
+  const safeDownload = escapeHtml(downloadUrl);
+
+  const text = [
+    `Hola ${workerName}.`,
+    `Te invitamos a enlazar tu aplicacion TurnoPlus Trabajador con ${unit}.`,
+    `1) Abre este enlace e inicia sesion con tu correo Google: ${inviteUrl}`,
+    `2) Si aun no tienes la app, instalala desde: ${downloadUrl}`,
+    "Si no esperabas esta invitacion, puedes ignorar este correo."
+  ].join("\n\n");
+
+  const html = `
+    <div style="font-family: Arial, Helvetica, sans-serif; color: #1f2933; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px;">TurnoPlus Trabajador</h2>
+      <p>Hola <strong>${safeName}</strong>,</p>
+      <p>Te invitamos a enlazar tu aplicacion <strong>TurnoPlus Trabajador</strong> con <strong>${safeUnit}</strong> para revisar tus turnos, permisos y solicitudes desde tu celular.</p>
+      <p style="margin: 24px 0;">
+        <a href="${safeInvite}" style="background: #1d6cff; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 10px; font-weight: bold; display: inline-block;">Enlazar mi app</a>
+      </p>
+      <p style="font-size: 14px; color: #52606d;">Si el boton no funciona, copia y pega este enlace en tu navegador:<br>
+        <a href="${safeInvite}">${safeInvite}</a>
+      </p>
+      <p style="font-size: 14px; color: #52606d;">Si aun no tienes la app instalada, descargala aqui:<br>
+        <a href="${safeDownload}">${safeDownload}</a>
+      </p>
+      <hr style="border: none; border-top: 1px solid #e4e7eb; margin: 24px 0;">
+      <p style="font-size: 12px; color: #9aa5b1;">Si no esperabas esta invitacion, puedes ignorar este correo.</p>
+    </div>
+  `;
+
+  return { html, text };
 }
 
 function formatDateCL(value) {
