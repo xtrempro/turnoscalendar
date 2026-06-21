@@ -641,7 +641,7 @@ function dashboardShell(content = loadingHTML()) {
             <div class="dashboard-head">
                 <div>
                     <h2>Dashboard</h2>
-                    <p>Indicadores consolidados de horas extras, dotaci\u00f3n, cobertura y licencias.</p>
+                    <p>Ranking de licencias m\u00e9dicas por trabajador.</p>
                 </div>
             </div>
             ${content}
@@ -684,6 +684,12 @@ function bindDashboardControls(root) {
         });
 }
 
+// NOTA: los graficos "Gasto en pago de horas extras", "Dotacion por estamento"
+// y "Turnos sin cubrir" se desactivaron temporalmente porque su calculo
+// (buildHheeExpenseRows / buildStaffingHeadcountRows / buildStaffingRows) es
+// pesado y ralentizaba la carga del dashboard. Las funciones constructoras y de
+// render se conservan intactas para volver a habilitarlos mas adelante con una
+// estrategia que no penalice la carga (p. ej. carga diferida o cacheo).
 export async function renderDashboardPanel() {
     const root = document.getElementById("dashboardPanel");
     if (!root) return;
@@ -692,36 +698,11 @@ export async function renderDashboardPanel() {
 
     root.innerHTML = dashboardShell();
 
-    const [
-        hheeRows,
-        staffingHeadcountRows,
-        staffingRows,
-        licenseRows
-    ] = await Promise.all([
-        buildHheeExpenseRows(),
-        Promise.resolve(buildStaffingHeadcountRows()),
-        buildStaffingRows(),
-        Promise.resolve(buildLicenseRanking())
-    ]);
+    const licenseRows = buildLicenseRanking();
 
     if (requestId !== renderRequest) return;
 
     root.innerHTML = dashboardShell(`
-        ${renderCard(
-            "Gasto en pago de horas extras",
-            "\u00daltimos 15 meses por estamento.",
-            renderHheeExpenseChart(hheeRows)
-        )}
-        ${renderCard(
-            "Dotaci\u00f3n por estamento",
-            "Dotaci\u00f3n anual incluyendo Planta, Contrata, Honorarios y Reemplazo.",
-            renderStaffingHeadcountChart(staffingHeadcountRows)
-        )}
-        ${renderCard(
-            "Turnos sin cubrir",
-            "\u00daltimos 15 meses.",
-            renderLineChart(staffingRows.labels, staffingRows.series)
-        )}
         ${renderCard(
             "Ranking de licencias m\u00e9dicas",
             `Top 15 trabajadores en los \u00faltimos ${dashboardState.licenseYears} a\u00f1o(s).`,
