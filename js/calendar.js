@@ -56,6 +56,7 @@ import {
     renderTimeline
 } from "./timeline.js";
 import {
+    cededSwapTurnBlocks,
     deshacerCambioTurno,
     getCambioTurnoCalendario,
     getCambiosTurnoCalendario,
@@ -1626,6 +1627,11 @@ async function getReplacementCandidates(
         })
         .filter(candidate =>
             !workerHasAbsence(candidate.profile.name, keyDay) &&
+            !cededSwapTurnBlocks(
+                candidate.profile.name,
+                keyDay,
+                neededTurn
+            ) &&
             canCoverShift(
                 candidate.currentState,
                 neededTurn,

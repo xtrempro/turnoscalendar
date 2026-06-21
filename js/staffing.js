@@ -17,6 +17,7 @@ import {
 } from "./turnEngine.js";
 import { ESTAMENTO, TURNO } from "./constants.js";
 import { currentDate } from "./calendar.js";
+import { cededSwapTurnBlocks } from "./swaps.js";
 import { getJSON, setJSON } from "./persistence.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { fetchHolidays } from "./holidays.js";
@@ -3028,8 +3029,13 @@ function contarRequerimiento(
     };
 }
 
-function sugerirReemplazo(profiles, row, y, m, d, absenceCache){
+function sugerirReemplazo(profiles, row, y, m, d, absenceCache, shiftKind){
     const dayKey = key(y, m, d);
+    const neededTurn = shiftKind === "night"
+        ? TURNO.NOCHE
+        : shiftKind === "diurno"
+            ? TURNO.DIURNO
+            : TURNO.LARGA;
     const libres = profiles
         .filter(profile => staffingGroupMatches(profile, row, dayKey))
         .filter(profile =>
@@ -3041,7 +3047,10 @@ function sugerirReemplazo(profiles, row, y, m, d, absenceCache){
         )
         .filter(profile => {
             return getStaffingTurno(profile, y, m, d) === 0;
-        });
+        })
+        .filter(profile =>
+            !cededSwapTurnBlocks(profile.name, dayKey, neededTurn)
+        );
 
     if (!libres.length) return null;
 
@@ -3153,7 +3162,8 @@ export function analizarMes(year, month, holidays = {}){
                             year,
                             month,
                             d,
-                            absenceCache
+                            absenceCache,
+                            check.kind
                         )
                     });
                 }

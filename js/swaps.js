@@ -671,6 +671,67 @@ export function canGiveSwapTurn(profile, keyDay) {
     );
 }
 
+const SWAP_CODE_TO_TURNO = {
+    L: TURNO.LARGA,
+    N: TURNO.NOCHE,
+    "24": TURNO.TURNO24,
+    D: TURNO.DIURNO,
+    "D+N": TURNO.DIURNO_NOCHE,
+    "18": TURNO.TURNO18
+};
+
+function swapCodeToTurno(code) {
+    return SWAP_CODE_TO_TURNO[code] || TURNO.LIBRE;
+}
+
+/**
+ * Turnos que el perfil ENTREGO (cedio) en cambios activos ese dia: como quien
+ * entrega en la fecha original, o como receptor que devuelve en la fecha de
+ * devolucion. El horario de esos turnos queda comprometido.
+ */
+export function getCededSwapTurns(profile, keyDay) {
+    const fecha = isoFromKey(keyDay);
+    const turns = [];
+
+    getSwaps().forEach(swap => {
+        if (cambioEstaAnulado(swap)) return;
+
+        if (
+            !swap.skipFecha &&
+            swap.from === profile &&
+            swap.fecha === fecha
+        ) {
+            turns.push(swapCodeToTurno(swap.turno));
+        }
+
+        if (
+            !swap.skipDevolucion &&
+            swap.to === profile &&
+            swap.devolucion === fecha
+        ) {
+            turns.push(swapCodeToTurno(swap.turnoDevuelto));
+        }
+    });
+
+    return turns.filter(Boolean);
+}
+
+/**
+ * True si el perfil cedio (entrego) un turno cuyo horario solapa con el turno
+ * requerido. Sirve para bloquear el slot cedido en sugerencias de reemplazo y
+ * en la aceptacion de nuevos cambios de turno.
+ */
+export function cededSwapTurnBlocks(profile, keyDay, neededTurn) {
+    const need = Number(neededTurn) || TURNO.LIBRE;
+
+    if (!need) return false;
+
+    return getCededSwapTurns(profile, keyDay).some(ceded =>
+        (includesDaytimeStart(ceded) && includesDaytimeStart(need)) ||
+        (includesNoche(ceded) && includesNoche(need))
+    );
+}
+
 export function getSwapDateBlockReason({
     giver,
     receiver,
