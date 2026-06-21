@@ -4,6 +4,7 @@ import {
     getFirebaseServices
 } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
+import { getWorkerAppLinkForProfile } from "./workerAppDataSync.js";
 
 const WORKER_APP_URL = "https://turnoplusfuncionarios.web.app/";
 const WORKER_APP_DOWNLOAD_URL =
@@ -110,9 +111,9 @@ function showInviteDialog({
     phoneE164
 }) {
     const message = inviteMessage(profile, workspace, inviteUrl);
-    const mailtoUrl = email
-        ? `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent("Invitacion TurnoPlus Trabajador")}&body=${encodeURIComponent(message)}`
-        : "";
+    const sentNote = email
+        ? `Se envio un correo de invitacion a ${escapeHTML(email)} con el enlace para instalar y enlazar la app.`
+        : "El perfil no tiene correo registrado, asi que no se envio correo automatico. Comparte el enlace por WhatsApp o copialo.";
     const whatsappUrl = phoneE164
         ? `https://wa.me/${phoneE164}?text=${encodeURIComponent(message)}`
         : "";
@@ -130,13 +131,12 @@ function showInviteDialog({
                     <small>${escapeHTML(email || "Sin correo registrado")}${phoneE164 ? ` | WhatsApp +${escapeHTML(phoneE164)}` : ""}</small>
                 </div>
             </div>
-            <p>La invitacion quedo creada. Puedes enviarla por correo, WhatsApp o copiar el enlace.</p>
+            <p>${sentNote}</p>
             <label class="worker-app-invite-link">
                 <span>Enlace de invitacion</span>
                 <input type="text" value="${escapeHTML(inviteUrl)}" readonly>
             </label>
             <div class="turn-change-dialog__actions worker-app-invite-actions">
-                <button class="secondary-button" type="button" data-worker-invite-action="email" ${email ? "" : "disabled"}>Correo</button>
                 <button class="secondary-button" type="button" data-worker-invite-action="whatsapp" ${phoneE164 ? "" : "disabled"}>WhatsApp</button>
                 <button class="primary-button" type="button" data-worker-invite-action="copy">Copiar enlace</button>
                 <button class="ghost-button" type="button" data-worker-invite-action="close">Cerrar</button>
@@ -149,12 +149,6 @@ function showInviteDialog({
             closeInviteDialog(backdrop);
         }
     });
-
-    backdrop
-        .querySelector("[data-worker-invite-action='email']")
-        ?.addEventListener("click", () => {
-            if (mailtoUrl) window.location.href = mailtoUrl;
-        });
 
     backdrop
         .querySelector("[data-worker-invite-action='whatsapp']")
@@ -184,6 +178,88 @@ function showInviteDialog({
     backdrop.querySelector("input")?.select();
 }
 
+async function unlinkWorkerApp(workspaceId, link) {
+    const user = getCurrentFirebaseUser();
+    const { db, firestoreModule } = await getFirebaseServices();
+
+    await firestoreModule.setDoc(
+        firestoreModule.doc(
+            db,
+            "workspaces",
+            workspaceId,
+            "workerLinks",
+            link.uid
+        ),
+        {
+            uid: link.uid,
+            status: "unlinked",
+            unlinkedAt: firestoreModule.serverTimestamp(),
+            unlinkedByUid: user?.uid || "",
+            unlinkedByName: user?.displayName || user?.email || ""
+        },
+        { merge: true }
+    );
+}
+
+function showUnlinkDialog({ profile, workspace, link }) {
+    const profileName = String(profile?.name || "Trabajador").trim();
+    const email = normalizeEmail(profile.email) || link.workerEmail || "";
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.innerHTML = `
+        <section class="turn-change-dialog worker-app-invite-dialog" role="dialog" aria-modal="true" aria-labelledby="workerAppInviteTitle">
+            <strong id="workerAppInviteTitle">Enlace app trabajador</strong>
+            <div class="worker-app-invite-profile">
+                <span class="worker-app-invite-avatar">${escapeHTML(profileInitials(profile))}</span>
+                <div>
+                    <b>${escapeHTML(profileName)}</b>
+                    <small>${escapeHTML(email || "Sin correo registrado")}</small>
+                </div>
+            </div>
+            <p>Este trabajador ya tiene su aplicacion enlazada.</p>
+            <div class="turn-change-dialog__actions worker-app-invite-actions">
+                <button class="worker-app-unlink-button" type="button" data-worker-invite-action="unlink">Desenlazar</button>
+                <button class="ghost-button" type="button" data-worker-invite-action="close">Cerrar</button>
+            </div>
+        </section>
+    `;
+
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) {
+            closeInviteDialog(backdrop);
+        }
+    });
+
+    backdrop
+        .querySelector("[data-worker-invite-action='unlink']")
+        ?.addEventListener("click", async event => {
+            const confirmed = window.confirm(
+                `Deseas desenlazar la app de ${profileName}? Dejara de recibir su informacion en la app y debera enlazarse nuevamente.`
+            );
+
+            if (!confirmed) return;
+
+            const button = event.currentTarget;
+            button.disabled = true;
+
+            try {
+                await unlinkWorkerApp(workspace.id, link);
+                closeInviteDialog(backdrop);
+            } catch (error) {
+                console.error(error);
+                button.disabled = false;
+                alert(error.message || "No se pudo desenlazar la app del trabajador.");
+            }
+        });
+
+    backdrop
+        .querySelector("[data-worker-invite-action='close']")
+        ?.addEventListener("click", () => closeInviteDialog(backdrop));
+
+    document.body.appendChild(backdrop);
+}
+
 export async function openWorkerAppInviteDialog(profile) {
     if (!profile?.name) {
         alert("Selecciona un trabajador para generar el enlace.");
@@ -200,6 +276,13 @@ export async function openWorkerAppInviteDialog(profile) {
 
     if (!workspace?.id) {
         alert("Selecciona un entorno Firebase antes de enviar el enlace.");
+        return;
+    }
+
+    const existingLink = getWorkerAppLinkForProfile(profile);
+
+    if (existingLink) {
+        showUnlinkDialog({ profile, workspace, link: existingLink });
         return;
     }
 

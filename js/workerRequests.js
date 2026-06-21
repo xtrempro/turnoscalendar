@@ -69,7 +69,8 @@ const STATUS_LABELS = {
     pending: "Pendiente",
     accepted: "Aceptada",
     rejected: "Rechazada",
-    canceled: "Anulada"
+    canceled: "Anulada",
+    expired: "Expirada"
 };
 
 let selectedStatus = "pending";
@@ -1184,6 +1185,8 @@ export async function renderWorkerRequestsPanel() {
             ${statusButtonHTML("pending", "Pendientes", pending.length)}
             ${statusButtonHTML("accepted", "Aceptadas", requests.filter(request => request.status === "accepted").length)}
             ${statusButtonHTML("rejected", "Rechazadas", requests.filter(request => request.status === "rejected").length)}
+            ${statusButtonHTML("canceled", "Anuladas", requests.filter(request => request.status === "canceled").length)}
+            ${statusButtonHTML("expired", "Expiradas", requests.filter(request => request.status === "expired").length)}
             ${statusButtonHTML("all", "Todas", requests.length)}
         </div>
 

@@ -3884,6 +3884,28 @@ body.auth-gate-active .app-shell {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.worker-app-unlink-button {
+    min-height: 44px;
+    padding: 0 18px;
+    border: 1px solid #dc2626;
+    border-radius: 14px;
+    background: #dc2626;
+    color: #ffffff;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.worker-app-unlink-button:hover:not(:disabled) {
+    background: #b91c1c;
+    border-color: #b91c1c;
+}
+
+.worker-app-unlink-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 .rotation-config-dialog {
     width: min(620px, 100%);
     max-height: min(88vh, 760px);
@@ -8699,6 +8721,11 @@ body[data-active-view="turnos"] .staffing-report-day strong {
 .worker-request-status--canceled {
     background: rgba(239, 68, 68, 0.12);
     color: #dc2626;
+}
+
+.worker-request-status--expired {
+    background: rgba(100, 116, 139, 0.16);
+    color: #475569;
 }
 
 .worker-request-card__meta {
