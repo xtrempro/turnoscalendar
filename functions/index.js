@@ -59,11 +59,35 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
     const unit = String(invite.workspaceName || "TurnoPlus").trim();
     const inviteUrl = String(invite.inviteUrl || "");
     const downloadUrl = String(invite.appDownloadUrl || WORKER_APP_BASE_URL);
+
+    // Para correos no-Gmail: el boton del correo ES el enlace de ingreso
+    // passwordless (un correo, un clic). Para Gmail, el enlace abre la app y se
+    // inicia sesion con Google. Si falla la generacion (p. ej. dominio de
+    // continuacion no autorizado), se usa el enlace normal como respaldo.
+    const isGoogleEmail = /@(?:gmail|googlemail)\.com$/i.test(email);
+    let ctaUrl = inviteUrl;
+
+    if (!isGoogleEmail && inviteUrl) {
+      try {
+        ctaUrl = await admin.auth().generateSignInWithEmailLink(email, {
+          url: inviteUrl,
+          handleCodeInApp: true
+        });
+      } catch (linkError) {
+        logger.warn(
+          "No se pudo generar enlace de ingreso; se usa el enlace normal.",
+          { email, message: linkError.message }
+        );
+        ctaUrl = inviteUrl;
+      }
+    }
+
     const { html, text } = buildInviteEmail({
       workerName,
       unit,
-      inviteUrl,
-      downloadUrl
+      ctaUrl,
+      downloadUrl,
+      isGoogleEmail
     });
 
     try {
@@ -653,17 +677,23 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
-function buildInviteEmail({ workerName, unit, inviteUrl, downloadUrl }) {
+function buildInviteEmail({ workerName, unit, ctaUrl, downloadUrl, isGoogleEmail }) {
   const safeName = escapeHtml(workerName);
   const safeUnit = escapeHtml(unit);
-  const safeInvite = escapeHtml(inviteUrl);
+  const safeCta = escapeHtml(ctaUrl);
   const safeDownload = escapeHtml(downloadUrl);
+  const ctaLabel = isGoogleEmail ? "Enlazar mi app" : "Entrar a mi app";
+  const accessNote = isGoogleEmail
+    ? "Toca el boton para abrir la app e iniciar sesion con tu cuenta Google."
+    : "Toca el boton para entrar directo a tu app (sin contrasena). El enlace es personal; no lo compartas.";
 
   const text = [
     `Hola ${workerName}.`,
     `Te invitamos a enlazar tu aplicacion TurnoPlus Trabajador con ${unit}.`,
-    `1) Abre este enlace e inicia sesion con tu correo Google: ${inviteUrl}`,
-    `2) Si aun no tienes la app, instalala desde: ${downloadUrl}`,
+    isGoogleEmail
+      ? `Abre este enlace e inicia sesion con tu cuenta Google: ${ctaUrl}`
+      : `Entra directo con este enlace (es personal, no lo compartas): ${ctaUrl}`,
+    `Si aun no tienes la app, instalala desde: ${downloadUrl}`,
     "Si no esperabas esta invitacion, puedes ignorar este correo."
   ].join("\n\n");
 
@@ -672,11 +702,12 @@ function buildInviteEmail({ workerName, unit, inviteUrl, downloadUrl }) {
       <h2 style="margin: 0 0 12px;">TurnoPlus Trabajador</h2>
       <p>Hola <strong>${safeName}</strong>,</p>
       <p>Te invitamos a enlazar tu aplicacion <strong>TurnoPlus Trabajador</strong> con <strong>${safeUnit}</strong> para revisar tus turnos, permisos y solicitudes desde tu celular.</p>
+      <p>${accessNote}</p>
       <p style="margin: 24px 0;">
-        <a href="${safeInvite}" style="background: #1d6cff; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 10px; font-weight: bold; display: inline-block;">Enlazar mi app</a>
+        <a href="${safeCta}" style="background: #1d6cff; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 10px; font-weight: bold; display: inline-block;">${ctaLabel}</a>
       </p>
       <p style="font-size: 14px; color: #52606d;">Si el boton no funciona, copia y pega este enlace en tu navegador:<br>
-        <a href="${safeInvite}">${safeInvite}</a>
+        <a href="${safeCta}">${safeCta}</a>
       </p>
       <p style="font-size: 14px; color: #52606d;">Si aun no tienes la app instalada, descargala aqui:<br>
         <a href="${safeDownload}">${safeDownload}</a>
