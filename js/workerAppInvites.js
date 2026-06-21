@@ -182,25 +182,22 @@ function showInviteDialog({
 }
 
 async function unlinkWorkerApp(workspaceId, link) {
-    const user = getCurrentFirebaseUser();
     const { db, firestoreModule } = await getFirebaseServices();
 
-    await firestoreModule.setDoc(
+    // Se ELIMINA el documento (no se deja como "unlinked"): las reglas de
+    // Firestore consideran "enlazado" a un trabajador por la EXISTENCIA del
+    // documento workerLinks/{uid}, no por su status. Si solo se marcara
+    // "unlinked", el trabajador seguiria pudiendo leer datos y enviar
+    // solicitudes (el documento existe), aunque el web lo oculte. Eliminarlo
+    // revoca el acceso por completo.
+    await firestoreModule.deleteDoc(
         firestoreModule.doc(
             db,
             "workspaces",
             workspaceId,
             "workerLinks",
             link.uid
-        ),
-        {
-            uid: link.uid,
-            status: "unlinked",
-            unlinkedAt: firestoreModule.serverTimestamp(),
-            unlinkedByUid: user?.uid || "",
-            unlinkedByName: user?.displayName || user?.email || ""
-        },
-        { merge: true }
+        )
     );
 }
 

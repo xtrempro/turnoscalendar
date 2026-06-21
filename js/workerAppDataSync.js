@@ -67,15 +67,18 @@ function scheduleRange(today = new Date()) {
 function normalizeWorkerLink(docSnap) {
     const data = docSnap.data() || {};
     const uid = String(data.uid || docSnap.id || "").trim();
-    const status = String(data.status || "active").trim();
 
-    if (!uid || status !== "active") return null;
+    if (!uid) return null;
 
+    // Se considera enlazado por la EXISTENCIA del documento, igual que las
+    // reglas de Firestore (workerLinkExists). Desenlazar elimina el documento,
+    // por lo que aqui basta con que exista para tratar al trabajador como
+    // enlazado (evita el estado inconsistente del status "unlinked").
     return {
         id: docSnap.id,
         ...data,
         uid,
-        status
+        status: String(data.status || "active").trim()
     };
 }
 
