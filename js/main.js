@@ -4923,10 +4923,7 @@ function renderProfiles(options = {}) {
 
     const current = getCurrentProfile();
     const filtro = DOM.filterRole.value;
-    const query =
-        DOM.profileSearch.value
-            .trim()
-            .toLowerCase();
+    const query = normalizeProfileSearch(DOM.profileSearch.value);
 
     DOM.profiles.innerHTML = "";
 
@@ -4939,11 +4936,11 @@ function renderProfiles(options = {}) {
 
         const matchSearch =
             !query ||
-            profile.name.toLowerCase().includes(query) ||
-            profile.estamento.toLowerCase().includes(query) ||
-            formatProfession(profile.profession).toLowerCase().includes(query) ||
-            String(profile.email || "").toLowerCase().includes(query) ||
-            String(profile.rut || "").toLowerCase().includes(query);
+            normalizeProfileSearch(profile.name).includes(query) ||
+            normalizeProfileSearch(profile.estamento).includes(query) ||
+            normalizeProfileSearch(formatProfession(profile.profession)).includes(query) ||
+            normalizeProfileSearch(profile.email).includes(query) ||
+            normalizeProfileSearch(profile.rut).includes(query);
 
         return matchActive && matchRole && matchSearch;
     });
