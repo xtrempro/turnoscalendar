@@ -201,6 +201,35 @@ async function unlinkWorkerApp(workspaceId, link) {
     );
 }
 
+/**
+ * Desenlaza la app del trabajador asociado a un perfil (si existe enlace).
+ * Se usa, por ejemplo, al desactivar el perfil. No falla si no hay enlace o
+ * entorno activo.
+ */
+export async function unlinkWorkerAppForProfile(profile) {
+    const profileName = typeof profile === "string"
+        ? profile
+        : profile?.name;
+
+    if (!profileName) return false;
+
+    const link = getWorkerAppLinkForProfile(profileName);
+    const workspace = getActiveWorkspace();
+
+    if (!link?.uid || !workspace?.id) return false;
+
+    try {
+        await unlinkWorkerApp(workspace.id, link);
+        return true;
+    } catch (error) {
+        console.warn(
+            "No se pudo desenlazar al trabajador del perfil.",
+            error
+        );
+        return false;
+    }
+}
+
 function showUnlinkDialog({ profile, workspace, link }) {
     const profileName = String(profile?.name || "Trabajador").trim();
     const email = normalizeEmail(profile.email) || link.workerEmail || "";

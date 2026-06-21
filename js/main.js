@@ -153,7 +153,10 @@ import {
     startWorkerRequestsRealtimeSync,
     stopWorkerRequestsRealtimeSync
 } from "./workerRequests.js";
-import { openWorkerAppInviteDialog } from "./workerAppInvites.js";
+import {
+    openWorkerAppInviteDialog,
+    unlinkWorkerAppForProfile
+} from "./workerAppInvites.js";
 import {
     createReplacementContractMemoTask,
     renderMemosPanel,
@@ -7665,6 +7668,10 @@ async function guardarPerfil() {
                     `${nextName} quedo ${activeLabel(nextProfilePayload.active)}.`,
                     { profile: nextName }
                 );
+
+                if (!nextProfilePayload.active) {
+                    void unlinkWorkerAppForProfile(nextName);
+                }
             }
         }
 
