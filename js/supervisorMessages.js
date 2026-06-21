@@ -115,6 +115,13 @@ function handleComposerKeydown(event) {
     event.currentTarget.form?.requestSubmit();
 }
 
+function handleDialogKeydown(event) {
+    if (event.key === "Escape") {
+        event.preventDefault();
+        closeMessagesDialog();
+    }
+}
+
 export function initSupervisorMessages({ button, badge } = {}) {
     floatingButton = button || null;
     floatingBadge = badge || null;
@@ -222,12 +229,14 @@ function openMessagesDialog() {
         .querySelector("[data-supervisor-message-close]")
         ?.addEventListener("click", closeMessagesDialog);
 
+    document.addEventListener("keydown", handleDialogKeydown);
     document.body.appendChild(dialog);
     refreshDialog();
     subscribeSelectedWorkerMessages();
 }
 
 function closeMessagesDialog() {
+    document.removeEventListener("keydown", handleDialogKeydown);
     dialog?.remove();
     dialog = null;
     stopMessagesSubscription();
