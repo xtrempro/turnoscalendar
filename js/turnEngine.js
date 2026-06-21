@@ -1,3 +1,4 @@
+import { isoFromKey } from "./dateUtils.js";
 import { stripAccents } from "./stringUtils.js";
 // js/turnEngine.js
 
@@ -122,13 +123,6 @@ export function fusionarTurnos(actual, recibido) {
 /* ======================================================
    HELPERS
 ====================================================== */
-
-function isoFromKey(key) {
-
-    const p = key.split("-");
-
-    return `${p[0]}-${String(Number(p[1]) + 1).padStart(2, "0")}-${String(p[2]).padStart(2, "0")}`;
-}
 
 function offsetKey(key, offset) {
     const p = key.split("-");
@@ -552,12 +546,9 @@ export function siguienteTurno(actual, isHab = true) {
     }
 }
 
-
-
 /* ======================================================
    TURNO REAL DEL TRABAJADOR EN FECHA
 ====================================================== */
-
 
 export function getTurnoReal(nombre, key) {
     return aplicarCambiosTurno(

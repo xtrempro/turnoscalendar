@@ -1,3 +1,4 @@
+import { keyFromDate } from "./dateUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { TURNO_LABEL } from "./constants.js";
 import { pushHistory } from "./history.js";
@@ -88,14 +89,6 @@ function parseISODate(value) {
         Number(match[2]) - 1,
         Number(match[3])
     );
-}
-
-function keyFromDate(date) {
-    return [
-        date.getFullYear(),
-        date.getMonth(),
-        date.getDate()
-    ].join("-");
 }
 
 function isoFromDate(date) {

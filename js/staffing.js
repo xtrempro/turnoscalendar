@@ -1,3 +1,4 @@
+import { isoFromKey, parseKeyParts as parseKey } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
@@ -591,22 +592,6 @@ function removeSegmentsByAbsence(absence, currentSegments) {
 
 function key(y, m, d){
     return `${y}-${m}-${d}`;
-}
-
-function isoFromKey(keyDay) {
-    const parts = String(keyDay || "").split("-");
-
-    return `${parts[0]}-${String(Number(parts[1]) + 1).padStart(2, "0")}-${String(Number(parts[2])).padStart(2, "0")}`;
-}
-
-function parseKey(keyDay) {
-    const parts = String(keyDay || "").split("-");
-
-    return {
-        year: Number(parts[0]),
-        month: Number(parts[1]),
-        day: Number(parts[2])
-    };
 }
 
 function normalizeSearch(value) {

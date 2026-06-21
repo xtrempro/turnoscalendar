@@ -1,3 +1,4 @@
+import { keyFromDate } from "./dateUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, getRaw, setJSON } from "./persistence.js";
 import {
@@ -187,10 +188,6 @@ function formatDatesInText(value) {
         (_match, year, month, day) =>
             `${String(Number(day)).padStart(2, "0")}-${String(Number(month)).padStart(2, "0")}-${year}`
     );
-}
-
-function keyFromDate(date) {
-    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
 function addDaysKey(keyDay, offset = 1) {

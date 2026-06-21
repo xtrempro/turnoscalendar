@@ -1,3 +1,4 @@
+import { keyFromDate, keyToDate as parseKey } from "./dateUtils.js";
 import { stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
@@ -39,18 +40,6 @@ let renderToken = 0;
 
 function normalizeText(value) {
     return stripAccents(String(value || "")).toLowerCase();
-}
-
-function keyFromDate(date) {
-    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-}
-
-function parseKey(keyDay) {
-    const [year, month, day] = String(keyDay || "")
-        .split("-")
-        .map(Number);
-
-    return new Date(year, month, day);
 }
 
 function isoFromDate(date) {

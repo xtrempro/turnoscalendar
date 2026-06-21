@@ -1,3 +1,4 @@
+import { keyFromDate, isoFromKey, keyFromISO } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import {
     getBaseProfileData,
@@ -22,18 +23,6 @@ import { getTurnoBase } from "./turnEngine.js";
 import { isReplacementProfile } from "./contracts.js";
 import { getReplacementTurnForWorker } from "./replacements.js";
 import { getBlockedDayForProfile } from "./workerAvailability.js";
-
-function keyFromISO(value) {
-    const parts = String(value || "").split("-");
-
-    return `${parts[0]}-${Number(parts[1]) - 1}-${Number(parts[2])}`;
-}
-
-function isoFromKey(key) {
-    const parts = String(key || "").split("-");
-
-    return `${parts[0]}-${String(Number(parts[1]) + 1).padStart(2, "0")}-${String(Number(parts[2])).padStart(2, "0")}`;
-}
 
 function isMedicalLicense(absence) {
     const type = getAbsenceType(absence);
@@ -66,10 +55,6 @@ function parseKeyDate(key) {
     const date = new Date(year, month, day);
 
     return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function keyFromDate(date) {
-    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
 function baseDataRange(data = {}) {

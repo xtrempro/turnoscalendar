@@ -1,3 +1,4 @@
+import { parseKeyParts as parseKey } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import {
     getProfiles,
@@ -5,16 +6,6 @@ import {
     saveReplacementContracts,
     getRotativa
 } from "./storage.js";
-
-function parseKey(keyDay) {
-    const parts = String(keyDay || "").split("-");
-
-    return {
-        year: Number(parts[0]),
-        month: Number(parts[1]),
-        day: Number(parts[2])
-    };
-}
 
 export function keyToISO(keyDay) {
     const { year, month, day } = parseKey(keyDay);

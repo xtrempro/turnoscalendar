@@ -1,3 +1,4 @@
+import { isoFromKey, keyFromISO, keyToDate as parseKey } from "./dateUtils.js";
 import {
     getProfiles,
     getReplacements,
@@ -29,28 +30,6 @@ import {
     AUDIT_CATEGORY
 } from "./auditLog.js";
 import { getWorkerAppLinkForProfile } from "./workerAppDataSync.js";
-
-function keyFromISO(value) {
-    const parts = String(value || "").split("-");
-
-    return `${parts[0]}-${Number(parts[1]) - 1}-${Number(parts[2])}`;
-}
-
-function isoFromKey(key) {
-    const parts = String(key || "").split("-");
-
-    return `${parts[0]}-${String(Number(parts[1]) + 1).padStart(2, "0")}-${String(Number(parts[2])).padStart(2, "0")}`;
-}
-
-function parseKey(key) {
-    const parts = String(key || "").split("-");
-
-    return new Date(
-        Number(parts[0]),
-        Number(parts[1]),
-        Number(parts[2])
-    );
-}
 
 function normalizeHours(hours) {
     if (!hours) return null;

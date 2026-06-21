@@ -1,3 +1,4 @@
+import { isoFromKey, keyFromISO, keyToDate as parseKey } from "./dateUtils.js";
 import { stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
@@ -59,28 +60,6 @@ const UNBACKED_OVERTIME_DETAIL = "Horas sin respaldo registrado";
 
 function key(year, month, day) {
     return `${year}-${month}-${day}`;
-}
-
-function isoFromKey(keyDay) {
-    const parts = String(keyDay || "").split("-");
-
-    return `${parts[0]}-${String(Number(parts[1]) + 1).padStart(2, "0")}-${String(Number(parts[2])).padStart(2, "0")}`;
-}
-
-function keyFromISO(value) {
-    const parts = String(value || "").split("-");
-
-    return `${parts[0]}-${Number(parts[1]) - 1}-${Number(parts[2])}`;
-}
-
-function parseKey(keyDay) {
-    const parts = String(keyDay || "").split("-");
-
-    return new Date(
-        Number(parts[0]),
-        Number(parts[1]),
-        Number(parts[2])
-    );
 }
 
 function formatDate(value) {

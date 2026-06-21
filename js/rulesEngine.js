@@ -1,3 +1,4 @@
+import { keyToDate as parseKey } from "./dateUtils.js";
 import { stripAccents } from "./stringUtils.js";
 // js/rulesEngine.js
 
@@ -251,16 +252,6 @@ export function puedeReemplazarAusencia(absence, nextType) {
     return (
         isMedicalAbsenceType(currentType) &&
         isMedicalAbsenceType(nextType)
-    );
-}
-
-function parseKey(keyDay) {
-    const parts = String(keyDay || "").split("-");
-
-    return new Date(
-        Number(parts[0]),
-        Number(parts[1]),
-        Number(parts[2])
     );
 }
 

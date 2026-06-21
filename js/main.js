@@ -1,3 +1,4 @@
+import { keyFromDate, toISODate, keyToDate as parseKey, parseISODate as parseInputDate } from "./dateUtils.js";
 import { normalizeText, stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
@@ -503,36 +504,6 @@ const HR_LOG_CONFIG = [
 ];
 
 const recordYearFilters = {};
-
-function keyFromDate(date) {
-    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
-}
-
-function parseKey(key) {
-    const parts = key.split("-");
-    return new Date(
-        Number(parts[0]),
-        Number(parts[1]),
-        Number(parts[2])
-    );
-}
-
-function parseInputDate(value){
-    const parts = value.split("-");
-    return new Date(
-        Number(parts[0]),
-        Number(parts[1]) - 1,
-        Number(parts[2])
-    );
-}
-
-function toISODate(date) {
-    return [
-        date.getFullYear(),
-        String(date.getMonth() + 1).padStart(2, "0"),
-        String(date.getDate()).padStart(2, "0")
-    ].join("-");
-}
 
 function toInputDate(date){
     return toISODate(date);

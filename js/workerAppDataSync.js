@@ -1,3 +1,4 @@
+import { keyFromDate, toISODate } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import { TURNO } from "./constants.js";
 import { getFirebaseServices } from "./firebaseClient.js";
@@ -37,18 +38,6 @@ function normalizeRut(value) {
     return String(value || "")
         .replace(/[^0-9kK]/g, "")
         .toUpperCase();
-}
-
-function toISODate(date) {
-    return [
-        date.getFullYear(),
-        String(date.getMonth() + 1).padStart(2, "0"),
-        String(date.getDate()).padStart(2, "0")
-    ].join("-");
-}
-
-function keyFromDate(date) {
-    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
 function addDays(date, amount) {

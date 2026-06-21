@@ -1,5 +1,6 @@
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
+import { parseISODate as parseInputDate } from "./dateUtils.js";
 import {
     cambiosDelMes,
     cambioEstaAnulado,
@@ -44,15 +45,6 @@ const SWAP_MONTH_NAMES = [
     "Noviembre",
     "Diciembre"
 ];
-
-function parseInputDate(value){
-    const parts = value.split("-");
-    return new Date(
-        Number(parts[0]),
-        Number(parts[1]) - 1,
-        Number(parts[2])
-    );
-}
 
 function formatFecha(fechaStr){
     const parts = fechaStr.split("-");

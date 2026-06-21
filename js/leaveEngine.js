@@ -1,3 +1,4 @@
+import { keyFromDate, isoFromKey, keyToDate as parseKey } from "./dateUtils.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 
@@ -51,16 +52,6 @@ import { createLeaveMemoTask } from "./memos.js";
 HELPERS
 ========================================= */
 
-function keyFromDate(d){
-    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-}
-
-function isoFromKey(key) {
-    const parts = String(key || "").split("-");
-
-    return `${parts[0]}-${String(Number(parts[1]) + 1).padStart(2, "0")}-${String(Number(parts[2])).padStart(2, "0")}`;
-}
-
 function formatKey(key) {
     const iso = isoFromKey(key);
     const parts = iso.split("-");
@@ -105,11 +96,6 @@ function absenceLabel(type) {
     if (type === "unjustified_absence") return "Ausencia Injustificada";
 
     return "Licencia M\u00e9dica";
-}
-
-function parseKey(k){
-    const p = k.split("-");
-    return new Date(Number(p[0]), Number(p[1]), Number(p[2]));
 }
 
 function diasEntre(a,b){
