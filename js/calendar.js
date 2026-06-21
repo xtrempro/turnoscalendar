@@ -95,7 +95,6 @@ import {
     getLeaveApplicationInfo,
     undoAuditLogEntry
 } from "./auditLog.js";
-import { notifyWorkerApp } from "./workerAppDataSync.js";
 import {
     getClockExtraHours,
     hasClockExtra,
@@ -929,35 +928,6 @@ function leaveDateLabelFromKey(keyDay) {
     });
 }
 
-async function notifyAffectedWorkersOfLeaveCancellation(result, label) {
-    const tasks = [];
-
-    if (result.profile) {
-        tasks.push(
-            notifyWorkerApp(
-                result.profile,
-                `Tu supervisor anulo ${label}. Revisa tu calendario actualizado en la app.`
-            )
-        );
-    }
-
-    (result.canceledReplacements || []).forEach(replacement => {
-        if (!replacement?.worker) return;
-
-        const date = replacement.date || "la fecha asignada";
-        const turn = replacement.turno || "turno";
-
-        tasks.push(
-            notifyWorkerApp(
-                replacement.worker,
-                `Se anulo tu turno extra del ${date} (${turn}) porque se anulo ${label} de ${result.profile}.`
-            )
-        );
-    });
-
-    await Promise.all(tasks);
-}
-
 function openLeaveDetailDialog({
     profile,
     keyDay,
@@ -1053,7 +1023,6 @@ function openLeaveDetailDialog({
                     return;
                 }
 
-                await notifyAffectedWorkersOfLeaveCancellation(result, label);
                 close();
                 await renderCalendar({ deferHeavy: true });
             } catch (error) {

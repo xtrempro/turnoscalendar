@@ -1066,17 +1066,28 @@ export async function undoAuditLogEntry(logId, options = {}) {
             : `Accion anulada desde ${cancellationSource}.`
     }));
 
+    const undoProfile = String(log.profile || log.meta?.profile || "");
+    const canceledReplacements = result.canceledReplacements || [];
+
     window.dispatchEvent(
         new CustomEvent("proturnos:auditUndoApplied", {
-            detail: { logId }
+            detail: {
+                logId,
+                category: log.category,
+                profile: undoProfile,
+                leaveType: log.category === AUDIT_CATEGORY.LEAVE_ABSENCE
+                    ? getLeaveUndoType(log)
+                    : "",
+                canceledReplacements
+            }
         })
     );
 
     return {
         ok: true,
-        profile: String(log.profile || log.meta?.profile || ""),
+        profile: undoProfile,
         action: String(log.action || ""),
-        canceledReplacements: result.canceledReplacements || []
+        canceledReplacements
     };
 }
 

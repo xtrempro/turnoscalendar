@@ -43,6 +43,7 @@ import {
 } from "./firebaseWorkerRequests.js";
 import {
     getWorkerAppLinkForProfile,
+    notifyWorkerApp,
     scheduleWorkerAppDataPublish,
     startWorkerAppDataSync,
     stopWorkerAppDataSync
@@ -9718,9 +9719,56 @@ window.addEventListener("proturnos:memosChanged", () => {
     }
 });
 
-window.addEventListener("proturnos:auditUndoApplied", () => {
+window.addEventListener("proturnos:auditUndoApplied", event => {
     refreshAll();
+    notifyWorkersOfAuditUndo(event.detail || {});
 });
+
+const LEAVE_CANCELLATION_LABELS = {
+    admin: "el permiso administrativo",
+    half_admin_morning: "el 1/2 administrativo (manana)",
+    half_admin_afternoon: "el 1/2 administrativo (tarde)",
+    half_admin: "el 1/2 administrativo",
+    legal: "el feriado legal",
+    comp: "el compensatorio",
+    license: "la licencia medica",
+    professional_license: "la LM profesional",
+    union_leave: "el permiso gremial",
+    unpaid_leave: "el permiso sin goce",
+    unjustified_absence: "la ausencia injustificada"
+};
+
+function notifyWorkersOfAuditUndo(detail) {
+    const canceledReplacements = Array.isArray(detail.canceledReplacements)
+        ? detail.canceledReplacements
+        : [];
+    const isLeave = detail.category === "leave_absence";
+    const profile = String(detail.profile || "");
+    const leaveLabel =
+        LEAVE_CANCELLATION_LABELS[detail.leaveType] || "tu permiso/ausencia";
+
+    if (isLeave && profile) {
+        void notifyWorkerApp(
+            profile,
+            `Tu supervisor anulo ${leaveLabel}. Revisa tu calendario actualizado en la app.`
+        );
+    }
+
+    canceledReplacements.forEach(replacement => {
+        if (!replacement?.worker) return;
+
+        const date = replacement.date || "la fecha asignada";
+        const turn = replacement.turno || "turno";
+        const reason = isLeave && profile
+            ? ` porque se anulo ${leaveLabel} de ${profile}`
+            : "";
+
+        void notifyWorkerApp(
+            replacement.worker,
+            `Se anulo tu turno extra del ${date} (${turn})${reason}.`
+        );
+    });
+}
 
 window.addEventListener("proturnos:workerLinksChanged", () => {
     renderDashboardState();
