@@ -1,4 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
+import { normalizeText } from "./stringUtils.js";
 import { getCurrentFirebaseUser, getFirebaseServices } from "./firebaseClient.js";
 import { getWorkerAppLinks } from "./workerAppDataSync.js";
 
@@ -11,6 +12,7 @@ let unreadCount = 0;
 let floatingButton = null;
 let floatingBadge = null;
 let dialog = null;
+let workerSearch = "";
 
 function initials(value) {
     return String(value || "")
@@ -239,6 +241,7 @@ function closeMessagesDialog() {
     document.removeEventListener("keydown", handleDialogKeydown);
     dialog?.remove();
     dialog = null;
+    workerSearch = "";
     stopMessagesSubscription();
 }
 
@@ -268,6 +271,17 @@ function refreshDialog() {
         });
     });
 
+    const searchInput = body.querySelector("[data-message-worker-search]");
+
+    if (searchInput) {
+        searchInput.addEventListener("input", () => {
+            workerSearch = searchInput.value;
+            applyWorkerSearchFilter();
+        });
+    }
+
+    applyWorkerSearchFilter();
+
     const form = body.querySelector("[data-supervisor-message-form]");
     form?.addEventListener("submit", sendSupervisorMessage);
     form
@@ -282,11 +296,48 @@ function refreshDialog() {
     focusMessageComposer();
 }
 
+function workerSearchText(item) {
+    return normalizeText(
+        [item.name, item.role, item.email, item.rut]
+            .filter(Boolean)
+            .join(" ")
+    );
+}
+
+function applyWorkerSearchFilter() {
+    if (!dialog) return;
+
+    const query = normalizeText(workerSearch);
+    const buttons = dialog.querySelectorAll(".supervisor-message-worker");
+    let visibleCount = 0;
+
+    buttons.forEach(button => {
+        const matches =
+            !query || (button.dataset.search || "").includes(query);
+
+        button.classList.toggle("hidden", !matches);
+
+        if (matches) visibleCount++;
+    });
+
+    const noResults = dialog.querySelector(".supervisor-message-no-results");
+
+    if (noResults) {
+        noResults.classList.toggle(
+            "hidden",
+            visibleCount > 0 || !buttons.length
+        );
+    }
+}
+
 function renderMessagesLayout(workers, worker) {
     return `
         <aside class="supervisor-message-workers">
+            <div class="supervisor-message-search">
+                <input type="search" data-message-worker-search placeholder="Buscar trabajador" value="${escapeHTML(workerSearch)}" autocomplete="off">
+            </div>
             ${workers.map(item => `
-                <button class="supervisor-message-worker ${item.uid === worker?.uid ? "is-active" : ""}" type="button" data-message-worker="${escapeHTML(item.uid)}">
+                <button class="supervisor-message-worker ${item.uid === worker?.uid ? "is-active" : ""}" type="button" data-message-worker="${escapeHTML(item.uid)}" data-search="${escapeHTML(workerSearchText(item))}">
                     <span class="supervisor-message-avatar">${escapeHTML(initials(item.name))}</span>
                     <span>
                         <strong>${escapeHTML(item.name)}</strong>
@@ -294,6 +345,7 @@ function renderMessagesLayout(workers, worker) {
                     </span>
                 </button>
             `).join("")}
+            <div class="supervisor-message-no-results hidden">Sin resultados</div>
         </aside>
         <section class="supervisor-message-chat">
             <div class="supervisor-message-chat-head">
