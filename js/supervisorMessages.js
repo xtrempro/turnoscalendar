@@ -13,6 +13,10 @@ let floatingButton = null;
 let floatingBadge = null;
 let dialog = null;
 let workerSearch = "";
+let massMode = false;
+const massSelected = new Set();
+let massText = "";
+let massSending = false;
 
 function initials(value) {
     return String(value || "")
@@ -55,6 +59,7 @@ function linkedWorkers() {
         .map(link => ({
             uid: link.uid,
             name: link.profile?.name || link.profileName || "Trabajador",
+            estamento: link.profile?.estamento || "",
             role: [
                 link.profile?.estamento || "",
                 link.profile?.profession || ""
@@ -211,12 +216,15 @@ function openMessagesDialog() {
                     <strong id="supervisorMessagesTitle">Mensajeria</strong>
                     <small>${escapeHTML(activeWorkspace.name || "TurnoPlus")}</small>
                 </div>
-                <button class="icon-button supervisor-messages-close" type="button" data-supervisor-message-close aria-label="Cerrar">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                        <path d="M6 6l12 12"></path>
-                        <path d="M18 6L6 18"></path>
-                    </svg>
-                </button>
+                <div class="supervisor-messages-header-actions">
+                    <button class="secondary-button supervisor-messages-mass-toggle" type="button" data-supervisor-mass-toggle>Mensaje masivo</button>
+                    <button class="icon-button supervisor-messages-close" type="button" data-supervisor-message-close aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                            <path d="M6 6l12 12"></path>
+                            <path d="M18 6L6 18"></path>
+                        </svg>
+                    </button>
+                </div>
             </header>
             <div class="supervisor-messages-body"></div>
         </section>
@@ -231,10 +239,30 @@ function openMessagesDialog() {
         .querySelector("[data-supervisor-message-close]")
         ?.addEventListener("click", closeMessagesDialog);
 
+    dialog
+        .querySelector("[data-supervisor-mass-toggle]")
+        ?.addEventListener("click", () => {
+            massMode = !massMode;
+            massSelected.clear();
+            massText = "";
+            updateMassToggleLabel();
+            refreshDialog();
+        });
+
     document.addEventListener("keydown", handleDialogKeydown);
     document.body.appendChild(dialog);
+    updateMassToggleLabel();
     refreshDialog();
     subscribeSelectedWorkerMessages();
+}
+
+function updateMassToggleLabel() {
+    const button = dialog?.querySelector("[data-supervisor-mass-toggle]");
+
+    if (!button) return;
+
+    button.textContent = massMode ? "Volver al chat" : "Mensaje masivo";
+    button.classList.toggle("is-active", massMode);
 }
 
 function closeMessagesDialog() {
@@ -242,6 +270,10 @@ function closeMessagesDialog() {
     dialog?.remove();
     dialog = null;
     workerSearch = "";
+    massMode = false;
+    massSelected.clear();
+    massText = "";
+    massSending = false;
     stopMessagesSubscription();
 }
 
@@ -252,15 +284,27 @@ function refreshDialog() {
     if (!body) return;
 
     const workers = linkedWorkers();
-    const worker = selectedWorker();
 
-    body.innerHTML = workers.length
-        ? renderMessagesLayout(workers, worker)
-        : `
+    if (!workers.length) {
+        body.innerHTML = `
             <div class="supervisor-messages-empty">
                 No hay trabajadores con aplicacion enlazada.
             </div>
         `;
+        return;
+    }
+
+    if (massMode) {
+        body.innerHTML = renderMassLayout(workers);
+        bindMassLayout(body);
+        bindWorkerSearch(body);
+        applyWorkerSearchFilter();
+        return;
+    }
+
+    const worker = selectedWorker();
+
+    body.innerHTML = renderMessagesLayout(workers, worker);
 
     body.querySelectorAll("[data-message-worker]").forEach(button => {
         button.addEventListener("click", () => {
@@ -271,15 +315,7 @@ function refreshDialog() {
         });
     });
 
-    const searchInput = body.querySelector("[data-message-worker-search]");
-
-    if (searchInput) {
-        searchInput.addEventListener("input", () => {
-            workerSearch = searchInput.value;
-            applyWorkerSearchFilter();
-        });
-    }
-
+    bindWorkerSearch(body);
     applyWorkerSearchFilter();
 
     const form = body.querySelector("[data-supervisor-message-form]");
@@ -296,6 +332,17 @@ function refreshDialog() {
     focusMessageComposer();
 }
 
+function bindWorkerSearch(body) {
+    const searchInput = body.querySelector("[data-message-worker-search]");
+
+    if (!searchInput) return;
+
+    searchInput.addEventListener("input", () => {
+        workerSearch = searchInput.value;
+        applyWorkerSearchFilter();
+    });
+}
+
 function workerSearchText(item) {
     return normalizeText(
         [item.name, item.role, item.email, item.rut]
@@ -308,7 +355,9 @@ function applyWorkerSearchFilter() {
     if (!dialog) return;
 
     const query = normalizeText(workerSearch);
-    const buttons = dialog.querySelectorAll(".supervisor-message-worker");
+    const buttons = dialog.querySelectorAll(
+        ".supervisor-message-workers [data-search]"
+    );
     let visibleCount = 0;
 
     buttons.forEach(button => {
@@ -366,6 +415,200 @@ function renderMessagesLayout(workers, worker) {
             </form>
         </section>
     `;
+}
+
+function massGroups(workers) {
+    const groups = new Map();
+
+    workers.forEach(item => {
+        const label = item.estamento || "Sin estamento";
+
+        if (!groups.has(label)) {
+            groups.set(label, []);
+        }
+
+        groups.get(label).push(item.uid);
+    });
+
+    return Array.from(groups.entries())
+        .map(([label, uids]) => ({ label, uids }))
+        .sort((a, b) => a.label.localeCompare(b.label, "es"));
+}
+
+function renderMassLayout(workers) {
+    const groups = massGroups(workers);
+    const selectedCount = workers
+        .filter(item => massSelected.has(item.uid))
+        .length;
+
+    return `
+        <aside class="supervisor-message-workers">
+            <div class="supervisor-message-search">
+                <input type="search" data-message-worker-search placeholder="Buscar trabajador" value="${escapeHTML(workerSearch)}" autocomplete="off">
+            </div>
+            ${workers.map(item => `
+                <label class="supervisor-mass-worker ${massSelected.has(item.uid) ? "is-selected" : ""}" data-search="${escapeHTML(workerSearchText(item))}">
+                    <input type="checkbox" data-mass-worker="${escapeHTML(item.uid)}" ${massSelected.has(item.uid) ? "checked" : ""}>
+                    <span class="supervisor-message-avatar">${escapeHTML(initials(item.name))}</span>
+                    <span>
+                        <strong>${escapeHTML(item.name)}</strong>
+                        <small>${escapeHTML(item.role || item.email || "App enlazada")}</small>
+                    </span>
+                </label>
+            `).join("")}
+            <div class="supervisor-message-no-results hidden">Sin resultados</div>
+        </aside>
+        <section class="supervisor-message-mass">
+            <div class="supervisor-message-mass-head">
+                <strong>Mensaje masivo</strong>
+                <small data-mass-count>${selectedCount} seleccionado(s)</small>
+            </div>
+            <div class="supervisor-mass-groups">
+                <button type="button" class="supervisor-mass-chip" data-mass-group="__all__">Todos (${workers.length})</button>
+                <button type="button" class="supervisor-mass-chip" data-mass-group="__none__">Ninguno</button>
+                ${groups.map(group => `
+                    <button type="button" class="supervisor-mass-chip" data-mass-group="${escapeHTML(group.label)}">${escapeHTML(group.label)} (${group.uids.length})</button>
+                `).join("")}
+            </div>
+            <textarea class="supervisor-mass-text" data-mass-text rows="4" placeholder="Escribe el mensaje para los trabajadores seleccionados (por ejemplo, el link de una reunion).">${escapeHTML(massText)}</textarea>
+            <button class="primary-button supervisor-mass-send" type="button" data-mass-send ${massSending ? "disabled" : ""}>
+                ${massSending ? "Enviando..." : `Enviar a ${selectedCount}`}
+            </button>
+        </section>
+    `;
+}
+
+function syncMassSelectionUI() {
+    if (!dialog) return;
+
+    const count = massSelected.size;
+    const countEl = dialog.querySelector("[data-mass-count]");
+
+    if (countEl) {
+        countEl.textContent = `${count} seleccionado(s)`;
+    }
+
+    const sendButton = dialog.querySelector("[data-mass-send]");
+
+    if (sendButton && !massSending) {
+        sendButton.textContent = `Enviar a ${count}`;
+    }
+}
+
+function bindMassLayout(body) {
+    body.querySelectorAll("[data-mass-worker]").forEach(checkbox => {
+        checkbox.addEventListener("change", () => {
+            const uid = checkbox.dataset.massWorker || "";
+
+            if (checkbox.checked) {
+                massSelected.add(uid);
+            } else {
+                massSelected.delete(uid);
+            }
+
+            checkbox
+                .closest(".supervisor-mass-worker")
+                ?.classList.toggle("is-selected", checkbox.checked);
+            syncMassSelectionUI();
+        });
+    });
+
+    body.querySelectorAll("[data-mass-group]").forEach(chip => {
+        chip.addEventListener("click", () => {
+            const group = chip.dataset.massGroup || "";
+            const workers = linkedWorkers();
+
+            if (group === "__all__") {
+                workers.forEach(item => massSelected.add(item.uid));
+            } else if (group === "__none__") {
+                massSelected.clear();
+            } else {
+                workers
+                    .filter(item =>
+                        (item.estamento || "Sin estamento") === group
+                    )
+                    .forEach(item => massSelected.add(item.uid));
+            }
+
+            body.querySelectorAll("[data-mass-worker]").forEach(checkbox => {
+                const checked = massSelected.has(
+                    checkbox.dataset.massWorker || ""
+                );
+
+                checkbox.checked = checked;
+                checkbox
+                    .closest(".supervisor-mass-worker")
+                    ?.classList.toggle("is-selected", checked);
+            });
+
+            syncMassSelectionUI();
+        });
+    });
+
+    const textarea = body.querySelector("[data-mass-text]");
+
+    if (textarea) {
+        textarea.addEventListener("input", () => {
+            massText = textarea.value;
+        });
+    }
+
+    body
+        .querySelector("[data-mass-send]")
+        ?.addEventListener("click", sendMassMessage);
+}
+
+async function sendMassMessage() {
+    if (massSending) return;
+
+    const text = String(massText || "").trim();
+    const recipients = linkedWorkers()
+        .filter(item => massSelected.has(item.uid));
+
+    if (!text) {
+        alert("Escribe un mensaje para enviar.");
+        return;
+    }
+
+    if (!recipients.length) {
+        alert("Selecciona al menos un trabajador.");
+        return;
+    }
+
+    if (
+        !window.confirm(
+            `Enviar este mensaje a ${recipients.length} trabajador(es)?`
+        )
+    ) {
+        return;
+    }
+
+    massSending = true;
+    refreshDialog();
+
+    let sent = 0;
+    let failed = 0;
+
+    for (const worker of recipients) {
+        try {
+            await writeSupervisorMessage(worker, text);
+            sent++;
+        } catch (error) {
+            console.error(error);
+            failed++;
+        }
+    }
+
+    massSending = false;
+    massText = "";
+    massSelected.clear();
+    refreshDialog();
+
+    alert(
+        failed
+            ? `Mensaje enviado a ${sent}. No se pudo enviar a ${failed}.`
+            : `Mensaje enviado a ${sent} trabajador(es).`
+    );
 }
 
 function renderMessageBubble(message) {

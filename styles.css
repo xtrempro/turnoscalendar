@@ -2634,6 +2634,129 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     text-align: center;
 }
 
+.supervisor-messages-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.supervisor-messages-mass-toggle.is-active {
+    background: var(--blue);
+    border-color: var(--blue);
+    color: #ffffff;
+}
+
+.supervisor-mass-worker {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 20px 42px minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.supervisor-mass-worker:hover,
+.supervisor-mass-worker.is-selected {
+    border-color: var(--border-strong);
+    background: var(--panel-hover);
+}
+
+.supervisor-mass-worker input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+}
+
+.supervisor-mass-worker strong {
+    display: block;
+    font-size: 0.92rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.supervisor-mass-worker small {
+    display: block;
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.supervisor-message-mass {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    overflow: auto;
+}
+
+.supervisor-message-mass-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.supervisor-message-mass-head strong {
+    font-size: 1.02rem;
+    color: var(--text);
+}
+
+.supervisor-message-mass-head small {
+    color: var(--text-soft);
+    font-weight: 700;
+}
+
+.supervisor-mass-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.supervisor-mass-chip {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--field);
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.supervisor-mass-chip:hover {
+    border-color: var(--border-strong);
+    background: var(--panel-hover);
+}
+
+.supervisor-mass-text {
+    width: 100%;
+    min-height: 120px;
+    resize: vertical;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--field);
+    color: var(--text);
+    font: inherit;
+}
+
+.supervisor-mass-send {
+    align-self: flex-start;
+}
+
+.supervisor-mass-send:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 .supervisor-message-worker {
     width: 100%;
     display: grid;
