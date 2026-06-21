@@ -85,7 +85,21 @@ export function saveManualHolidays(holidays = []) {
 export async function fetchHolidays(year){
     if(holidaysCache[year]) return holidaysCache[year];
 
-    const h = {};
+    // Cache persistente (solo feriados oficiales) para evitar el fetch de red en
+    // cada recarga. Los feriados manuales se combinan frescos en cada carga.
+    const persisted = getJSON(`holidaysCache_${year}`, null);
+
+    if (
+        persisted &&
+        typeof persisted === "object" &&
+        Object.keys(persisted).length
+    ) {
+        const merged = { ...persisted, ...manualHolidayMap(year) };
+        holidaysCache[year] = merged;
+        return merged;
+    }
+
+    const official = {};
 
     try {
         const r = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/CL`);
@@ -93,13 +107,17 @@ export async function fetchHolidays(year){
 
         data.forEach(d=>{
             const [holidayYear, month, day] = d.date.split("-").map(Number);
-            h[`${holidayYear}-${month - 1}-${day}`] = d.localName || true;
+            official[`${holidayYear}-${month - 1}-${day}`] = d.localName || true;
         });
+
+        if (Object.keys(official).length) {
+            setJSON(`holidaysCache_${year}`, official);
+        }
     } catch {
         // Si la API no responde, se mantienen al menos los feriados manuales.
     }
 
-    Object.assign(h, manualHolidayMap(year));
+    const h = { ...official, ...manualHolidayMap(year) };
 
     holidaysCache[year] = h;
     return h;

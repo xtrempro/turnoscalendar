@@ -3050,7 +3050,39 @@ function sugerirReemplazo(profiles, row, y, m, d, absenceCache){
     return libres[0].name;
 }
 
+// Cache de analizarMes: el calculo de dotacion (dias x requerimientos x
+// perfiles) es pesado. Se memoiza por mes + firma de feriados y se invalida
+// ante cualquier cambio de datos local o aplicacion de estado remoto.
+const ANALIZAR_MES_CACHE = new Map();
+
+function holidaysSignature(holidays) {
+    return Object.keys(holidays || {}).sort().join(",");
+}
+
+function clearAnalizarMesCache() {
+    ANALIZAR_MES_CACHE.clear();
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener(
+        "proturnos:persistenceChanged",
+        clearAnalizarMesCache
+    );
+    window.addEventListener("proturnos:firebaseAppState", event => {
+        if (event.detail?.type === "app-state-applied") {
+            clearAnalizarMesCache();
+        }
+    });
+}
+
 export function analizarMes(year, month, holidays = {}){
+    const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
+    const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
+
+    if (cachedResult) {
+        return cachedResult;
+    }
+
     const profiles = getProfiles().filter(isProfileActive);
     const requirements = buildStaffingRequirementRows()
         .filter(row => row.required > 0);
@@ -3143,6 +3175,8 @@ export function analizarMes(year, month, holidays = {}){
             detalle
         });
     }
+
+    ANALIZAR_MES_CACHE.set(cacheKey, salida);
 
     return salida;
 }

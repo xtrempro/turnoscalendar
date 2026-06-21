@@ -8,7 +8,8 @@ const INTERNAL_KEYS = new Set([
 const INTERNAL_KEY_PREFIXES = [
     "firebase:",
     "firebase-",
-    "kanban_private_"
+    "kanban_private_",
+    "holidaysCache_"
 ];
 
 let activeDriver = LOCAL_DRIVER;
