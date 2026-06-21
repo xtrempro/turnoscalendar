@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import {
     getProfiles,
     getCurrentProfile,
@@ -17,10 +18,13 @@ import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { isBusinessDay } from "./calculations.js";
 import { getJSON } from "./persistence.js";
 import {
+    esAusenciaInjustificada,
+    getAbsenceType,
     getTurnoExtraAgregado,
     requiereReemplazoTurnoBase,
     restarTurnoCubierto
 } from "./rulesEngine.js";
+import { getLeaveApplicationInfo } from "./auditLog.js";
 import {
     getBackedTurnForWorker,
     getClockExtraBackupForWorker,
@@ -177,11 +181,7 @@ function bindTimelineOutsideClickListener(container) {
 }
 
 function normalizeTextKey(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return normalizeText(value);
 }
 
 function displayProfession(value) {
@@ -356,16 +356,16 @@ function syncTimelineStickyOffsets(container) {
     );
 }
 
-function getColor(nombre, key){
-    const data = getData(nombre);
-    const admin = getAdmin(nombre);
-    const legal = getLegal(nombre);
-    const comp = getComp(nombre);
-    const abs = getAbs(nombre);
+function getColor(nombre, key, maps = null){
+    const admin = maps?.admin || getAdmin(nombre);
+    const legal = maps?.legal || getLegal(nombre);
+    const comp = maps?.comp || getComp(nombre);
+    const abs = maps?.absences || getAbs(nombre);
+    const absenceType = getAbsenceType(abs[key]);
 
-    if (abs[key]?.type === "professional_license") return "#2563eb";
-    if (abs[key]?.type === "union_leave") return "#e64747";
-    if (abs[key]?.type === "unpaid_leave") return "#6b7280";
+    if (absenceType === "professional_license") return "#2563eb";
+    if (absenceType === "union_leave") return "#e64747";
+    if (absenceType === "unpaid_leave") return "#6b7280";
     if (abs[key]) return "#ef4444";
     if (legal[key]) return "#0ea5a6";
     if (comp[key]) return "#f97316";
@@ -377,6 +377,81 @@ function getColor(nombre, key){
     const turno = getTurnoReal(nombre, key);
 
     return TURNO_COLOR[turno] || TURNO_COLOR[0];
+}
+
+function leaveTypeForDay(keyDay, maps) {
+    const admin = maps?.admin || {};
+    const legal = maps?.legal || {};
+    const comp = maps?.comp || {};
+    const absences = maps?.absences || {};
+
+    if (admin[keyDay] === 1) return "admin";
+    if (admin[keyDay] === "0.5M") return "half_admin_morning";
+    if (admin[keyDay] === "0.5T") return "half_admin_afternoon";
+    if (admin[keyDay] === 0.5) return "half_admin";
+    if (legal[keyDay]) return "legal";
+    if (comp[keyDay]) return "comp";
+
+    const absence = absences[keyDay];
+
+    if (!absence) return "";
+
+    return esAusenciaInjustificada(absence)
+        ? "unjustified_absence"
+        : getAbsenceType(absence);
+}
+
+function leaveLabelForType(type) {
+    if (type === "admin") return "P. Administrativo";
+    if (type === "half_admin_morning") return "1/2 ADM Ma\u00f1ana";
+    if (type === "half_admin_afternoon") return "1/2 ADM Tarde";
+    if (type === "half_admin") return "1/2 ADM";
+    if (type === "legal") return "F. Legal";
+    if (type === "comp") return "F. Compensatorio";
+    if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "Permiso Gremial";
+    if (type === "unpaid_leave") return "Permiso sin Goce";
+    if (type === "unjustified_absence") return "Ausencia Injustificada";
+    if (type === "license") return "Licencia Medica";
+
+    return "Permiso/Ausencia";
+}
+
+function leaveSourceMapForType(type, maps) {
+    if (
+        type === "admin" ||
+        type === "half_admin_morning" ||
+        type === "half_admin_afternoon" ||
+        type === "half_admin"
+    ) {
+        return maps?.admin || {};
+    }
+
+    if (type === "legal") return maps?.legal || {};
+    if (type === "comp") return maps?.comp || {};
+
+    return maps?.absences || {};
+}
+
+function leaveApplicationHoverTitle(profileName, keyDay, maps) {
+    const type = leaveTypeForDay(keyDay, maps);
+
+    if (!type) return "";
+
+    const info = type === "half_admin"
+        ? null
+        : getLeaveApplicationInfo({
+            profile: profileName,
+            keyDay,
+            type,
+            sourceMap: leaveSourceMapForType(type, maps)
+        });
+
+    return [
+        leaveLabelForType(type),
+        `Aplicado: ${info?.createdAtLabel || "Sin registro"}`,
+        `Usuario: ${info?.actorName || "No registrado"}`
+    ].join("\n");
 }
 
 function needsReplacementMarker(nombre, key) {
@@ -719,6 +794,12 @@ export async function renderTimeline(){
             honorariaSummary?.overtimeHours > 0
                 ? " honoraria-hhee-excess"
                 : "";
+        const leaveMaps = {
+            admin: getAdmin(profile.name),
+            legal: getLegal(profile.name),
+            comp: getComp(profile.name),
+            absences: getAbs(profile.name)
+        };
 
         html += `<tr>`;
         html += `
@@ -744,7 +825,7 @@ export async function renderTimeline(){
 
         for (let d = 1; d <= diasMes; d++) {
             const key = `${year}-${month}-${d}`;
-            const color = getColor(profile.name, key);
+            const color = getColor(profile.name, key, leaveMaps);
             const date = new Date(year, month, d);
             const isInhabil = !isBusinessDay(date, holidays);
             const workerBlockedDay =
@@ -834,13 +915,19 @@ export async function renderTimeline(){
                                     : `Motivo HHEE: ${replacement.reason || replacement.absenceType || "sin detalle"}`
                             )
                             : "";
+            const leaveTitle = leaveApplicationHoverTitle(
+                profile.name,
+                key,
+                leaveMaps
+            );
             const titleText = [
                 title,
+                leaveTitle,
                 workerBlockedDay
                     ? workerBlockedDay.message ||
                         "El trabajador solicito no hacer reemplazos ni cambios de turno en esta fecha."
                     : ""
-            ].filter(Boolean).join(" ");
+            ].filter(Boolean).join("\n");
 
             html += `
                 <td

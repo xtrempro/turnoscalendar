@@ -1,3 +1,4 @@
+import { stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
@@ -27,10 +28,7 @@ function isValidColumn(status) {
 }
 
 function normalizeKeyPart(value, fallback) {
-    return String(value || fallback)
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
+    return stripAccents(String(value || fallback).trim())
         .toLowerCase()
         .replace(/[^a-z0-9_-]+/g, "_")
         .replace(/^_+|_+$/g, "")

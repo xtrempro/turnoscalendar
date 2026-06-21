@@ -31,6 +31,8 @@ import {
     tieneAusencia,
     requiereReemplazoTurnoBase,
     getTurnoExtraAgregado,
+    esAusenciaInjustificada,
+    getAbsenceType,
     obtenerLabelDia,
     aplicarClasesEspeciales,
     estaBloqueadoModo,
@@ -88,7 +90,8 @@ import {
 } from "./honoraria.js";
 import {
     addAuditLog,
-    AUDIT_CATEGORY
+    AUDIT_CATEGORY,
+    getLeaveApplicationInfo
 } from "./auditLog.js";
 import {
     getClockExtraHours,
@@ -818,6 +821,95 @@ function turnChangeHoverTitle(marker, profileName) {
         `Fecha devoluci\u00f3n: ${formatISODateForHover(swap.devolucion)}`,
         `Turno devoluci\u00f3n: ${swapCodeLabel(swap.turnoDevuelto)}`
     ].filter(Boolean).join("\n");
+}
+
+function leaveTypeForDay(keyDay, admin, legal, comp, absences) {
+    if (admin[keyDay] === 1) return "admin";
+    if (admin[keyDay] === "0.5M") return "half_admin_morning";
+    if (admin[keyDay] === "0.5T") return "half_admin_afternoon";
+    if (admin[keyDay] === 0.5) return "half_admin";
+    if (legal[keyDay]) return "legal";
+    if (comp[keyDay]) return "comp";
+
+    const absence = absences[keyDay];
+
+    if (!absence) return "";
+
+    return esAusenciaInjustificada(absence)
+        ? "unjustified_absence"
+        : getAbsenceType(absence);
+}
+
+function leaveLabelForType(type) {
+    if (type === "admin") return "P. Administrativo";
+    if (type === "half_admin_morning") return "1/2 ADM Ma\u00f1ana";
+    if (type === "half_admin_afternoon") return "1/2 ADM Tarde";
+    if (type === "half_admin") return "1/2 ADM";
+    if (type === "legal") return "F. Legal";
+    if (type === "comp") return "F. Compensatorio";
+    if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "Permiso Gremial";
+    if (type === "unpaid_leave") return "Permiso sin Goce";
+    if (type === "unjustified_absence") return "Ausencia Injustificada";
+    if (type === "license") return "Licencia Medica";
+
+    return "Permiso/Ausencia";
+}
+
+function leaveSourceMapForType(type, admin, legal, comp, absences) {
+    if (
+        type === "admin" ||
+        type === "half_admin_morning" ||
+        type === "half_admin_afternoon" ||
+        type === "half_admin"
+    ) {
+        return admin;
+    }
+
+    if (type === "legal") return legal;
+    if (type === "comp") return comp;
+
+    return absences;
+}
+
+function leaveApplicationHoverTitle(
+    profileName,
+    keyDay,
+    admin,
+    legal,
+    comp,
+    absences
+) {
+    const type = leaveTypeForDay(
+        keyDay,
+        admin,
+        legal,
+        comp,
+        absences
+    );
+
+    if (!type) return "";
+
+    const info = type === "half_admin"
+        ? null
+        : getLeaveApplicationInfo({
+            profile: profileName,
+            keyDay,
+            type,
+            sourceMap: leaveSourceMapForType(
+                type,
+                admin,
+                legal,
+                comp,
+                absences
+            )
+        });
+
+    return [
+        leaveLabelForType(type),
+        `Aplicado: ${info?.createdAtLabel || "Sin registro"}`,
+        `Usuario: ${info?.actorName || "No registrado"}`
+    ].join("\n");
 }
 
 function remoteFusionReplacementTurn(snapshot, profileName, keyDay, state) {
@@ -3080,9 +3172,14 @@ export async function renderCalendar(options = {}) {
                 : undefined,
             title: (() => {
                 const hrs = calcHours(date, state, holidays);
-                if (!activeProfileEnabled) {
-                    return "Perfil desactivado: calendario solo lectura.";
-                }
+                const leaveTitle = leaveApplicationHoverTitle(
+                    activeProfile,
+                    keyDay,
+                    admin,
+                    legal,
+                    comp,
+                    absences
+                );
 
                 const suffix = needsReplacement
                     ? " | Requiere reemplazo de turno base"
@@ -3103,6 +3200,10 @@ export async function renderCalendar(options = {}) {
                             : "";
 
                 const baseTitle = (() => {
+                    if (!activeProfileEnabled) {
+                        return "Perfil desactivado: calendario solo lectura.";
+                    }
+
                     if (showExtraReason) {
                         return `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
                     }
@@ -3115,9 +3216,11 @@ export async function renderCalendar(options = {}) {
                         `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
                 })();
 
-                return turnChangeTitle
-                    ? `${turnChangeTitle}\n${baseTitle}`
-                    : baseTitle;
+                return [
+                    turnChangeTitle,
+                    baseTitle,
+                    leaveTitle
+                ].filter(Boolean).join("\n");
             })(),
             isWeekendDay,
             isHoliday: Boolean(isHoliday),

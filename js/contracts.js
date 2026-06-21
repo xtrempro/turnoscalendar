@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import {
     getProfiles,
     getReplacementContracts,
@@ -87,19 +88,11 @@ export function addReplacementContract(profileName, contract) {
 }
 
 export function isReplacementContractType(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase() === "reemplazo";
+    return normalizeText(value) === "reemplazo";
 }
 
 export function isHonorariaContractType(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase() === "honorarios";
+    return normalizeText(value) === "honorarios";
 }
 
 export function getHonorariaContract(profileOrName) {

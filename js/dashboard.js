@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
     getCompensationProfileAt,
@@ -64,14 +65,6 @@ const dashboardState = {
 
 let renderRequest = 0;
 const holidayCache = new Map();
-
-function normalizeText(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
-}
 
 function roleKey(value) {
     const normalized = normalizeText(value)

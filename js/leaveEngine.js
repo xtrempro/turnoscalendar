@@ -212,6 +212,7 @@ export function aplicarAusenciaInjustificada(fecha){
         {
             profile: currentProfile,
             date: isoFromKey(key),
+            keys: [key],
             type: "unjustified_absence"
         }
     );
@@ -337,6 +338,7 @@ export async function aplicarAdministrativo(fecha, cantidad = 1){
         {
             profile: currentProfile,
             date: isoFromKey(keyFromDate(fecha)),
+            keys,
             type: "admin",
             amount: cantidad
         }
@@ -394,6 +396,7 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
         {
             profile: getCurrentProfile(),
             date: isoFromKey(key),
+            keys: [key],
             type: tipo === "M"
                 ? "half_admin_morning"
                 : "half_admin_afternoon",
@@ -625,6 +628,7 @@ export async function aplicarLegal(fecha, cantidad){
         {
             profile: getCurrentProfile(),
             date: isoFromKey(startKey),
+            keys: nuevos,
             type: "legal",
             amount: cantidad
         }
@@ -779,6 +783,7 @@ export async function aplicarComp(fecha, cantidad = 10){
         {
             profile: getCurrentProfile(),
             date: isoFromKey(startKey),
+            keys: nuevos,
             type: "comp",
             amount: total
         }
@@ -1061,6 +1066,7 @@ export async function aplicarLicencia(
         {
             profile: getCurrentProfile(),
             date: isoFromKey(startKey),
+            keys,
             amount: total,
             type
         }

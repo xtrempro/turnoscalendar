@@ -1,14 +1,11 @@
+import { normalizeText } from "./stringUtils.js";
 import { getFirebaseServices } from "./firebaseClient.js";
 
 let blockedDays = [];
 let unsubscribeBlockedDays = null;
 
 function normalizeProfileName(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return normalizeText(value);
 }
 
 function normalizeDate(value) {

@@ -1,3 +1,4 @@
+import { stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import {
@@ -37,10 +38,7 @@ let draggedWorker = null;
 let renderToken = 0;
 
 function normalizeText(value) {
-    return String(value || "")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return stripAccents(String(value || "")).toLowerCase();
 }
 
 function keyFromDate(date) {

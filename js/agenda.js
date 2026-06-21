@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 
@@ -8,11 +9,7 @@ let selectedContactId = NEW_CONTACT_ID;
 let agendaSearch = "";
 
 function normalizeSearch(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return normalizeText(value);
 }
 
 function normalizeAttachment(attachment) {

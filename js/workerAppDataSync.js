@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import { TURNO } from "./constants.js";
 import { getFirebaseServices } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
@@ -31,14 +32,6 @@ let publishInFlight = false;
 let publishRequested = false;
 let workerLinks = [];
 let syncGeneration = 0;
-
-function normalizeText(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
-}
 
 function normalizeRut(value) {
     return String(value || "")

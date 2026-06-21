@@ -1,3 +1,4 @@
+import { stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
     getBaseProfileData,
@@ -115,9 +116,7 @@ function formatMoney(value) {
 }
 
 function safeFileName(value) {
-    return String(value || "reporte")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
+    return stripAccents(String(value || "reporte"))
         .replace(/[^a-zA-Z0-9_-]+/g, "_")
         .replace(/^_+|_+$/g, "");
 }

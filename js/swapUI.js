@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
     cambiosDelMes,
@@ -72,11 +73,7 @@ function getPerfil(nombre) {
 }
 
 function normalizeSearch(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return normalizeText(value);
 }
 
 function profileMetaLabel(profile = {}) {

@@ -1,3 +1,4 @@
+import { stripAccents } from "./stringUtils.js";
 // js/turnEngine.js
 
 import { TURNO } from "./constants.js";
@@ -176,10 +177,7 @@ function parseISODate(value) {
 }
 
 function normalizeFirstTurn(value) {
-    const normalized = String(value || "")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    const normalized = stripAccents(String(value || "")).toLowerCase();
 
     if (
         normalized === "larga2" ||

@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
     getCurrentProfile,
@@ -181,18 +182,12 @@ function emptyStaffingConfig() {
 function normalizeStaffingEstamento(value) {
     const clean = String(value || "").trim();
 
-    const comparable = clean
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    const comparable = normalizeText(value);
 
     if (comparable === "tecnico") return "Técnico";
 
     return STAFFING_ESTAMENTOS.find(estamento =>
-        estamento
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, "")
-            .toLowerCase() === comparable
+        normalizeText(estamento) === comparable
     ) || clean;
 }
 
@@ -615,11 +610,7 @@ function parseKey(keyDay) {
 }
 
 function normalizeSearch(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return normalizeText(value);
 }
 
 const STAFFING_REMINDER_RECURRENCES = new Set([

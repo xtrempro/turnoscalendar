@@ -1,3 +1,4 @@
+import { stripAccents } from "./stringUtils.js";
 // js/rulesEngine.js
 
 /* ======================================================
@@ -183,10 +184,7 @@ export function turnoExtraCubreTurno(extraState, coveredState) {
 }
 
 function normalizeText(value) {
-    return String(value || "")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return stripAccents(String(value || "")).toLowerCase();
 }
 
 function getAbsenceText(absence) {

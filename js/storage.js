@@ -1,3 +1,4 @@
+import { normalizeText, stripAccents } from "./stringUtils.js";
 import {
     getRaw,
     setRaw,
@@ -104,11 +105,7 @@ const PROFESSION_ALIASES = {
 };
 
 function normalizeTextKey(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return normalizeText(value);
 }
 
 function findProfessionOption(value, options = []) {
@@ -167,10 +164,7 @@ export function normalizeProfession(value, estamento = "Profesional") {
 }
 
 function normalizeProfileId(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
+    return stripAccents(String(value || "").trim())
         .toLowerCase()
         .replace(/[^a-z0-9_-]+/g, "_")
         .replace(/^_+|_+$/g, "")
@@ -568,10 +562,7 @@ export function profileCanCoverProfile(candidate, target) {
 
 function normalizeRotativaType(value){
     const source = String(value || "").trim();
-    const normalized = source
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    const normalized = stripAccents(source).toLowerCase();
 
     if (
         normalized === "3turno" ||
@@ -610,10 +601,7 @@ function normalizeRotativaType(value){
 }
 
 function normalizeRotationFirstTurn(value) {
-    const normalized = String(value || "")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    const normalized = stripAccents(String(value || "")).toLowerCase();
 
     if (
         normalized === "larga2" ||
@@ -1193,11 +1181,7 @@ export function setShiftAssigned(value, profile = currentProfile){
 
 export function getValorHora(profile = currentProfile, date = null){
     const profileData = getCompensationProfileAt(profile, date);
-    const isHonoraria = String(profileData?.contractType || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase() === "honorarios";
+    const isHonoraria = normalizeText(profileData?.contractType) === "honorarios";
     const honorariaHourlyRate =
         Math.max(0, Number(profileData?.honorariaHourlyRate) || 0);
 

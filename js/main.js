@@ -1,3 +1,4 @@
+import { normalizeText, stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
     prevMonth,
@@ -1244,10 +1245,7 @@ function syncProfileRotationOptions(data = profileDraft) {
 }
 
 function normalizeRotationFirstTurn(value) {
-    const normalized = String(value || "")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    const normalized = stripAccents(String(value || "")).toLowerCase();
 
     if (
         normalized === "larga2" ||
@@ -6615,11 +6613,7 @@ async function renderClockMarksPanel() {
 window.renderClockMarksPanel = renderClockMarksPanel;
 
 function normalizeProfileSearch(value) {
-    return String(value || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase();
+    return normalizeText(value);
 }
 
 function getTopSearchProfiles() {

@@ -1,5 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
-import { getJSON, setJSON } from "./persistence.js";
+import { getJSON, getRaw, setJSON } from "./persistence.js";
 import {
     getCurrentProfile,
     getProfiles,
@@ -17,6 +17,8 @@ const MAX_LOGS = 1500;
 let selectedMonth = "";
 const selectedCategories = new Set();
 let expandedLogId = "";
+let leaveApplicationLogCacheRaw = null;
+let leaveApplicationLogCache = [];
 
 export const AUDIT_CATEGORY = {
     TURN_CHANGES: "turn_changes",
@@ -312,6 +314,192 @@ function getLeaveUndoType(log) {
     if (action.includes("licencia")) return "license";
 
     return "";
+}
+
+function sortedLeaveApplicationLogs() {
+    const raw = getRaw(KEY, "[]");
+
+    if (raw === leaveApplicationLogCacheRaw) {
+        return leaveApplicationLogCache;
+    }
+
+    let parsed = [];
+
+    try {
+        parsed = JSON.parse(raw || "[]");
+    } catch {
+        parsed = [];
+    }
+
+    leaveApplicationLogCacheRaw = raw;
+    leaveApplicationLogCache = normalizeLogs(parsed)
+        .filter(log =>
+            log.category === AUDIT_CATEGORY.LEAVE_ABSENCE &&
+            !log.canceledAt
+        )
+        .sort((a, b) =>
+            String(b.createdAt).localeCompare(String(a.createdAt))
+        );
+
+    return leaveApplicationLogCache;
+}
+
+function normalizeKeyList(value) {
+    const source = Array.isArray(value)
+        ? value
+        : String(value || "")
+            .split(",");
+
+    return source
+        .map(item => String(item || "").trim())
+        .filter(Boolean);
+}
+
+function logProfileName(log) {
+    return String(
+        log?.profile ||
+        log?.meta?.profile ||
+        ""
+    ).trim();
+}
+
+function sameProfileName(a, b) {
+    return String(a || "").trim() === String(b || "").trim();
+}
+
+function leaveMapValueMatchesType(value, type) {
+    if (!value) return false;
+
+    if (type === "admin") return value === 1;
+    if (type === "half_admin_morning") return value === "0.5M";
+    if (type === "half_admin_afternoon") return value === "0.5T";
+    if (type === "legal" || type === "comp") return Boolean(value);
+
+    return absenceTypeOf(value) === type;
+}
+
+function dateKeyIsBefore(a, b) {
+    const first = keyToDate(a);
+    const second = keyToDate(b);
+
+    if (!first || !second) return false;
+
+    return first < second;
+}
+
+function calendarSpanIncludes(startKey, keyDay, days) {
+    if (!startKey || !keyDay) return false;
+    if (dateKeyIsBefore(keyDay, startKey)) return false;
+
+    let cursor = startKey;
+    const total = Math.max(1, Math.round(Number(days) || 1));
+
+    for (let i = 0; i < total; i++) {
+        if (cursor === keyDay) return true;
+
+        cursor = addDaysKey(cursor, 1);
+    }
+
+    return false;
+}
+
+function mapSpanIncludes(sourceMap, type, startKey, keyDay) {
+    if (
+        !sourceMap ||
+        typeof sourceMap !== "object" ||
+        !startKey ||
+        !keyDay ||
+        dateKeyIsBefore(keyDay, startKey)
+    ) {
+        return false;
+    }
+
+    let cursor = startKey;
+    let guard = 0;
+
+    while (cursor && guard < 750) {
+        if (!leaveMapValueMatchesType(sourceMap[cursor], type)) {
+            return false;
+        }
+
+        if (cursor === keyDay) return true;
+
+        cursor = addDaysKey(cursor, 1);
+        guard++;
+    }
+
+    return false;
+}
+
+function leaveLogCoversKey(log, type, keyDay, sourceMap) {
+    const explicitKeys = normalizeKeyList(log?.meta?.keys);
+
+    if (explicitKeys.length) {
+        return explicitKeys.includes(keyDay);
+    }
+
+    const metaKey = String(log?.meta?.keyDay || "").trim();
+
+    if (metaKey) {
+        return metaKey === keyDay;
+    }
+
+    const startKey = isoToDateKey(log?.meta?.date);
+
+    if (!startKey) return false;
+
+    if (
+        type === "legal" ||
+        type === "comp"
+    ) {
+        return mapSpanIncludes(
+            sourceMap,
+            type,
+            startKey,
+            keyDay
+        ) || startKey === keyDay;
+    }
+
+    return calendarSpanIncludes(
+        startKey,
+        keyDay,
+        log?.meta?.amount || 1
+    );
+}
+
+export function getLeaveApplicationInfo({
+    profile,
+    keyDay,
+    type,
+    sourceMap = null
+} = {}) {
+    const normalizedType = String(type || "").trim();
+
+    if (!profile || !keyDay || !normalizedType) {
+        return null;
+    }
+
+    const log = sortedLeaveApplicationLogs()
+        .find(item =>
+            sameProfileName(logProfileName(item), profile) &&
+            getLeaveUndoType(item) === normalizedType &&
+            leaveLogCoversKey(
+                item,
+                normalizedType,
+                keyDay,
+                sourceMap
+            )
+        );
+
+    if (!log) return null;
+
+    const actorName = logActorName(log);
+
+    return {
+        createdAt: log.createdAt,
+        createdAtLabel: formatTimestamp(log.createdAt),
+        actorName: actorName || "No registrado"
+    };
 }
 
 function canUndoAuditLog(log) {
@@ -992,4 +1180,6 @@ export function renderAuditLogPanel() {
     });
 }
 
-window.renderAuditLogPanel = renderAuditLogPanel;
+if (typeof window !== "undefined") {
+    window.renderAuditLogPanel = renderAuditLogPanel;
+}
