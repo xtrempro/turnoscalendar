@@ -41,6 +41,7 @@ import {
     stopFirebaseWorkerRequestSync
 } from "./firebaseWorkerRequests.js";
 import {
+    getWorkerAppLinkForProfile,
     scheduleWorkerAppDataPublish,
     startWorkerAppDataSync,
     stopWorkerAppDataSync
@@ -4515,11 +4516,19 @@ function renderDashboardState() {
             profileCanEdit &&
             Boolean(profile) &&
             profileDraft.mode === PROFILE_MODE.VIEW;
+        const isWorkerLinked =
+            Boolean(profile) && Boolean(getWorkerAppLinkForProfile(profile));
 
         DOM.workerAppInviteBtn.disabled = !canInviteWorker;
-        DOM.workerAppInviteBtn.title = canInviteWorker
-            ? "Enviar enlace para la app del trabajador"
-            : "Selecciona un trabajador guardado para enviar el enlace";
+        DOM.workerAppInviteBtn.textContent = isWorkerLinked
+            ? "ENLAZADO"
+            : "ENLACE APP";
+        DOM.workerAppInviteBtn.classList.toggle("is-linked", isWorkerLinked);
+        DOM.workerAppInviteBtn.title = isWorkerLinked
+            ? "El trabajador ya enlazo su app TurnoPlus. Puedes reenviar el enlace."
+            : canInviteWorker
+                ? "Enviar enlace para la app del trabajador"
+                : "Selecciona un trabajador guardado para enviar el enlace";
     }
 
     syncHoursMonthControls(
@@ -9743,6 +9752,10 @@ window.addEventListener("proturnos:memosChanged", () => {
 
 window.addEventListener("proturnos:auditUndoApplied", () => {
     refreshAll();
+});
+
+window.addEventListener("proturnos:workerLinksChanged", () => {
+    renderDashboardState();
 });
 
 function syncWorkspaceStateViews() {

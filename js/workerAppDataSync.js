@@ -589,6 +589,13 @@ export async function startWorkerAppDataSync(workspace) {
                 workerLinks = snap.docs
                     .map(normalizeWorkerLink)
                     .filter(Boolean);
+
+                if (typeof window !== "undefined") {
+                    window.dispatchEvent(
+                        new CustomEvent("proturnos:workerLinksChanged")
+                    );
+                }
+
                 scheduleWorkerAppDataPublish(INITIAL_PUBLISH_DELAY_MS);
             },
             error => {
