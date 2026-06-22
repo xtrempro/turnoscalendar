@@ -6708,19 +6708,9 @@ function handleRotationSelectionChange() {
         return;
     }
 
-    if (
-        requiresRotationStart(profileDraft.rotationType) &&
-        !getDraftUnitEntryDate()
-    ) {
-        alert("Ingresa primero la fecha de ingreso a la unidad para configurar la rotativa.");
-        profileDraft.rotationType = "";
-        profileDraft.rotationStart = "";
-        profileDraft.rotationFirstTurn = "larga";
-        DOM.profileRotationSelect.value = "";
-        renderDashboardState();
-        return;
-    }
-
+    // La fecha de ingreso a la unidad ya NO es obligatoria para configurar la
+    // rotativa. Si existe, el calendario de la rotativa se abre en esa fecha
+    // (getRotationConfigDefaultStart); si no, se abre en el mes actual.
     if (
         isHonorariaDraft() &&
         (
