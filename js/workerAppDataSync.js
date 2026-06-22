@@ -360,7 +360,10 @@ function buildSupervisorReminders(profile) {
 
 async function buildOvertimeSummaries(profile) {
     try {
-        return await buildWorkerHheeSummaries(profile, 11);
+        // Solo el mes actual + 2 anteriores (lo relevante para pago/devolucion).
+        // Reduce la carga ~4x respecto a 12 meses. Meses mas antiguos en la app
+        // del trabajador caen al calculo liviano basado en solicitudes.
+        return await buildWorkerHheeSummaries(profile, 2);
     } catch (error) {
         console.warn(
             "No se pudo calcular el resumen HHEE para la app del trabajador.",
