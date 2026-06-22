@@ -2342,6 +2342,13 @@ function weeklyIsInhabil(day, holidays) {
     return !isBusinessDay(day, holidays);
 }
 
+function staffingEstamentoOrder(profile) {
+    const estamento = normalizeStaffingEstamento(profile?.estamento);
+    const index = STAFFING_ESTAMENTOS.indexOf(estamento);
+
+    return index === -1 ? STAFFING_ESTAMENTOS.length : index;
+}
+
 function weeklyShiftProfiles(
     date,
     shiftKey,
@@ -2389,6 +2396,8 @@ function weeklyShiftProfiles(
             return items;
         })
         .sort((a, b) =>
+            staffingEstamentoOrder(a.profile) -
+                staffingEstamentoOrder(b.profile) ||
             a.profile.name.localeCompare(b.profile.name, "es") ||
             (a.type === "replacement-slot" ? 1 : -1)
         );
@@ -2557,6 +2566,8 @@ function weeklyLeaveProfiles(
         })
         .filter(Boolean)
         .sort((a, b) =>
+            staffingEstamentoOrder(a.profile) -
+                staffingEstamentoOrder(b.profile) ||
             a.profile.name.localeCompare(b.profile.name, "es")
         );
 }
