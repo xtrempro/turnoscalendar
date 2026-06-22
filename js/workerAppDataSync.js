@@ -307,6 +307,55 @@ function currentYearBalances(profileName) {
     };
 }
 
+// Misma clave que usa staffing.js para los recordatorios del supervisor.
+const STAFFING_REMINDERS_KEY = "staffing_custom_reminders";
+const STAFFING_REMINDER_ESTAMENTO_PREFIX = "estamento:";
+const STAFFING_RECURRENCE_TO_WORKER = {
+    once: "Una sola vez",
+    yearly: "Anual",
+    monthly: "Mensual"
+};
+
+// Indica si un recordatorio del supervisor va dirigido al trabajador segun su
+// estamento. "all"/"private" son solo para administradores (no se envian).
+function staffingReminderTargetsProfile(reminder, profileRole) {
+    const visibility = String(reminder?.visibility || "");
+
+    if (visibility === "workers") return true;
+
+    if (visibility.startsWith(STAFFING_REMINDER_ESTAMENTO_PREFIX)) {
+        const target = normalizeText(
+            visibility.slice(STAFFING_REMINDER_ESTAMENTO_PREFIX.length)
+        );
+
+        return Boolean(target) && normalizeText(profileRole) === target;
+    }
+
+    return false;
+}
+
+function buildSupervisorReminders(profile) {
+    const reminders = getJSON(STAFFING_REMINDERS_KEY, []);
+
+    if (!Array.isArray(reminders)) return [];
+
+    const role = profile?.estamento || "";
+
+    return reminders
+        .filter(reminder => reminder?.dateISO && reminder?.description)
+        .filter(reminder => staffingReminderTargetsProfile(reminder, role))
+        .map(reminder => ({
+            id: String(reminder.id || ""),
+            date: String(reminder.dateISO || ""),
+            title: String(reminder.description || "").trim(),
+            description: "Recordatorio enviado por el supervisor.",
+            periodicity:
+                STAFFING_RECURRENCE_TO_WORKER[reminder.recurrence] ||
+                "Una sola vez",
+            source: "Supervisor"
+        }));
+}
+
 function buildWorkerAppPayload(link, profile, workspace) {
     const schedule = buildScheduleDays(profile);
     const leaveBalances = currentYearBalances(profile.name);
@@ -335,6 +384,7 @@ function buildWorkerAppPayload(link, profile, workspace) {
         scheduleStart: schedule.start,
         scheduleEnd: schedule.end,
         days: schedule.days,
+        supervisorReminders: buildSupervisorReminders(profile),
         updatedAtISO: new Date().toISOString()
     };
 }

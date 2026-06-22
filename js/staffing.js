@@ -605,20 +605,48 @@ const STAFFING_REMINDER_RECURRENCES = new Set([
     "monthly"
 ]);
 
-const STAFFING_REMINDER_VISIBILITIES = new Set([
-    "all",
-    "private"
-]);
+const STAFFING_REMINDER_ESTAMENTO_PREFIX = "estamento:";
+
+// Visibilidad de un recordatorio del supervisor:
+//   "all"             -> usuarios administradores del entorno (web supervisor)
+//   "private"         -> solo quien lo crea
+//   "workers"         -> todos los trabajadores (app TurnoPlus)
+//   "estamento:<X>"   -> trabajadores de ese estamento
+function isValidStaffingReminderVisibility(value) {
+    if (value === "all" || value === "private" || value === "workers") {
+        return true;
+    }
+
+    if (
+        typeof value === "string" &&
+        value.startsWith(STAFFING_REMINDER_ESTAMENTO_PREFIX)
+    ) {
+        return STAFFING_ESTAMENTOS.includes(
+            value.slice(STAFFING_REMINDER_ESTAMENTO_PREFIX.length)
+        );
+    }
+
+    return false;
+}
+
+function staffingReminderVisibilityLabel(visibility) {
+    if (visibility === "private") return "Sólo quien lo crea";
+    if (visibility === "workers") return "Todos los trabajadores";
+
+    if (
+        typeof visibility === "string" &&
+        visibility.startsWith(STAFFING_REMINDER_ESTAMENTO_PREFIX)
+    ) {
+        return `Trabajadores: ${visibility.slice(STAFFING_REMINDER_ESTAMENTO_PREFIX.length)}`;
+    }
+
+    return "Todos los usuarios administradores del entorno";
+}
 
 const STAFFING_REMINDER_RECURRENCE_LABELS = {
     once: "Una sola vez",
     yearly: "Anual en la misma fecha",
     monthly: "Mensual"
-};
-
-const STAFFING_REMINDER_VISIBILITY_LABELS = {
-    all: "Todos los usuarios",
-    private: "Solo quien lo crea"
 };
 
 function reminderDateParts(value) {
@@ -686,7 +714,7 @@ function normalizeStaffingReminder(reminder, index = 0) {
     )
         ? reminder.recurrence
         : "once";
-    const visibility = STAFFING_REMINDER_VISIBILITIES.has(
+    const visibility = isValidStaffingReminderVisibility(
         reminder?.visibility
     )
         ? reminder.visibility
@@ -3268,7 +3296,7 @@ function renderDetailBadge(detail){
     if (detail.tipo === "reminder") {
         const meta = detail.custom
             ? [
-                STAFFING_REMINDER_VISIBILITY_LABELS[detail.visibility],
+                staffingReminderVisibilityLabel(detail.visibility),
                 STAFFING_REMINDER_RECURRENCE_LABELS[detail.recurrence]
             ]
                 .filter(Boolean)
@@ -3397,7 +3425,11 @@ function openStaffingReminderDialog() {
                 <label class="staffing-reminder-field">
                     <span>Visibilidad</span>
                     <select name="visibility">
-                        <option value="all">Todos los usuarios del entorno</option>
+                        <option value="all">Todos los usuarios administradores del entorno</option>
+                        <option value="workers">Todos los trabajadores</option>
+                        ${STAFFING_ESTAMENTOS.map(estamento => `
+                        <option value="estamento:${escapeHTML(estamento)}">Trabajadores: ${escapeHTML(estamento)}</option>
+                        `).join("")}
                         <option value="private">S&oacute;lo quien lo crea</option>
                     </select>
                 </label>
