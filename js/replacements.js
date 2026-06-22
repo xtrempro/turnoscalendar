@@ -424,6 +424,9 @@ function buildReplacementRequest(data) {
         data.absenceType ||
         getAbsenceLabelForProfileDate(data.replaced, data.keyDay);
     const turnoCode = turnoToCode(data.turno);
+    // calcHours espera el ESTADO numerico del turno (1=Larga, 2=Noche, ...),
+    // no la letra que se guarda en el documento (turnoCode).
+    const turnoState = Number(data.turno) || 0;
 
     // Horas extra del turno cubierto (todo el turno es sobretiempo). Se calculan
     // y guardan en la solicitud para que la app del trabajador pueda mostrar el
@@ -433,7 +436,7 @@ function buildReplacementRequest(data) {
         ? getCachedHolidays(requestDate.getFullYear())
         : {};
     const computedHours = requestDate
-        ? calcHours(requestDate, turnoCode, holidayMap)
+        ? calcHours(requestDate, turnoState, holidayMap)
         : { d: 0, n: 0 };
     const explicitOvertime = normalizeHours(data.overtimeHours);
     const dayHours = computedHours.d || 0;
