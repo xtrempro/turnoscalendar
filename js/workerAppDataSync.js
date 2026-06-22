@@ -12,7 +12,8 @@ import {
     getRotativa,
     getShiftAssigned,
     getManualLeaveBalances,
-    isProfileActive
+    isProfileActive,
+    getTurnChangeConfig
 } from "./storage.js";
 import {
     aplicarCambiosTurno,
@@ -21,7 +22,7 @@ import {
 } from "./turnEngine.js";
 import { turnoLabel } from "./uiEngine.js";
 import { obtenerLabelDia } from "./rulesEngine.js";
-import { canSwapProfiles } from "./swaps.js";
+import { canSwapProfiles, activeMonthlySwapCount } from "./swaps.js";
 import { getWorkerBlockedDays } from "./workerAvailability.js";
 import { buildWorkerHheeSummaries } from "./hoursReport.js";
 
@@ -369,6 +370,25 @@ async function buildOvertimeSummaries(profile) {
     }
 }
 
+function buildSwapLimit(profileName) {
+    const config = getTurnChangeConfig();
+    const limit = Number(config.monthlySwapLimit) || 0;
+    const now = new Date();
+    const used = activeMonthlySwapCount(
+        profileName,
+        now.getFullYear(),
+        now.getMonth()
+    );
+
+    return {
+        enabled: config.limitMonthlySwaps === true && limit > 0,
+        limit,
+        used,
+        year: now.getFullYear(),
+        month: now.getMonth()
+    };
+}
+
 async function buildWorkerAppPayload(link, profile, workspace) {
     const schedule = buildScheduleDays(profile);
     const leaveBalances = currentYearBalances(profile.name);
@@ -400,6 +420,7 @@ async function buildWorkerAppPayload(link, profile, workspace) {
         days: schedule.days,
         supervisorReminders: buildSupervisorReminders(profile),
         overtimeSummaries,
+        swapLimit: buildSwapLimit(profile.name),
         updatedAtISO: new Date().toISOString()
     };
 }
