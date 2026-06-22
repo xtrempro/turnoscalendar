@@ -23,6 +23,7 @@ import { turnoLabel } from "./uiEngine.js";
 import { obtenerLabelDia } from "./rulesEngine.js";
 import { canSwapProfiles } from "./swaps.js";
 import { getWorkerBlockedDays } from "./workerAvailability.js";
+import { buildWorkerHheeSummaries } from "./hoursReport.js";
 
 const PUBLISH_DELAY_MS = 1200;
 const INITIAL_PUBLISH_DELAY_MS = 2500;
@@ -356,9 +357,22 @@ function buildSupervisorReminders(profile) {
         }));
 }
 
-function buildWorkerAppPayload(link, profile, workspace) {
+async function buildOvertimeSummaries(profile) {
+    try {
+        return await buildWorkerHheeSummaries(profile, 11);
+    } catch (error) {
+        console.warn(
+            "No se pudo calcular el resumen HHEE para la app del trabajador.",
+            error
+        );
+        return [];
+    }
+}
+
+async function buildWorkerAppPayload(link, profile, workspace) {
     const schedule = buildScheduleDays(profile);
     const leaveBalances = currentYearBalances(profile.name);
+    const overtimeSummaries = await buildOvertimeSummaries(profile);
 
     return {
         uid: link.uid,
@@ -385,6 +399,7 @@ function buildWorkerAppPayload(link, profile, workspace) {
         scheduleEnd: schedule.end,
         days: schedule.days,
         supervisorReminders: buildSupervisorReminders(profile),
+        overtimeSummaries,
         updatedAtISO: new Date().toISOString()
     };
 }
@@ -623,9 +638,9 @@ export async function publishWorkerAppDataNow() {
 
     try {
         await Promise.all(
-            linkedProfiles.map(item => {
+            linkedProfiles.map(async item => {
                 const payload = item.profile
-                    ? buildWorkerAppPayload(item.link, item.profile, workspace)
+                    ? await buildWorkerAppPayload(item.link, item.profile, workspace)
                     : buildMissingProfilePayload(item.link, workspace);
 
                 return writeWorkerAppData(

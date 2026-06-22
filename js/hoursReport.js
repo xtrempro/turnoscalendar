@@ -2225,6 +2225,95 @@ export async function buildDiurnoReportPreviewHTML(
         : buildAssignedShiftReportHTML(model);
 }
 
+// Resumen HHEE autoritativo de un trabajador para un mes, usando el MISMO motor
+// del reporte (turnos extra agregados manualmente, extensiones horarias y el
+// arrastre de horas de noche entre meses). Devuelve totales crudos del mes y
+// netos (con carryIn del mes anterior y carryOut al siguiente).
+export async function buildWorkerHheeMonthSummary(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name) return null;
+
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = await fetchReportHolidays(year);
+    const data = getProfileData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        {},
+        { d: 0, n: 0 }
+    );
+
+    let model;
+
+    if (isReplacementReportProfile(profile.name)) {
+        model = buildNoAssignmentReportModel({
+            profile,
+            monthDate,
+            holidays,
+            stats,
+            contractOnly: true
+        });
+    } else if (isAssignedShiftReportProfile(profile.name)) {
+        model = buildAssignedShiftReportModel({
+            profile,
+            monthDate,
+            holidays,
+            stats
+        });
+    } else if (isDiurnoReportProfile(profile.name)) {
+        model = stats.mode === "aggregate"
+            ? buildNoAssignmentReportModel({ profile, monthDate, holidays, stats })
+            : buildAssignedShiftReportModel({ profile, monthDate, holidays, stats });
+    } else {
+        model = buildNoAssignmentReportModel({ profile, monthDate, holidays, stats });
+    }
+
+    const num = value => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    return {
+        year,
+        month,
+        rawDiurnas: num(model.rawDiurnas),
+        rawNocturnas: num(model.rawNocturnas),
+        carryInD: num(model.carryIn?.d),
+        carryInN: num(model.carryIn?.n),
+        carryOutD: num(model.carryOut?.d),
+        carryOutN: num(model.carryOut?.n),
+        netDiurnas: num(model.totalD),
+        netNocturnas: num(model.totalN),
+        returnTransfer: Boolean(model.stats?.returnTransferEnabled)
+    };
+}
+
+// Resumen HHEE de los ultimos `monthsBack`+1 meses (incluye el mes actual).
+export async function buildWorkerHheeSummaries(profile, monthsBack = 5) {
+    if (!profile?.name) return [];
+
+    const today = new Date();
+    const months = [];
+
+    for (let offset = monthsBack; offset >= 0; offset -= 1) {
+        months.push(new Date(today.getFullYear(), today.getMonth() - offset, 1));
+    }
+
+    const summaries = await Promise.all(
+        months.map(monthDate => buildWorkerHheeMonthSummary(profile, monthDate))
+    );
+
+    return summaries.filter(Boolean);
+}
+
 export async function exportNoAssignmentShiftReport(
     profile,
     monthDate = new Date()
