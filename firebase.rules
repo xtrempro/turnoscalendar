@@ -436,11 +436,34 @@ service cloud.firestore {
               "colleagueResponseAt",
               "rejectReason",
               "notificationStatus",
+              "returnDate",
+              "devolucion",
+              "returnTurnLabel",
               "updatedAt"
             ]) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
         allow delete: if isMember(workspaceId);
+      }
+
+      match /workerSwapOpenRequests/{openId} {
+        allow read: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            resource.data.createdByUid == request.auth.uid &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow create: if isMember(workspaceId) ||
+          (
+            signedIn() &&
+            request.resource.data.createdByUid == request.auth.uid &&
+            request.resource.data.workspaceId == workspaceId &&
+            request.resource.data.source == "worker_app" &&
+            request.resource.data.status == "open" &&
+            request.resource.data.ownDate is string &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow update, delete: if isMember(workspaceId);
       }
 
       match /workerAppInvites/{inviteId} {
@@ -543,6 +566,8 @@ service cloud.firestore {
               "blockedDayDates",
               "blockedDays",
               "blockedDaysUpdatedAt",
+              "swapOptIn",
+              "swapOptInUpdatedAt",
               "updatedAt"
             ])
           );
@@ -554,6 +579,8 @@ service cloud.firestore {
               "blockedDayDates",
               "blockedDays",
               "blockedDaysUpdatedAt",
+              "swapOptIn",
+              "swapOptInUpdatedAt",
               "updatedAt"
             ])
           );
