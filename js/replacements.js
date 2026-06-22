@@ -24,6 +24,7 @@ import {
     tieneAusencia
 } from "./rulesEngine.js";
 import { calcHours, isBusinessDay } from "./calculations.js";
+import { getCachedHolidays } from "./holidays.js";
 import { getClockExtraHours } from "./clockMarks.js";
 import {
     addAuditLog,
@@ -422,6 +423,21 @@ function buildReplacementRequest(data) {
     const absenceType =
         data.absenceType ||
         getAbsenceLabelForProfileDate(data.replaced, data.keyDay);
+    const turnoCode = turnoToCode(data.turno);
+
+    // Horas extra del turno cubierto (todo el turno es sobretiempo). Se calculan
+    // y guardan en la solicitud para que la app del trabajador pueda mostrar el
+    // resumen HH.EE (diurnas/nocturnas) sin recalcular.
+    const requestDate = data.keyDay ? parseKey(data.keyDay) : null;
+    const holidayMap = requestDate
+        ? getCachedHolidays(requestDate.getFullYear())
+        : {};
+    const computedHours = requestDate
+        ? calcHours(requestDate, turnoCode, holidayMap)
+        : { d: 0, n: 0 };
+    const explicitOvertime = normalizeHours(data.overtimeHours);
+    const dayHours = computedHours.d || 0;
+    const nightHours = computedHours.n || 0;
 
     return {
         id,
@@ -439,7 +455,7 @@ function buildReplacementRequest(data) {
         replacedProfileId: replacedProfile?.id || "",
         keyDay: data.keyDay,
         date: isoFromKey(data.keyDay),
-        turno: turnoToCode(data.turno),
+        turno: turnoCode,
         turnoLabel: turnoReplacementLabel(data.turno),
         absenceType,
         source: data.source || "replacement_request",
@@ -447,7 +463,9 @@ function buildReplacementRequest(data) {
         phone: workerProfile?.phone || "",
         scope: data.scope || "compatible",
         diurnoLongCoverage: Boolean(data.diurnoLongCoverage),
-        overtimeHours: normalizeHours(data.overtimeHours),
+        overtimeHours: explicitOvertime || (dayHours + nightHours),
+        dayHours,
+        nightHours,
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
         canceledAt: "",
