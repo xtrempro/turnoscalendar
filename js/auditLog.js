@@ -1002,10 +1002,6 @@ function filterLogsBySelectedMonth(logs) {
     );
 }
 
-export function getAuditCategories() {
-    return CATEGORY_DEFS.map(item => ({ ...item }));
-}
-
 export function getAuditLogs() {
     return normalizeLogs(getJSON(KEY, []));
 }

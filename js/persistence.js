@@ -47,14 +47,6 @@ function parseJSON(raw, fallback) {
     }
 }
 
-export function getStorageDriver() {
-    return activeDriver;
-}
-
-export function configureStorageDriver(driver = LOCAL_DRIVER) {
-    activeDriver = driver || LOCAL_DRIVER;
-}
-
 export function isInternalKey(key) {
     const cleanKey = String(key || "");
 
@@ -168,21 +160,6 @@ export function exportLocalSnapshot({
         snapshot[key] = store.getItem(key);
         return snapshot;
     }, {});
-}
-
-export function importLocalSnapshot(snapshot = {}, {
-    overwrite = true,
-    includeInternal = false
-} = {}) {
-    if (!snapshot || typeof snapshot !== "object") return;
-
-    Object.entries(snapshot).forEach(([key, value]) => {
-        if (!includeInternal && isInternalKey(key)) return;
-        if (!overwrite && getRaw(key, null) !== null) return;
-        if (value === null || value === undefined) return;
-
-        setRaw(key, value);
-    });
 }
 
 export function replaceLocalSnapshot(snapshot = {}, {

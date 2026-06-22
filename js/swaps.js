@@ -24,16 +24,6 @@ import { isReplacementProfile } from "./contracts.js";
 import { getReplacementTurnForWorker } from "./replacements.js";
 import { getBlockedDayForProfile } from "./workerAvailability.js";
 
-function isMedicalLicense(absence) {
-    const type = getAbsenceType(absence);
-
-    return (
-        type === "license" ||
-        type === "union_leave" ||
-        type === "professional_license"
-    );
-}
-
 function normalizeTextKey(value) {
     return normalizeText(value);
 }
@@ -299,39 +289,6 @@ export function registrarCambio(data) {
 /* =========================================
    BUSCAR CAMBIO POR FECHA
 ========================================= */
-export function getCambioPorFecha(fecha) {
-
-    const swaps = getSwaps();
-
-    return swaps.find(s =>
-        !cambioEstaAnulado(s) &&
-        (
-            (!s.skipFecha && s.fecha === fecha) ||
-            (!s.skipDevolucion && s.devolucion === fecha)
-        )
-    );
-}
-
-export function getCambioTurnoRecibido(nombre, keyDay) {
-    const fecha = isoFromKey(keyDay);
-
-    return getSwaps().find(swap =>
-        !cambioEstaAnulado(swap) &&
-        (
-            (
-                !swap.skipFecha &&
-                swap.to === nombre &&
-                swap.fecha === fecha
-            ) ||
-            (
-                !swap.skipDevolucion &&
-                swap.from === nombre &&
-                swap.devolucion === fecha
-            )
-        )
-    ) || null;
-}
-
 export function swapCodeLabel(code) {
     if (code === "L") return "Larga";
     if (code === "N") return "Noche";
@@ -428,58 +385,6 @@ export function getCambiosTurnoCalendario(nombre, keyDay) {
 
 export function getCambioTurnoCalendario(nombre, keyDay) {
     return getCambiosTurnoCalendario(nombre, keyDay)[0] || null;
-}
-
-export function getCambioTurnoSolicitado(nombre, keyDay) {
-    const fecha = isoFromKey(keyDay);
-    const swap = getSwaps().find(item =>
-        !cambioEstaAnulado(item) &&
-        item.from === nombre &&
-        (
-            (!item.skipFecha && item.fecha === fecha) ||
-            (!item.skipDevolucion && item.devolucion === fecha)
-        )
-    );
-
-    if (!swap) return null;
-
-    if (!swap.skipFecha && swap.fecha === fecha) {
-        return {
-            swap,
-            label: `CCTT ${swapCodeLabel(swap.turno)}`.trim()
-        };
-    }
-
-    return {
-        swap,
-        label: `DDTT ${swapCodeLabel(swap.turnoDevuelto)}`.trim()
-    };
-}
-
-export function cambioTieneLicenciaEnTurnosBase(swap) {
-    if (!swap) return false;
-
-    const checks = [];
-
-    if (!swap.skipFecha && swap.from && swap.fecha) {
-        checks.push({
-            profile: swap.from,
-            key: keyFromISO(swap.fecha)
-        });
-    }
-
-    if (!swap.skipDevolucion && swap.to && swap.devolucion) {
-        checks.push({
-            profile: swap.to,
-            key: keyFromISO(swap.devolucion)
-        });
-    }
-
-    return checks.some(({ profile, key }) => {
-        const absences = getJSON(`absences_${profile}`, {});
-
-        return isMedicalLicense(absences[key]);
-    });
 }
 
 export function deshacerCambioTurno(swap) {
@@ -652,22 +557,6 @@ function createsInvertedTwentyFourForReceiver({
             includesNoche(projectedTurn) &&
             includesDaytimeStart(nextTurn)
         )
-    );
-}
-
-export function isProfileClearForSwap(profile, keyDay) {
-    return (
-        !profileHasSwapAbsence(profile, keyDay) &&
-        !activeSwapConflictsProfileDate(profile, keyDay) &&
-        getSwapTurnState(profile, keyDay) === 0
-    );
-}
-
-export function canGiveSwapTurn(profile, keyDay) {
-    return (
-        !profileHasSwapAbsence(profile, keyDay) &&
-        !activeSwapConflictsProfileDate(profile, keyDay) &&
-        isSwapExchangeableTurn(getSwapTurnState(profile, keyDay))
     );
 }
 
@@ -863,16 +752,3 @@ export function cancelSwapsForProfileKeys(profile, keys = []) {
 /* =========================================
    ELIMINAR CAMBIO
 ========================================= */
-export function eliminarCambio(id) {
-
-    const swaps = getSwaps()
-        .filter(s => s.id !== id);
-
-    saveSwaps(swaps);
-    addAuditLog(
-        AUDIT_CATEGORY.TURN_CHANGES,
-        "Elimino cambio de turno",
-        `ID de cambio eliminado: ${id}.`,
-        { swapId: id }
-    );
-}

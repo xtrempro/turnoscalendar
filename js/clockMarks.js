@@ -759,23 +759,6 @@ export function getWorkedIntervalsForState(
         .filter(Boolean);
 }
 
-function segmentHasExtra(segment, mark) {
-    if (!mark || mark.missingEntry || mark.missingExit) return false;
-
-    const adjusted = adjustedSegment(new Date(
-        segment.start.getFullYear(),
-        segment.start.getMonth(),
-        segment.start.getDate()
-    ), segment, mark);
-
-    if (!adjusted) return false;
-
-    return (
-        adjusted.start < segment.start ||
-        adjusted.end > segment.end
-    );
-}
-
 export function hasClockExtra(profile, keyDay, date, state, holidays = {}) {
     const extra = getClockExtraHours(
         profile,

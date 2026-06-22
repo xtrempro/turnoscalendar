@@ -1845,27 +1845,6 @@ function buildStats({
     };
 }
 
-export function calcularHorasMes(
-    y,
-    m,
-    days,
-    holidays,
-    data,
-    blocked,
-    carryIn
-) {
-    return calcularHorasMesPerfil(
-        getCurrentProfile(),
-        y,
-        m,
-        days,
-        holidays,
-        data,
-        blocked,
-        carryIn
-    );
-}
-
 export function calcularHorasMesPerfil(
     nombre,
     y,

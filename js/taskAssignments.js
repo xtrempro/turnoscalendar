@@ -156,12 +156,6 @@ function saveTasks(tasks) {
     );
 }
 
-function tasksForShift(shift) {
-    return getTasks()
-        .filter(task => task.shift === shift)
-        .sort((a, b) => a.order - b.order);
-}
-
 function getAllAssignments() {
     const raw = getJSON(ASSIGNMENTS_KEY, {});
 

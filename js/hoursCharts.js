@@ -65,13 +65,6 @@ async function holidaysForYear(year) {
     return holidayCache.get(year);
 }
 
-function getRoleProfiles(role) {
-    return getProfiles()
-        .filter(isProfileActive)
-        .filter(profile => profile.estamento === role)
-        .sort((a, b) => a.name.localeCompare(b.name));
-}
-
 async function getProfileStats(profileName, year, month) {
     const days = new Date(year, month + 1, 0).getDate();
     const holidays = await holidaysForYear(year);
@@ -86,66 +79,6 @@ async function getProfileStats(profileName, year, month) {
         {},
         { d: 0, n: 0 }
     );
-}
-
-async function buildMonthlyRows(role, year, month) {
-    const profiles = getRoleProfiles(role);
-    const rows = [];
-
-    for (const profile of profiles) {
-        const stats = await getProfileStats(
-            profile.name,
-            year,
-            month
-        );
-
-        rows.push({
-            name: profile.name,
-            day: Number(stats.hheeDiurnas) || 0,
-            night: Number(stats.hheeNocturnas) || 0
-        });
-    }
-
-    return rows;
-}
-
-async function buildHistoryRows(role, year, month, years) {
-    const months = Math.max(12, Number(years) * 12);
-    const profiles = getRoleProfiles(role);
-    const start = new Date(year, month - months + 1, 1);
-    const rows = [];
-
-    for (let index = 0; index < months; index++) {
-        const date = new Date(
-            start.getFullYear(),
-            start.getMonth() + index,
-            1
-        );
-        let day = 0;
-        let night = 0;
-
-        for (const profile of profiles) {
-            const stats = await getProfileStats(
-                profile.name,
-                date.getFullYear(),
-                date.getMonth()
-            );
-
-            day += Number(stats.hheeDiurnas) || 0;
-            night += Number(stats.hheeNocturnas) || 0;
-        }
-
-        rows.push({
-            label: formatMonth(
-                date.getFullYear(),
-                date.getMonth()
-            ),
-            day,
-            night
-        });
-    }
-
-    return rows;
 }
 
 async function buildProfileHistoryRows(profileName, year, month) {
@@ -197,97 +130,6 @@ function renderLegend() {
 
 function getProfileChartTarget() {
     return DOM.hheeProfileHistoryChart || DOM.hheeHistoryChart;
-}
-
-function renderMonthlyChart(rows, role, year, month) {
-    if (!DOM.hheeMonthlyChart) return;
-
-    if (!rows.length) {
-        DOM.hheeMonthlyChart.innerHTML =
-            emptyChart(`No hay trabajadores activos en ${role}.`);
-        return;
-    }
-
-    const max = Math.max(
-        1,
-        ...rows.map(row => row.day + row.night)
-    );
-
-    DOM.hheeMonthlyChart.innerHTML = `
-        ${renderLegend()}
-        <div class="hhee-chart-context">
-            ${role} | ${formatMonth(year, month)}
-        </div>
-        <div class="hhee-worker-bars">
-            ${rows.map(row => {
-                const total = row.day + row.night;
-                const dayWidth = total
-                    ? (row.day / max) * 100
-                    : 0;
-                const nightWidth = total
-                    ? (row.night / max) * 100
-                    : 0;
-
-                return `
-                    <div class="hhee-worker-row">
-                        <strong title="${row.name}">${row.name}</strong>
-                        <div class="hhee-stacked-bar" title="${row.name}: ${formatHour(row.day)}h diurnas / ${formatHour(row.night)}h nocturnas">
-                            <span class="hhee-bar-day" style="width:${dayWidth}%"></span>
-                            <span class="hhee-bar-night" style="width:${nightWidth}%"></span>
-                        </div>
-                        <small>${formatHour(total)}h</small>
-                    </div>
-                `;
-            }).join("")}
-        </div>
-    `;
-}
-
-function renderHistoryChart(rows, role, years) {
-    if (!DOM.hheeHistoryChart) return;
-
-    if (!rows.length) {
-        DOM.hheeHistoryChart.innerHTML =
-            emptyChart(`No hay datos historicos para ${role}.`);
-        return;
-    }
-
-    const max = Math.max(
-        1,
-        ...rows.map(row => row.day + row.night)
-    );
-
-    DOM.hheeHistoryChart.innerHTML = `
-        ${renderLegend()}
-        <div class="hhee-chart-context">
-            ${role} | \u00daltimos ${years} a\u00f1o(s)
-        </div>
-        <div class="hhee-history-bars">
-            ${rows.map(row => {
-                const total = row.day + row.night;
-                const height = Math.max(
-                    total ? (total / max) * 100 : 0,
-                    total ? 5 : 0
-                );
-                const dayPercent = total
-                    ? (row.day / total) * 100
-                    : 0;
-                const nightPercent = total
-                    ? (row.night / total) * 100
-                    : 0;
-
-                return `
-                    <div class="hhee-history-item" title="${row.label}: ${formatHour(row.day)}h diurnas / ${formatHour(row.night)}h nocturnas">
-                        <div class="hhee-history-stack" style="height:${height}%">
-                            <span class="hhee-bar-night" style="height:${nightPercent}%"></span>
-                            <span class="hhee-bar-day" style="height:${dayPercent}%"></span>
-                        </div>
-                        <small>${row.label}</small>
-                    </div>
-                `;
-            }).join("")}
-        </div>
-    `;
 }
 
 function renderProfileHistoryChart(rows, profileName, year, month) {

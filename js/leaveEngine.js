@@ -410,40 +410,6 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
 FERIADO LEGAL
 ========================================= */
 
-export function existeBloque10Actual(){
-
-    const legal = getLegalDays();
-
-    const fechas = Object.keys(legal)
-        .map(parseKey)
-        .sort((a,b)=>a-b);
-
-    let max = 0;
-    let actual = 0;
-    let prev = null;
-
-    fechas.forEach(d=>{
-
-        const dow = d.getDay();
-
-        if(dow===0 || dow===6) return;
-
-        if(!prev){
-            actual = 1;
-        }else{
-            const dif = diasEntre(d, prev);
-
-            actual = dif <= 3 ? actual+1 : 1;
-        }
-
-        if(actual > max) max = actual;
-
-        prev = d;
-    });
-
-    return max >= 10;
-}
-
 export async function existeBloque10Legal(year = new Date().getFullYear()){
     const legal = getLegalDays();
     const holidays = await fetchHolidays(year);

@@ -78,64 +78,12 @@ const STAFFING_DATE_REMINDERS = [
     { month: 9, day: 27, label: "D\u00eda del Odont\u00f3logo" }
 ];
 
-function defaultConfig() {
-    return {};
-}
-
-function normalizeConfig(config = {}) {
-    const base = defaultConfig();
-    const tecnico = ESTAMENTO[1];
-    const legacyTecnico =
-        config["TÃ©cnico"] ||
-        config.Tecnico ||
-        {};
-
-    return {
-        ...base,
-        ...config,
-        [tecnico]: {
-            ...base[tecnico],
-            ...(config[tecnico] || legacyTecnico)
-        }
-    };
-}
-
-function configSummary(config) {
-    return Object.entries(normalizeConfig(config))
-        .map(([estamento, values]) =>
-            `${estamento}: H${values.habil}/I${values.inhabil}/N${values.noche}`
-        )
-        .join("; ");
-}
-
 export function getStaffingConfig() {
     return normalizeStaffingConfig(getJSON(KEY, {}));
 }
 
 export function saveStaffingConfig(cfg) {
     setJSON(KEY, normalizeStaffingConfig(cfg));
-}
-
-function renderStaffingConfigSummary(cfg) {
-    const summary = document.getElementById("staffingConfigSummary");
-    if (!summary) return;
-
-    summary.innerHTML = ESTAMENTO.map(est => `
-        <article class="staffing-config-card">
-            <strong>${est}</strong>
-            <span>Habil: ${cfg[est].habil}</span>
-            <span>Inhabil: ${cfg[est].inhabil}</span>
-            <span>Noche: ${cfg[est].noche}</span>
-        </article>
-    `).join("");
-}
-
-function trabajaDia(turno) {
-    return [1, 3, 4, 5].includes(turno);
-}
-
-function trabajaNoche(turno) {
-    return [2, 3, 5].includes(turno);
 }
 
 const STAFFING_ESTAMENTOS = [
@@ -409,10 +357,6 @@ export function syncStaffingConfigForProfileChange(
     return true;
 }
 
-export function getStaffingModalities() {
-    return STAFFING_MODALITIES.map(modality => ({ ...modality }));
-}
-
 export function buildStaffingRequirementRows(
     config = getStaffingConfig()
 ) {
@@ -474,20 +418,9 @@ export function staffingConfigSummary(config = getStaffingConfig()) {
         .join("; ");
 }
 
-function worksStaffingDiurno(turno) {
-    return turno === TURNO.DIURNO ||
-        turno === TURNO.DIURNO_NOCHE;
-}
-
 function worksStaffingLong(turno) {
     return turno === TURNO.LARGA ||
         turno === TURNO.TURNO24;
-}
-
-function worksStaffingNight(turno) {
-    return turno === TURNO.NOCHE ||
-        turno === TURNO.TURNO24 ||
-        turno === TURNO.DIURNO_NOCHE;
 }
 
 const STAFFING_SEGMENT = {
@@ -1834,10 +1767,6 @@ function bindStaffingView() {
     if (showInactive) {
         showInactive.onchange = renderStaffingProfiles;
     }
-}
-
-function getDataPerfil(nombre){
-    return getJSON("data_" + nombre, {});
 }
 
 function absenceCacheKey(profileName, keyDay) {

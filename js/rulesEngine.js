@@ -371,32 +371,6 @@ export function puedeAplicarAdministrativo(
     return true;
 }
 
-export function puedeIniciarLegal(
-    keyDay,
-    isHab,
-    admin,
-    legal,
-    comp,
-    absences
-) {
-    if (!isHab) {
-        return false;
-    }
-
-    if (admin[keyDay] || legal[keyDay] || comp[keyDay]) {
-        return false;
-    }
-
-    if (
-        absences[keyDay] &&
-        !esAusenciaInjustificada(absences[keyDay])
-    ) {
-        return false;
-    }
-
-    return true;
-}
-
 export function puedeAplicarLegalDesde(
     keyDay,
     cantidad,
@@ -501,27 +475,6 @@ export function tieneBloqueoCompensatorio(
     }
 
     return bloqueaCompensatorioPorAusencia(absences[keyDay]);
-}
-
-export function puedeIniciarCompensatorio(
-    keyDay,
-    isHab,
-    admin,
-    legal,
-    comp,
-    absences
-) {
-    return (
-        isHab &&
-        !bloqueaCompensatorioPorLegal(keyDay, legal) &&
-        !tieneBloqueoCompensatorio(
-            keyDay,
-            admin,
-            legal,
-            comp,
-            absences
-        )
-    );
 }
 
 export function puedeAplicarCompensatorioDesde(
