@@ -9781,6 +9781,65 @@ window.addEventListener("proturnos:workerLinksChanged", () => {
     renderDashboardState();
 });
 
+// Atajos de teclado globales para modales: Escape cierra/cancela y Enter
+// (sin Shift) acciona el boton principal (aceptar/enviar). Cubre los modales
+// del programa, que usan estos backdrops.
+const MODAL_BACKDROP_SELECTOR =
+    ".turn-change-dialog-backdrop, .task-assignment-dialog-backdrop";
+
+function topmostModalBackdrop() {
+    const backdrops = document.querySelectorAll(MODAL_BACKDROP_SELECTOR);
+
+    return backdrops.length ? backdrops[backdrops.length - 1] : null;
+}
+
+document.addEventListener("keydown", event => {
+    if (event.key !== "Escape" && event.key !== "Enter") return;
+
+    const backdrop = topmostModalBackdrop();
+
+    if (!backdrop) return;
+
+    if (event.key === "Escape") {
+        const cancelButton =
+            backdrop.querySelector(
+                "[data-action='cancel'], [data-action='close']"
+            ) ||
+            backdrop.querySelector(".ghost-button, .secondary-button");
+
+        if (cancelButton) {
+            event.preventDefault();
+            cancelButton.click();
+        }
+
+        // Si no hay boton reconocible, se deja que el handler propio del
+        // modal (p. ej. el chat) maneje el Escape sin forzar la limpieza.
+        return;
+    }
+
+    // Enter: si otro handler ya lo trato (p. ej. el chat), no duplicar.
+    // Shift+Enter conserva el salto de linea.
+    if (event.shiftKey || event.defaultPrevented) return;
+
+    const active = document.activeElement;
+
+    if (
+        active &&
+        (active.tagName === "SELECT" || active.tagName === "BUTTON")
+    ) {
+        return;
+    }
+
+    const primaryButton =
+        backdrop.querySelector(".primary-button:not(:disabled)") ||
+        backdrop.querySelector("button[type='submit']:not(:disabled)");
+
+    if (!primaryButton) return;
+
+    event.preventDefault();
+    primaryButton.click();
+});
+
 function syncWorkspaceStateViews() {
     const profiles = getProfiles();
     const current = getCurrentProfile();
