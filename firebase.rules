@@ -236,7 +236,16 @@ service cloud.firestore {
       allow list: if false;
       allow update: if isOwner(workspaceId) &&
         request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(["name", "inviteCode", "updatedAt"]);
+          .hasOnly([
+            "name",
+            "inviteCode",
+            "updatedAt",
+            "deletionStatus",
+            "deletionRequestedAt",
+            "deletionRequestedByUid",
+            "deletionScheduledAt",
+            "deletionCanceledAt"
+          ]);
       allow delete: if isOwner(workspaceId);
 
       match /members/{userId} {

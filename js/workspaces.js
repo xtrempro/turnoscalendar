@@ -1,8 +1,13 @@
 import { getJSON, setJSON } from "./persistence.js";
-import { getFirebaseServices } from "./firebaseClient.js";
+import {
+    getFirebaseServices,
+    getCurrentFirebaseUser
+} from "./firebaseClient.js";
 
 const ACTIVE_WORKSPACE_KEY = "firebaseActiveWorkspace";
 const INVITE_CODE_BYTES = 16;
+// Periodo de gracia antes de eliminar definitivamente un entorno.
+export const WORKSPACE_DELETION_GRACE_HOURS = 72;
 
 function workspaceLabel(workspace) {
     return String(workspace?.name || workspace?.id || "Entorno");
@@ -80,6 +85,64 @@ export function setActiveWorkspace(workspace) {
     });
 }
 
+// Programa la eliminacion del entorno (solo el creador). Marca el doc con la
+// fecha objetivo; una Cloud Function programada hace el borrado real al vencer.
+export async function requestWorkspaceDeletion(workspaceId) {
+    const user = getCurrentFirebaseUser();
+
+    if (!user) throw new Error("Debes iniciar sesion.");
+    if (!workspaceId) throw new Error("Entorno invalido.");
+
+    const { db, firestoreModule } = await getFirebaseServices();
+    const ref = firestoreModule.doc(db, "workspaces", workspaceId);
+    const snap = await firestoreModule.getDoc(ref);
+
+    if (!snap.exists()) throw new Error("El entorno no existe.");
+    if (snap.data().ownerUid !== user.uid) {
+        throw new Error("Solo el creador del entorno puede eliminarlo.");
+    }
+
+    const scheduledAt = new Date(
+        Date.now() + WORKSPACE_DELETION_GRACE_HOURS * 60 * 60 * 1000
+    );
+
+    await firestoreModule.updateDoc(ref, {
+        deletionStatus: "pending_deletion",
+        deletionRequestedAt: firestoreModule.serverTimestamp(),
+        deletionRequestedByUid: user.uid,
+        deletionScheduledAt: scheduledAt,
+        updatedAt: firestoreModule.serverTimestamp()
+    });
+
+    return scheduledAt.toISOString();
+}
+
+// Anula la eliminacion programada (solo el creador).
+export async function cancelWorkspaceDeletion(workspaceId) {
+    const user = getCurrentFirebaseUser();
+
+    if (!user) throw new Error("Debes iniciar sesion.");
+    if (!workspaceId) return;
+
+    const { db, firestoreModule } = await getFirebaseServices();
+    const ref = firestoreModule.doc(db, "workspaces", workspaceId);
+    const snap = await firestoreModule.getDoc(ref);
+
+    if (!snap.exists()) return;
+    if (snap.data().ownerUid !== user.uid) {
+        throw new Error("Solo el creador puede anular la eliminacion.");
+    }
+
+    await firestoreModule.updateDoc(ref, {
+        deletionStatus: null,
+        deletionRequestedAt: null,
+        deletionRequestedByUid: null,
+        deletionScheduledAt: null,
+        deletionCanceledAt: firestoreModule.serverTimestamp(),
+        updatedAt: firestoreModule.serverTimestamp()
+    });
+}
+
 export async function ensureFirebaseUser(user) {
     if (!user) return;
 
@@ -113,6 +176,36 @@ export async function listUserWorkspaces(user) {
         .sort((a, b) =>
             workspaceLabel(a).localeCompare(workspaceLabel(b))
         );
+}
+
+// Lee el estado de eliminacion del doc top-level del entorno.
+export async function fetchWorkspaceDeletionInfo(workspaceId) {
+    if (!workspaceId) return null;
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+        const snap = await firestoreModule.getDoc(
+            firestoreModule.doc(db, "workspaces", workspaceId)
+        );
+
+        if (!snap.exists()) return null;
+
+        const data = snap.data();
+        const scheduled = data.deletionScheduledAt;
+        const scheduledMs = scheduled?.toMillis
+            ? scheduled.toMillis()
+            : (scheduled?.seconds ? scheduled.seconds * 1000 : null);
+
+        return {
+            ownerUid: data.ownerUid || "",
+            deletionStatus: data.deletionStatus || "",
+            deletionScheduledMs: scheduledMs,
+            deletionRequestedByUid: data.deletionRequestedByUid || ""
+        };
+    } catch (error) {
+        console.warn("No se pudo leer el estado del entorno.", error);
+        return null;
+    }
 }
 
 export async function createWorkspace(user, name) {

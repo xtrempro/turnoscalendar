@@ -4363,6 +4363,50 @@ body.auth-gate-active .app-shell {
     font-size: 0.9rem;
 }
 
+.firebase-workspace-danger {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+}
+
+.firebase-workspace-danger.is-pending {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid #ef4444;
+    border-radius: 12px;
+    background: #fef2f2;
+    color: #991b1b;
+}
+
+.firebase-workspace-danger.is-pending strong {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.firebase-workspace-danger.is-pending p {
+    margin: 0 0 8px;
+    font-size: 0.86rem;
+    line-height: 1.4;
+}
+
+.danger-button {
+    min-height: 38px;
+    padding: 0 12px;
+    border: 1px solid #ef4444;
+    border-radius: 10px;
+    background: #fff;
+    color: #dc2626;
+    font-weight: 700;
+}
+
+.danger-button:hover {
+    background: #fef2f2;
+}
+
+.firebase-workspace-danger.is-pending .primary-button {
+    background: #ef4444;
+}
+
 .firebase-workspace-item.is-active {
     border-color: rgba(34, 197, 94, 0.55);
     background:

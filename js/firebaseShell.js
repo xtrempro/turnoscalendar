@@ -12,7 +12,11 @@ import {
     joinWorkspace,
     listUserWorkspaces,
     prepareWorkspaceInvitation,
-    setActiveWorkspace
+    setActiveWorkspace,
+    fetchWorkspaceDeletionInfo,
+    requestWorkspaceDeletion,
+    cancelWorkspaceDeletion,
+    WORKSPACE_DELETION_GRACE_HOURS
 } from "./workspaces.js";
 import { replaceLocalSnapshot } from "./persistence.js";
 import {
@@ -304,6 +308,8 @@ function workspaceListHTML() {
                         Enviar correo
                     </button>
                 </div>
+
+                ${workspaceDeletionBlockHTML(workspace)}
             </article>
         `;
     }).join("");
@@ -531,8 +537,64 @@ async function refreshWorkspaces() {
         return;
     }
 
-    workspaceList = await listUserWorkspaces(currentUser);
+    const list = await listUserWorkspaces(currentUser);
+
+    // Adjunta el estado de eliminacion de cada entorno (doc top-level).
+    workspaceList = await Promise.all(
+        list.map(async workspace => {
+            const info = await fetchWorkspaceDeletionInfo(workspace.id);
+
+            return {
+                ...workspace,
+                deletionStatus: info?.deletionStatus || "",
+                deletionScheduledMs: info?.deletionScheduledMs || null,
+                ownerUid: info?.ownerUid || workspace.ownerUid || ""
+            };
+        })
+    );
     currentWorkspace = getActiveWorkspace();
+}
+
+function workspaceDeletionBlockHTML(workspace) {
+    const isOwner = workspace.role === "owner";
+    const pending = workspace.deletionStatus === "pending_deletion";
+
+    if (pending) {
+        const when = workspace.deletionScheduledMs
+            ? new Date(workspace.deletionScheduledMs)
+            : null;
+        const hoursLeft = when
+            ? Math.max(0, Math.ceil((when.getTime() - Date.now()) / 3600000))
+            : null;
+        const whenText = when
+            ? when.toLocaleString("es-CL", { dateStyle: "medium", timeStyle: "short" })
+            : "";
+
+        return `
+            <div class="firebase-workspace-danger is-pending">
+                <strong>Eliminacion programada</strong>
+                <p>
+                    Este entorno se eliminara definitivamente el ${escapeHTML(whenText)}${hoursLeft !== null ? ` (en ~${hoursLeft} h)` : ""}.
+                    Hasta entonces se conserva el acceso a los datos.
+                </p>
+                ${isOwner ? `
+                    <button class="primary-button" type="button" data-action="cancel-workspace-deletion" data-workspace-ref="${escapeHTML(workspace.id)}">
+                        Anular eliminacion
+                    </button>
+                ` : `<small>Solo el creador del entorno puede anular la eliminacion.</small>`}
+            </div>
+        `;
+    }
+
+    if (!isOwner) return "";
+
+    return `
+        <div class="firebase-workspace-danger">
+            <button class="danger-button firebase-workspace-delete" type="button" data-action="request-workspace-deletion" data-workspace-ref="${escapeHTML(workspace.id)}">
+                Eliminar entorno
+            </button>
+        </div>
+    `;
 }
 
 async function refreshLinkedUnits() {
@@ -602,6 +664,38 @@ async function handleAction(action, backdrop, sourceButton = null) {
             if (!loginGateEnabled) {
                 closeModal(backdrop, { force: true });
             }
+            return;
+        }
+
+        if (action === "request-workspace-deletion") {
+            const id = sourceButton?.dataset.workspaceRef;
+            const workspace = workspaceList.find(item => item.id === id);
+            const name = workspace?.name || id || "";
+            const typed = window.prompt(
+                `Esto programara la ELIMINACION del entorno "${name}" en ${WORKSPACE_DELETION_GRACE_HOURS} horas.\n` +
+                "Se avisara a los demas usuarios y a los trabajadores enlazados. Podras anularla durante ese plazo.\n" +
+                "Pasado el plazo se borrara de forma definitiva y no podras volver a acceder.\n\n" +
+                "Para confirmar, escribe el nombre exacto del entorno:"
+            );
+
+            if (typed === null) return;
+
+            if (String(typed).trim() !== String(name).trim()) {
+                alert("El nombre no coincide. No se programo la eliminacion.");
+                return;
+            }
+
+            await requestWorkspaceDeletion(id);
+            await refreshWorkspaces();
+            renderSignedInModal(backdrop);
+            return;
+        }
+
+        if (action === "cancel-workspace-deletion") {
+            const id = sourceButton?.dataset.workspaceRef;
+            await cancelWorkspaceDeletion(id);
+            await refreshWorkspaces();
+            renderSignedInModal(backdrop);
             return;
         }
 

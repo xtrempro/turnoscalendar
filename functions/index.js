@@ -5,6 +5,7 @@ const {
   onDocumentCreated,
   onDocumentUpdated
 } = require("firebase-functions/v2/firestore");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret, defineString } = require("firebase-functions/params");
 
 // API key de Resend. Configurar con: firebase functions:secrets:set RESEND_API_KEY
@@ -691,6 +692,128 @@ exports.processOpenSwapResponse = onDocumentUpdated(
         tag: `open-swap-${groupId}`
       }
     });
+  }
+);
+
+// Eliminacion de entorno programada/anulada: avisa a los trabajadores enlazados
+// (push) y propaga el estado a su workerAppData para mostrar el banner/cuenta
+// regresiva en la app del trabajador.
+exports.notifyWorkspaceDeletion = onDocumentUpdated(
+  "workspaces/{workspaceId}",
+  async (event) => {
+    const before = event.data?.before?.data() || {};
+    const after = event.data?.after?.data() || {};
+    const { workspaceId } = event.params;
+    const wasPending = before.deletionStatus === "pending_deletion";
+    const isPending = after.deletionStatus === "pending_deletion";
+
+    if (wasPending === isPending) return;
+
+    const wsRef = db.collection("workspaces").doc(workspaceId);
+    const linksSnap = await wsRef.collection("workerLinks").get();
+    const uids = linksSnap.docs.map((docSnap) => docSnap.id).filter(Boolean);
+    const workspaceName = after.name || before.name || "tu unidad";
+    const scheduledMs = after.deletionScheduledAt?.toMillis
+      ? after.deletionScheduledAt.toMillis()
+      : null;
+
+    const deletionValue = isPending
+      ? { status: "pending_deletion", scheduledAtMs: scheduledMs, workspaceName }
+      : admin.firestore.FieldValue.delete();
+
+    const batch = db.batch();
+    uids.forEach((uid) => {
+      batch.set(
+        wsRef.collection("workerAppData").doc(uid),
+        { workspaceDeletion: deletionValue, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+    });
+    await batch.commit();
+
+    const title = isPending ? "Tu unidad sera eliminada" : "Eliminacion anulada";
+    const body = isPending
+      ? "Tu supervisor programo eliminar la unidad. Descarga tus datos (turnos, HH.EE) antes del cierre."
+      : "Se anulo la eliminacion de tu unidad. Todo sigue normal.";
+
+    await Promise.all(uids.map((uid) =>
+      sendWorkerPush({
+        workspaceId,
+        uid,
+        category: "messages",
+        title,
+        body,
+        data: {
+          type: "workspace_deletion",
+          category: "messages",
+          workspaceId,
+          status: isPending ? "pending_deletion" : "canceled",
+          screen: "turnos",
+          url: APP_URL,
+          tag: `workspace-deletion-${workspaceId}`,
+          requireInteraction: isPending ? "true" : "false"
+        }
+      })
+    ));
+  }
+);
+
+// Ejecuta el borrado definitivo de los entornos cuyo plazo de gracia vencio.
+// Nota: Cloud Scheduler no opera en southamerica-west1, por eso esta funcion
+// corre en us-central1 (la region solo define donde corre el job; el acceso a
+// Firestore es global).
+exports.purgeWorkspaceDeletions = onSchedule(
+  { schedule: "every 60 minutes", region: "us-central1" },
+  async () => {
+    const nowMs = Date.now();
+    const snap = await db
+      .collection("workspaces")
+      .where("deletionStatus", "==", "pending_deletion")
+      .get();
+
+    for (const docSnap of snap.docs) {
+      const data = docSnap.data();
+      const scheduledMs = data.deletionScheduledAt?.toMillis
+        ? data.deletionScheduledAt.toMillis()
+        : null;
+
+      // Guarda: solo borrar si sigue pendiente y el plazo realmente vencio.
+      if (!scheduledMs || scheduledMs > nowMs) continue;
+
+      const wsId = docSnap.id;
+      const wsRef = db.collection("workspaces").doc(wsId);
+
+      try {
+        // 1. Quitar el entorno del indice de cada miembro (users/{uid}/workspaces).
+        const membersSnap = await wsRef.collection("members").get();
+        const batch = db.batch();
+        membersSnap.docs.forEach((member) => {
+          batch.delete(
+            db.collection("users").doc(member.id).collection("workspaces").doc(wsId)
+          );
+        });
+
+        // 2. Eliminar los enlaces con otras unidades (ambos lados).
+        const linksFrom = await db
+          .collection("workspaceLinks")
+          .where("fromWorkspaceId", "==", wsId)
+          .get();
+        const linksTo = await db
+          .collection("workspaceLinks")
+          .where("toWorkspaceId", "==", wsId)
+          .get();
+        [...linksFrom.docs, ...linksTo.docs].forEach((link) => batch.delete(link.ref));
+
+        await batch.commit();
+
+        // 3. Borrado recursivo del entorno (doc + subcolecciones).
+        await db.recursiveDelete(wsRef);
+
+        logger.info(`Entorno eliminado definitivamente: ${wsId}`);
+      } catch (error) {
+        logger.error(`No se pudo eliminar el entorno ${wsId}`, error);
+      }
+    }
   }
 );
 
