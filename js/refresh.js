@@ -5,8 +5,12 @@ import {
     renderMemosPanel,
     updateMemosNavBadge
 } from "./memos.js";
+import { applyTurnoColors } from "./turnoColors.js";
 
 export function refreshAll(){
+    // Aplica los colores de turno configurados (variables CSS) antes de render.
+    applyTurnoColors();
+
     const activeView =
         document.body.dataset.activeView || "turnos";
 

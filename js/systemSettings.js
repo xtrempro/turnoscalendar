@@ -33,6 +33,14 @@ import {
     normalizeMenuPermissions,
     saveWorkspaceMemberPermissions
 } from "./workspacePermissions.js";
+import {
+    TURNO_COLOR_CODES,
+    turnoColorLabel,
+    getTurnoColorConfig,
+    saveTurnoColorConfig,
+    getDefaultTurnoColorConfig,
+    applyTurnoColors
+} from "./turnoColors.js";
 
 const GROUPS = [
     {
@@ -56,6 +64,7 @@ let replacementRequestConfigDraft = null;
 let reportSignatureConfigDraft = null;
 let turnChangeConfigDraft = null;
 let staffingConfigDraft = null;
+let colorConfigDraft = null;
 let memberPermissionDraft = [];
 let memberPermissionLoading = false;
 let memberPermissionError = "";
@@ -564,7 +573,62 @@ function renderUsersPanel() {
     `;
 }
 
+function renderColorsPanel() {
+    const config = colorConfigDraft || getTurnoColorConfig();
+    const rows = TURNO_COLOR_CODES.map(code => `
+        <div class="settings-color-row">
+            <span class="settings-color-name">${escapeHTML(turnoColorLabel(code))}</span>
+            <label class="settings-color-field">
+                <span>Base</span>
+                <input type="color" data-turno-color="${code}" data-color-kind="base" value="${escapeHTML(config.base[code])}">
+            </label>
+            <label class="settings-color-field">
+                <span>Extra</span>
+                <input type="color" data-turno-color="${code}" data-color-kind="extra" value="${escapeHTML(config.extra[code])}">
+            </label>
+        </div>
+    `).join("");
+
+    return `
+        <div class="settings-section">
+            <h4 class="settings-subtitle">Colores de turnos</h4>
+            <p class="settings-hint">
+                Define el color de cada turno en el calendario y el timeline. La columna
+                "Extra" es el color cuando el turno es de reemplazo (turno extra), para
+                distinguirlo del turno base.
+            </p>
+            <div class="settings-color-grid">
+                ${rows}
+            </div>
+            <button class="secondary-button settings-reset-colors" type="button" data-settings-reset-colors>
+                Restablecer colores por defecto
+            </button>
+        </div>
+    `;
+}
+
+function readColorConfig(backdrop) {
+    const base = {};
+    const extra = {};
+
+    for (const code of TURNO_COLOR_CODES) {
+        const baseInput = backdrop.querySelector(
+            `[data-turno-color="${code}"][data-color-kind="base"]`
+        );
+        const extraInput = backdrop.querySelector(
+            `[data-turno-color="${code}"][data-color-kind="extra"]`
+        );
+        const current = colorConfigDraft || getTurnoColorConfig();
+
+        base[code] = baseInput?.value || current.base[code];
+        extra[code] = extraInput?.value || current.extra[code];
+    }
+
+    return { base, extra };
+}
+
 function renderActivePanel(config) {
+    if (activeTab === "colors") return renderColorsPanel();
     if (activeTab === "holidays") return renderHolidaysPanel();
     if (activeTab === "requests") return renderRequestsPanel();
     if (activeTab === "signature") return renderSignaturePanel();
@@ -608,6 +672,9 @@ function modalHTML() {
                 </button>
                 <button class="${activeTab === "turnChanges" ? "is-active" : ""}" type="button" data-settings-tab="turnChanges">
                     Turnos
+                </button>
+                <button class="${activeTab === "colors" ? "is-active" : ""}" type="button" data-settings-tab="colors">
+                    Colores
                 </button>
                 <button class="${activeTab === "staffing" ? "is-active" : ""}" type="button" data-settings-tab="staffing">
                     Dotacion RRHH
@@ -840,6 +907,10 @@ function preserveActiveDraft(backdrop) {
         staffingConfigDraft = readStaffingConfig(backdrop);
     }
 
+    if (activeTab === "colors") {
+        colorConfigDraft = readColorConfig(backdrop);
+    }
+
     if (activeTab === "users") {
         readMemberPermissionDraft(backdrop);
     }
@@ -935,6 +1006,13 @@ function bindBackdrop(backdrop) {
         if (tab) {
             preserveActiveDraft(backdrop);
             activeTab = tab.dataset.settingsTab;
+            backdrop.innerHTML = modalHTML();
+            return;
+        }
+
+        const resetColors = event.target.closest("[data-settings-reset-colors]");
+        if (resetColors) {
+            colorConfigDraft = getDefaultTurnoColorConfig();
             backdrop.innerHTML = modalHTML();
             return;
         }
@@ -1049,6 +1127,10 @@ function bindBackdrop(backdrop) {
                     getTurnChangeConfig()
                 );
                 saveStaffingConfig(nextStaffingConfig);
+                saveTurnoColorConfig(
+                    colorConfigDraft || getTurnoColorConfig()
+                );
+                applyTurnoColors();
                 await saveMemberPermissionDrafts();
 
                 if (
@@ -1094,6 +1176,7 @@ export function openSystemSettings() {
         getReportSignatureConfig();
     turnChangeConfigDraft = getTurnChangeConfig();
     staffingConfigDraft = getStaffingConfig();
+    colorConfigDraft = getTurnoColorConfig();
     memberPermissionDraft = [];
     memberPermissionLoading = false;
     memberPermissionError = "";

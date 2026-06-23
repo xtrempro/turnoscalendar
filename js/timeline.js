@@ -13,6 +13,7 @@ import {
     getTurnoReal
 } from "./turnEngine.js";
 import { TURNO, TURNO_COLOR } from "./constants.js";
+import { getTurnoColor } from "./turnoColors.js";
 import { fetchHolidays } from "./holidays.js";
 import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { isBusinessDay } from "./calculations.js";
@@ -356,7 +357,7 @@ function syncTimelineStickyOffsets(container) {
     );
 }
 
-function getColor(nombre, key, maps = null){
+function getColor(nombre, key, maps = null, isExtra = false){
     const admin = maps?.admin || getAdmin(nombre);
     const legal = maps?.legal || getLegal(nombre);
     const comp = maps?.comp || getComp(nombre);
@@ -376,7 +377,7 @@ function getColor(nombre, key, maps = null){
 
     const turno = getTurnoReal(nombre, key);
 
-    return TURNO_COLOR[turno] || TURNO_COLOR[0];
+    return getTurnoColor(turno, isExtra) || TURNO_COLOR[turno] || TURNO_COLOR[0];
 }
 
 function leaveTypeForDay(keyDay, maps) {
@@ -825,7 +826,14 @@ export async function renderTimeline(){
 
         for (let d = 1; d <= diasMes; d++) {
             const key = `${year}-${month}-${d}`;
-            const color = getColor(profile.name, key, leaveMaps);
+            const replacement =
+                replacementMarker(profile.name, key);
+            const color = getColor(
+                profile.name,
+                key,
+                leaveMaps,
+                Boolean(replacement)
+            );
             const date = new Date(year, month, d);
             const isInhabil = !isBusinessDay(date, holidays);
             const workerBlockedDay =
@@ -873,8 +881,6 @@ export async function renderTimeline(){
                 !contractError &&
                 !severeClockIncident &&
                 !needsReplacement;
-            const replacement =
-                replacementMarker(profile.name, key);
             const marker = contractError
                 ? "X"
                 : severeClockIncident

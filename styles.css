@@ -5171,6 +5171,75 @@ body.theme-dark .overtime-backup-subsection {
     padding-right: 4px;
 }
 
+.settings-subtitle {
+    margin: 0 0 6px;
+    font-size: 1rem;
+    color: var(--text-strong, var(--text));
+}
+
+.settings-hint {
+    margin: 0 0 14px;
+    color: var(--text-muted);
+    font-size: 0.84rem;
+    line-height: 1.4;
+}
+
+.settings-color-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 18px;
+    margin-bottom: 16px;
+}
+
+.settings-color-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--field, #fff);
+}
+
+.settings-color-name {
+    min-width: 0;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.settings-color-field {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+}
+
+.settings-color-field input[type="color"] {
+    width: 42px;
+    height: 30px;
+    min-height: 0;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+}
+
+.settings-reset-colors {
+    width: auto;
+}
+
+@media (max-width: 760px) {
+    .settings-color-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 .settings-grade-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5649,40 +5718,87 @@ body.theme-dark .overtime-backup-subsection {
     border-color: transparent !important;
 }
 
+/* Colores de turno configurables (variables seteadas desde Ajustes). El color
+   de texto se calcula por contraste. Los turnos extra (replacement-day) usan
+   su propia variable para poder distinguirse del turno base. */
 .green {
-    background: linear-gradient(135deg, #1eb45a, #23c46c) !important;
+    background: var(--turno-color-1, #22c55e) !important;
+    color: var(--turno-text-1, #ffffff) !important;
 }
 
 .blue {
-    background: linear-gradient(135deg, #1d6cff, #3084ff) !important;
+    background: var(--turno-color-2, #1d6cff) !important;
+    color: var(--turno-text-2, #ffffff) !important;
 }
 
 .purple {
-    background: linear-gradient(135deg, #7f2cc3, #a53ad7) !important;
+    background: var(--turno-color-3, #8b2bd9) !important;
+    color: var(--turno-text-3, #ffffff) !important;
 }
 
 .lightgreen {
-    background: #0b8853 !important;
-    color: #ffffff !important;
+    background: var(--turno-color-4, #0b8853) !important;
+    color: var(--turno-text-4, #ffffff) !important;
 }
 
 .yellow {
-    background: linear-gradient(135deg, #f4b523, #ffcc4d) !important;
-    color: #1c1c1c !important;
+    background: var(--turno-color-5, #f0b100) !important;
+    color: var(--turno-text-5, #1c1c1c) !important;
 }
 
 .half-morning {
-    background: linear-gradient(135deg, #eab308, #facc15) !important;
-    color: #1c1c1c !important;
+    background: var(--turno-color-6, #fbbf24) !important;
+    color: var(--turno-text-6, #1c1c1c) !important;
 }
 
 .half-afternoon {
-    background: linear-gradient(135deg, #f59e0b, #fb923c) !important;
-    color: #1c1c1c !important;
+    background: var(--turno-color-7, #f59e0b) !important;
+    color: var(--turno-text-7, #1c1c1c) !important;
 }
 
 .eighteen {
-    background: linear-gradient(135deg, #6d28d9, #8b5cf6) !important;
+    background: var(--turno-color-8, #7c3aed) !important;
+    color: var(--turno-text-8, #ffffff) !important;
+}
+
+.day.replacement-day.green {
+    background: var(--turno-color-1-extra, #22c55e) !important;
+    color: var(--turno-text-1-extra, #ffffff) !important;
+}
+
+.day.replacement-day.blue {
+    background: var(--turno-color-2-extra, #1d6cff) !important;
+    color: var(--turno-text-2-extra, #ffffff) !important;
+}
+
+.day.replacement-day.purple {
+    background: var(--turno-color-3-extra, #8b2bd9) !important;
+    color: var(--turno-text-3-extra, #ffffff) !important;
+}
+
+.day.replacement-day.lightgreen {
+    background: var(--turno-color-4-extra, #0b8853) !important;
+    color: var(--turno-text-4-extra, #ffffff) !important;
+}
+
+.day.replacement-day.yellow {
+    background: var(--turno-color-5-extra, #f0b100) !important;
+    color: var(--turno-text-5-extra, #1c1c1c) !important;
+}
+
+.day.replacement-day.half-morning {
+    background: var(--turno-color-6-extra, #fbbf24) !important;
+    color: var(--turno-text-6-extra, #1c1c1c) !important;
+}
+
+.day.replacement-day.half-afternoon {
+    background: var(--turno-color-7-extra, #f59e0b) !important;
+    color: var(--turno-text-7-extra, #1c1c1c) !important;
+}
+
+.day.replacement-day.eighteen {
+    background: var(--turno-color-8-extra, #7c3aed) !important;
+    color: var(--turno-text-8-extra, #ffffff) !important;
 }
 
 .weekend:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.union-leave-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.hours-return-day):not(.legal-day):not(.comp-day),
