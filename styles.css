@@ -4509,10 +4509,22 @@ body.auth-gate-active .app-shell {
 
 .replacement-candidate-list {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 10px;
     max-height: min(420px, 52vh);
     overflow: auto;
     padding-right: 4px;
+}
+
+/* Escritorio: 2 columnas de candidatos para que quepan mas en pantalla. */
+@media (min-width: 860px) {
+    .replacement-dialog {
+        width: min(760px, 100%);
+    }
+
+    .replacement-candidate-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 .replacement-candidate {
