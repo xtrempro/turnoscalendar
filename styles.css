@@ -4516,13 +4516,14 @@ body.auth-gate-active .app-shell {
     padding-right: 4px;
 }
 
-/* Escritorio: 2 columnas de candidatos para que quepan mas en pantalla. */
+/* Escritorio: 2 columnas de candidatos en el modal de reemplazo para que quepan
+   mas en pantalla. Solo el modal (no la subseccion de respaldo de turnos extra). */
 @media (min-width: 860px) {
     .replacement-dialog {
         width: min(760px, 100%);
     }
 
-    .replacement-candidate-list {
+    .replacement-dialog .replacement-candidate-list {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
