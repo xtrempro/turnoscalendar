@@ -1,5 +1,7 @@
 // Construye el texto de estado de la rotativa y la ayuda del editor de perfil,
 // segun el borrador (modo, tipo de contrato, rotativa) y el perfil guardado.
+// Tambien renderiza el bloque de estado de rotativa (el handler para abrir la
+// configuracion se inyecta como callback para no acoplar el modal aqui).
 
 import {
     profileDraft,
@@ -16,6 +18,58 @@ import {
 import { formatDisplayDate } from "./dateUtils.js";
 import { getContractsForProfile } from "./contracts.js";
 import { getPerfilActual } from "./profileQueries.js";
+import { DOM } from "./dom.js";
+import { escapeHTML } from "./htmlUtils.js";
+
+/**
+ * Renderiza el bloque de estado de rotativa en el editor de perfil.
+ * @param {Object} data datos mostrados del perfil
+ * @param {boolean} editing si el editor esta en modo edicion
+ * @param {(type: string) => void} onConfigure handler para abrir el modal de
+ *   configuracion de rotativa (se inyecta para no acoplar el modal aqui)
+ */
+export function renderProfileRotationStatus(data, editing, onConfigure) {
+    if (!DOM.profileRotationStatus) return;
+
+    const replacementContract =
+        isReplacementDraft(data);
+    const canConfigure =
+        editing &&
+        (
+            replacementContract ||
+            (
+                Boolean(data.rotationType) &&
+                (
+                    !isHonorariaDraft(data) ||
+                    Boolean(data.honorariaStart && data.honorariaEnd)
+                )
+            )
+        );
+
+    DOM.profileRotationStatus.classList.toggle(
+        "profile-status-note--with-action",
+        canConfigure
+    );
+
+    DOM.profileRotationStatus.innerHTML = `
+        <span>${escapeHTML(buildRotationStatus(data))}</span>
+        ${canConfigure ? `
+            <button id="openRotationConfigBtn" class="profile-status-action" type="button">
+                ${replacementContract ? "Nuevo Contrato" : "Configurar rotativa"}
+            </button>
+        ` : ""}
+    `;
+
+    document
+        .getElementById("openRotationConfigBtn")
+        ?.addEventListener("click", () => {
+            onConfigure?.(
+                replacementContract
+                    ? "reemplazo"
+                    : data.rotationType
+            );
+        });
+}
 
 export function formatRotationStartSummary(data, prefix = "") {
     const startText = data.rotationStart

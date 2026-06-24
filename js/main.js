@@ -114,7 +114,8 @@ import { getPerfilActual, getDisplayedProfileData } from "./profileQueries.js";
 import { validateProfileDraft } from "./profileValidation.js";
 import {
     buildRotationStatus,
-    buildEditorHint
+    buildEditorHint,
+    renderProfileRotationStatus
 } from "./profileRotationStatus.js";
 import {
     activeLabel,
@@ -880,49 +881,6 @@ function canEditCurrentProfileMenu() {
 
     alert("Tu usuario tiene permiso solo de lectura en Perfiles.");
     return false;
-}
-
-function renderProfileRotationStatus(data, editing) {
-    if (!DOM.profileRotationStatus) return;
-
-    const replacementContract =
-        isReplacementDraft(data);
-    const canConfigure =
-        editing &&
-        (
-            replacementContract ||
-            (
-                Boolean(data.rotationType) &&
-                (
-                    !isHonorariaDraft(data) ||
-                    Boolean(data.honorariaStart && data.honorariaEnd)
-                )
-            )
-        );
-
-    DOM.profileRotationStatus.classList.toggle(
-        "profile-status-note--with-action",
-        canConfigure
-    );
-
-    DOM.profileRotationStatus.innerHTML = `
-        <span>${escapeHTML(buildRotationStatus(data))}</span>
-        ${canConfigure ? `
-            <button id="openRotationConfigBtn" class="profile-status-action" type="button">
-                ${replacementContract ? "Nuevo Contrato" : "Configurar rotativa"}
-            </button>
-        ` : ""}
-    `;
-
-    document
-        .getElementById("openRotationConfigBtn")
-        ?.addEventListener("click", () => {
-            openRotationConfigModal(
-                replacementContract
-                    ? "reemplazo"
-                    : data.rotationType
-            );
-        });
 }
 
 function renderContractHistory(profile) {
@@ -2979,7 +2937,7 @@ function renderDashboardState() {
     }
 
     if (activeView === "profile") {
-        renderProfileRotationStatus(data, editing);
+        renderProfileRotationStatus(data, editing, openRotationConfigModal);
         renderContractHistory(profile);
         renderProfileDocs(data, editing);
         renderProfileRecords(profile, editing);
