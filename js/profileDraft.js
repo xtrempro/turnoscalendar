@@ -21,6 +21,12 @@ import {
     requiresRotationStart,
     normalizeRotationFirstTurn
 } from "./rotationUtils.js";
+import {
+    getRotativa,
+    isProfileActive,
+    getShiftAssigned,
+    normalizeProfession
+} from "./storage.js";
 
 export const PROFILE_MODE = {
     VIEW: "view",
@@ -220,4 +226,64 @@ export function hasGradeValueChanged() {
         String(profileDraft.estamento || "") !==
             String(profileDraft.originalEstamento || "")
     );
+}
+
+/**
+ * Carga un perfil guardado en el borrador (incluye originales para diff).
+ * @param {Object} profile
+ */
+export function loadDraftFromProfile(profile){
+    const rotativa = getRotativa(profile.name);
+    const legacyReplacement =
+        rotativa.type === "reemplazo";
+    const rotationStart =
+        normalizeStoredStart(rotativa.start);
+
+    profileDraft.originalName = profile.name;
+    profileDraft.originalRotationType =
+        rotativa.type || "";
+    profileDraft.originalRotationStart =
+        rotationStart;
+    profileDraft.originalRotationFirstTurn =
+        normalizeRotationFirstTurn(rotativa.firstTurn);
+    profileDraft.originalContractType = profile.contractType || "";
+    profileDraft.originalEstamento = profile.estamento || "";
+    profileDraft.originalGrade = String(profile.grade || "");
+    profileDraft.name = profile.name;
+    profileDraft.email = profile.email || "";
+    profileDraft.rut = profile.rut || "";
+    profileDraft.phone = profile.phone || "";
+    profileDraft.birthDate = profile.birthDate || "";
+    profileDraft.docs = Array.isArray(profile.docs)
+        ? [...profile.docs]
+        : [];
+    profileDraft.active = isProfileActive(profile);
+    profileDraft.unit = "";
+    profileDraft.unitEntryDate = profile.unitEntryDate || "";
+    profileDraft.contractType = legacyReplacement
+        ? "Reemplazo"
+        : profile.contractType || "";
+    profileDraft.estamento = profile.estamento || "";
+    profileDraft.unionLeaveEnabled =
+        Boolean(profile.unionLeaveEnabled);
+    profileDraft.profession = normalizeProfession(
+        profile.profession,
+        profileDraft.estamento
+    );
+    profileDraft.grade = String(profile.grade || "");
+    profileDraft.rotationType = legacyReplacement
+        ? ""
+        : rotativa.type || "";
+    profileDraft.rotationStart = legacyReplacement
+        ? ""
+        : rotationStart;
+    profileDraft.rotationFirstTurn =
+        normalizeRotationFirstTurn(rotativa.firstTurn);
+    profileDraft.honorariaStart = profile.honorariaStart || "";
+    profileDraft.honorariaEnd = profile.honorariaEnd || "";
+    profileDraft.honorariaHourlyRate =
+        String(profile.honorariaHourlyRate || "");
+    profileDraft.honorariaMaxMonthlyHours =
+        String(profile.honorariaMaxMonthlyHours || "");
+    profileDraft.shiftAssigned = getShiftAssigned(profile.name);
 }

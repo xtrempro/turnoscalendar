@@ -1,0 +1,155 @@
+// Construye el texto de estado de la rotativa y la ayuda del editor de perfil,
+// segun el borrador (modo, tipo de contrato, rotativa) y el perfil guardado.
+
+import {
+    profileDraft,
+    PROFILE_MODE,
+    isReplacementDraft,
+    isHonorariaDraft,
+    hasRotationChanged
+} from "./profileDraft.js";
+import {
+    getRotativaLabel,
+    requiresRotationFirstTurn,
+    getRotationFirstTurnLabel
+} from "./rotationUtils.js";
+import { formatDisplayDate } from "./dateUtils.js";
+import { getContractsForProfile } from "./contracts.js";
+import { getPerfilActual } from "./profileQueries.js";
+
+export function formatRotationStartSummary(data, prefix = "") {
+    const startText = data.rotationStart
+        ? ` desde ${formatDisplayDate(data.rotationStart)}`
+        : "";
+    const firstTurnText =
+        requiresRotationFirstTurn(data.rotationType) &&
+        data.rotationStart
+            ? `, iniciando con ${getRotationFirstTurnLabel(data.rotationFirstTurn, data.rotationType)}`
+            : "";
+
+    return `${prefix}${getRotativaLabel(data.rotationType)}${startText}${firstTurnText}.`;
+}
+
+export function buildRotationStatus(data){
+    if (isReplacementDraft(data)) {
+        const freeRotation = data.rotationType === "libre";
+
+        if (profileDraft.mode === PROFILE_MODE.VIEW) {
+            const profile = getPerfilActual();
+            const contracts = profile
+                ? getContractsForProfile(profile.name)
+                : [];
+
+            if (!contracts.length) {
+                return "Contrato Reemplazo sin periodos registrados.";
+            }
+
+            return freeRotation
+                ? `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s). Rotativa Libre: calendario disponible para carga manual.`
+                : `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s). La rotativa se hereda del trabajador reemplazado.`;
+        }
+
+        if (!data.contractStart) {
+            return "Presione el botón para ingresar un nuevo contrato de reemplazo.";
+        }
+
+        if (!data.contractEnd) {
+            return `Inicio de contrato: ${formatDisplayDate(data.contractStart)}. Falta definir termino en el modal.`;
+        }
+
+        return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}.${freeRotation ? " Rotativa Libre: calendario disponible para carga manual." : ""}`;
+    }
+
+    if (isHonorariaDraft(data)) {
+        if (!data.honorariaStart || !data.honorariaEnd) {
+            return "Completa la vigencia del contrato de Honorarios antes de aplicar la rotativa.";
+        }
+
+        const contractSummary =
+            `Contrato Honorarios: ${formatDisplayDate(data.honorariaStart)} al ${formatDisplayDate(data.honorariaEnd)} | Tope mensual: ${data.honorariaMaxMonthlyHours || 0} hrs.`;
+
+        if (!data.rotationType) {
+            return `${contractSummary} Selecciona una rotativa.`;
+        }
+
+        if (data.rotationType === "libre") {
+            return `${contractSummary} Rotativa Libre: calendario disponible para carga manual.`;
+        }
+
+        if (!data.rotationStart) {
+            return `${contractSummary} Configura desde que fecha se aplicara ${getRotativaLabel(data.rotationType)}.`;
+        }
+
+        return `${contractSummary} ${formatRotationStartSummary(data, "")}`;
+    }
+
+    if (data.rotationType === "libre") {
+        return "Rotativa Libre: calendario disponible para carga manual.";
+    }
+
+    if (profileDraft.mode === PROFILE_MODE.CREATE) {
+        if (!data.rotationType) {
+            return "Selecciona una rotativa para definir su fecha de inicio.";
+        }
+
+        if (!data.rotationStart) {
+            return `Configura en el modal desde que fecha se aplicara ${getRotativaLabel(data.rotationType)}.`;
+        }
+
+        return formatRotationStartSummary(data, "");
+    }
+
+    if (profileDraft.mode === PROFILE_MODE.EDIT) {
+        if (!data.rotationType) {
+            return "Selecciona la nueva rotativa para configurar su fecha de inicio.";
+        }
+
+        if (!hasRotationChanged()) {
+            return formatRotationStartSummary(data, "Rotativa actual: ");
+        }
+
+        if (!data.rotationStart) {
+            return `Configura en el modal desde que fecha se aplicara la nueva ${getRotativaLabel(data.rotationType)}.`;
+        }
+
+        return formatRotationStartSummary(data, "Nueva rotativa: ");
+    }
+
+    if (!data.rotationType) {
+        return "Este colaborador aun no tiene una rotativa configurada.";
+    }
+
+    return formatRotationStartSummary(data, "Rotativa actual: ");
+}
+
+export function buildEditorHint(profile){
+    if (profileDraft.mode === PROFILE_MODE.CREATE) {
+        if (isReplacementDraft()) {
+            return "Completa nombre, estamento, periodo de contrato y a quien reemplaza antes de guardar.";
+        }
+
+        if (isHonorariaDraft()) {
+            return "Completa los datos del contrato de Honorarios y configura una rotativa dentro de su vigencia.";
+        }
+
+        return "Completa nombre, estamento, rotativa y configura en el modal desde que fecha inicia antes de guardar.";
+    }
+
+    if (profileDraft.mode === PROFILE_MODE.EDIT) {
+        if (isReplacementDraft()) {
+            return "Puedes actualizar los datos del trabajador o agregar un nuevo contrato de reemplazo indicando inicio, termino y a quien reemplaza.";
+        }
+
+        if (isHonorariaDraft()) {
+            return "Actualiza la vigencia, el valor hora y el tope mensual. La rotativa solo se mostrara dentro del contrato.";
+        }
+
+        return "Actualiza los datos del trabajador. Solo si cambias la rotativa debes configurar en el modal desde que fecha aplica.";
+    }
+
+    if (profile) {
+        return "";
+    }
+
+    return "";
+}
