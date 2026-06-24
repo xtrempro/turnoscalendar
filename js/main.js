@@ -111,6 +111,28 @@ import {
 } from "./navigation.js";
 import { initTheme } from "./theme.js";
 import {
+    activeLabel,
+    yesNoLabel,
+    getLicenseTypeLabel
+} from "./labels.js";
+import {
+    PROFILE_MODE,
+    PROFILE_BIRTH_DATE_DEFAULT,
+    profileDraft,
+    resetProfileDraft,
+    isReplacementDraft,
+    isHonorariaDraft,
+    isProfileEditing,
+    hasRotationChanged,
+    getDraftUnitEntryDate,
+    isBeforeDraftUnitEntryDate,
+    rotationStartBeforeUnitEntryMessage,
+    shouldRequireUnitEntryForRotation,
+    isFirstProfileRotationConfig,
+    getRotationConfigDefaultStart,
+    hasGradeValueChanged
+} from "./profileDraft.js";
+import {
     prevMonth,
     nextMonth,
     currentDate,
@@ -317,13 +339,6 @@ import {
     validarCantidadLegalAnual
 } from "./leaveEngine.js";
 
-const PROFILE_MODE = {
-    VIEW: "view",
-    CREATE: "create",
-    EDIT: "edit"
-};
-
-const PROFILE_BIRTH_DATE_DEFAULT = "2000-01-01";
 
 let selectionMode = null;
 let pendingRotationChange = null;
@@ -438,50 +453,6 @@ function getProfileMetaLabel(profile) {
     return `${role} | ${formatProfession(profile.profession)}`;
 }
 
-const profileDraft = {
-    mode: PROFILE_MODE.VIEW,
-    originalName: "",
-    originalRotationType: "",
-    originalRotationStart: "",
-    originalRotationFirstTurn: "larga",
-    originalContractType: "",
-    originalEstamento: "",
-    originalGrade: "",
-    name: "",
-    email: "",
-    rut: "",
-    phone: "",
-    birthDate: "",
-    docs: [],
-    active: true,
-    unit: "",
-    unitEntryDate: "",
-    contractType: "",
-    estamento: "",
-    profession: "Sin informacion",
-    grade: "",
-    rotationType: "",
-    rotationStart: "",
-    rotationFirstTurn: "larga",
-    contractStart: "",
-    contractEnd: "",
-    contractReplaces: "",
-    contractReason: "",
-    honorariaStart: "",
-    honorariaEnd: "",
-    honorariaHourlyRate: "",
-    honorariaMaxMonthlyHours: "",
-    unionLeaveEnabled: false,
-    shiftAssigned: false
-};
-
-function isReplacementDraft(data = profileDraft) {
-    return isReplacementContractType(data.contractType);
-}
-
-function isHonorariaDraft(data = profileDraft) {
-    return isHonorariaContractType(data.contractType);
-}
 
 window.selectionMode = null;
 window.compCantidad = 0;
@@ -879,17 +850,6 @@ function syncProfileRotationOptions(data = profileDraft) {
     }
 }
 
-function activeLabel(value) {
-    return value ? "activo" : "desactivado";
-}
-
-function yesNoLabel(value) {
-    return value ? "si" : "no";
-}
-
-function isProfileEditing(){
-    return profileDraft.mode !== PROFILE_MODE.VIEW;
-}
 
 function getPerfilActual() {
     const current = getCurrentProfile();
@@ -921,42 +881,6 @@ function canEditCurrentProfileMenu() {
 
     alert("Tu usuario tiene permiso solo de lectura en Perfiles.");
     return false;
-}
-
-function clearDraftValues(){
-    profileDraft.originalName = "";
-    profileDraft.originalRotationType = "";
-    profileDraft.originalRotationStart = "";
-    profileDraft.originalRotationFirstTurn = "larga";
-    profileDraft.originalContractType = "";
-    profileDraft.originalEstamento = "";
-    profileDraft.originalGrade = "";
-    profileDraft.name = "";
-    profileDraft.email = "";
-    profileDraft.rut = "";
-    profileDraft.phone = "";
-    profileDraft.birthDate = PROFILE_BIRTH_DATE_DEFAULT;
-    profileDraft.docs = [];
-    profileDraft.active = true;
-    profileDraft.unit = "";
-    profileDraft.unitEntryDate = "";
-    profileDraft.contractType = "";
-    profileDraft.estamento = "";
-    profileDraft.profession = "Sin informacion";
-    profileDraft.grade = "";
-    profileDraft.rotationType = "";
-    profileDraft.rotationStart = "";
-    profileDraft.rotationFirstTurn = "larga";
-    profileDraft.contractStart = "";
-    profileDraft.contractEnd = "";
-    profileDraft.contractReplaces = "";
-    profileDraft.contractReason = "";
-    profileDraft.honorariaStart = "";
-    profileDraft.honorariaEnd = "";
-    profileDraft.honorariaHourlyRate = "";
-    profileDraft.honorariaMaxMonthlyHours = "";
-    profileDraft.unionLeaveEnabled = false;
-    profileDraft.shiftAssigned = false;
 }
 
 function loadDraftFromProfile(profile){
@@ -1013,112 +937,6 @@ function loadDraftFromProfile(profile){
     profileDraft.honorariaMaxMonthlyHours =
         String(profile.honorariaMaxMonthlyHours || "");
     profileDraft.shiftAssigned = getShiftAssigned(profile.name);
-}
-
-function hasRotationChanged() {
-    if (profileDraft.mode !== PROFILE_MODE.EDIT) {
-        return false;
-    }
-
-    return (
-        profileDraft.rotationType !==
-            profileDraft.originalRotationType ||
-        normalizeStoredStart(profileDraft.rotationStart) !==
-            normalizeStoredStart(
-                profileDraft.originalRotationStart
-            ) ||
-        (
-            requiresRotationFirstTurn(profileDraft.rotationType) &&
-            normalizeRotationFirstTurn(profileDraft.rotationFirstTurn) !==
-                normalizeRotationFirstTurn(
-                    profileDraft.originalRotationFirstTurn
-                )
-        )
-    );
-}
-
-function getDraftUnitEntryDate() {
-    return normalizeStoredStart(profileDraft.unitEntryDate || "");
-}
-
-function isBeforeDraftUnitEntryDate(value) {
-    const unitEntryDate = getDraftUnitEntryDate();
-
-    return Boolean(
-        value &&
-        unitEntryDate &&
-        compareISODate(value, unitEntryDate) < 0
-    );
-}
-
-function rotationStartBeforeUnitEntryMessage(
-    value,
-    unitEntryDate = getDraftUnitEntryDate()
-) {
-    return `La rotativa no puede comenzar el ${formatDisplayDate(value)} porque la fecha de ingreso a la unidad es ${formatDisplayDate(unitEntryDate)}.`;
-}
-
-function shouldRequireUnitEntryForRotation() {
-    return Boolean(
-        !isReplacementDraft() &&
-        requiresRotationStart(profileDraft.rotationType) &&
-        (
-            profileDraft.mode === PROFILE_MODE.CREATE ||
-            hasRotationChanged()
-        )
-    );
-}
-
-function isFirstProfileRotationConfig(type = profileDraft.rotationType) {
-    if (profileDraft.mode === PROFILE_MODE.CREATE) {
-        return true;
-    }
-
-    if (profileDraft.mode !== PROFILE_MODE.EDIT) {
-        return !profileDraft.rotationStart;
-    }
-
-    return (
-        !profileDraft.originalRotationType ||
-        (
-            requiresRotationStart(profileDraft.originalRotationType) &&
-            !profileDraft.originalRotationStart
-        )
-    );
-}
-
-function getRotationConfigDefaultStart(type = profileDraft.rotationType) {
-    if (!requiresRotationStart(type)) {
-        return "";
-    }
-
-    const unitEntryDate = getDraftUnitEntryDate();
-    const candidate = isFirstProfileRotationConfig(type)
-        ? unitEntryDate
-        : toInputDate(new Date());
-
-    if (
-        unitEntryDate &&
-        candidate &&
-        compareISODate(candidate, unitEntryDate) < 0
-    ) {
-        return unitEntryDate;
-    }
-
-    return candidate;
-}
-
-function hasGradeValueChanged() {
-    if (profileDraft.mode !== PROFILE_MODE.EDIT) {
-        return false;
-    }
-
-    return (
-        String(profileDraft.grade || "") !==
-            String(profileDraft.originalGrade || "") ||
-        String(profileDraft.estamento || "") !==
-            String(profileDraft.originalEstamento || "")
-    );
 }
 
 function getDisplayedProfileData(){
@@ -5186,7 +5004,7 @@ function selectProfileByName(profileName, options = {}) {
     if (!profile) return;
 
     clearSelectionMode(false);
-    clearDraftValues();
+    resetProfileDraft();
     availabilityEditMode = false;
     profileDraft.mode = PROFILE_MODE.VIEW;
     setCurrentProfile(profile.name);
@@ -5274,7 +5092,7 @@ function startCreateMode() {
     if (!canEditCurrentProfileMenu()) return;
 
     clearSelectionMode(false);
-    clearDraftValues();
+    resetProfileDraft();
     availabilityEditMode = false;
     profileRotationMiniDate = new Date();
 
@@ -5351,7 +5169,7 @@ window.startReplacementContractEdit =
 
 function exitProfileMode(selectedName = getCurrentProfile()) {
     clearSelectionMode(false);
-    clearDraftValues();
+    resetProfileDraft();
     availabilityEditMode = false;
     profileDraft.mode = PROFILE_MODE.VIEW;
 
@@ -6272,13 +6090,6 @@ function activarSelectorComp() {
         "comp",
         `Selecciona un d\u00eda h\u00e1bil para iniciar el bloque completo de ${formatSaldo(cantidad)} F. Compensatorio. Deben haber pasado 90 d\u00edas corridos desde el \u00faltimo F. Legal.`
     );
-}
-
-function getLicenseTypeLabel(type) {
-    if (type === "professional_license") return "LM Profesional";
-    if (type === "union_leave") return "Permiso Gremial";
-    if (type === "unpaid_leave") return "Permiso sin Goce";
-    return "Licencia M\u00e9dica";
 }
 
 function openAmountDialog({
