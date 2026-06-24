@@ -1,6 +1,7 @@
 import { isoFromKey, parseKeyParts as parseKey } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
+import { readFileAsDataURL, dataUrlToBlob } from "./attachmentUtils.js";
 import {
     getCurrentProfile,
     getProfiles,
@@ -815,16 +816,6 @@ function staffingReminderDefaultDate() {
     ].join("-");
 }
 
-function readFileAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-    });
-}
-
 async function readApplicantDocuments(files) {
     const docs = [];
 
@@ -838,20 +829,6 @@ async function readApplicantDocuments(files) {
     }
 
     return docs;
-}
-
-function dataUrlToBlob(dataUrl) {
-    const [header, data] = String(dataUrl || "").split(",");
-    const mimeMatch = header.match(/data:([^;]+);base64/);
-    const mime = mimeMatch?.[1] || "application/octet-stream";
-    const binary = atob(data || "");
-    const bytes = new Uint8Array(binary.length);
-
-    for (let index = 0; index < binary.length; index++) {
-        bytes[index] = binary.charCodeAt(index);
-    }
-
-    return new Blob([bytes], { type: mime });
 }
 
 function openApplicantDocument(doc) {

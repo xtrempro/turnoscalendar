@@ -53,6 +53,7 @@ import { getActiveWorkspace } from "./workspaces.js";
 import { getJSON } from "./persistence.js";
 import {
     getClockExtraHours,
+    getClockDeficitHours,
     getClockMarks
 } from "./clockMarks.js";
 
@@ -613,7 +614,21 @@ function buildNoAssignmentDayRows(
         const workState = absence?.full
             ? TURNO.LIBRE
             : absence?.workState || actual;
-        const hours = numberHours(date, workState, holidays);
+        const baseHours = numberHours(date, workState, holidays);
+        // Ajuste por incidencias de marcaje de reloj: se suma lo trabajado fuera
+        // del turno (ingreso anticipado, salida tardia) y se descuenta lo
+        // programado no trabajado (atraso, salida anticipada). Sin marca el
+        // ajuste es 0 (turno realizado normal).
+        const clockExtraHours = absence?.full
+            ? { d: 0, n: 0 }
+            : getClockExtraHours(profileName, keyDay, date, actual, holidays);
+        const clockDeficitHours = absence?.full
+            ? { d: 0, n: 0 }
+            : getClockDeficitHours(profileName, keyDay, date, actual, holidays);
+        const hours = {
+            d: Math.max(0, baseHours.d + clockExtraHours.d - clockDeficitHours.d),
+            n: Math.max(0, baseHours.n + clockExtraHours.n - clockDeficitHours.n)
+        };
         const hasManualBase =
             Object.prototype.hasOwnProperty.call(baseData, keyDay) ||
             rawBase > TURNO.LIBRE;
@@ -1318,11 +1333,14 @@ function buildNoAssignmentReportModel({
         dayRows: [
             ...dayDetail.rows,
             {
-                fecha: "Total del mes",
+                // Total BRUTO del mes: suma de las horas trabajadas en los dias
+                // del mes, sin descontar las horas que se traspasan al mes
+                // siguiente (ese ajuste de carry se detalla en el resumen).
+                fecha: "Total bruto del mes",
                 turnoBase: "",
                 turnoRealizado: "",
-                horasDiurnas: formatHour(totalD),
-                horasNocturnas: formatHour(totalN),
+                horasDiurnas: formatHour(dayDetail.rawTotals.d),
+                horasNocturnas: formatHour(dayDetail.rawTotals.n),
                 respaldo: ""
             }
         ]

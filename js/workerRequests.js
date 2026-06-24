@@ -48,6 +48,7 @@ import {
     registrarCambio
 } from "./swaps.js";
 import { getActiveWorkspace } from "./workspaces.js";
+import { notifyWorkerApp } from "./workerAppDataSync.js";
 
 const REQUEST_TYPE_LABELS = {
     admin: "P. Administrativo",
@@ -61,9 +62,35 @@ const REQUEST_TYPE_LABELS = {
     clock_incident: "Incidencia en Marcacion",
     swap: "Cambio de Turno",
     replacement_request: "Turno Extra",
+    hhee_return: "Devolución de Horas",
     workspace_link: "Enlace de Unidad",
     unknown: "Solicitud"
 };
+
+const MONTH_NAMES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+];
+
+function monthLabelFromYearMonth(year, month) {
+    const y = Number(year);
+    const m = Number(month);
+
+    if (!Number.isFinite(y) || !Number.isFinite(m) || m < 0 || m > 11) {
+        return "";
+    }
+
+    return `${MONTH_NAMES[m]} de ${y}`;
+}
+
+function formatReturnHours(value) {
+    const parsed = Number(value) || 0;
+    const rounded = Math.round(parsed * 100) / 100;
+
+    return Number.isInteger(rounded)
+        ? String(rounded)
+        : String(rounded).replace(".", ",");
+}
 
 const STATUS_LABELS = {
     pending: "Pendiente",
@@ -78,6 +105,16 @@ let selectedMonth = monthValue();
 let activeWorkspaceLinkWatchId = "";
 let unsubscribeWorkspaceLinks = null;
 let linkRenderTimer = null;
+
+// El traspaso de HH.EE a devolucion vive en main.js (depende de helpers de
+// saldo y estadisticas que estan alli). main.js registra aqui el manejador para
+// que aceptar una solicitud "hhee_return" active el traspaso del mes pedido.
+let hheeReturnRequestHandler = null;
+
+export function setHheeReturnRequestHandler(handler) {
+    hheeReturnRequestHandler =
+        typeof handler === "function" ? handler : null;
+}
 
 function parseISODate(value) {
     const match = String(value || "")
@@ -278,7 +315,7 @@ function resolveProfileName(request) {
 }
 
 function requestNeedsDate(request) {
-    return !["swap"].includes(request.type);
+    return !["swap", "hhee_return"].includes(request.type);
 }
 
 function invalidDateResult(request) {
@@ -681,6 +718,17 @@ async function applyWorkerRequest(request) {
         return applySwapRequest(request, profile);
     }
 
+    if (request.type === "hhee_return") {
+        if (!hheeReturnRequestHandler) {
+            return {
+                ok: false,
+                message: "El modulo de devolucion de horas no esta disponible."
+            };
+        }
+
+        return hheeReturnRequestHandler(request, profile);
+    }
+
     return {
         ok: false,
         message: "Tipo de solicitud no reconocido."
@@ -729,6 +777,37 @@ function requestDetailsHTML(request) {
 
         if (request.expiresAt && request.status === "pending") {
             pieces.push(`Caduca: ${formatTimestamp(request.expiresAt)}`);
+        }
+
+        return pieces.join(" | ");
+    }
+
+    if (request.type === "hhee_return") {
+        const monthLabel = monthLabelFromYearMonth(
+            request.returnYear,
+            request.returnMonth
+        );
+        const nextLabel = monthLabelFromYearMonth(
+            Number(request.returnMonth) === 11
+                ? Number(request.returnYear) + 1
+                : Number(request.returnYear),
+            Number(request.returnMonth) === 11
+                ? 0
+                : Number(request.returnMonth) + 1
+        );
+
+        if (monthLabel) {
+            pieces.push(`HH.EE de ${monthLabel}`);
+        }
+
+        pieces.push(
+            `Netas: ${formatReturnHours(request.netTotal)} h ` +
+            `(${formatReturnHours(request.netDay)} diurnas, ` +
+            `${formatReturnHours(request.netNight)} nocturnas)`
+        );
+
+        if (nextLabel) {
+            pieces.push(`Disponibles desde ${nextLabel}`);
         }
 
         return pieces.join(" | ");
@@ -1081,6 +1160,18 @@ async function rejectRequest(request) {
         rejectedAt: new Date().toISOString(),
         rejectReason: reason
     });
+
+    if (request.type === "hhee_return" && request.profile) {
+        const monthLabel = monthLabelFromYearMonth(
+            request.returnYear,
+            request.returnMonth
+        );
+
+        void notifyWorkerApp(
+            request.profile,
+            `Tu supervisor no aprobó tu solicitud de devolución de horas${monthLabel ? ` de ${monthLabel}` : ""}. Motivo: ${reason}.`
+        );
+    }
 
     addAuditLog(
         AUDIT_CATEGORY.WORKER_REQUESTS,

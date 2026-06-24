@@ -25,3 +25,17 @@ export function stripAccents(value) {
 export function normalizeText(value) {
     return stripAccents(String(value || "")).trim().toLowerCase();
 }
+
+/**
+ * Deja solo los digitos de un valor y, opcionalmente, lo recorta a una
+ * longitud maxima. Util para telefonos, RUT sin formato, etc.
+ *
+ * @param {*} value valor de entrada
+ * @param {number} maxLength cantidad maxima de digitos a conservar
+ * @returns {string} solo digitos
+ */
+export function sanitizeDigits(value, maxLength = Infinity) {
+    return String(value || "")
+        .replace(/\D/g, "")
+        .slice(0, maxLength);
+}

@@ -1,6 +1,115 @@
-import { keyFromDate, toISODate, keyToDate as parseKey, parseISODate as parseInputDate } from "./dateUtils.js";
-import { normalizeText, stripAccents } from "./stringUtils.js";
+import {
+    keyFromDate,
+    toISODate,
+    keyToDate as parseKey,
+    parseISODate as parseInputDate,
+    toInputDate,
+    toMonthInputValue,
+    parseMonthInputValue,
+    normalizeStoredStart,
+    inputDateToCalendarKey,
+    calendarKeyToInputDate,
+    compareISODate,
+    isDateKeyOnOrAfter,
+    formatDisplayDate,
+    formatMonthHeading,
+    monthSerial,
+    nextMonthPeriod
+} from "./dateUtils.js";
+import { normalizeText, stripAccents, sanitizeDigits } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
+import { formatRut, getRutValidationMessage } from "./rutUtils.js";
+import {
+    getRotativaLabel,
+    requiresRotationFirstTurn,
+    requiresRotationStart,
+    getRotationStartOptions,
+    normalizeRotationFirstTurn,
+    normalizeRotationFirstTurnForType,
+    getRotationFirstTurnLabel,
+    getRotationSequence
+} from "./rotationUtils.js";
+import {
+    cloneReturnDate,
+    timeNearReturnReference,
+    formatReturnTime,
+    formatReturnDateTime,
+    roundReturnHours,
+    returnHoursBetween,
+    getSegmentReturnHours,
+    getReturnSegmentId
+} from "./hourReturnUtils.js";
+import {
+    formatClockMarkDate,
+    formatClockMinute,
+    clockSegmentsOverlap,
+    findClockMarkEntry,
+    findClockSegmentForKey,
+    fallbackClockSegment,
+    hasClockMarkRecordData,
+    getClockMarkTimingFlags
+} from "./clockMarkUtils.js";
+import {
+    normalizeAttachmentFiles,
+    readAttachmentFiles,
+    dataUrlToBlob
+} from "./attachmentUtils.js";
+import {
+    formatSaldo,
+    normalizeBalanceValue,
+    withManualBalance
+} from "./balanceUtils.js";
+import {
+    profileUsesProfession,
+    formatProfession,
+    replaceProfessionOptions
+} from "./professionUtils.js";
+import {
+    formatHistoryDateTime,
+    recordProfileContractHistory
+} from "./contractHistoryUtils.js";
+import {
+    auditProfileSnapshot,
+    describeProfileChanges
+} from "./profileAuditUtils.js";
+import {
+    hheeReturnEffectivePeriod,
+    futureHheeReturnTransferHours,
+    getHheeMonthStats,
+    setHoursReturnBalance,
+    adjustHoursReturnBalance,
+    hheeReturnEffectiveLabel,
+    hheeReturnTransferPayload,
+    syncHheeReturnTransferBalance
+} from "./hheeReturnTransfer.js";
+import {
+    normalizeProfileSearch,
+    getCalendarProfileSearchValue,
+    findTopProfileSearchMatch
+} from "./profileSearchUtils.js";
+import {
+    aplicarDiurnoDesde,
+    aplicarCuartoTurnoDesde,
+    aplicarTercerTurnoDesde
+} from "./rotationApply.js";
+import {
+    getClockActualState,
+    buildClockMarkRecordsForProfile
+} from "./clockMarkRecords.js";
+import { printReportPreviewHTML } from "./reportPrint.js";
+import {
+    getRecordYear,
+    renderRecordField,
+    renderRecordEntry
+} from "./profileRecordsView.js";
+import {
+    getViewForTarget,
+    getTargetForActiveView,
+    isAppTarget,
+    targetFromHash,
+    appTargetUrl
+} from "./navigation.js";
+import { initTheme } from "./theme.js";
 import {
     prevMonth,
     nextMonth,
@@ -150,6 +259,7 @@ import { renderReplacementLogHTML } from "./replacements.js";
 import {
     refreshWorkerRequestsNavBadge,
     renderWorkerRequestsPanel,
+    setHheeReturnRequestHandler,
     startWorkerRequestsRealtimeSync,
     stopWorkerRequestsRealtimeSync
 } from "./workerRequests.js";
@@ -213,7 +323,6 @@ const PROFILE_MODE = {
     EDIT: "edit"
 };
 
-const THEME_KEY = "proturnos_theme";
 const PROFILE_BIRTH_DATE_DEFAULT = "2000-01-01";
 
 let selectionMode = null;
@@ -245,10 +354,6 @@ let clockMarksMonthDate = new Date(
 );
 let clockMarksMonthTouched = false;
 
-const PROFESSION_LABELS = {
-    [SIN_INFORMACION_PROFESSION]: "Sin informaci\u00f3n"
-};
-
 const FOURTH_SHIFT_NO_ASSIGNMENT_REPORT_LABEL =
     "3er o 4\u00b0 Turno sin asignaci\u00f3n de turno";
 const FOURTH_SHIFT_ASSIGNED_REPORT_LABEL =
@@ -271,36 +376,6 @@ const REPORT_MONTH_NAMES = [
     "Noviembre",
     "Diciembre"
 ];
-
-function profileUsesProfession(profile = {}) {
-    return (
-        profile.estamento === "Profesional" ||
-        profile.estamento === "T\u00e9cnico"
-    );
-}
-
-function formatProfession(value) {
-    const clean = value || SIN_INFORMACION_PROFESSION;
-
-    return PROFESSION_LABELS[clean] || clean;
-}
-
-function professionOptionElement(value) {
-    const option = document.createElement("option");
-
-    option.value = value;
-    option.textContent = formatProfession(value);
-
-    return option;
-}
-
-function replaceProfessionOptions(element, options = []) {
-    if (!element) return;
-
-    element.replaceChildren(
-        ...options.map(professionOptionElement)
-    );
-}
 
 function syncProfileProfessionField(data, editing) {
     if (!DOM.profileProfessionSelect) return;
@@ -509,81 +584,6 @@ const HR_LOG_CONFIG = [
 
 const recordYearFilters = {};
 
-function toInputDate(date){
-    return toISODate(date);
-}
-
-function toMonthInputValue(date) {
-    return [
-        date.getFullYear(),
-        String(date.getMonth() + 1).padStart(2, "0")
-    ].join("-");
-}
-
-function parseMonthInputValue(value) {
-    const parts = String(value || "").split("-");
-    const year = Number(parts[0]);
-    const month = Number(parts[1]) - 1;
-
-    if (!year || month < 0) return null;
-
-    return new Date(year, month, 1);
-}
-
-function normalizeStoredStart(start){
-    if (!start) return "";
-
-    if (/^\d{4}-\d{2}-\d{2}$/.test(start)) {
-        return start;
-    }
-
-    const date = new Date(start);
-
-    if (Number.isNaN(date.getTime())) {
-        return "";
-    }
-
-    return toInputDate(date);
-}
-
-function inputDateToCalendarKey(value){
-    if (!value) return "";
-
-    const parts = value.split("-");
-
-    if (parts.length !== 3) return "";
-
-    return `${parts[0]}-${Number(parts[1]) - 1}-${Number(parts[2])}`;
-}
-
-function calendarKeyToInputDate(key){
-    if (!key) return "";
-
-    return toInputDate(parseKey(key));
-}
-
-function compareISODate(a, b) {
-    return String(a || "").localeCompare(String(b || ""));
-}
-
-function isDateKeyOnOrAfter(key, startDate) {
-    const date = parseKey(key);
-
-    if (Number.isNaN(date.getTime())) return false;
-
-    return date >= startDate;
-}
-
-function formatDisplayDate(value){
-    if (!value) return "";
-
-    const parts = value.split("-");
-
-    if (parts.length !== 3) return value;
-
-    return `${parts[2]}/${parts[1]}/${parts[0]}`;
-}
-
 function contarHabiles(
     obj,
     year = new Date().getFullYear(),
@@ -602,127 +602,6 @@ function contarHabiles(
     return total;
 }
 
-function formatSaldo(value) {
-    const rounded =
-        Math.round((Number(value) || 0) * 100) / 100;
-
-    return Number.isInteger(rounded)
-        ? String(rounded)
-        : String(rounded).replace(".", ",");
-}
-
-function formatMonthHeading(date) {
-    return date.toLocaleString(
-        "es-CL",
-        {
-            month: "long",
-            year: "numeric"
-        }
-    ).toUpperCase();
-}
-
-function normalizeBalanceValue(value) {
-    const numeric = Number(
-        String(value ?? "").replace(",", ".")
-    );
-
-    if (!Number.isFinite(numeric)) return 0;
-
-    return Math.max(0, Math.round(numeric * 100) / 100);
-}
-
-function withManualBalance(
-    manualValue,
-    fallbackValue
-) {
-    const numeric = Number(manualValue);
-
-    return Number.isFinite(numeric)
-        ? Math.max(0, numeric)
-        : fallbackValue;
-}
-
-function monthSerial(year, month) {
-    return Number(year) * 12 + Number(month);
-}
-
-function nextMonthPeriod(year, month) {
-    const date = new Date(
-        Number(year),
-        Number(month) + 1,
-        1
-    );
-
-    return {
-        year: date.getFullYear(),
-        month: date.getMonth()
-    };
-}
-
-function hheeReturnEffectivePeriod(record = {}) {
-    const effectiveYear = Number(record.effectiveYear);
-    const effectiveMonth = Number(record.effectiveMonth);
-
-    if (
-        Number.isFinite(effectiveYear) &&
-        Number.isFinite(effectiveMonth)
-    ) {
-        return {
-            year: effectiveYear,
-            month: effectiveMonth
-        };
-    }
-
-    return nextMonthPeriod(record.year, record.month);
-}
-
-function hasStoredHheeReturnEffectivePeriod(record = {}) {
-    return (
-        Number.isFinite(Number(record.effectiveYear)) &&
-        Number.isFinite(Number(record.effectiveMonth))
-    );
-}
-
-function futureHheeReturnTransferHours(
-    profileName,
-    year,
-    month
-) {
-    if (
-        !profileName ||
-        !Number.isFinite(Number(year)) ||
-        !Number.isFinite(Number(month))
-    ) {
-        return 0;
-    }
-
-    const targetSerial = monthSerial(year, month);
-
-    return Object.values(getHheeReturnTransfers(profileName))
-        .filter(record => record?.enabled)
-        .reduce((sum, record) => {
-            const effective =
-                hheeReturnEffectivePeriod(record);
-
-            const appliesToYear =
-                Number(effective.year) === Number(year) ||
-                (
-                    !hasStoredHheeReturnEffectivePeriod(record) &&
-                    Number(record.year) === Number(year)
-                );
-
-            if (
-                !appliesToYear ||
-                monthSerial(effective.year, effective.month) <=
-                    targetSerial
-            ) {
-                return sum;
-            }
-
-            return sum +
-                normalizeBalanceValue(record.transferredHours);
-        }, 0);
-}
 
 function getLeaveBalances(
     year = new Date().getFullYear(),
@@ -805,75 +684,6 @@ function incrementManualBalance(
     });
 }
 
-function sanitizeDigits(value, maxLength = Infinity) {
-    return String(value || "")
-        .replace(/\D/g, "")
-        .slice(0, maxLength);
-}
-
-function formatRut(value) {
-    const raw = String(value || "")
-        .replace(/[^0-9kK]/g, "")
-        .toUpperCase();
-
-    if (raw.length <= 1) return raw;
-
-    const body = raw.slice(0, -1);
-    const verifier = raw.slice(-1);
-    const dotted = body
-        .split("")
-        .reverse()
-        .join("")
-        .match(/.{1,3}/g)
-        .join(".")
-        .split("")
-        .reverse()
-        .join("");
-
-    return `${dotted}-${verifier}`;
-}
-
-function cleanRutForValidation(value) {
-    return String(value || "")
-        .replace(/\./g, "")
-        .replace(/\s+/g, "")
-        .toUpperCase();
-}
-
-function validarRut(rutCompleto) {
-    const cleaned = cleanRutForValidation(rutCompleto);
-
-    if (!/^[0-9]+-[0-9K]{1}$/.test(cleaned)) return false;
-
-    const [rut, dv] = cleaned.split("-");
-    let suma = 0;
-    let multiplo = 2;
-
-    for (let i = rut.length - 1; i >= 0; i--) {
-        suma += Number(rut.charAt(i)) * multiplo;
-        multiplo = multiplo < 7 ? multiplo + 1 : 2;
-    }
-
-    let dvEsperado = 11 - (suma % 11);
-    dvEsperado =
-        dvEsperado === 11
-            ? "0"
-            : dvEsperado === 10
-                ? "K"
-                : String(dvEsperado);
-
-    return dv === dvEsperado;
-}
-
-function getRutValidationMessage(value) {
-    const rut = String(value || "").trim();
-
-    if (!rut) return "";
-    if (validarRut(rut)) return "";
-
-    return "El RUT ingresado no es valido. Revisa el numero y el digito verificador.";
-}
-
 function syncRutValidity(showMessage = false) {
     const message = getRutValidationMessage(
         DOM.profileRutInput.value
@@ -886,54 +696,6 @@ function syncRutValidity(showMessage = false) {
     }
 
     return !message;
-}
-
-function normalizeAttachmentFiles(files) {
-    return Array.from(files || []).map(file => ({
-        id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
-        name: file.name,
-        type: file.type || "",
-        size: file.size || 0,
-        addedAt: new Date().toISOString()
-    }));
-}
-
-function readFileAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-    });
-}
-
-async function readAttachmentFiles(files) {
-    const list = Array.from(files || []);
-    const attachments = [];
-
-    for (const file of list) {
-        attachments.push({
-            ...normalizeAttachmentFiles([file])[0],
-            dataUrl: await readFileAsDataURL(file)
-        });
-    }
-
-    return attachments;
-}
-
-function dataUrlToBlob(dataUrl) {
-    const [header, data] = String(dataUrl || "").split(",");
-    const mimeMatch = header.match(/data:([^;]+);base64/);
-    const mime = mimeMatch?.[1] || "application/octet-stream";
-    const binary = atob(data || "");
-    const bytes = new Uint8Array(binary.length);
-
-    for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-    }
-
-    return new Blob([bytes], { type: mime });
 }
 
 function openAttachment(doc) {
@@ -971,18 +733,6 @@ function saveProfileLogs(profileName, logs) {
     if (!profileName) return;
 
     setJSON(`hrLogs_${profileName}`, logs || {});
-}
-
-function getRecordYear(entry) {
-    const source = entry.date || entry.start || "";
-
-    return source ? String(source).slice(0, 4) : "";
-}
-
-function renderAttachmentName(entry) {
-    return entry?.file?.name
-        ? `<small>Clip: ${escapeHTML(entry.file.name)}</small>`
-        : "";
 }
 
 function syncHoursMonthControls(forceChartMonth = false) {
@@ -1052,97 +802,6 @@ function changeClockMarksMonth(offset) {
     );
 
     renderClockMarksPanel();
-}
-
-function getRotativaLabel(type){
-    if (type === "3turno") return "3er Turno";
-    if (type === "4turno") return "4° Turno";
-    if (type === "diurno") return "Diurno";
-    if (type === "libre") return "Libre";
-    if (type === "reemplazo") return "Reemplazo";
-    return "Sin rotativa";
-}
-
-function requiresRotationFirstTurn(type) {
-    return type === "3turno" || type === "4turno";
-}
-
-function requiresRotationStart(type) {
-    return Boolean(type) && type !== "libre";
-}
-
-function getRotationStartOptions(type) {
-    if (type === "3turno") {
-        return [
-            {
-                value: "larga",
-                label: "Iniciar con primer Largo",
-                summary: "primer Largo",
-                detail: "Iniciar con el primer turno Largo"
-            },
-            {
-                value: "larga2",
-                label: "Iniciar con segundo Largo",
-                summary: "segundo Largo",
-                detail: "Iniciar con el segundo turno Largo"
-            },
-            {
-                value: "noche",
-                label: "Iniciar con primera Noche",
-                summary: "primera Noche",
-                detail: "Iniciar con la primera Noche"
-            },
-            {
-                value: "noche2",
-                label: "Iniciar con segunda Noche",
-                summary: "segunda Noche",
-                detail: "Iniciar con la segunda Noche"
-            },
-            {
-                value: "libre1",
-                label: "Iniciar con primer Libre",
-                summary: "primer Libre",
-                detail: "Iniciar con el primer Libre"
-            },
-            {
-                value: "libre2",
-                label: "Iniciar con segundo Libre",
-                summary: "segundo Libre",
-                detail: "Iniciar con el segundo Libre"
-            }
-        ];
-    }
-
-    if (type === "4turno") {
-        return [
-            {
-                value: "larga",
-                label: "Iniciar con Largo",
-                summary: "Largo",
-                detail: "Iniciar con turno Largo"
-            },
-            {
-                value: "noche",
-                label: "Iniciar con Noche",
-                summary: "Noche",
-                detail: "Iniciar con turno Noche"
-            },
-            {
-                value: "libre1",
-                label: "Iniciar con primer Libre",
-                summary: "primer Libre",
-                detail: "Iniciar con el primer Libre"
-            },
-            {
-                value: "libre2",
-                label: "Iniciar con segundo Libre",
-                summary: "segundo Libre",
-                detail: "Iniciar con el segundo Libre"
-            }
-        ];
-    }
-
-    return [];
 }
 
 function supportsLibreRotation(data = profileDraft) {
@@ -1220,203 +879,12 @@ function syncProfileRotationOptions(data = profileDraft) {
     }
 }
 
-function normalizeRotationFirstTurn(value) {
-    const normalized = stripAccents(String(value || "")).toLowerCase();
-
-    if (
-        normalized === "larga2" ||
-        normalized === "largo2" ||
-        normalized === "segunda larga" ||
-        normalized === "segundo largo" ||
-        normalized === "2 larga" ||
-        normalized === "2 largo"
-    ) {
-        return "larga2";
-    }
-
-    if (
-        normalized === "noche2" ||
-        normalized === "segunda noche" ||
-        normalized === "2 noche"
-    ) {
-        return "noche2";
-    }
-
-    if (
-        normalized === "libre2" ||
-        normalized === "segundo libre" ||
-        normalized === "segunda libre" ||
-        normalized === "2 libre"
-    ) {
-        return "libre2";
-    }
-
-    if (
-        normalized === "libre" ||
-        normalized === "libre1" ||
-        normalized === "primer libre" ||
-        normalized === "primera libre" ||
-        normalized === "1 libre"
-    ) {
-        return "libre1";
-    }
-
-    return normalized === "noche"
-        ? "noche"
-        : "larga";
-}
-
-function normalizeRotationFirstTurnForType(type, value) {
-    const normalized = normalizeRotationFirstTurn(value);
-    const options = getRotationStartOptions(type);
-
-    if (!options.length) return normalized;
-
-    return options.some(option => option.value === normalized)
-        ? normalized
-        : options[0].value;
-}
-
-function getRotationFirstTurnLabel(value, type = "") {
-    const normalized = normalizeRotationFirstTurnForType(type, value);
-    const option = getRotationStartOptions(type)
-        .find(item => item.value === normalized);
-
-    if (option) return option.summary || option.label;
-
-    if (normalized === "larga2") return "segundo Largo";
-    if (normalized === "noche") return "primera Noche";
-    if (normalized === "noche2") return "segunda Noche";
-    if (normalized === "libre1") return "primer Libre";
-    if (normalized === "libre2") return "segundo Libre";
-
-    return "primer Largo";
-}
-
-function rotateRotationSequence(sequence, startIndex) {
-    return [
-        ...sequence.slice(startIndex),
-        ...sequence.slice(0, startIndex)
-    ];
-}
-
-function rotationStartIndex(type, firstTurn = "larga") {
-    const normalized =
-        normalizeRotationFirstTurnForType(type, firstTurn);
-
-    if (type === "3turno") {
-        if (normalized === "larga2") return 1;
-        if (normalized === "noche") return 2;
-        if (normalized === "noche2") return 3;
-        if (normalized === "libre1") return 4;
-        if (normalized === "libre2") return 5;
-
-        return 0;
-    }
-
-    if (type === "4turno") {
-        if (normalized === "noche") return 1;
-        if (normalized === "libre1") return 2;
-        if (normalized === "libre2") return 3;
-
-        return 0;
-    }
-
-    return 0;
-}
-
-function getRotationSequence(type, firstTurn = "larga") {
-    if (type === "3turno") {
-        return rotateRotationSequence(
-            [1, 1, 2, 2, 0, 0],
-            rotationStartIndex(type, firstTurn)
-        );
-    }
-
-    if (type === "4turno") {
-        return rotateRotationSequence(
-            [1, 2, 0, 0],
-            rotationStartIndex(type, firstTurn)
-        );
-    }
-
-    return [];
-}
-
 function activeLabel(value) {
     return value ? "activo" : "desactivado";
 }
 
 function yesNoLabel(value) {
     return value ? "si" : "no";
-}
-
-function auditProfileSnapshot(profileName) {
-    const profile = getProfiles().find(
-        item => item.name === profileName
-    );
-
-    if (!profile) return null;
-
-    return {
-        ...profile,
-        shiftAssigned: getShiftAssigned(profileName),
-        rotativa: getRotativa(profileName)
-    };
-}
-
-function describeProfileChanges(before, after) {
-    if (!before) return "Ficha inicial creada.";
-
-    const changes = [];
-    const fields = [
-        ["name", "nombre"],
-        ["email", "correo"],
-        ["rut", "RUT"],
-        ["phone", "celular"],
-        ["birthDate", "fecha de nacimiento"],
-        ["unitEntryDate", "fecha de ingreso"],
-        ["contractType", "tipo de contrato"],
-        ["honorariaStart", "inicio contrato honorarios"],
-        ["honorariaEnd", "termino contrato honorarios"],
-        ["honorariaHourlyRate", "valor hora honorarios"],
-        ["honorariaMaxMonthlyHours", "maximo mensual honorarios"],
-        ["estamento", "estamento"],
-        ["profession", "profesion"],
-        ["unionLeaveEnabled", "permiso gremial"],
-        ["grade", "grado"]
-    ];
-
-    fields.forEach(([key, label]) => {
-        if (String(before[key] || "") !== String(after[key] || "")) {
-            changes.push(label);
-        }
-    });
-
-    if (Boolean(before.shiftAssigned) !== Boolean(after.shiftAssigned)) {
-        changes.push("asignacion de turno");
-    }
-
-    if (
-        String(before.rotativa?.type || "") !== String(after.rotativa?.type || "") ||
-        String(before.rotativa?.start || "") !== String(after.rotativa?.start || "") ||
-        normalizeRotationFirstTurn(before.rotativa?.firstTurn) !==
-            normalizeRotationFirstTurn(after.rotativa?.firstTurn)
-    ) {
-        changes.push("rotativa actual");
-    }
-
-    if ((before.docs?.length || 0) !== (after.docs?.length || 0)) {
-        changes.push("documentos adjuntos");
-    }
-
-    if (before.active !== after.active) {
-        changes.push("estado del perfil");
-    }
-
-    return changes.length
-        ? `Campos modificados: ${changes.join(", ")}.`
-        : "Se guardo la ficha sin cambios detectados.";
 }
 
 function isProfileEditing(){
@@ -1963,164 +1431,6 @@ function renderProfileRotationStatus(data, editing) {
                     : data.rotationType
             );
         });
-}
-
-function formatHistoryDateTime(value) {
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) {
-        return value || "";
-    }
-
-    return date.toLocaleString("es-CL", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit"
-    });
-}
-
-function formatHistoryValue(field, value) {
-    if (field === "profession") {
-        return formatProfession(value);
-    }
-
-    if (field === "rotation") {
-        return formatRotationValue(value);
-    }
-
-    if (field === "grade") {
-        return value ? `Grado ${value}` : "Sin grado";
-    }
-
-    if (field === "contractType") {
-        return value || "Sin contrato";
-    }
-
-    if (field === "estamento") {
-        return value || "Sin estamento";
-    }
-
-    return value || "Sin dato";
-}
-
-function formatRotationValue(rotativa = {}) {
-    const type = rotativa?.type || "";
-    const start = normalizeStoredStart(rotativa?.start || "");
-    const firstTurn =
-        normalizeRotationFirstTurnForType(
-            type,
-            rotativa?.firstTurn
-        );
-    const startText = start
-        ? ` desde ${formatDisplayDate(start)}`
-        : "";
-    const firstTurnText =
-        requiresRotationFirstTurn(type) && start
-            ? `, inicia con ${getRotationFirstTurnLabel(firstTurn, type)}`
-            : "";
-
-    return `${getRotativaLabel(type)}${startText}${firstTurnText}`;
-}
-
-function contractHistoryChanges(
-    previousSnapshot,
-    nextSnapshot,
-    gradeEffectiveDate
-) {
-    if (!previousSnapshot || !nextSnapshot) return [];
-
-    const fieldConfig = [
-        {
-            key: "contractType",
-            label: "Tipo de contrato",
-            effectiveDate: gradeEffectiveDate
-        },
-        {
-            key: "estamento",
-            label: "Estamento",
-            effectiveDate: gradeEffectiveDate
-        },
-        {
-            key: "profession",
-            label: "Profesi\u00f3n"
-        },
-        {
-            key: "grade",
-            label: "Grado",
-            effectiveDate: gradeEffectiveDate
-        }
-    ];
-
-    const changes = fieldConfig
-        .filter(config =>
-            String(previousSnapshot[config.key] || "") !==
-            String(nextSnapshot[config.key] || "")
-        )
-        .map(config => ({
-            field: config.key,
-            label: config.label,
-            from: formatHistoryValue(
-                config.key,
-                previousSnapshot[config.key]
-            ),
-            to: formatHistoryValue(
-                config.key,
-                nextSnapshot[config.key]
-            ),
-            effectiveDate: config.effectiveDate || ""
-        }));
-
-    const previousRotation = previousSnapshot.rotativa || {};
-    const nextRotation = nextSnapshot.rotativa || {};
-    const rotationChanged =
-        String(previousRotation.type || "") !==
-            String(nextRotation.type || "") ||
-        normalizeStoredStart(previousRotation.start || "") !==
-            normalizeStoredStart(nextRotation.start || "") ||
-        normalizeRotationFirstTurn(previousRotation.firstTurn) !==
-            normalizeRotationFirstTurn(nextRotation.firstTurn);
-
-    if (rotationChanged) {
-        changes.push({
-            field: "rotation",
-            label: "Rotativa",
-            from: formatHistoryValue("rotation", previousRotation),
-            to: formatHistoryValue("rotation", nextRotation),
-            effectiveDate:
-                normalizeStoredStart(nextRotation.start || "") || ""
-        });
-    }
-
-    return changes;
-}
-
-function recordProfileContractHistory(
-    profileName,
-    previousSnapshot,
-    nextSnapshot,
-    gradeEffectiveDate
-) {
-    const changes = contractHistoryChanges(
-        previousSnapshot,
-        nextSnapshot,
-        gradeEffectiveDate
-    );
-
-    if (!changes.length) return;
-
-    addContractHistoryEntry(profileName, {
-        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        createdAt: new Date().toISOString(),
-        effectiveDate:
-            gradeEffectiveDate ||
-            changes.find(change => change.effectiveDate)
-                ?.effectiveDate ||
-            "",
-        summary: "Cambio de datos contractuales",
-        changes
-    });
 }
 
 function renderContractHistory(profile) {
@@ -3193,125 +2503,6 @@ function requestGradeEffectiveDate(previousSnapshot, nextProfile) {
     });
 }
 
-function getHheeMonthStats(profileName, year, month, holidays) {
-    const days = new Date(year, month + 1, 0).getDate();
-
-    return calcularHorasMesPerfil(
-        profileName,
-        year,
-        month,
-        days,
-        holidays,
-        getProfileData(profileName),
-        {},
-        getCarry(year, month)
-    );
-}
-
-function setHoursReturnBalance(profileName, year, value) {
-    const manual = getManualLeaveBalances(year, profileName);
-
-    saveManualLeaveBalances(
-        year,
-        {
-            ...manual,
-            hoursReturn: normalizeBalanceValue(value)
-        },
-        profileName
-    );
-}
-
-function adjustHoursReturnBalance(profileName, year, delta) {
-    const manual = getManualLeaveBalances(year, profileName);
-    const current = normalizeBalanceValue(manual.hoursReturn);
-
-    setHoursReturnBalance(
-        profileName,
-        year,
-        Math.max(0, current + Number(delta || 0))
-    );
-}
-
-function hheeReturnEffectiveLabel(year, month) {
-    const effective = nextMonthPeriod(year, month);
-
-    return formatMonthHeading(
-        new Date(effective.year, effective.month, 1)
-    );
-}
-
-function roundSignedHours(value) {
-    return Math.round((Number(value) || 0) * 100) / 100;
-}
-
-function hheeReturnTransferPayload(stats, transferredHours) {
-    return {
-        transferredHours,
-        hheeDiurnas: Math.max(0, Number(stats.hheeDiurnas) || 0),
-        hheeNocturnas: Math.max(0, Number(stats.hheeNocturnas) || 0)
-    };
-}
-
-function syncHheeReturnTransferBalance(profileName, year, month, stats) {
-    const existing =
-        getHheeReturnTransfer(profileName, year, month);
-
-    if (!existing?.enabled) return;
-    const effective =
-        hheeReturnEffectivePeriod({
-            ...existing,
-            year,
-            month
-        });
-    const hasStoredEffective =
-        hasStoredHheeReturnEffectivePeriod(existing);
-
-    const transferredHours =
-        calculateHheeReturnTransferHours(
-            stats.hheeDiurnas,
-            stats.hheeNocturnas
-        );
-    const previousTransferred =
-        normalizeBalanceValue(existing.transferredHours);
-    const delta = roundSignedHours(
-        transferredHours - previousTransferred
-    );
-
-    if (!hasStoredEffective && Number(effective.year) !== Number(year)) {
-        adjustHoursReturnBalance(
-            profileName,
-            year,
-            -previousTransferred
-        );
-        adjustHoursReturnBalance(
-            profileName,
-            effective.year,
-            previousTransferred
-        );
-    }
-
-    if (delta) {
-        adjustHoursReturnBalance(
-            profileName,
-            effective.year,
-            delta
-        );
-    }
-
-    saveHheeReturnTransfer(
-        profileName,
-        year,
-        month,
-        {
-            ...existing,
-            ...hheeReturnTransferPayload(stats, transferredHours),
-            enabled: true,
-            effectiveYear: effective.year,
-            effectiveMonth: effective.month
-        }
-    );
-}
-
 function renderHheeReturnTransferControl(profile, year, month, stats) {
     if (!DOM.hheeReturnTransferToggle) return;
 
@@ -3484,6 +2675,122 @@ async function handleHheeReturnTransferToggle() {
     refreshAll();
 }
 
+// Activa el traspaso de las HH.EE de un mes a devolucion para un colaborador.
+// Es la misma logica del switch "Enviar HH.EE a devolucion" (rama enable de
+// handleHheeReturnTransferToggle), reutilizada al aceptar una solicitud
+// "hhee_return" enviada desde la app del trabajador. Es idempotente: si el mes
+// ya estaba traspasado no vuelve a sumar el saldo.
+async function enableHheeReturnTransferForMonth(profileName, year, month) {
+    const name = String(profileName || "").trim();
+
+    if (
+        !name ||
+        !Number.isFinite(Number(year)) ||
+        !Number.isFinite(Number(month))
+    ) {
+        return {
+            ok: false,
+            message: "La solicitud de devolución no trae el mes o el colaborador."
+        };
+    }
+
+    const holidays = await fetchHolidays(year);
+    const stats = getHheeMonthStats(name, year, month, holidays);
+    const transferHours = calculateHheeReturnTransferHours(
+        stats.hheeDiurnas,
+        stats.hheeNocturnas
+    );
+
+    if (transferHours <= 0) {
+        return {
+            ok: false,
+            message: "Ese mes no tiene horas extras positivas para traspasar a devolución."
+        };
+    }
+
+    const existing = getHheeReturnTransfer(name, year, month);
+
+    if (existing?.enabled) {
+        return {
+            ok: true,
+            alreadyEnabled: true,
+            transferHours: normalizeBalanceValue(existing.transferredHours),
+            effective: hheeReturnEffectivePeriod({ ...existing, year, month })
+        };
+    }
+
+    const effective = existing
+        ? hheeReturnEffectivePeriod({ ...existing, year, month })
+        : nextMonthPeriod(year, month);
+    const manual = getManualLeaveBalances(effective.year, name);
+    const baseBalance = normalizeBalanceValue(manual.hoursReturn);
+
+    pushHistory();
+
+    adjustHoursReturnBalance(name, effective.year, transferHours);
+    saveHheeReturnTransfer(
+        name,
+        year,
+        month,
+        {
+            ...existing,
+            ...hheeReturnTransferPayload(stats, transferHours),
+            enabled: true,
+            baseBalance,
+            effectiveYear: effective.year,
+            effectiveMonth: effective.month
+        }
+    );
+
+    addAuditLog(
+        AUDIT_CATEGORY.LEAVE_ABSENCE,
+        "Traspaso HH.EE a devolución",
+        `${name}: ${formatSaldo(stats.hheeDiurnas)}h diurnas y ${formatSaldo(stats.hheeNocturnas)}h nocturnas generan ${formatSaldo(transferHours)} hrs. de devolución desde ${hheeReturnEffectiveLabel(year, month)} (solicitud del trabajador).`,
+        {
+            profile: name,
+            year,
+            month,
+            transferHours,
+            effectiveYear: effective.year,
+            effectiveMonth: effective.month,
+            source: "worker_request"
+        }
+    );
+
+    return { ok: true, transferHours, effective };
+}
+
+// Conecta la aceptacion de solicitudes "hhee_return" (app del trabajador) con la
+// activacion del traspaso de HH.EE a devolucion, notificando luego al trabajador
+// y re-publicando sus datos para que vea el cambio en su app.
+setHheeReturnRequestHandler(async request => {
+    const profileName = String(request?.profile || "").trim();
+    const year = Number(request?.returnYear);
+    const month = Number(request?.returnMonth);
+
+    const result = await enableHheeReturnTransferForMonth(
+        profileName,
+        year,
+        month
+    );
+
+    if (!result.ok) return result;
+
+    const sourceLabel = formatMonthHeading(new Date(year, month, 1));
+    const effectiveLabel = hheeReturnEffectiveLabel(year, month);
+
+    void notifyWorkerApp(
+        profileName,
+        `Tu supervisor aceptó enviar tus HH.EE de ${sourceLabel} a devolución de horas. ` +
+        `Dispones de ${formatSaldo(result.transferHours)} hrs. desde ${effectiveLabel}.`
+    );
+
+    scheduleWorkerAppDataPublish(300);
+    refreshAll();
+
+    return { ok: true };
+});
+
 async function renderProfileHoursSummary(profile = getPerfilActual()) {
     const summary = document.getElementById("summary");
     const records = DOM.hheeMonthlyRecords;
@@ -3603,54 +2910,6 @@ function renderProfileDocs(data, editing) {
                 renderDashboardState();
             };
         });
-}
-
-function renderRecordField(field, recordKey) {
-    const id = `${recordKey}_${field.name}`;
-
-    if (field.type === "textarea") {
-        return `
-            <label class="record-field record-field--wide">
-                <span>${field.label}</span>
-                <textarea id="${id}" data-field="${field.name}" rows="3"></textarea>
-            </label>
-        `;
-    }
-
-    return `
-        <label class="record-field">
-            <span>${field.label}</span>
-            <input id="${id}" data-field="${field.name}" type="${field.type || "text"}">
-        </label>
-    `;
-}
-
-function renderRecordEntry(config, entry) {
-    const values = config.fields
-        .map(field => {
-            const value = entry[field.name];
-            const displayValue =
-                field.type === "date" && value
-                    ? formatDisplayDate(value)
-                    : value;
-
-            return `
-                <span>
-                    <strong>${field.label}:</strong>
-                    ${escapeHTML(displayValue || "Sin dato")}
-                </span>
-            `;
-        })
-        .join("");
-
-    return `
-        <article class="record-item">
-            <div class="record-item__values">
-                ${values}
-            </div>
-            ${renderAttachmentName(entry)}
-        </article>
-    `;
 }
 
 function renderRecordCard(config, logs, editing) {
@@ -4381,6 +3640,50 @@ function showHistoryActionToast(result, type) {
     }, 5200);
 }
 
+// Toast generico no bloqueante para avisos breves (reemplaza alert() nativo).
+// Se auto-cierra y tambien se cierra al hacer clic.
+function showAppToast(message, options = {}) {
+    const {
+        title = "",
+        variant = "info",
+        duration = 4200
+    } = options;
+
+    let toast = document.getElementById("appToast");
+
+    if (!toast) {
+        toast = document.createElement("div");
+        toast.id = "appToast";
+        toast.className = "app-toast";
+        toast.setAttribute("role", "status");
+        toast.setAttribute("aria-live", "polite");
+        toast.addEventListener("click", () => {
+            toast.classList.remove("is-visible");
+        });
+        document.body.appendChild(toast);
+    }
+
+    toast.classList.remove(
+        "is-visible",
+        "app-toast--info",
+        "app-toast--warn",
+        "app-toast--success"
+    );
+    toast.innerHTML = `
+        ${title ? `<strong>${escapeHTML(title)}</strong>` : ""}
+        <span>${escapeHTML(message)}</span>
+    `;
+
+    void toast.offsetWidth;
+
+    toast.classList.add(`app-toast--${variant}`, "is-visible");
+
+    clearTimeout(toast._hideTimer);
+    toast._hideTimer = setTimeout(() => {
+        toast.classList.remove("is-visible");
+    }, duration);
+}
+
 function updateHistoryNavState() {
     if (DOM.undoBtn) {
         DOM.undoBtn.disabled = !canUndo();
@@ -4438,80 +3741,6 @@ function updateTurnChangesNavState() {
     }
 }
 
-function getViewForTarget(targetId) {
-    if (
-        targetId === "profileSection" ||
-        targetId === "availabilitySummary"
-    ) {
-        return "profile";
-    }
-
-    if (targetId === "hoursPanel") {
-        return "hours";
-    }
-
-    if (targetId === "turnChangesView") {
-        return "swap";
-    }
-
-    if (targetId === "workerRequestsPanel") {
-        return "requests";
-    }
-
-    if (targetId === "memosPanel") {
-        return "memos";
-    }
-
-    if (targetId === "reportsPanel") {
-        return "reports";
-    }
-
-    if (targetId === "dashboardPanel") {
-        return "dashboard";
-    }
-
-    if (targetId === "clockMarksPanel") {
-        return "clockmarks";
-    }
-
-    if (targetId === "auditLogPanel") {
-        return "log";
-    }
-
-    if (targetId === "staffingWeeklyCalendar") {
-        return "weekly";
-    }
-
-    if (targetId === "timelinePanel") {
-        return "timeline";
-    }
-
-    if (targetId === "taskAssignmentsPanel") {
-        return "tasks";
-    }
-
-    if (targetId === "kanbanPanel") {
-        return "kanban";
-    }
-
-    if (targetId === "agendaPanel") {
-        return "agenda";
-    }
-
-    return "turnos";
-}
-
-function getTargetForActiveView() {
-    const activeView = document.body.dataset.activeView || "turnos";
-    const activeTile = Array.from(
-        document.querySelectorAll(".nav-tile[data-target]")
-    ).find(button =>
-        getViewForTarget(button.dataset.target) === activeView &&
-        !button.classList.contains("nav-tile--action")
-    );
-
-    return activeTile?.dataset.target || "calendarPanel";
-}
 
 function syncWorkspacePermissionUI(options = {}) {
     const shouldSwitch = options.switchIfNeeded !== false;
@@ -5210,263 +4439,6 @@ function buildSpecificReportPreviewHTML(profile, date) {
     return Promise.resolve("");
 }
 
-function printReportPreviewHTML(html, title) {
-    if (!html) {
-        alert("No fue posible generar el reporte para imprimir.");
-        return;
-    }
-
-    const printWindow = window.open(
-        "",
-        "_blank",
-        "width=1100,height=800"
-    );
-
-    if (!printWindow) {
-        alert("Permite las ventanas emergentes para imprimir el reporte.");
-        return;
-    }
-
-    printWindow.document.open();
-    printWindow.document.write(`
-        <!doctype html>
-        <html lang="es">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>${escapeHTML(title || "Reporte")}</title>
-                <link rel="stylesheet" href="styles.css">
-                <style>
-                    :root {
-                        --accent: #1d6cff;
-                        --panel: #ffffff;
-                        --panel-alt: #ffffff;
-                        --field: #ffffff;
-                        --border: #e5e7eb;
-                        --text: #0f172a;
-                        --text-soft: #1e2f4d;
-                        --text-muted: #64748b;
-                    }
-
-                    *,
-                    *::before,
-                    *::after {
-                        -webkit-print-color-adjust: exact !important;
-                        print-color-adjust: exact !important;
-                        color-adjust: exact !important;
-                    }
-
-                    html,
-                    body {
-                        width: 100%;
-                        min-height: 100%;
-                        margin: 0;
-                        background: #ffffff !important;
-                        color: #111827 !important;
-                    }
-
-                    body::before,
-                    body::after {
-                        display: none !important;
-                    }
-
-                    .report-print-page {
-                        max-width: 1180px;
-                        margin: 0 auto;
-                        padding: 18px;
-                        box-sizing: border-box;
-                        background: #ffffff;
-                    }
-
-                    .report-print-page .report-title-strip {
-                        display: block;
-                    }
-
-                    .report-print-page .no-assignment-report {
-                        display: grid;
-                        gap: 12px;
-                    }
-
-                    .report-print-page .report-title-strip {
-                        padding: 10px 12px;
-                        border-radius: 12px;
-                        background: #0f172a !important;
-                        color: #ffffff !important;
-                        font-weight: 900;
-                        text-align: center;
-                    }
-
-                    .report-print-page .report-section {
-                        display: grid;
-                        gap: 6px;
-                        min-width: 0;
-                    }
-
-                    .report-print-page .report-section h4 {
-                        margin: 0;
-                        padding: 7px 10px;
-                        border-radius: 10px;
-                        background: #1d6cff !important;
-                        color: #ffffff !important;
-                        font-size: 0.82rem;
-                        text-transform: uppercase;
-                    }
-
-                    .report-print-page .report-table-wrap {
-                        overflow: visible;
-                        border-radius: 12px;
-                        border: 1px solid #e5e7eb;
-                        background: #ffffff !important;
-                    }
-
-                    .report-print-page .report-table {
-                        width: 100%;
-                        border-collapse: collapse;
-                        font-size: 0.8rem;
-                    }
-
-                    .report-print-page .report-table th,
-                    .report-print-page .report-table td {
-                        padding: 7px 8px;
-                        border: 1px solid #e5e7eb;
-                        text-align: left;
-                        vertical-align: top;
-                    }
-
-                    .report-print-page .report-table th {
-                        background: #dbeafe !important;
-                        color: #0f172a !important;
-                        font-weight: 800;
-                    }
-
-                    .report-print-page .report-table td {
-                        background: #ffffff !important;
-                        color: #1e2f4d !important;
-                    }
-
-                    .report-print-page .report-worker-data-grid {
-                        display: grid !important;
-                        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-                        gap: 12px !important;
-                    }
-
-                    .report-print-page .report-worker-data-column {
-                        min-width: 0;
-                    }
-
-                    .report-print-page .report-section--worker-data .report-table {
-                        min-width: 0;
-                    }
-
-                    .report-print-page .report-section--worker-data .report-table th:first-child,
-                    .report-print-page .report-section--worker-data .report-table td:first-child {
-                        width: 1%;
-                        padding-right: 22px;
-                        white-space: nowrap;
-                    }
-
-                    .report-print-page .report-row--inhabil td:first-child {
-                        background: #fee2e2 !important;
-                    }
-
-                    .report-print-page .report-signature-footer {
-                        justify-self: end;
-                        width: min(320px, 42%);
-                        min-width: 240px;
-                        margin-top: 24mm;
-                        margin-right: 10mm;
-                        padding: 2mm 0 0;
-                        border-top: 1px solid #1e2f4d;
-                        color: #1e2f4d !important;
-                        font-size: 0.78rem;
-                        font-weight: 650;
-                        line-height: 1.3;
-                        text-align: center;
-                        break-inside: avoid;
-                        page-break-inside: avoid;
-                    }
-
-                    @media print {
-                        @page {
-                            size: A4 landscape;
-                            margin: 12mm;
-                        }
-
-                        html,
-                        body {
-                            width: auto;
-                            min-height: 0;
-                            padding: 0 !important;
-                        }
-
-                        .report-print-page {
-                            max-width: none;
-                            width: 100%;
-                            padding: 4mm;
-                            box-sizing: border-box;
-                            -webkit-box-decoration-break: clone;
-                            box-decoration-break: clone;
-                        }
-
-                        .report-print-page .no-assignment-report {
-                            gap: 8px;
-                        }
-
-                        .report-print-page .report-section {
-                            break-inside: auto;
-                            page-break-inside: auto;
-                        }
-
-                        .report-print-page .report-section h4 {
-                            break-after: avoid;
-                            page-break-after: avoid;
-                        }
-
-                        .report-print-page .report-table-wrap {
-                            break-inside: auto;
-                            page-break-inside: auto;
-                        }
-
-                        .report-print-page .report-worker-data-grid {
-                            display: grid !important;
-                            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-                        }
-
-                        .report-print-page .report-table {
-                            page-break-inside: auto;
-                        }
-
-                        .report-print-page .report-table tr {
-                            break-inside: avoid;
-                            page-break-inside: avoid;
-                        }
-                    }
-                </style>
-            </head>
-            <body class="theme-light">
-                <main class="report-print-page">
-                    ${html}
-                </main>
-            </body>
-        </html>
-    `);
-    printWindow.document.close();
-
-    const runPrint = () => {
-        printWindow.focus();
-        printWindow.print();
-    };
-
-    if (printWindow.document.readyState === "complete") {
-        window.setTimeout(runPrint, 300);
-    } else {
-        printWindow.addEventListener("load", () =>
-            window.setTimeout(runPrint, 300),
-            { once: true }
-        );
-    }
-}
-
 async function printSpecificReportPdf(profile, date) {
     if (!profile?.name) {
         alert("Selecciona un trabajador para imprimir el reporte.");
@@ -5706,286 +4678,6 @@ async function renderReportsProfiles(options = {}) {
     }
 }
 
-function formatClockMarkDate(keyDay) {
-    return formatDisplayDate(calendarKeyToInputDate(keyDay));
-}
-
-function formatClockMinute(date) {
-    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
-}
-
-function parseClockTimeValue(value) {
-    const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
-
-    if (!match) return null;
-
-    const hour = Number(match[1]);
-    const minute = Number(match[2]);
-
-    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-        return null;
-    }
-
-    return { hour, minute };
-}
-
-function clockDateAt(base, hour, minute = 0) {
-    return new Date(
-        base.getFullYear(),
-        base.getMonth(),
-        base.getDate(),
-        hour,
-        minute
-    );
-}
-
-function clockTimeNearReference(baseDate, value, reference) {
-    const parsed = parseClockTimeValue(value);
-
-    if (!parsed) return null;
-
-    const same = clockDateAt(
-        baseDate,
-        parsed.hour,
-        parsed.minute
-    );
-    const next = new Date(same);
-    next.setDate(next.getDate() + 1);
-    const previous = new Date(same);
-    previous.setDate(previous.getDate() - 1);
-
-    return [same, next, previous].sort((a, b) =>
-        Math.abs(a - reference) - Math.abs(b - reference)
-    )[0];
-}
-
-function clockSegmentsOverlap(a, b) {
-    return a.start < b.end && b.start < a.end;
-}
-
-function findClockMarkEntry(mark, segment) {
-    if (!mark?.segments || !segment) return null;
-
-    const aliases = {
-        half_admin_morning: ["half_afternoon"],
-        half_admin_afternoon: ["half_morning"],
-        half_morning: ["half_admin_afternoon"],
-        half_afternoon: ["half_admin_morning"]
-    };
-    const keys = [segment.id, ...(aliases[segment.id] || [])];
-    const key = keys.find(item => mark.segments[item]);
-
-    return key
-        ? { key, value: mark.segments[key] }
-        : null;
-}
-
-function findClockSegmentForKey(segmentKey, segments) {
-    const aliases = {
-        half_admin_morning: ["half_afternoon"],
-        half_admin_afternoon: ["half_morning"],
-        half_morning: ["half_admin_afternoon"],
-        half_afternoon: ["half_admin_morning"]
-    };
-
-    return segments.find(segment =>
-        segment.id === segmentKey ||
-        (aliases[segmentKey] || []).includes(segment.id)
-    ) || null;
-}
-
-function fallbackClockSegment(date, segmentKey) {
-    return {
-        id: segmentKey,
-        label: segmentKey
-            .replace(/_/g, " ")
-            .replace(/\b\w/g, char => char.toUpperCase()),
-        start: clockDateAt(date, 0),
-        end: clockDateAt(date, 0)
-    };
-}
-
-function hasClockMarkRecordData(segmentMark) {
-    return Boolean(
-        segmentMark?.entryTime ||
-        segmentMark?.exitTime ||
-        segmentMark?.missingEntry ||
-        segmentMark?.missingExit
-    );
-}
-
-function getClockMarkTimingFlags(date, segment, segmentMark) {
-    const entry = segmentMark?.entryTime
-        ? clockTimeNearReference(
-            date,
-            segmentMark.entryTime,
-            segment.start
-        )
-        : null;
-    const exit = segmentMark?.exitTime
-        ? clockTimeNearReference(
-            date,
-            segmentMark.exitTime,
-            segment.end
-        )
-        : null;
-
-    return {
-        entry,
-        exit,
-        lateEntry: Boolean(entry && entry > segment.start),
-        earlyEntry: Boolean(entry && entry < segment.start),
-        earlyExit: Boolean(exit && exit < segment.end),
-        lateExit: Boolean(exit && exit > segment.end)
-    };
-}
-
-function getClockActualState(profileName, keyDay) {
-    const data = getProfileData(profileName);
-    const hasData =
-        Object.prototype.hasOwnProperty.call(data, keyDay);
-    const rawState = hasData
-        ? Number(data[keyDay]) || TURNO.LIBRE
-        : getTurnoBase(profileName, keyDay);
-
-    return aplicarCambiosTurno(
-        profileName,
-        keyDay,
-        rawState
-    );
-}
-
-function getClockBaseState(profileName, keyDay) {
-    return aplicarCambiosTurno(
-        profileName,
-        keyDay,
-        getTurnoBase(profileName, keyDay),
-        { includeReplacements: false }
-    );
-}
-
-function isClockBaseOrSwapSegment(
-    profileName,
-    keyDay,
-    date,
-    segment,
-    holidays
-) {
-    const baseState = getClockBaseState(profileName, keyDay);
-    const scheduledBaseState = getClockScheduleState(
-        profileName,
-        keyDay,
-        baseState
-    );
-    const baseSegments = getScheduledSegmentsForProfile(
-        profileName,
-        keyDay,
-        date,
-        scheduledBaseState,
-        holidays
-    );
-
-    return baseSegments.some(base =>
-        base.id === segment.id ||
-        clockSegmentsOverlap(base, segment)
-    );
-}
-
-function buildClockMarkRecordsForProfile(profile, monthDate, holidays) {
-    const records = [];
-    const y = monthDate.getFullYear();
-    const m = monthDate.getMonth();
-    const marks = getClockMarks(profile.name);
-
-    Object.entries(marks).forEach(([keyDay, dayMark]) => {
-        const date = parseKey(keyDay);
-
-        if (
-            Number.isNaN(date.getTime()) ||
-            date.getFullYear() !== y ||
-            date.getMonth() !== m ||
-            !dayMark?.segments
-        ) {
-            return;
-        }
-
-        const actualState = getClockActualState(
-            profile.name,
-            keyDay
-        );
-        const scheduledState = getClockScheduleState(
-            profile.name,
-            keyDay,
-            actualState
-        );
-        const scheduledSegments = getScheduledSegmentsForProfile(
-            profile.name,
-            keyDay,
-            date,
-            scheduledState,
-            holidays
-        );
-        const consumed = new Set();
-
-        scheduledSegments.forEach(segment => {
-            const entry = findClockMarkEntry(dayMark, segment);
-
-            if (!entry || !hasClockMarkRecordData(entry.value)) {
-                return;
-            }
-
-            consumed.add(entry.key);
-            records.push({
-                profile,
-                keyDay,
-                date,
-                segment,
-                segmentKey: entry.key,
-                segmentMark: entry.value,
-                isBaseOrSwap: isClockBaseOrSwapSegment(
-                    profile.name,
-                    keyDay,
-                    date,
-                    segment,
-                    holidays
-                )
-            });
-        });
-
-        Object.entries(dayMark.segments)
-            .filter(([segmentKey, segmentMark]) =>
-                !consumed.has(segmentKey) &&
-                hasClockMarkRecordData(segmentMark)
-            )
-            .forEach(([segmentKey, segmentMark]) => {
-                const segment =
-                    findClockSegmentForKey(
-                        segmentKey,
-                        scheduledSegments
-                    ) ||
-                    fallbackClockSegment(date, segmentKey);
-
-                records.push({
-                    profile,
-                    keyDay,
-                    date,
-                    segment,
-                    segmentKey,
-                    segmentMark,
-                    isBaseOrSwap: isClockBaseOrSwapSegment(
-                        profile.name,
-                        keyDay,
-                        date,
-                        segment,
-                        holidays
-                    )
-                });
-            });
-    });
-
-    return records;
-}
-
 function renderClockMarkRecord(record) {
     const timing = getClockMarkTimingFlags(
         record.date,
@@ -5995,10 +4687,40 @@ function renderClockMarkRecord(record) {
     const isMissing =
         record.segmentMark.missingEntry ||
         record.segmentMark.missingExit;
+
+    // Magnitudes (en minutos) de horas trabajadas de mas (ingreso antes /
+    // salida despues) y de tiempo programado no trabajado (ingreso tarde /
+    // salida antes). Solo aplica a segmentos del turno base/cambio.
+    let extraMinutes = 0;
+    let deficitMinutes = 0;
+
+    if (record.isBaseOrSwap && !isMissing) {
+        if (timing.entry) {
+            const diff =
+                (record.segment.start - timing.entry) / 60000;
+            if (diff > 0) extraMinutes += diff;
+            else deficitMinutes += -diff;
+        }
+
+        if (timing.exit) {
+            const diff =
+                (timing.exit - record.segment.end) / 60000;
+            if (diff > 0) extraMinutes += diff;
+            else deficitMinutes += -diff;
+        }
+    }
+
+    // La recuperacion es la parte del tiempo extra que compensa el deficit.
+    const recoveryMinutes = Math.min(extraMinutes, deficitMinutes);
+    const netExtraMinutes = extraMinutes - recoveryMinutes;
+    const uncoveredMinutes = deficitMinutes - recoveryMinutes;
+
+    // Hay reduccion de jornada solo si la recuperacion NO cubre el deficit.
     const isReduction =
         record.isBaseOrSwap &&
         !isMissing &&
-        (timing.lateEntry || timing.earlyExit);
+        uncoveredMinutes > 0;
+
     const classes = [
         "clockmark-record",
         isMissing ? "clockmark-record--severe" : "",
@@ -6019,10 +4741,20 @@ function renderClockMarkRecord(record) {
     }
 
     if (isReduction) {
-        badges.push("Reduccion de jornada");
-    }
+        // El atraso/salida temprana no alcanzo a recuperarse: solo reduccion.
+        badges.push("Reducción de jornada");
+    } else if (record.isBaseOrSwap && !isMissing) {
+        // Segmento base/cambio sin deficit pendiente: puede recuperar el atraso
+        // y/o generar horas extra (puede llevar ambas etiquetas).
+        if (recoveryMinutes > 0) {
+            badges.push("Recuperación de horas");
+        }
 
-    if (timing.earlyEntry || timing.lateExit) {
+        if (netExtraMinutes > 0) {
+            badges.push("Genera horas extra");
+        }
+    } else if (!isMissing && (timing.earlyEntry || timing.lateExit)) {
+        // Segmentos extra (fuera del turno): siempre generan horas extra.
         badges.push("Genera horas extra");
     }
 
@@ -6370,10 +5102,6 @@ async function renderClockMarksPanel() {
 
 window.renderClockMarksPanel = renderClockMarksPanel;
 
-function normalizeProfileSearch(value) {
-    return normalizeText(value);
-}
-
 function getTopSearchProfiles() {
     const showInactive =
         DOM.showInactiveProfiles?.checked ?? false;
@@ -6385,51 +5113,6 @@ function getTopSearchProfiles() {
         .sort((a, b) =>
             a.name.localeCompare(b.name)
         );
-}
-
-function getCalendarProfileDetail(profile = {}) {
-    const estamento = profile.estamento || "Sin estamento";
-    const profession = normalizeProfession(
-        profile.profession,
-        estamento
-    );
-
-    return profession === SIN_INFORMACION_PROFESSION
-        ? estamento
-        : formatProfession(profession);
-}
-
-function getCalendarProfileSearchValue(profile = {}) {
-    const name = String(profile.name || "").trim();
-    const separator = "   |   ";
-
-    if (!name) return "";
-
-    return `${name}${separator}${getCalendarProfileDetail(profile)}`;
-}
-
-function getCalendarProfileSearchKeys(profile = {}) {
-    return [
-        profile.name,
-        getCalendarProfileSearchValue(profile)
-    ]
-        .map(normalizeProfileSearch)
-        .filter(Boolean);
-}
-
-function findTopProfileSearchMatch(query, profiles) {
-    const normalizedQuery = normalizeProfileSearch(query);
-
-    const matchesBy = predicate =>
-        profiles.find(profile =>
-            getCalendarProfileSearchKeys(profile).some(predicate)
-        );
-
-    return (
-        matchesBy(value => value === normalizedQuery) ||
-        matchesBy(value => value.startsWith(normalizedQuery)) ||
-        matchesBy(value => value.includes(normalizedQuery))
-    );
 }
 
 function syncTopProfileSearch() {
@@ -6480,7 +5163,10 @@ function handleTopProfileSearch() {
     );
 
     if (!match) {
-        alert("No se encontro un colaborador con ese nombre.");
+        showAppToast(
+            "No se encontro un colaborador con ese nombre.",
+            { title: "Sin resultados", variant: "warn" }
+        );
         syncTopProfileSearch();
         DOM.topProfileSearchInput.focus();
         DOM.topProfileSearchInput.select();
@@ -7091,89 +5777,6 @@ async function cleanupFutureSchedule(startDate) {
     saveAbsences(absences);
 }
 
-async function aplicarDiurnoDesde(fecha) {
-    if (!getCurrentProfile()) return;
-
-    const data = getProfileData();
-    const baseData = getBaseProfileData();
-    const blocked = getBlockedDays();
-
-    const year = fecha.getFullYear();
-    const holidays = await fetchHolidays(year);
-
-    let day = new Date(fecha);
-
-    while (day.getFullYear() === year) {
-        const key = keyFromDate(day);
-
-        delete data[key];
-        delete baseData[key];
-        delete blocked[key];
-
-        if (isBusinessDay(day, holidays)) {
-            data[key] = 4;
-            baseData[key] = 4;
-            blocked[key] = true;
-        }
-
-        day.setDate(day.getDate() + 1);
-    }
-
-    saveProfileData(data);
-    saveBaseProfileData(baseData);
-    saveBlockedDays(blocked);
-    refreshAll();
-}
-
-function aplicarRotativaSecuencialDesde(fecha, secuencia) {
-    if (!getCurrentProfile()) return;
-
-    const data = getProfileData();
-    const baseData = getBaseProfileData();
-    const blocked = getBlockedDays();
-
-    let day = new Date(fecha);
-    const year = day.getFullYear();
-
-    while (day.getFullYear() === year) {
-        for (let i = 0; i < secuencia.length; i++) {
-            const key = keyFromDate(day);
-            const turno = secuencia[i];
-
-            delete data[key];
-            delete baseData[key];
-            delete blocked[key];
-
-            if (turno) {
-                data[key] = turno;
-                baseData[key] = turno;
-                blocked[key] = true;
-            }
-
-            day.setDate(day.getDate() + 1);
-        }
-    }
-
-    saveProfileData(data);
-    saveBaseProfileData(baseData);
-    saveBlockedDays(blocked);
-    refreshAll();
-}
-
-function aplicarCuartoTurnoDesde(fecha, firstTurn = "larga") {
-    aplicarRotativaSecuencialDesde(
-        fecha,
-        getRotationSequence("4turno", firstTurn)
-    );
-}
-
-function aplicarTercerTurnoDesde(fecha, firstTurn = "larga") {
-    aplicarRotativaSecuencialDesde(
-        fecha,
-        getRotationSequence("3turno", firstTurn)
-    );
-}
-
 async function applyDraftRotation(
     rotationType,
     rotationStart,
@@ -7773,93 +6376,6 @@ function openAmountDialog({
     });
 }
 
-function cloneReturnDate(date) {
-    return new Date(date.getTime());
-}
-
-function dateAtReturn(base, hour, minutes = 0) {
-    return new Date(
-        base.getFullYear(),
-        base.getMonth(),
-        base.getDate(),
-        hour,
-        minutes
-    );
-}
-
-function nextDateAtReturn(base, hour, minutes = 0) {
-    const date = dateAtReturn(base, hour, minutes);
-    date.setDate(date.getDate() + 1);
-    return date;
-}
-
-function parseReturnTime(value) {
-    const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
-
-    if (!match) return null;
-
-    const hour = Number(match[1]);
-    const minute = Number(match[2]);
-
-    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-        return null;
-    }
-
-    return { hour, minute };
-}
-
-function timeNearReturnReference(baseDate, value, reference) {
-    const parsed = parseReturnTime(value);
-
-    if (!parsed) return null;
-
-    const candidates = [
-        dateAtReturn(baseDate, parsed.hour, parsed.minute),
-        nextDateAtReturn(baseDate, parsed.hour, parsed.minute)
-    ];
-    const previous =
-        dateAtReturn(baseDate, parsed.hour, parsed.minute);
-
-    previous.setDate(previous.getDate() - 1);
-    candidates.push(previous);
-
-    return candidates.sort((a, b) =>
-        Math.abs(a - reference) - Math.abs(b - reference)
-    )[0];
-}
-
-function formatReturnTime(date) {
-    return [
-        String(date.getHours()).padStart(2, "0"),
-        String(date.getMinutes()).padStart(2, "0")
-    ].join(":");
-}
-
-function formatReturnDateTime(date) {
-    return `${formatReturnTime(date)} hrs.`;
-}
-
-function roundReturnHours(value) {
-    return Math.max(
-        0,
-        Math.round((Number(value) || 0) * 10) / 10
-    );
-}
-
-function returnHoursBetween(start, end) {
-    return roundReturnHours(
-        Math.max(0, (end - start) / 36e5)
-    );
-}
-
-function getSegmentReturnHours(segment) {
-    return returnHoursBetween(segment.start, segment.end);
-}
-
-function getReturnSegmentId(segment, index) {
-    return String(segment.id || `segment_${index}`);
-}
-
 function buildHourReturnRecord({
     profile,
     keyDay,
@@ -8429,37 +6945,6 @@ async function handleClockMarkSelection(fecha) {
     clearSelectionMode();
 }
 
-function applyTheme(theme) {
-    document.body.classList.remove("theme-light", "theme-dark");
-    document.body.classList.add(`theme-${theme}`);
-    DOM.themeToggle.setAttribute(
-        "aria-pressed",
-        theme === "dark" ? "true" : "false"
-    );
-}
-
-function initTheme() {
-    const savedTheme = getRaw(THEME_KEY, "");
-    const prefersLight =
-        window.matchMedia &&
-        window.matchMedia("(prefers-color-scheme: light)").matches;
-
-    const initialTheme =
-        savedTheme || (prefersLight ? "light" : "dark");
-
-    applyTheme(initialTheme);
-
-    DOM.themeToggle.onclick = () => {
-        const nextTheme =
-            document.body.classList.contains("theme-dark")
-                ? "light"
-                : "dark";
-
-        setRaw(THEME_KEY, nextTheme);
-        applyTheme(nextTheme);
-    };
-}
-
 function primeBirthDatePickerDefault() {
     const field = DOM.profileBirthDateInput;
 
@@ -8827,30 +7312,6 @@ function initializeInactiveProfileToggles() {
 const MOBILE_LAYOUT_QUERY = "(max-width: 760px)";
 let appNavigationHistoryReady = false;
 let appNavigationHistoryBound = false;
-
-function isAppTarget(targetId) {
-    return Boolean(
-        targetId &&
-        document.getElementById(targetId) &&
-        Array.from(
-            document.querySelectorAll(".nav-tile[data-target]")
-        ).some(button => button.dataset.target === targetId)
-    );
-}
-
-function targetFromHash() {
-    const value = decodeURIComponent(
-        String(window.location.hash || "").replace(/^#/, "")
-    );
-
-    return isAppTarget(value) ? value : "";
-}
-
-function appTargetUrl(targetId) {
-    const url = new URL(window.location.href);
-    url.hash = targetId;
-    return `${url.pathname}${url.search}${url.hash}`;
-}
 
 function syncAppNavigationHistory(targetId, mode = "push") {
     if (!window.history || !isAppTarget(targetId)) return;

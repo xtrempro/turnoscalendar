@@ -47,6 +47,16 @@ function displayUserName(user) {
     return user.displayName || user.email || "Usuario";
 }
 
+// Etiqueta principal del chip (junto al engranaje): muestra el entorno activo
+// para que quede claro en que unidad se esta trabajando.
+function displayWorkspaceLabel() {
+    if (!isFirebaseConfigured()) return "Modo local";
+    if (!currentUser) return "Iniciar sesion";
+    if (!currentWorkspace) return "Sin entorno";
+
+    return currentWorkspace.name;
+}
+
 function workspaceText() {
     if (!isFirebaseConfigured()) return "Datos en localStorage";
     if (!currentUser) return "Sin sesion";
@@ -165,12 +175,17 @@ async function copyTextToClipboard(text) {
 
 function updateTopbar() {
     if (options.userName) {
-        options.userName.textContent =
-            displayUserName(currentUser);
+        // Mostrar el entorno activo como etiqueta principal.
+        options.userName.textContent = displayWorkspaceLabel();
     }
 
     if (options.userChip) {
-        options.userChip.title = workspaceText();
+        // El tooltip conserva el detalle: usuario + entorno.
+        const userName = displayUserName(currentUser);
+
+        options.userChip.title = currentUser
+            ? `${userName} | ${workspaceText()}`
+            : workspaceText();
         options.userChip.classList.toggle(
             "user-chip--firebase",
             Boolean(currentUser)
@@ -187,11 +202,37 @@ function setLoginGateActive(active) {
     );
 }
 
+// El entorno activo es valido solo si esta entre los entornos del usuario.
+// Si se elimino o se perdio la membresia, deja de aparecer en la lista.
+function hasValidActiveWorkspace() {
+    const id = currentWorkspace?.id;
+
+    if (!id) return false;
+
+    return workspaceList.some(workspace => workspace.id === id);
+}
+
+// La app queda bloqueada (no editable) mientras no haya sesion o no haya un
+// entorno activo valido. Asi se evita trabajar sobre datos locales de un
+// entorno inexistente o ya eliminado.
+function isShellLocked() {
+    if (!loginGateEnabled) return false;
+    if (!currentUser) return true;
+
+    return !hasValidActiveWorkspace();
+}
+
+// Sincroniza el gate de la app con el estado actual: bloquea si falta sesion o
+// entorno valido, libera si todo esta en orden.
+function refreshShellGate() {
+    setLoginGateActive(isShellLocked());
+}
+
 function closeModal(backdrop, options = {}) {
     if (
         !options.force &&
         backdrop?.dataset.authRequired === "true" &&
-        !currentUser
+        isShellLocked()
     ) {
         return;
     }
@@ -466,6 +507,15 @@ function linkedUnitsPanelHTML() {
 
 function renderSignedInModal(backdrop) {
     const pendingWorkspaceId = pendingJoinWorkspaceId();
+    const locked = isShellLocked();
+
+    // Mientras no haya entorno valido, el selector queda bloqueado: no se puede
+    // cerrar hasta crear o elegir uno.
+    backdrop.dataset.authRequired = locked ? "true" : "false";
+    backdrop.classList.toggle(
+        "turn-change-dialog-backdrop--locked",
+        locked
+    );
 
     backdrop.innerHTML = `
         <section class="turn-change-dialog firebase-dialog">
@@ -474,6 +524,12 @@ function renderSignedInModal(backdrop) {
                 ${escapeHTML(currentUser.displayName || currentUser.email || "Usuario")}
                 ${currentWorkspace ? `trabajando en ${escapeHTML(currentWorkspace.name)}.` : "sin entorno activo."}
             </p>
+            ${locked ? `
+                <div class="firebase-dialog-note">
+                    Debes crear un entorno o unirte a uno para empezar a trabajar.
+                    No se puede editar informacion sin un entorno activo.
+                </div>
+            ` : ""}
 
             <div class="firebase-dialog-grid">
                 <label class="firebase-field">
@@ -497,7 +553,7 @@ function renderSignedInModal(backdrop) {
 
             <div class="turn-change-dialog__actions">
                 <button class="secondary-button" type="button" data-action="sign-out">Cerrar sesion</button>
-                <button class="primary-button" type="button" data-action="close">Cerrar</button>
+                ${locked ? "" : `<button class="primary-button" type="button" data-action="close">Cerrar</button>`}
             </div>
         </section>
     `;
@@ -637,11 +693,9 @@ async function handleAction(action, backdrop, sourceButton = null) {
                 await ensureFirebaseUser(currentUser);
                 await refreshWorkspaces();
                 await refreshLinkedUnits();
-                setLoginGateActive(false);
-                backdrop.dataset.authRequired = "false";
-                backdrop.classList.remove(
-                    "turn-change-dialog-backdrop--locked"
-                );
+                // El gate y el bloqueo del modal los resuelve refreshShellGate /
+                // renderSignedInModal segun haya o no un entorno valido.
+                refreshShellGate();
                 updateTopbar();
                 options.onAuthChange?.(currentUser);
                 options.onWorkspaceChange?.(currentWorkspace);
@@ -766,6 +820,7 @@ async function handleAction(action, backdrop, sourceButton = null) {
             await refreshWorkspaces();
             await refreshLinkedUnits();
             linkedUnitState.message = "";
+            refreshShellGate();
             updateTopbar();
             await options.onWorkspaceChange?.(currentWorkspace);
             renderSignedInModal(backdrop);
@@ -789,6 +844,7 @@ async function handleAction(action, backdrop, sourceButton = null) {
             await refreshWorkspaces();
             await refreshLinkedUnits();
             linkedUnitState.message = "";
+            refreshShellGate();
             updateTopbar();
             await options.onWorkspaceChange?.(currentWorkspace);
             renderSignedInModal(backdrop);
@@ -898,6 +954,7 @@ function bindModalActions(backdrop) {
             currentWorkspace = workspace;
             setActiveWorkspace(workspace);
             linkedUnitState.message = "";
+            refreshShellGate();
             updateTopbar();
 
             // Detener el sync actual y LIMPIAR el estado local antes de activar
@@ -935,6 +992,7 @@ async function handleWorkspaceAccessLost(workspaceId) {
         currentWorkspace = null;
         replaceLocalSnapshot({}, { silent: true });
         await refreshWorkspaces();
+        refreshShellGate();
         updateTopbar();
 
         window.alert(
@@ -944,7 +1002,7 @@ async function handleWorkspaceAccessLost(workspaceId) {
         if (activeFirebaseBackdrop?.isConnected) {
             renderSignedInModal(activeFirebaseBackdrop);
         } else {
-            await openFirebaseModal();
+            await openFirebaseModal({ required: true });
         }
     } catch (error) {
         console.warn("No se pudo manejar la perdida de acceso al entorno.", error);
@@ -953,18 +1011,20 @@ async function handleWorkspaceAccessLost(workspaceId) {
     }
 }
 
-async function openFirebaseModal(options = {}) {
+async function openFirebaseModal(modalOptions = {}) {
     if (!isFirebaseConfigured()) {
         renderDisabledModal();
         return;
     }
 
-    const required =
-        Boolean(options.required) && loginGateEnabled && !currentUser;
-    const backdrop = createModal({ locked: required });
+    // La app esta bloqueada si falta sesion o entorno valido; en ambos casos el
+    // modal no se puede cerrar hasta resolverlo. modalOptions.required permite
+    // forzar el bloqueo aunque el estado todavia no se haya recalculado.
+    const locked = isShellLocked() || Boolean(modalOptions.required);
+    const backdrop = createModal({ locked });
 
     if (!currentUser) {
-        renderSignedOutModal(backdrop, { required });
+        renderSignedOutModal(backdrop, { required: locked });
         return;
     }
 
@@ -1005,17 +1065,26 @@ export async function initFirebaseShell(initOptions = {}) {
                 await ensureFirebaseUser(user);
                 await refreshWorkspaces();
                 await refreshLinkedUnits();
-                setLoginGateActive(false);
 
-                if (
-                    activeFirebaseBackdrop?.isConnected &&
-                    activeFirebaseBackdrop.dataset.authRequired === "true"
-                ) {
-                    activeFirebaseBackdrop.dataset.authRequired = "false";
-                    activeFirebaseBackdrop.classList.remove(
-                        "turn-change-dialog-backdrop--locked"
-                    );
-                    renderSignedInModal(activeFirebaseBackdrop);
+                if (hasValidActiveWorkspace()) {
+                    setLoginGateActive(false);
+
+                    if (
+                        activeFirebaseBackdrop?.isConnected &&
+                        activeFirebaseBackdrop.dataset.authRequired === "true"
+                    ) {
+                        renderSignedInModal(activeFirebaseBackdrop);
+                    }
+                } else {
+                    // Logueado pero sin entorno valido (nunca creo uno, o el
+                    // activo fue eliminado): limpiar el activo obsoleto y forzar
+                    // que cree/elija uno antes de poder editar.
+                    if (currentWorkspace) {
+                        setActiveWorkspace(null);
+                        currentWorkspace = null;
+                    }
+                    setLoginGateActive(true);
+                    await openFirebaseModal({ required: true });
                 }
             } else {
                 workspaceList = [];

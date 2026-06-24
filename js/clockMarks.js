@@ -7,31 +7,18 @@ import {
 } from "./storage.js";
 import { getHourReturn } from "./hourReturns.js";
 import { createClockMemoTask } from "./memos.js";
+import {
+    cloneDate,
+    dateAt,
+    nextDateAt,
+    parseTimeValue as parseTime,
+    timeNearReference
+} from "./timeUtils.js";
 
 const BLOCK_MINUTES = 30;
 
 function storageKey(profile) {
     return `clockMarks_${profile}`;
-}
-
-function cloneDate(date) {
-    return new Date(date.getTime());
-}
-
-function dateAt(base, hour, minutes = 0) {
-    return new Date(
-        base.getFullYear(),
-        base.getMonth(),
-        base.getDate(),
-        hour,
-        minutes
-    );
-}
-
-function nextDateAt(base, hour, minutes = 0) {
-    const date = dateAt(base, hour, minutes);
-    date.setDate(date.getDate() + 1);
-    return date;
 }
 
 function minutesBetween(start, end) {
@@ -42,40 +29,6 @@ function addMinutes(date, minutes) {
     const next = cloneDate(date);
     next.setMinutes(next.getMinutes() + minutes);
     return next;
-}
-
-function parseTime(value) {
-    const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
-
-    if (!match) return null;
-
-    const hour = Number(match[1]);
-    const minute = Number(match[2]);
-
-    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-        return null;
-    }
-
-    return { hour, minute };
-}
-
-function timeNearReference(baseDate, value, reference) {
-    const parsed = parseTime(value);
-
-    if (!parsed) return null;
-
-    const candidates = [
-        dateAt(baseDate, parsed.hour, parsed.minute),
-        nextDateAt(baseDate, parsed.hour, parsed.minute)
-    ];
-
-    const previous = dateAt(baseDate, parsed.hour, parsed.minute);
-    previous.setDate(previous.getDate() - 1);
-    candidates.push(previous);
-
-    return candidates.sort((a, b) =>
-        Math.abs(a - reference) - Math.abs(b - reference)
-    )[0];
 }
 
 function roundLateMinutes(minutes) {
@@ -817,6 +770,62 @@ export function getClockExtraHours(
     const total = { d: 0, n: 0 };
 
     extraIntervals.forEach(interval => {
+        addHours(total, classifyInterval(interval, holidays));
+    });
+
+    return {
+        d: Math.round(total.d * 2) / 2,
+        n: Math.round(total.n * 2) / 2
+    };
+}
+
+// Horas programadas que NO se trabajaron por una incidencia de marcaje (ingreso
+// con atraso, salida anticipada o marca faltante), excluyendo lo cubierto por un
+// permiso. Es el espejo de getClockExtraHours: si no hay marca, lo trabajado
+// equivale a lo programado y el deficit es 0.
+export function getClockDeficitHours(
+    profile,
+    keyDay,
+    date,
+    state,
+    holidays = {}
+) {
+    const scheduledState = getClockScheduleState(
+        profile,
+        keyDay,
+        state
+    );
+    const scheduled = getScheduledSegmentsForProfile(
+        profile,
+        keyDay,
+        date,
+        scheduledState,
+        holidays
+    ).map(segment => ({
+        start: segment.start,
+        end: segment.end
+    }));
+    const worked = getWorkedIntervalsForState(
+        profile,
+        keyDay,
+        date,
+        state,
+        holidays
+    );
+    const permissionIntervals = getNonExtraPermissionIntervals(
+        profile,
+        keyDay,
+        date,
+        Number(state) || TURNO.LIBRE,
+        holidays
+    );
+    const deficitIntervals = subtractIntervals(
+        subtractIntervals(scheduled, worked),
+        permissionIntervals
+    );
+    const total = { d: 0, n: 0 };
+
+    deficitIntervals.forEach(interval => {
         addHours(total, classifyInterval(interval, holidays));
     });
 

@@ -1,4 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
+import { sanitizeDigits } from "./stringUtils.js";
 import {
     getCurrentFirebaseUser,
     getFirebaseServices
@@ -8,12 +9,6 @@ import { getWorkerAppLinkForProfile } from "./workerAppDataSync.js";
 
 const WORKER_APP_URL = "https://turnoplusfuncionarios.web.app/";
 const INVITE_DURATION_DAYS = 14;
-
-function sanitizeDigits(value, maxLength = Infinity) {
-    return String(value || "")
-        .replace(/\D/g, "")
-        .slice(0, maxLength);
-}
 
 function normalizeEmail(value) {
     return String(value || "").trim().toLowerCase();

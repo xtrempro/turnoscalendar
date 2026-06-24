@@ -1,6 +1,7 @@
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
+import { readFileAsDataURL, dataUrlToBlob } from "./attachmentUtils.js";
 
 const STORAGE_KEY = "agenda_contacts";
 const NEW_CONTACT_ID = "__new_contact__";
@@ -97,16 +98,6 @@ function getSelectedContact(contacts) {
     );
 }
 
-function readFileAsDataURL(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-    });
-}
-
 async function readAttachmentFile(file) {
     if (!file) return null;
 
@@ -120,20 +111,6 @@ async function readAttachmentFile(file) {
         addedAt: new Date().toISOString(),
         dataUrl: await readFileAsDataURL(file)
     };
-}
-
-function dataUrlToBlob(dataUrl) {
-    const [header, data] = String(dataUrl || "").split(",");
-    const mimeMatch = header.match(/data:([^;]+);base64/);
-    const mime = mimeMatch?.[1] || "application/octet-stream";
-    const binary = atob(data || "");
-    const bytes = new Uint8Array(binary.length);
-
-    for (let index = 0; index < binary.length; index++) {
-        bytes[index] = binary.charCodeAt(index);
-    }
-
-    return new Blob([bytes], { type: mime });
 }
 
 function openAttachment(attachment) {
