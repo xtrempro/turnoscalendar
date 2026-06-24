@@ -449,6 +449,16 @@ export async function startFirebaseAppStateSync(
                     generation === syncGeneration
                 ) {
                     waitingInitialState = false;
+
+                    // Acceso denegado al entorno activo = el entorno fue
+                    // eliminado o se perdio la membresia. Se avisa para sacar
+                    // al usuario y limpiar el estado local en cache.
+                    if (error?.code === "permission-denied") {
+                        dispatchStatus({
+                            type: "app-state-access-lost",
+                            workspaceId
+                        });
+                    }
                 }
                 console.warn("No se pudo leer estado Firebase.", error);
             }
@@ -477,6 +487,11 @@ export function stopFirebaseAppStateSync() {
     waitingInitialState = false;
     lastUploadedHash = "";
     lastAppliedHash = "";
+    // Limpia la marca de "cambios locales sin subir": pertenece al entorno que
+    // se deja. Si no se limpia, al cambiar de entorno se interpretaria el estado
+    // local (recien vaciado) como mas nuevo que el destino y se subiria encima,
+    // BORRANDO los datos del entorno destino.
+    removeKey(LOCAL_DIRTY_KEY);
     syncGeneration++;
 }
 

@@ -37,6 +37,7 @@ let linkedUnitState = {
     links: []
 };
 let activeFirebaseBackdrop = null;
+let handlingAccessLost = false;
 let loginGateEnabled = true;
 
 function displayUserName(user) {
@@ -556,7 +557,10 @@ async function refreshWorkspaces() {
 }
 
 function workspaceDeletionBlockHTML(workspace) {
-    const isOwner = workspace.role === "owner";
+    // El creador se determina por ownerUid (mas fiable que el rol de membresia,
+    // que en entornos antiguos puede no estar como "owner").
+    const isOwner = workspace.role === "owner" ||
+        Boolean(workspace.ownerUid && currentUser && workspace.ownerUid === currentUser.uid);
     const pending = workspace.deletionStatus === "pending_deletion";
 
     if (pending) {
@@ -780,11 +784,13 @@ async function handleAction(action, backdrop, sourceButton = null) {
                     pendingJoinInviteCode()
                 );
             clearPendingJoinWorkspaceId();
+            await options.onWorkspaceChange?.(null);
+            replaceLocalSnapshot({}, { silent: true });
             await refreshWorkspaces();
             await refreshLinkedUnits();
             linkedUnitState.message = "";
             updateTopbar();
-            options.onWorkspaceChange?.(currentWorkspace);
+            await options.onWorkspaceChange?.(currentWorkspace);
             renderSignedInModal(backdrop);
             return;
         }
@@ -882,7 +888,7 @@ function bindModalActions(backdrop) {
     });
 
     backdrop.querySelectorAll("[data-workspace-select]").forEach(button => {
-        button.onclick = () => {
+        button.onclick = async () => {
             const workspace = workspaceList.find(item =>
                 item.id === button.dataset.workspaceSelect
             );
@@ -893,17 +899,58 @@ function bindModalActions(backdrop) {
             setActiveWorkspace(workspace);
             linkedUnitState.message = "";
             updateTopbar();
-            options.onWorkspaceChange?.(currentWorkspace);
-            refreshLinkedUnits()
-                .catch(error => {
-                    console.warn(
-                        "No se pudieron cargar unidades enlazadas.",
-                        error
-                    );
-                })
-                .finally(() => renderSignedInModal(backdrop));
+
+            // Detener el sync actual y LIMPIAR el estado local antes de activar
+            // el nuevo entorno; si no, los datos locales del entorno anterior se
+            // subirian al nuevo (corrupcion al cambiar de unidad).
+            await options.onWorkspaceChange?.(null);
+            replaceLocalSnapshot({}, { silent: true });
+            await options.onWorkspaceChange?.(currentWorkspace);
+
+            try {
+                await refreshLinkedUnits();
+            } catch (error) {
+                console.warn("No se pudieron cargar unidades enlazadas.", error);
+            }
+
+            renderSignedInModal(backdrop);
         };
     });
+}
+
+// Se perdio el acceso al entorno activo (fue eliminado o se quito la membresia).
+// Saca al usuario del entorno, limpia el estado local en cache y abre el
+// selector de entornos.
+async function handleWorkspaceAccessLost(workspaceId) {
+    const active = getActiveWorkspace();
+
+    if (handlingAccessLost) return;
+    if (!active || (workspaceId && active.id !== workspaceId)) return;
+
+    handlingAccessLost = true;
+
+    try {
+        await options.onWorkspaceChange?.(null);
+        setActiveWorkspace(null);
+        currentWorkspace = null;
+        replaceLocalSnapshot({}, { silent: true });
+        await refreshWorkspaces();
+        updateTopbar();
+
+        window.alert(
+            "Este entorno ya no esta disponible (fue eliminado o perdiste el acceso). Selecciona o crea otro entorno."
+        );
+
+        if (activeFirebaseBackdrop?.isConnected) {
+            renderSignedInModal(activeFirebaseBackdrop);
+        } else {
+            await openFirebaseModal();
+        }
+    } catch (error) {
+        console.warn("No se pudo manejar la perdida de acceso al entorno.", error);
+    } finally {
+        handlingAccessLost = false;
+    }
 }
 
 async function openFirebaseModal(options = {}) {
@@ -936,6 +983,12 @@ export async function initFirebaseShell(initOptions = {}) {
         openFirebaseModal({
             required: loginGateEnabled && !currentUser
         });
+    });
+
+    window.addEventListener("proturnos:firebaseAppState", event => {
+        if (event.detail?.type === "app-state-access-lost") {
+            handleWorkspaceAccessLost(event.detail.workspaceId);
+        }
     });
 
     if (!isFirebaseConfigured()) return;
