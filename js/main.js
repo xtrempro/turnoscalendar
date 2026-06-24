@@ -7356,6 +7356,14 @@ function syncWorkspaceStateViews() {
 }
 
 initTheme();
+
+// Service Worker: cachea el shell para reaperturas instantaneas y offline basico.
+if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+    });
+}
+
 initTurnosSidePanelSync();
 initSystemSettings({
     button: DOM.systemSettingsBtn,

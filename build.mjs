@@ -46,6 +46,10 @@ writeFileSync(
     path.join(DIST, "styles.css"),
     readFileSync("styles.css")
 );
+writeFileSync(
+    path.join(DIST, "sw.js"),
+    readFileSync("sw.js")
+);
 for (const dir of ["img", "reports"]) {
     if (existsSync(dir)) {
         cpSync(dir, path.join(DIST, dir), { recursive: true });
