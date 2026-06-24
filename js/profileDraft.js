@@ -8,7 +8,8 @@
 
 import {
     isReplacementContractType,
-    isHonorariaContractType
+    isHonorariaContractType,
+    getContractsForProfile
 } from "./contracts.js";
 import {
     normalizeStoredStart,
@@ -25,7 +26,8 @@ import {
     getRotativa,
     isProfileActive,
     getShiftAssigned,
-    normalizeProfession
+    normalizeProfession,
+    getCurrentProfile
 } from "./storage.js";
 
 export const PROFILE_MODE = {
@@ -286,4 +288,40 @@ export function loadDraftFromProfile(profile){
     profileDraft.honorariaMaxMonthlyHours =
         String(profile.honorariaMaxMonthlyHours || "");
     profileDraft.shiftAssigned = getShiftAssigned(profile.name);
+}
+
+// --- Predicados de contrato del borrador (movidos desde main.js) ---
+
+export function supportsLibreRotation(data = profileDraft) {
+    return isReplacementDraft(data) || isHonorariaDraft(data);
+}
+
+export function hasPendingReplacementContract() {
+    return Boolean(
+        profileDraft.contractStart ||
+        profileDraft.contractEnd ||
+        profileDraft.contractReplaces.trim() ||
+        profileDraft.contractReason
+    );
+}
+
+export function requiresReplacementContract() {
+    if (!isReplacementDraft()) {
+        return false;
+    }
+
+    if (profileDraft.mode === PROFILE_MODE.CREATE) {
+        return true;
+    }
+
+    if (hasPendingReplacementContract()) {
+        return true;
+    }
+
+    const existingContracts =
+        getContractsForProfile(
+            profileDraft.originalName || getCurrentProfile()
+        );
+
+    return existingContracts.length === 0;
 }

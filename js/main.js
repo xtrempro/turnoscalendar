@@ -111,6 +111,7 @@ import {
 } from "./navigation.js";
 import { initTheme } from "./theme.js";
 import { getPerfilActual, getDisplayedProfileData } from "./profileQueries.js";
+import { validateProfileDraft } from "./profileValidation.js";
 import {
     buildRotationStatus,
     buildEditorHint
@@ -136,7 +137,9 @@ import {
     isFirstProfileRotationConfig,
     getRotationConfigDefaultStart,
     hasGradeValueChanged,
-    loadDraftFromProfile
+    loadDraftFromProfile,
+    supportsLibreRotation,
+    requiresReplacementContract
 } from "./profileDraft.js";
 import {
     prevMonth,
@@ -779,10 +782,6 @@ function changeClockMarksMonth(offset) {
     );
 
     renderClockMarksPanel();
-}
-
-function supportsLibreRotation(data = profileDraft) {
-    return isReplacementDraft(data) || isHonorariaDraft(data);
 }
 
 function profileSupportsLibreRotation(profile = {}) {
@@ -4904,211 +4903,19 @@ function handleRotationSelectionChange() {
     openRotationConfigModal(profileDraft.rotationType);
 }
 
-function hasPendingReplacementContract() {
-    return Boolean(
-        profileDraft.contractStart ||
-        profileDraft.contractEnd ||
-        profileDraft.contractReplaces.trim() ||
-        profileDraft.contractReason
-    );
-}
-
-function requiresReplacementContract() {
-    if (!isReplacementDraft()) {
-        return false;
-    }
-
-    if (profileDraft.mode === PROFILE_MODE.CREATE) {
-        return true;
-    }
-
-    if (hasPendingReplacementContract()) {
-        return true;
-    }
-
-    const existingContracts =
-        getContractsForProfile(
-            profileDraft.originalName || getCurrentProfile()
-        );
-
-    return existingContracts.length === 0;
-}
-
 function validateDraft() {
-    const missing = [];
-    const shouldRequireRotationStart =
-        (
-            profileDraft.mode === PROFILE_MODE.CREATE ||
-            hasRotationChanged()
-        ) &&
-        requiresRotationStart(profileDraft.rotationType);
-    const rutMessage =
-        getRutValidationMessage(profileDraft.rut);
+    const result = validateProfileDraft();
 
-    if (!profileDraft.name.trim()) missing.push("nombre");
-    if (!profileDraft.estamento) missing.push("estamento");
-    if (
-        shouldRequireUnitEntryForRotation() &&
-        !getDraftUnitEntryDate()
-    ) {
-        missing.push("fecha de ingreso a la unidad");
-    }
-    if (
-        profileDraft.rotationType === "libre" &&
-        !supportsLibreRotation()
-    ) {
-        alert("La rotativa Libre solo esta disponible para contratos Reemplazo u Honorarios.");
-        return false;
-    }
+    if (result.ok) return true;
 
-    if (!isReplacementDraft() && !profileDraft.rotationType) {
-        missing.push("rotativa");
-    }
-    if (requiresReplacementContract()) {
-        if (!profileDraft.contractStart) {
-            missing.push("inicio de contrato");
-        }
+    alert(result.message);
 
-        if (!profileDraft.contractEnd) {
-            missing.push("termino de contrato");
-        }
-
-        if (!profileDraft.contractReplaces.trim()) {
-            missing.push("a quien reemplaza");
-        }
-
-        if (!profileDraft.contractReason) {
-            missing.push("motivo del reemplazo");
-        }
-    }
-
-    if (isHonorariaDraft()) {
-        if (!profileDraft.honorariaStart) {
-            missing.push("inicio del contrato de Honorarios");
-        }
-
-        if (!profileDraft.honorariaEnd) {
-            missing.push("termino del contrato de Honorarios");
-        }
-
-        if (!(Number(profileDraft.honorariaHourlyRate) > 0)) {
-            missing.push("valor de la hora");
-        }
-
-        if (!(Number(profileDraft.honorariaMaxMonthlyHours) > 0)) {
-            missing.push("maximo de horas mensuales");
-        }
-    }
-
-    if (
-        !isReplacementDraft() &&
-        shouldRequireRotationStart &&
-        !profileDraft.rotationStart
-    ) {
-        missing.push("fecha de inicio de rotativa");
-    }
-
-    if (
-        !isReplacementDraft() &&
-        shouldRequireRotationStart &&
-        requiresRotationFirstTurn(profileDraft.rotationType) &&
-        !profileDraft.rotationFirstTurn
-    ) {
-        missing.push("turno inicial de rotativa");
-    }
-
-    if (
-        !isReplacementDraft() &&
-        profileDraft.rotationStart &&
-        isBeforeDraftUnitEntryDate(profileDraft.rotationStart)
-    ) {
-        alert(rotationStartBeforeUnitEntryMessage(profileDraft.rotationStart));
-        return false;
-    }
-
-    if (
-        isReplacementDraft() &&
-        profileDraft.contractStart &&
-        profileDraft.contractEnd &&
-        compareISODate(
-            profileDraft.contractEnd,
-            profileDraft.contractStart
-        ) < 0
-    ) {
-        alert("La fecha de termino del contrato no puede ser anterior al inicio.");
-        return false;
-    }
-
-    if (
-        isHonorariaDraft() &&
-        profileDraft.honorariaStart &&
-        profileDraft.honorariaEnd &&
-        compareISODate(
-            profileDraft.honorariaEnd,
-            profileDraft.honorariaStart
-        ) < 0
-    ) {
-        alert("La fecha de termino del contrato de Honorarios no puede ser anterior al inicio.");
-        return false;
-    }
-
-    if (
-        isHonorariaDraft() &&
-        profileDraft.honorariaStart &&
-        profileDraft.honorariaEnd &&
-        profileDraft.rotationStart &&
-        (
-            compareISODate(
-                profileDraft.rotationStart,
-                profileDraft.honorariaStart
-            ) < 0 ||
-            compareISODate(
-                profileDraft.rotationStart,
-                profileDraft.honorariaEnd
-            ) > 0
-        )
-    ) {
-        alert("La rotativa del trabajador a Honorarios debe comenzar dentro de la vigencia del contrato.");
-        return false;
-    }
-
-    if (
-        isReplacementDraft() &&
-        profileDraft.contractReplaces.trim()
-    ) {
-        const targetName =
-            profileDraft.contractReplaces.trim();
-
-        if (targetName === profileDraft.name.trim()) {
-            alert("Un trabajador no puede reemplazarse a si mismo.");
-            return false;
-        }
-
-        if (
-            !getProfiles().some(profile =>
-                profile.name === targetName
-            )
-        ) {
-            alert("El trabajador reemplazado debe existir en el listado de perfiles.");
-            return false;
-        }
-    }
-
-    if (rutMessage) {
-        alert(rutMessage);
+    if (result.focusRut) {
         DOM.profileRutInput.focus();
         DOM.profileRutInput.select();
         syncRutValidity(true);
-        return false;
     }
 
-    if (!missing.length) {
-        return true;
-    }
-
-    alert(
-        `Falta completar: ${missing.join(", ")}.`
-    );
     return false;
 }
 
