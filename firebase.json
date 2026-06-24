@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "public": ".",
+    "public": "dist",
     "ignore": [
       "firebase.json",
       ".firebaserc",
@@ -39,7 +39,16 @@
         ]
       },
       {
-        "source": "**/*.@(html|js|css|png)",
+        "source": "assets/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(html|css|png)",
         "headers": [
           {
             "key": "Cache-Control",
