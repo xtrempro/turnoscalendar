@@ -2310,6 +2310,12 @@ export async function buildWorkerHheeMonthSummary(
         carryOutN: num(model.carryOut?.n),
         netDiurnas: num(model.totalD),
         netNocturnas: num(model.totalN),
+        // HH.EE autoritativas del motor: las mismas que muestra el panel HH.EE
+        // del supervisor (`calcularHorasMesPerfil` -> stats.hhee*). Incluyen los
+        // turnos extra y las extensiones horarias netas agregados a mano en el
+        // calendario, sin depender de que se haya escrito el motivo/respaldo.
+        hheeDiurnas: num(stats.hheeDiurnas),
+        hheeNocturnas: num(stats.hheeNocturnas),
         returnTransfer: Boolean(model.stats?.returnTransferEnabled)
     };
 }
