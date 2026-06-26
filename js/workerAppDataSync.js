@@ -21,10 +21,16 @@ import {
     getTurnoProgramado
 } from "./turnEngine.js";
 import { turnoLabel } from "./uiEngine.js";
-import { obtenerLabelDia } from "./rulesEngine.js";
+import {
+    getTurnoExtraAgregado,
+    obtenerLabelDia
+} from "./rulesEngine.js";
 import { canSwapProfiles, activeMonthlySwapCount } from "./swaps.js";
 import { getWorkerBlockedDays } from "./workerAvailability.js";
-import { buildWorkerHheeSummaries } from "./hoursReport.js";
+import {
+    buildWorkerHheeMonthSummary,
+    buildWorkerHheeSummaries
+} from "./hoursReport.js";
 import { fetchHolidays, getCachedHolidays } from "./holidays.js";
 import { getTurnoColorConfig } from "./turnoColors.js";
 import { withManualBalance } from "./balanceUtils.js";
@@ -255,6 +261,8 @@ function profileLeaveMaps(profileName) {
 function buildScheduleDays(profile) {
     const { start, end } = scheduleRange();
     const maps = profileLeaveMaps(profile.name);
+    const profileData = getJSON("data_" + profile.name, {});
+    const shiftAssigned = getShiftAssigned(profile.name);
     const days = {};
     // Resolver de color en HEX (snapshot de los colores configurados) para que
     // la PWA pinte las mismas bandas que el calendario.
@@ -279,6 +287,27 @@ function buildScheduleDays(profile) {
             programmedTurn
         );
         const baseTurn = getTurnoBase(profile.name, keyDay);
+        const baseWithSwaps = aplicarCambiosTurno(
+            profile.name,
+            keyDay,
+            baseTurn,
+            { includeReplacements: false }
+        );
+        const programmedWithSwaps = aplicarCambiosTurno(
+            profile.name,
+            keyDay,
+            Object.prototype.hasOwnProperty.call(profileData, keyDay)
+                ? Number(profileData[keyDay]) || TURNO.LIBRE
+                : baseTurn,
+            { includeReplacements: false }
+        );
+        const manualExtra = Boolean(
+            shiftAssigned &&
+            getTurnoExtraAgregado(
+                baseWithSwaps,
+                programmedWithSwaps
+            )
+        );
         const visualLabel = obtenerLabelDia(
             keyDay,
             actualTurn,
@@ -302,8 +331,12 @@ function buildScheduleDays(profile) {
             cursor,
             holidaysByYear[cursorYear],
             maps.admin[keyDay],
-            baseTurn,
-            { resolveColor: colorResolver }
+            baseWithSwaps,
+            {
+                resolveColor: colorResolver,
+                unbasedComponentsAreExtra: manualExtra,
+                singleBandGradient: manualExtra
+            }
         );
 
         days[iso] = {
@@ -316,6 +349,7 @@ function buildScheduleDays(profile) {
             displayLabel: visualLabel || label,
             className: classNameForDay(actualTurn, hasLeave),
             colorGradient: colorGradient || "",
+            isManualExtra: manualExtra,
             hasLeave
         };
     }
@@ -506,12 +540,43 @@ function buildSupervisorReminders(profile) {
         }));
 }
 
-async function buildOvertimeSummaries(profile) {
+async function buildOvertimeSummaries(profile, schedule) {
     try {
-        // Solo el mes actual + 2 anteriores (lo relevante para pago/devolucion).
-        // Reduce la carga ~4x respecto a 12 meses. Meses mas antiguos en la app
-        // del trabajador caen al calculo liviano basado en solicitudes.
-        return await buildWorkerHheeSummaries(profile, 2);
+        const baseSummaries = await buildWorkerHheeSummaries(
+            profile,
+            SCHEDULE_MONTHS_BACK
+        );
+        const includedMonths = new Set(
+            baseSummaries.map(item =>
+                `${item.year}-${String(item.month + 1).padStart(2, "0")}`
+            )
+        );
+        const manualExtraMonths = Array.from(new Set(
+            Object.values(schedule?.days || {})
+                .filter(day => day?.isManualExtra)
+                .map(day => String(day.iso || "").slice(0, 7))
+                .filter(monthKey =>
+                    /^\d{4}-\d{2}$/.test(monthKey) &&
+                    !includedMonths.has(monthKey)
+                )
+        ));
+        const manualExtraSummaries = await Promise.all(
+            manualExtraMonths.map(monthKey => {
+                const [year, month] = monthKey.split("-").map(Number);
+
+                return buildWorkerHheeMonthSummary(
+                    profile,
+                    new Date(year, month - 1, 1)
+                );
+            })
+        );
+
+        return [...baseSummaries, ...manualExtraSummaries]
+            .filter(Boolean)
+            .sort((a, b) =>
+                Number(a.year) - Number(b.year) ||
+                Number(a.month) - Number(b.month)
+            );
     } catch (error) {
         console.warn(
             "No se pudo calcular el resumen HHEE para la app del trabajador.",
@@ -548,7 +613,10 @@ async function buildWorkerAppPayload(link, profile, workspace) {
     );
     const currentYear = String(new Date().getFullYear());
     const leaveBalances = leaveBalancesByYear[currentYear];
-    const overtimeSummaries = await buildOvertimeSummaries(profile);
+    const overtimeSummaries = await buildOvertimeSummaries(
+        profile,
+        schedule
+    );
 
     return {
         uid: link.uid,

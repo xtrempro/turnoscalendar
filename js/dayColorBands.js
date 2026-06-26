@@ -157,8 +157,9 @@ function baseComponents(state, date, holidays, halfAdmin, baseTurn) {
     return null;
 }
 
-function gradientFromPercentBands(bands) {
-    if (bands.length <= 1) return null;
+function gradientFromPercentBands(bands, includeSingleBand = false) {
+    if (!bands.length) return null;
+    if (bands.length === 1 && !includeSingleBand) return null;
 
     let acc = 0;
     const stops = bands.map(band => {
@@ -249,8 +250,11 @@ export function getDayColorGradient(
     for (const comp of comps) {
         const isExtra =
             Boolean(TURNO_VAR[comp.code]) &&
-            baseCodes.length > 0 &&
-            !baseCodes.includes(comp.code);
+            (
+                baseCodes.length > 0
+                    ? !baseCodes.includes(comp.code)
+                    : options.unbasedComponentsAreExtra === true
+            );
 
         bands.push({
             color: resolveColor(comp.code, isExtra),
@@ -262,5 +266,8 @@ export function getDayColorGradient(
         bands.push({ color: resolveColor(bottomIncident, false), pct: INCIDENT_PCT });
     }
 
-    return gradientFromPercentBands(bands);
+    return gradientFromPercentBands(
+        bands,
+        options.singleBandGradient === true
+    );
 }

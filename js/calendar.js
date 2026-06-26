@@ -1304,7 +1304,13 @@ function openLeaveDetailDialog({
     document.body.appendChild(backdrop);
 }
 
-function previewDirectTurnChange(cell, nextTurn, date, holidays = {}) {
+function previewDirectTurnChange(
+    cell,
+    nextTurn,
+    date,
+    holidays = {},
+    options = {}
+) {
     if (!cell) return;
 
     Object.values(TURNO_CLASS)
@@ -1317,10 +1323,41 @@ function previewDirectTurnChange(cell, nextTurn, date, holidays = {}) {
         "needs-extra-reason",
         "clock-extra-day",
         "clock-incident-day",
-        "clock-severe-day"
+        "clock-severe-day",
+        "manual-extra-day",
+        "turno-split"
     );
+    cell.style.removeProperty("background");
 
     aplicarClaseTurno(cell, nextTurn);
+
+    if (options.manualExtra) {
+        const gradient = getDayColorGradient(
+            options.profileName,
+            options.keyDay,
+            nextTurn,
+            date,
+            holidays,
+            null,
+            options.baseTurn,
+            {
+                unbasedComponentsAreExtra: true,
+                singleBandGradient: true
+            }
+        );
+
+        cell.classList.add("manual-extra-day");
+
+        if (gradient) {
+            cell.style.setProperty(
+                "background",
+                gradient,
+                "important"
+            );
+            cell.classList.add("turno-split");
+        }
+    }
+
     cell.classList.add("calendar-direct-edit-feedback");
     cell.dataset.directTurnState = String(nextTurn);
 
@@ -1744,7 +1781,7 @@ function isDiurnoLongCoverageCandidate(
     );
 }
 
-function getPendingManualExtraTurn(
+function getManualExtraTurn(
     profileName,
     keyDay,
     profileData
@@ -1763,9 +1800,21 @@ function getPendingManualExtraTurn(
             : getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
     );
-    const extraTurn = getTurnoExtraAgregado(
+    return getTurnoExtraAgregado(
         baseWithSwaps,
         actualWithSwaps
+    );
+}
+
+function getPendingManualExtraTurn(
+    profileName,
+    keyDay,
+    profileData
+) {
+    const extraTurn = getManualExtraTurn(
+        profileName,
+        keyDay,
+        profileData
     );
 
     return restarTurnoCubierto(
@@ -3189,12 +3238,28 @@ async function clickDia(
             baseTurno
         }
     );
+    const effectiveBaseTurn = aplicarCambiosTurno(
+        getCurrentProfile(),
+        keyDay,
+        baseTurno,
+        { includeReplacements: false }
+    );
+    const manualExtra = Boolean(
+        getShiftAssigned(getCurrentProfile()) &&
+        getTurnoExtraAgregado(effectiveBaseTurn, nuevo)
+    );
 
     previewDirectTurnChange(
         options.cell,
         nuevo,
         options.date || dateFromKeyDay(keyDay),
-        options.holidays || {}
+        options.holidays || {},
+        {
+            profileName: getCurrentProfile(),
+            keyDay,
+            baseTurn: effectiveBaseTurn,
+            manualExtra
+        }
     );
 
     keepCalendarDirectEditHistoryOpen(
@@ -3375,6 +3440,14 @@ export async function renderCalendar(options = {}) {
                 keyDay,
                 data
             );
+        const manualExtra = Boolean(
+            getShiftAssigned(activeProfile) &&
+            getManualExtraTurn(
+                activeProfile,
+                keyDay,
+                data
+            )
+        );
         const severeClockIncident =
             hasSevereClockIncident(activeProfile, keyDay);
         const simpleClockIncident =
@@ -3610,6 +3683,10 @@ export async function renderCalendar(options = {}) {
             div.classList.add("replacement-day");
         }
 
+        if (manualExtra) {
+            div.classList.add("manual-extra-day");
+        }
+
         if (hourReturn) {
             div.classList.add("hours-return-day");
             if (!hourReturn.fullTurn) {
@@ -3637,7 +3714,11 @@ export async function renderCalendar(options = {}) {
                 date,
                 holidays,
                 admin[keyDay],
-                getTurnoBase(activeProfile, keyDay)
+                getTurnoBase(activeProfile, keyDay),
+                {
+                    unbasedComponentsAreExtra: manualExtra,
+                    singleBandGradient: manualExtra
+                }
             )
         );
 
