@@ -1,7 +1,13 @@
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
-import { readFileAsDataURL, dataUrlToBlob } from "./attachmentUtils.js";
+import {
+    ATTACHMENT_ACCEPT,
+    deleteStoredAttachment,
+    openAttachmentFile,
+    readAttachmentFile
+} from "./attachmentUtils.js";
+import { showConfirm } from "./dialogs.js";
 
 const STORAGE_KEY = "agenda_contacts";
 const NEW_CONTACT_ID = "__new_contact__";
@@ -22,7 +28,9 @@ function normalizeAttachment(attachment) {
         type: String(attachment.type || ""),
         size: Number(attachment.size || 0),
         addedAt: attachment.addedAt || new Date().toISOString(),
-        dataUrl: attachment.dataUrl || ""
+        dataUrl: attachment.dataUrl || "",
+        storagePath: attachment.storagePath || "",
+        uploadedByUid: attachment.uploadedByUid || ""
     };
 }
 
@@ -98,35 +106,12 @@ function getSelectedContact(contacts) {
     );
 }
 
-async function readAttachmentFile(file) {
-    if (!file) return null;
-
-    return {
-        id: `agenda_doc_${Date.now()}_${Math.random()
-            .toString(36)
-            .slice(2, 8)}`,
-        name: file.name,
-        type: file.type || "",
-        size: file.size || 0,
-        addedAt: new Date().toISOString(),
-        dataUrl: await readFileAsDataURL(file)
-    };
-}
-
-function openAttachment(attachment) {
-    if (!attachment?.dataUrl) {
-        alert("Este adjunto no tiene contenido disponible para visualizar.");
-        return;
+async function openAttachment(attachment) {
+    try {
+        await openAttachmentFile(attachment, { newTab: true });
+    } catch (error) {
+        alert(error?.message || "No se pudo abrir el adjunto.");
     }
-
-    const url = URL.createObjectURL(dataUrlToBlob(attachment.dataUrl));
-    const opened = window.open(url, "_blank", "noopener");
-
-    if (!opened) {
-        alert("El navegador bloqueo la ventana emergente. Permite pop-ups para visualizar el documento.");
-    }
-
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function renderContactItem(contact) {
@@ -240,7 +225,7 @@ function renderForm(contact) {
                 <label class="metric-row metric-row--field">
                     <span class="metric-label">Archivo Adjunto:</span>
                     <span>
-                        <input name="attachment" type="file">
+                        <input name="attachment" type="file" accept="${ATTACHMENT_ACCEPT}">
                         <small class="field-help">Al guardar reemplaza el archivo adjunto actual.</small>
                     </span>
                 </label>
@@ -362,11 +347,19 @@ function bindAgendaEvents(root) {
         const current = getSelectedContact(contacts);
         const now = new Date().toISOString();
         const file = form.elements.attachment?.files?.[0];
+        const previousAttachment = current?.attachment || null;
         let attachment = current?.attachment || null;
 
         try {
             if (file) {
-                attachment = await readAttachmentFile(file);
+                attachment = await readAttachmentFile(file, {
+                    moduleId: "agenda",
+                    ownerId:
+                        current?.id ||
+                        selectedContactId ||
+                        "new-contact",
+                    recordId: "contact-attachment"
+                });
             }
         } catch {
             alert("No se pudo leer el archivo adjunto. Intenta nuevamente con otro documento.");
@@ -398,6 +391,19 @@ function bindAgendaEvents(root) {
             : [...contacts, nextContact];
 
         saveContacts(nextContacts);
+        if (
+            file &&
+            previousAttachment?.storagePath &&
+            previousAttachment.storagePath !== attachment?.storagePath
+        ) {
+            await deleteStoredAttachment(previousAttachment)
+                .catch(error => {
+                    console.warn(
+                        "No se pudo eliminar el adjunto reemplazado.",
+                        error
+                    );
+                });
+        }
         selectedContactId = nextContact.id;
         agendaSearch = "";
         renderAgendaPanel();
@@ -407,15 +413,34 @@ function bindAgendaEvents(root) {
 
     root.querySelector("[data-agenda-delete]")?.addEventListener(
         "click",
-        () => {
+        async () => {
             if (!selectedContact) return;
-            if (!confirm("Eliminar este contacto?")) return;
+            if (
+                !await showConfirm(
+                    "Se eliminará el contacto y sus datos asociados.",
+                    {
+                        title: "Eliminar contacto",
+                        tone: "danger",
+                        confirmText: "Eliminar",
+                        destructive: true
+                    }
+                )
+            ) {
+                return;
+            }
 
             saveContacts(
                 getContacts().filter(
                     contact => contact.id !== selectedContact.id
                 )
             );
+            await deleteStoredAttachment(selectedContact.attachment)
+                .catch(error => {
+                    console.warn(
+                        "No se pudo eliminar el adjunto remoto.",
+                        error
+                    );
+                });
             selectedContactId = NEW_CONTACT_ID;
             renderAgendaPanel();
         }
@@ -428,7 +453,7 @@ function bindAgendaEvents(root) {
 
     root.querySelector("[data-agenda-remove-attachment]")?.addEventListener(
         "click",
-        () => {
+        async () => {
             if (!selectedContact) return;
 
             saveContacts(
@@ -442,6 +467,13 @@ function bindAgendaEvents(root) {
                         : contact
                 )
             );
+            await deleteStoredAttachment(selectedContact.attachment)
+                .catch(error => {
+                    console.warn(
+                        "No se pudo eliminar el adjunto remoto.",
+                        error
+                    );
+                });
             renderAgendaPanel();
         }
     );

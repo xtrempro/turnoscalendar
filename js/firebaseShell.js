@@ -1,4 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
+import { showConfirm, showPrompt } from "./dialogs.js";
 import {
     isFirebaseConfigured,
     onFirebaseAuthChanged,
@@ -9,9 +10,13 @@ import {
     createWorkspace,
     ensureFirebaseUser,
     getActiveWorkspace,
-    joinWorkspace,
     listUserWorkspaces,
-    prepareWorkspaceInvitation,
+    approveSupervisorInvitation,
+    claimSupervisorInvitation,
+    createSupervisorInvitation,
+    listSupervisorInvitations,
+    rejectSupervisorInvitation,
+    revokeSupervisorInvitation,
     setActiveWorkspace,
     fetchWorkspaceDeletionInfo,
     requestWorkspaceDeletion,
@@ -19,6 +24,10 @@ import {
     WORKSPACE_DELETION_GRACE_HOURS
 } from "./workspaces.js";
 import { replaceLocalSnapshot } from "./persistence.js";
+import {
+    MENU_PERMISSION_DEFS,
+    normalizeMenuPermissions
+} from "./workspacePermissions.js";
 import {
     acceptWorkspaceLink,
     listWorkspaceLinks,
@@ -35,6 +44,11 @@ let linkedUnitState = {
     loading: false,
     message: "",
     links: []
+};
+let supervisorInviteState = {
+    loading: false,
+    message: "",
+    invites: []
 };
 let activeFirebaseBackdrop = null;
 let handlingAccessLost = false;
@@ -84,8 +98,11 @@ function workspaceInviteURL(workspace) {
     const url = new URL(baseURL);
 
     url.searchParams.set("joinWorkspace", workspace.id);
-    if (workspace.inviteCode) {
-        url.searchParams.set("inviteCode", workspace.inviteCode);
+    if (workspace.supervisorInvite) {
+        url.searchParams.set(
+            "supervisorInvite",
+            workspace.supervisorInvite
+        );
     }
 
     return url.toString();
@@ -99,12 +116,12 @@ function pendingJoinWorkspaceId() {
         .get("joinWorkspace") || "";
 }
 
-function pendingJoinInviteCode() {
+function pendingSupervisorInviteToken() {
     if (typeof window === "undefined") return "";
 
     return new URL(window.location.href)
         .searchParams
-        .get("inviteCode") || "";
+        .get("supervisorInvite") || "";
 }
 
 function clearPendingJoinWorkspaceId() {
@@ -119,13 +136,15 @@ function clearPendingJoinWorkspaceId() {
 
     if (
         !url.searchParams.has("joinWorkspace") &&
-        !url.searchParams.has("inviteCode")
+        !url.searchParams.has("inviteCode") &&
+        !url.searchParams.has("supervisorInvite")
     ) {
         return;
     }
 
     url.searchParams.delete("joinWorkspace");
     url.searchParams.delete("inviteCode");
+    url.searchParams.delete("supervisorInvite");
     window.history.replaceState(
         {},
         "",
@@ -141,14 +160,24 @@ function workspaceById(workspaceId) {
 
 function workspaceInvitationText(workspace) {
     const inviteURL = workspaceInviteURL(workspace);
+    const expiresAt = workspace.supervisorInviteExpiresAt
+        ? new Date(workspace.supervisorInviteExpiresAt)
+        : null;
+    const expiresText = expiresAt && !Number.isNaN(expiresAt.getTime())
+        ? expiresAt.toLocaleString("es-CL", {
+            dateStyle: "medium",
+            timeStyle: "short"
+        })
+        : "";
 
     return [
-        `Te invito a unirte al entorno "${workspace.name || workspace.id}" en ProTurnos.`,
+        `Te invito a solicitar acceso como supervisor al entorno "${workspace.name || workspace.id}" en TurnoPlus.`,
         "",
         inviteURL ? `Abre esta invitacion: ${inviteURL}` : "",
         "Inicia sesion con Google.",
-        "Si el enlace no aparece automaticamente, pega estos datos en Unirse a entorno existente:",
-        `${workspace.id} | ${workspace.inviteCode || ""}`
+        "La invitacion es de un solo uso y debe ser aprobada por el propietario.",
+        expiresText ? `Vence el ${expiresText}.` : "",
+        "Si el enlace no aparece automaticamente, pega el enlace completo en Unirse a entorno existente."
     ].filter(Boolean).join("\n");
 }
 
@@ -306,6 +335,218 @@ function renderDisabledModal() {
     });
 }
 
+function defaultSupervisorInvitePermissions() {
+    return MENU_PERMISSION_DEFS.reduce((permissions, menu) => {
+        permissions[menu.key] = {
+            view: true,
+            edit: false
+        };
+        return permissions;
+    }, {});
+}
+
+function timestampToMillis(value) {
+    if (!value) return 0;
+    if (typeof value === "number") return value;
+    if (value.toMillis) return value.toMillis();
+    if (value.seconds) return value.seconds * 1000;
+
+    return 0;
+}
+
+function formatInviteDate(value) {
+    const ms = timestampToMillis(value);
+    if (!ms) return "";
+
+    return new Date(ms).toLocaleString("es-CL", {
+        dateStyle: "medium",
+        timeStyle: "short"
+    });
+}
+
+function currentWorkspaceIsOwner() {
+    const workspace = workspaceById(currentWorkspace?.id);
+
+    return Boolean(
+        workspace &&
+        (
+            workspace.role === "owner" ||
+            (
+                workspace.ownerUid &&
+                currentUser &&
+                workspace.ownerUid === currentUser.uid
+            )
+        )
+    );
+}
+
+function readInvitePermissions(container) {
+    const permissions = {};
+
+    MENU_PERMISSION_DEFS.forEach(menu => {
+        const view = container.querySelector(
+            `[data-invite-permission-menu="${menu.key}"][data-permission-kind="view"]`
+        );
+        const edit = container.querySelector(
+            `[data-invite-permission-menu="${menu.key}"][data-permission-kind="edit"]`
+        );
+        const canView = Boolean(view?.checked);
+
+        permissions[menu.key] = {
+            view: canView,
+            edit: canView && Boolean(edit?.checked)
+        };
+    });
+
+    return normalizeMenuPermissions(permissions);
+}
+
+function invitePermissionsHTML(permissions) {
+    const normalized = normalizeMenuPermissions(permissions);
+
+    return `
+        <div class="settings-permission-grid supervisor-invite-permissions">
+            <div class="settings-permission-row settings-permission-row--head">
+                <span>Menú</span>
+                <span>Ver</span>
+                <span>Editar</span>
+            </div>
+            ${MENU_PERMISSION_DEFS.map(menu => {
+                const permission = normalized[menu.key];
+
+                return `
+                    <label class="settings-permission-row">
+                        <span>${escapeHTML(menu.label)}</span>
+                        <input
+                            type="checkbox"
+                            data-invite-permission-menu="${escapeHTML(menu.key)}"
+                            data-permission-kind="view"
+                            ${permission.view ? "checked" : ""}
+                        >
+                        <input
+                            type="checkbox"
+                            data-invite-permission-menu="${escapeHTML(menu.key)}"
+                            data-permission-kind="edit"
+                            ${permission.edit ? "checked" : ""}
+                            ${permission.view ? "" : "disabled"}
+                        >
+                    </label>
+                `;
+            }).join("")}
+        </div>
+    `;
+}
+
+function showSupervisorInvitePermissionsDialog({
+    title,
+    message,
+    confirmText,
+    permissions = defaultSupervisorInvitePermissions()
+} = {}) {
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+        const normalized = normalizeMenuPermissions(permissions);
+
+        backdrop.className =
+            "turn-change-dialog-backdrop supervisor-invite-backdrop";
+        backdrop.innerHTML = `
+            <section class="turn-change-dialog firebase-dialog supervisor-invite-dialog">
+                <strong>${escapeHTML(title || "Invitación de supervisor")}</strong>
+                <p>
+                    ${escapeHTML(message || "Define los permisos que tendrá este supervisor si el propietario aprueba la solicitud.")}
+                </p>
+                <div class="firebase-dialog-note supervisor-invite-error" hidden></div>
+                ${invitePermissionsHTML(normalized)}
+                <div class="turn-change-dialog__actions supervisor-invite-actions">
+                    <button class="secondary-button" type="button" data-invite-action="cancel">Cancelar</button>
+                    <button class="secondary-button" type="button" data-invite-action="read-only">Solo lectura</button>
+                    <button class="primary-button" type="button" data-invite-action="confirm">${escapeHTML(confirmText || "Continuar")}</button>
+                </div>
+            </section>
+        `;
+
+        document.body.appendChild(backdrop);
+
+        const dialog = backdrop.querySelector(".supervisor-invite-dialog");
+        const errorBox = backdrop.querySelector(".supervisor-invite-error");
+
+        const finish = value => {
+            backdrop.remove();
+            resolve(value);
+        };
+
+        const syncRow = viewInput => {
+            const menu = viewInput?.dataset.invitePermissionMenu;
+            const editInput = menu
+                ? dialog.querySelector(
+                    `[data-invite-permission-menu="${menu}"][data-permission-kind="edit"]`
+                )
+                : null;
+
+            if (!editInput) return;
+            editInput.disabled = !viewInput.checked;
+            if (!viewInput.checked) {
+                editInput.checked = false;
+            }
+        };
+
+        dialog
+            .querySelectorAll("[data-permission-kind='view']")
+            .forEach(input => {
+                input.addEventListener("change", () => syncRow(input));
+            });
+
+        backdrop.addEventListener("click", event => {
+            if (event.target === backdrop) {
+                finish(null);
+            }
+        });
+
+        dialog.querySelectorAll("[data-invite-action]").forEach(button => {
+            button.addEventListener("click", () => {
+                const action = button.dataset.inviteAction;
+
+                if (action === "cancel") {
+                    finish(null);
+                    return;
+                }
+
+                if (action === "read-only") {
+                    MENU_PERMISSION_DEFS.forEach(menu => {
+                        const view = dialog.querySelector(
+                            `[data-invite-permission-menu="${menu.key}"][data-permission-kind="view"]`
+                        );
+                        const edit = dialog.querySelector(
+                            `[data-invite-permission-menu="${menu.key}"][data-permission-kind="edit"]`
+                        );
+
+                        if (view) view.checked = true;
+                        if (edit) {
+                            edit.checked = false;
+                            edit.disabled = false;
+                        }
+                    });
+                    return;
+                }
+
+                const selected = readInvitePermissions(dialog);
+                const hasAny = MENU_PERMISSION_DEFS.some(menu =>
+                    selected[menu.key]?.view || selected[menu.key]?.edit
+                );
+
+                if (!hasAny) {
+                    errorBox.hidden = false;
+                    errorBox.textContent =
+                        "Selecciona al menos un permiso visible.";
+                    return;
+                }
+
+                finish(selected);
+            });
+        });
+    });
+}
+
 function workspaceListHTML() {
     if (!workspaceList.length) {
         return `
@@ -317,6 +558,12 @@ function workspaceListHTML() {
 
     return workspaceList.map(workspace => {
         const isActive = currentWorkspace?.id === workspace.id;
+        const isOwner = workspace.role === "owner" ||
+            Boolean(
+                workspace.ownerUid &&
+                currentUser &&
+                workspace.ownerUid === currentUser.uid
+            );
 
         return `
             <article class="firebase-workspace-item ${isActive ? "is-active" : ""}">
@@ -343,12 +590,14 @@ function workspaceListHTML() {
                     <button class="secondary-button" type="button" data-action="copy-workspace-id" data-workspace-ref="${escapeHTML(workspace.id)}">
                         Copiar ID
                     </button>
-                    <button class="secondary-button" type="button" data-action="copy-workspace-invite" data-workspace-ref="${escapeHTML(workspace.id)}">
-                        Copiar invitacion
-                    </button>
-                    <button class="primary-button" type="button" data-action="email-workspace-invite" data-workspace-ref="${escapeHTML(workspace.id)}">
-                        Enviar correo
-                    </button>
+                    ${isOwner ? `
+                        <button class="secondary-button" type="button" data-action="copy-workspace-invite" data-workspace-ref="${escapeHTML(workspace.id)}">
+                            Copiar invitación segura
+                        </button>
+                        <button class="primary-button" type="button" data-action="email-workspace-invite" data-workspace-ref="${escapeHTML(workspace.id)}">
+                            Enviar invitación
+                        </button>
+                    ` : ""}
                 </div>
 
                 ${workspaceDeletionBlockHTML(workspace)}
@@ -370,6 +619,13 @@ function friendlyFirebaseError(error) {
             `Firebase no permite iniciar sesion desde ${hostname}.`,
             "Agrega ese dominio en Firebase Console > Authentication > Settings > Authorized domains.",
             "Si estas usando ProTurnos localmente, agrega 127.0.0.1 y localhost, sin puerto."
+        ].join(" ");
+    }
+
+    if (code === "auth/cancelled-popup-request") {
+        return [
+            "El inicio de sesion anterior quedo abierto o fue reemplazado por otro intento.",
+            "Cierra cualquier ventana de Google abierta y vuelve a presionar Ingresar con Google una sola vez."
         ].join(" ");
     }
 
@@ -505,8 +761,102 @@ function linkedUnitsPanelHTML() {
     `;
 }
 
+function supervisorInviteStatusLabel(status) {
+    if (status === "open") return "Abierta";
+    if (status === "claimed") return "Pendiente de aprobación";
+    if (status === "approved") return "Aprobada";
+    if (status === "rejected") return "Rechazada";
+    if (status === "revoked") return "Revocada";
+    if (status === "expired") return "Vencida";
+    return "Pendiente";
+}
+
+function supervisorInviteActor(invite) {
+    return (
+        invite.claimedByName ||
+        invite.claimedByEmail ||
+        invite.createdByName ||
+        invite.createdByEmail ||
+        "Usuario"
+    );
+}
+
+function supervisorInvitesPanelHTML() {
+    if (!currentWorkspace || !currentWorkspaceIsOwner()) return "";
+
+    const message = supervisorInviteState.message
+        ? `
+            <div class="firebase-linked-status">
+                ${escapeHTML(supervisorInviteState.message)}
+            </div>
+        `
+        : "";
+    const visibleInvites = supervisorInviteState.invites
+        .filter(invite =>
+            ["open", "claimed", "approved", "rejected", "revoked", "expired"]
+                .includes(invite.status)
+        )
+        .slice(0, 12);
+
+    return `
+        <div class="firebase-linked-panel supervisor-invite-panel">
+            <strong>Invitaciones de supervisor</strong>
+            <p>
+                Las invitaciones son de un solo uso. El supervisor queda sin acceso
+                hasta que apruebes su solicitud.
+            </p>
+            ${message}
+            ${supervisorInviteState.loading ? `
+                <div class="firebase-empty">Cargando invitaciones...</div>
+            ` : visibleInvites.length ? `
+                <div class="firebase-linked-list">
+                    ${visibleInvites.map(invite => {
+                        const status = invite.status || "open";
+                        const expiresAt = formatInviteDate(invite.expiresAt);
+                        const createdAt = formatInviteDate(invite.createdAt);
+                        const actor = supervisorInviteActor(invite);
+
+                        return `
+                            <article class="firebase-linked-item supervisor-invite-item">
+                                <div>
+                                    <strong>${escapeHTML(actor)}</strong>
+                                    <small>
+                                        ${escapeHTML(supervisorInviteStatusLabel(status))}
+                                        ${expiresAt ? ` | vence ${escapeHTML(expiresAt)}` : ""}
+                                        ${createdAt ? ` | creada ${escapeHTML(createdAt)}` : ""}
+                                    </small>
+                                </div>
+                                <div class="firebase-linked-actions">
+                                    ${status === "claimed" ? `
+                                        <button class="primary-button" type="button" data-action="approve-supervisor-invite" data-invite-ref="${escapeHTML(invite.id)}">
+                                            Aprobar
+                                        </button>
+                                        <button class="secondary-button" type="button" data-action="reject-supervisor-invite" data-invite-ref="${escapeHTML(invite.id)}">
+                                            Rechazar
+                                        </button>
+                                    ` : ""}
+                                    ${["open", "claimed"].includes(status) ? `
+                                        <button class="secondary-button" type="button" data-action="revoke-supervisor-invite" data-invite-ref="${escapeHTML(invite.id)}">
+                                            Revocar
+                                        </button>
+                                    ` : ""}
+                                </div>
+                            </article>
+                        `;
+                    }).join("")}
+                </div>
+            ` : `
+                <div class="firebase-empty">
+                    No hay invitaciones ni solicitudes pendientes.
+                </div>
+            `}
+        </div>
+    `;
+}
+
 function renderSignedInModal(backdrop) {
     const pendingWorkspaceId = pendingJoinWorkspaceId();
+    const pendingInviteToken = pendingSupervisorInviteToken();
     const locked = isShellLocked();
 
     // Mientras no haya entorno valido, el selector queda bloqueado: no se puede
@@ -530,6 +880,11 @@ function renderSignedInModal(backdrop) {
                     No se puede editar informacion sin un entorno activo.
                 </div>
             ` : ""}
+            ${supervisorInviteState.message ? `
+                <div class="firebase-dialog-note firebase-dialog-note--success">
+                    ${escapeHTML(supervisorInviteState.message)}
+                </div>
+            ` : ""}
 
             <div class="firebase-dialog-grid">
                 <label class="firebase-field">
@@ -540,8 +895,10 @@ function renderSignedInModal(backdrop) {
 
                 <label class="firebase-field">
                     <span>Unirse a entorno existente</span>
-                    <input id="firebaseJoinWorkspaceId" type="text" placeholder="Pega enlace de invitacion o ID | codigo" value="${escapeHTML(pendingWorkspaceId)}">
-                    <button class="secondary-button" type="button" data-action="join-workspace">Unirme</button>
+                    <input id="firebaseJoinWorkspaceId" type="text" placeholder="Pega enlace de invitación segura" value="${escapeHTML(pendingWorkspaceId)}">
+                    <button class="secondary-button" type="button" data-action="join-workspace">
+                        ${pendingInviteToken ? "Solicitar acceso" : "Solicitar acceso"}
+                    </button>
                 </label>
             </div>
 
@@ -550,6 +907,7 @@ function renderSignedInModal(backdrop) {
             </div>
 
             ${linkedUnitsPanelHTML()}
+            ${supervisorInvitesPanelHTML()}
 
             <div class="turn-change-dialog__actions">
                 <button class="secondary-button" type="button" data-action="sign-out">Cerrar sesion</button>
@@ -591,6 +949,7 @@ function renderSignedOutModal(backdrop, options = {}) {
 async function refreshWorkspaces() {
     if (!currentUser || !isFirebaseConfigured()) {
         workspaceList = [];
+        supervisorInviteState.invites = [];
         return;
     }
 
@@ -610,6 +969,27 @@ async function refreshWorkspaces() {
         })
     );
     currentWorkspace = getActiveWorkspace();
+    await refreshSupervisorInvites();
+}
+
+async function refreshSupervisorInvites() {
+    supervisorInviteState.invites = [];
+
+    if (!currentWorkspace?.id || !currentWorkspaceIsOwner()) {
+        return;
+    }
+
+    try {
+        supervisorInviteState.loading = true;
+        supervisorInviteState.invites =
+            await listSupervisorInvitations(currentWorkspace.id);
+    } catch (error) {
+        console.warn("No se pudieron cargar invitaciones de supervisor.", error);
+        supervisorInviteState.message =
+            "No se pudieron cargar las invitaciones de supervisor.";
+    } finally {
+        supervisorInviteState.loading = false;
+    }
 }
 
 function workspaceDeletionBlockHTML(workspace) {
@@ -729,11 +1109,19 @@ async function handleAction(action, backdrop, sourceButton = null) {
             const id = sourceButton?.dataset.workspaceRef;
             const workspace = workspaceList.find(item => item.id === id);
             const name = workspace?.name || id || "";
-            const typed = window.prompt(
+            const typed = await showPrompt(
                 `Esto programara la ELIMINACION del entorno "${name}" en ${WORKSPACE_DELETION_GRACE_HOURS} horas.\n` +
                 "Se avisara a los demas usuarios y a los trabajadores enlazados. Podras anularla durante ese plazo.\n" +
                 "Pasado el plazo se borrara de forma definitiva y no podras volver a acceder.\n\n" +
-                "Para confirmar, escribe el nombre exacto del entorno:"
+                "Para confirmar, escribe el nombre exacto del entorno.",
+                {
+                    title: "Programar eliminación del entorno",
+                    tone: "danger",
+                    inputLabel: "Nombre exacto del entorno",
+                    placeholder: name,
+                    confirmText: "Programar eliminación",
+                    destructive: true
+                }
             );
 
             if (typed === null) return;
@@ -775,13 +1163,30 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
             if (!workspace) return;
 
+            const permissions =
+                await showSupervisorInvitePermissionsDialog({
+                    title: "Nueva invitación segura",
+                    message:
+                        "Selecciona los permisos que tendrá el supervisor si apruebas su solicitud.",
+                    confirmText: "Crear invitación"
+                });
+
+            if (!permissions) return;
+
             const invitationWorkspace =
-                await prepareWorkspaceInvitation(currentUser, workspace);
+                await createSupervisorInvitation(
+                    currentUser,
+                    workspace,
+                    permissions
+                );
 
             await copyTextToClipboard(
                 workspaceInvitationText(invitationWorkspace)
             );
+            supervisorInviteState.message =
+                "Invitación segura creada y copiada al portapapeles.";
             await refreshWorkspaces();
+            renderSignedInModal(backdrop);
             return;
         }
 
@@ -792,11 +1197,25 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
             if (!workspace) return;
 
+            const permissions =
+                await showSupervisorInvitePermissionsDialog({
+                    title: "Nueva invitación segura",
+                    message:
+                        "Selecciona los permisos que tendrá el supervisor si apruebas su solicitud.",
+                    confirmText: "Crear invitación"
+                });
+
+            if (!permissions) return;
+
             const invitationWorkspace =
-                await prepareWorkspaceInvitation(currentUser, workspace);
+                await createSupervisorInvitation(
+                    currentUser,
+                    workspace,
+                    permissions
+                );
 
             const subject = encodeURIComponent(
-                `Invitacion a ProTurnos - ${workspace.name || workspace.id}`
+                `Invitación a TurnoPlus - ${workspace.name || workspace.id}`
             );
             const body = encodeURIComponent(
                 workspaceInvitationText(invitationWorkspace)
@@ -804,7 +1223,10 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
             window.location.href =
                 `mailto:?subject=${subject}&body=${body}`;
+            supervisorInviteState.message =
+                "Invitación segura creada. Completa el correo para enviarla.";
             await refreshWorkspaces();
+            renderSignedInModal(backdrop);
             return;
         }
 
@@ -823,7 +1245,7 @@ async function handleAction(action, backdrop, sourceButton = null) {
             refreshShellGate();
             updateTopbar();
             await options.onWorkspaceChange?.(currentWorkspace);
-            renderSignedInModal(backdrop);
+            closeModal(backdrop, { force: true });
             return;
         }
 
@@ -832,21 +1254,98 @@ async function handleAction(action, backdrop, sourceButton = null) {
                 "#firebaseJoinWorkspaceId"
             );
 
-            currentWorkspace =
-                await joinWorkspace(
-                    currentUser,
-                    input?.value,
-                    pendingJoinInviteCode()
-                );
+            const result = await claimSupervisorInvitation(
+                currentUser,
+                input?.value,
+                pendingSupervisorInviteToken()
+            );
             clearPendingJoinWorkspaceId();
-            await options.onWorkspaceChange?.(null);
-            replaceLocalSnapshot({}, { silent: true });
+            supervisorInviteState.message =
+                `Solicitud enviada para ${result.workspaceName || "la unidad"}. Espera la aprobacion del propietario.`;
             await refreshWorkspaces();
             await refreshLinkedUnits();
-            linkedUnitState.message = "";
             refreshShellGate();
             updateTopbar();
-            await options.onWorkspaceChange?.(currentWorkspace);
+            renderSignedInModal(backdrop);
+            return;
+        }
+
+        if (action === "approve-supervisor-invite") {
+            const inviteId = sourceButton?.dataset.inviteRef;
+            const invite = supervisorInviteState.invites.find(item =>
+                item.id === inviteId
+            );
+
+            if (!invite || !currentWorkspace?.id) return;
+
+            const permissions =
+                await showSupervisorInvitePermissionsDialog({
+                    title: "Aprobar supervisor",
+                    message:
+                        `Revisa los permisos para ${supervisorInviteActor(invite)} antes de aprobar el acceso.`,
+                    confirmText: "Aprobar",
+                    permissions: invite.permissions || {}
+                });
+
+            if (!permissions) return;
+
+            await approveSupervisorInvitation(
+                currentWorkspace.id,
+                inviteId,
+                permissions
+            );
+            supervisorInviteState.message =
+                "Supervisor aprobado. Su unidad aparecera al actualizar o volver a iniciar sesion.";
+            await refreshWorkspaces();
+            renderSignedInModal(backdrop);
+            return;
+        }
+
+        if (action === "reject-supervisor-invite") {
+            const inviteId = sourceButton?.dataset.inviteRef;
+            const reason = await showPrompt(
+                "Puedes indicar un motivo breve para dejarlo registrado.",
+                {
+                    title: "Rechazar solicitud",
+                    tone: "warning",
+                    inputLabel: "Motivo opcional",
+                    placeholder: "Ej: solicitud no autorizada",
+                    confirmText: "Rechazar"
+                }
+            );
+
+            if (reason === null || !currentWorkspace?.id) return;
+
+            await rejectSupervisorInvitation(
+                currentWorkspace.id,
+                inviteId,
+                reason
+            );
+            supervisorInviteState.message =
+                "Solicitud de supervisor rechazada.";
+            await refreshWorkspaces();
+            renderSignedInModal(backdrop);
+            return;
+        }
+
+        if (action === "revoke-supervisor-invite") {
+            const inviteId = sourceButton?.dataset.inviteRef;
+            const confirmed = await showConfirm(
+                "Esta invitacion quedara cerrada y el enlace ya no podra usarse.",
+                {
+                    title: "Revocar invitacion",
+                    tone: "danger",
+                    confirmText: "Revocar",
+                    destructive: true
+                }
+            );
+
+            if (!confirmed || !currentWorkspace?.id) return;
+
+            await revokeSupervisorInvitation(currentWorkspace.id, inviteId);
+            supervisorInviteState.message =
+                "Invitacion de supervisor revocada.";
+            await refreshWorkspaces();
             renderSignedInModal(backdrop);
             return;
         }
@@ -898,8 +1397,14 @@ async function handleAction(action, backdrop, sourceButton = null) {
         if (action === "unlink-workspace-link") {
             const linkName =
                 sourceButton?.dataset.linkName || "esta unidad";
-            const confirmed = window.confirm(
-                `Deseas desenlazarte de ${linkName}? Ya no se podra buscar personal de esa unidad para prestamos.`
+            const confirmed = await showConfirm(
+                `Se eliminará el enlace con ${linkName} y ya no se podrá buscar personal de esa unidad para préstamos.`,
+                {
+                    title: "Desenlazar unidad",
+                    tone: "danger",
+                    confirmText: "Desenlazar",
+                    destructive: true
+                }
             );
 
             if (!confirmed) return;
@@ -916,6 +1421,7 @@ async function handleAction(action, backdrop, sourceButton = null) {
         }
     } catch (error) {
         linkedUnitState.loading = false;
+        supervisorInviteState.loading = false;
         if (backdrop?.isConnected && currentUser) {
             renderSignedInModal(backdrop);
         }
@@ -970,7 +1476,9 @@ function bindModalActions(backdrop) {
                 console.warn("No se pudieron cargar unidades enlazadas.", error);
             }
 
-            renderSignedInModal(backdrop);
+            await refreshSupervisorInvites();
+
+            closeModal(backdrop, { force: true });
         };
     });
 }

@@ -129,10 +129,10 @@ Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/
 - `js/hoursEngine.js`, `js/hoursCharts.js`, `js/hoursReport.js`: calculos, graficos y reportes de horas.
 - `js/systemSettings.js`: modal de ajustes, valores hora por grado, feriados manuales, solicitudes de reemplazo y dotacion.
 - `js/holidays.js`: feriados de Chile por API Nager.Date y feriados manuales.
-- `js/firebase*.js`, `js/workspaces.js`: autenticacion/shell Firebase, workspaces, copia manual de respaldo y sincronizacion del estado completo.
-- `js/firebaseAppState.js`: sincronizacion automatica por workspace del snapshot completo de `localStorage`, con manifiesto y chunks en Firestore.
-- `js/firebaseWorkspaceState.js`: lectura/escritura puntual del estado vivo de workspaces enlazados para prestamos entre unidades.
-- `js/firebaseLinkedUnits.js`: solicitudes de enlace entre unidades, aceptacion/rechazo y permisos tecnicos `linkedOperators`.
+- `js/firebase*.js`, `js/workspaces.js`: autenticacion/shell Firebase, workspaces, copia manual de respaldo y sincronizacion modular del estado.
+- `js/firebaseAppState.js`: sincronizacion automatica por workspace de subconjuntos de `localStorage`, con un manifiesto y chunks separados por modulo en Firestore.
+- `js/firebaseInterUnitLoans.js`: disponibilidad mensual sanitizada, sincronizacion local de prestamos y llamadas a Cloud Functions.
+- `js/firebaseLinkedUnits.js`: solicitudes de enlace entre unidades y aceptacion/rechazo/desenlace.
 - `firebase.rules` y `storage.rules`: reglas de Firestore y Storage para workspaces y miembros.
 
 ## Vistas Principales
@@ -204,9 +204,11 @@ Layout actual del menu Perfil:
 
 Migracion Firebase:
 
-- La seleccion de un workspace Firebase ahora inicia sincronizacion automatica del estado completo de la app, no solo perfiles o solicitudes.
-- `js/firebaseAppState.js` guarda un manifiesto en `workspaces/{workspaceId}/system/appState` y el contenido en chunks bajo `workspaces/{workspaceId}/appStateChunks`.
-- `localStorage` sigue siendo la cache local de trabajo; Firebase replica esa cache entre usuarios del mismo workspace.
+- La seleccion de un workspace Firebase inicia sincronizacion automatica del estado de la app separado por modulos de seguridad.
+- `js/firebaseStateModules.js` clasifica cada clave local en `profile`, `turnos`, `clockmarks`, `requests`, `memos`, `swap`, `hours`, `weekly`, `tasks`, `agenda`, `reports`, `log` o `system`.
+- Cada modulo guarda su manifiesto en `workspaces/{workspaceId}/stateModules/{moduleId}` y sus chunks en la subcoleccion `chunks`.
+- Las reglas validan `view` y `edit` del modulo tanto para lectura como para escritura. Las claves desconocidas se asignan a `system`, accesible solo para el propietario.
+- `localStorage` sigue siendo la cache local de trabajo; Firebase replica solamente los modulos autorizados entre usuarios del mismo workspace.
 
 Reglas actuales:
 
@@ -327,13 +329,14 @@ Unidades enlazadas:
 - Las solicitudes de enlace entrantes tambien aparecen en el menu `Solicitudes`, junto a las solicitudes de trabajadores, y suman al badge rojo del icono cuando estan pendientes.
 - `js/workerRequests.js` inicia una escucha Firestore en tiempo real sobre `workspaceLinks` entrantes del entorno activo para que el badge de `Solicitudes` se actualice sin tener que abrir el menu.
 - En `Cuenta y entornos`, los enlaces activos se pueden clickear para confirmar el desenlace. El `workspaceLink` queda con estado `unlinked` y deja de aparecer como activo.
-- Aceptar no agrega el entorno ajeno al selector de trabajo ni permite navegar sus perfiles. Crea permisos tecnicos `workspaces/{workspaceId}/linkedOperators/{uid}` para consultar/aplicar prestamos contra el snapshot vivo de la unidad enlazada.
+- Aceptar no agrega el entorno ajeno al selector de trabajo ni permite navegar sus perfiles.
 - En el dialogo de reemplazo, `Buscar sugerencias en unidades enlazadas` carga enlaces aceptados del entorno activo en ambos sentidos.
-- El sistema usa `js/firebaseWorkspaceState.js` para leer `workspaces/{workspaceId}/system/appState` y sus chunks sin reemplazar el estado local.
+- Cada unidad publica documentos `linkedStaffingMonths/{YYYY-MM}` con una proyeccion minima: nombre operativo, profesion, turno, disponibilidad y HHEE del mes. No incluye RUT, correo, documentos, permisos ni el snapshot completo.
+- La disponibilidad remota se obtiene mediante la callable `getLinkedStaffingMonth`, que valida autenticacion, membresia y enlace aceptado.
 - Solo lista candidatos activos compatibles por profesion/estamento, sin ausencias ese dia, con disponibilidad para cubrir el turno requerido y con regla de turno 24 permitida en ambas unidades cuando corresponda.
 - Las sugerencias muestran HHEE diurnas/nocturnas del mes calculadas desde la unidad origen del trabajador.
-- Al asignar un prestamo, escribe un reemplazo `linked_unit_loan` en el snapshot vivo de la unidad origen del trabajador para marcar `Prestamo`, generar la `P` en timeline y sumar HHEE alla; luego registra el prestamo en la unidad actual con `isLoan`, `workerWorkspaceId`, `hostWorkspaceId` y `remoteReplacementId`.
-- Este flujo requiere publicar `firebase.rules`, porque usa `workspaceLinks` y `linkedOperators`. Las reglas validan que el permiso tecnico solo sirve si el enlace asociado sigue en estado `accepted`.
+- Las callables `createInterUnitLoan` y `cancelInterUnitLoan` validan permisos, enlace y disponibilidad, y escriben `loanAssignments/{loanId}` en ambas unidades.
+- Cada unidad solo integra su propio `loanAssignment` como reemplazo local `inter_unit_loan`; nunca escribe el `appState` de la otra unidad.
 
 ## LOG / Anulaciones
 
@@ -363,39 +366,56 @@ Estado actual de comportamiento:
 - En el render del LOG no se muestra el label `Perfil: ...`; se muestra `Usuario: ...`.
 - Las fechas ISO dentro del detalle del registro se formatean visualmente como `DD-MM-AAAA`, aunque el dato original siga guardado como ISO.
 - Si se anula una ausencia o permiso desde LOG, `cancelReplacementsForAbsence()` marca los reemplazos asociados como `canceled`.
+- Tambien marca como anulado el LOG original `Asigno reemplazo de turno` asociado a cada `meta.replacementId` cancelado, dejando `canceledAt`, `canceledBy` y `cancellationDetails`.
 - Tambien notifica al trabajador afectado.
 - El log original de ausencia queda marcado como anulado.
 
-Pendiente conocido desde el chat:
-
-- Al anular un permiso administrativo desde LOG, ya se elimina/anula el permiso y el reemplazo asignado.
-- Falta marcar tambien como anulado el registro LOG original de `Asigno reemplazo de turno` asociado a ese `replacementId`.
-- Lugar probable: `js/auditLog.js`, dentro de `cancelReplacementsForAbsence()` o inmediatamente despues de cancelar reemplazos. Hay que buscar logs `AUDIT_CATEGORY.OVERTIME` con `meta.replacementId` igual al reemplazo cancelado y actualizar esos logs con `canceledAt`, `canceledBy` y `cancellationDetails`.
-
 ## Firebase
 
-`js/firebaseConfig.js` tiene `FIREBASE_ENABLED = true` y configuracion del proyecto `calendarioturnos-7c4d9`.
+`js/firebaseConfig.js` tiene `FIREBASE_ENABLED = true`.
+
+Proyectos:
+
+- Produccion: `calendarioturnos-7c4d9`.
+- Pruebas: `turnoplus-test-7c4d9`.
+- `.firebaserc` tiene aliases `default`/`production` y `test`.
+- La configuracion web usa produccion por defecto y selecciona test automaticamente cuando el host es `turnoplus-test-7c4d9.web.app` o `turnoplus-test-7c4d9.firebaseapp.com`.
 
 Arquitectura:
 
 - Modo local sigue usando `localStorage` como cache sincronica de la app.
 - Al iniciar sesion y seleccionar un workspace, `js/main.js` llama `startFirebaseAppStateSync()` desde `js/firebaseAppState.js`.
-- Firebase sincroniza automaticamente el estado completo de la app por workspace:
-  - Manifiesto: `workspaces/{workspaceId}/system/appState`.
-  - Chunks: `workspaces/{workspaceId}/appStateChunks/part_0000`, `part_0001`, etc.
+- Firebase sincroniza automaticamente documentos separados por modulo:
+  - Manifiesto: `workspaces/{workspaceId}/stateModules/{moduleId}`.
+  - Chunks: `workspaces/{workspaceId}/stateModules/{moduleId}/chunks/part_0000`, `part_0001`, etc.
+- `js/firebaseAppState.js` solo escucha los modulos que el miembro puede ver y solo sube aquellos que puede editar.
 - El snapshot excluye claves internas, de tema, workspace activo, id local del cliente y claves tecnicas de Firebase Auth (`firebase:` / `firebase-`).
-- `js/persistence.js` emite `proturnos:persistenceChanged` cuando cambian datos locales; `firebaseAppState.js` escucha ese evento y sube cambios con debounce.
-- Cuando llega un estado remoto, `replaceLocalSnapshot()` reemplaza la cache local en silencio y `main.js` refresca perfiles, calendario, cambios de turno, solicitudes, RRHH y dashboard.
+- `js/persistence.js` emite `proturnos:persistenceChanged`; `firebaseAppState.js` marca su modulo y sube solo ese subconjunto con debounce.
+- Cuando llega un cambio remoto, `replaceLocalSnapshotSubset()` reemplaza solamente el modulo correspondiente y `main.js` refresca las vistas.
 - Los modulos granulares `firebaseProfiles.js`, `firebaseReplacementRequests.js` y `firebaseWorkerRequests.js` siguen en el repo, pero `main.js` ya no los inicia; la sincronizacion completa los reemplaza como camino principal.
 - `js/firebaseMigration.js` sigue disponible como copia manual de respaldo en `workspaces/{workspaceId}/system/localStorageSnapshot`; no es el flujo automatico principal.
-- `js/firebaseLinkedUnits.js` maneja `workspaceLinks`: solicitudes pendientes, aceptadas, rechazadas y desenlazadas. Al aceptar, la unidad destino otorga al solicitante un permiso tecnico `linkedOperators`.
-- `js/firebaseWorkspaceState.js` permite leer/escribir puntualmente el appState de workspaces enlazados, sin cambiar el workspace activo local.
-- `firebase.rules` exige usuario autenticado y miembro de workspace para leer/escribir. Para appState, tambien permite usuarios con `linkedOperators`, limitado al flujo tecnico de prestamos.
-- `storage.rules` permite archivos bajo `workspaces/{workspaceId}/...` solo a miembros.
+- `js/firebaseLinkedUnits.js` maneja `workspaceLinks`: solicitudes pendientes, aceptadas, rechazadas y desenlazadas.
+- `firebase.rules` bloquea por completo los antiguos `system/appState` y `appStateChunks`; no existe fallback monolitico.
+- Las unidades enlazadas acceden solo por Cloud Functions a la proyeccion sanitizada.
+- Los adjuntos nuevos se guardan en `workspaces/{workspaceId}/attachments/{moduleId}/{ownerId}/{recordId}/{fileName}`.
+- `storage.rules` exige membresia, permiso del modulo, metadatos coherentes, tipos permitidos y limite de 5 MB. El cargador original puede eliminar su propio archivo.
+- Los adjuntos base64 antiguos siguen siendo legibles por compatibilidad, pero los nuevos perfiles, marcajes, agenda, memorandos y postulantes usan Firebase Storage.
+- MFA/TOTP queda preparado para una etapa futura, pero actualmente esta desactivado para reducir friccion comercial inicial. La UI conserva el codigo de enrolamiento, y `firebase.rules`, `storage.rules`, Functions y `scripts/cloud-hardening.mjs` lo controlan por bandera/constante antes de exigir `firebase.sign_in_second_factor`.
+- El proyecto productivo tiene Firestore con proteccion contra eliminacion, PITR de 7 dias y respaldo diario con retencion de 7 dias.
+- `scripts/cloud-hardening.mjs` aplica/valida restriccion de API key publica a APIs Firebase, metricas de logs, alertas de Functions/App Check y presupuesto mensual. TOTP solo se activa si se ejecuta con `TURNOPLUS_ENABLE_TOTP=true`.
+- La API key web es publica por diseno de Firebase; la seguridad depende de reglas, App Check, Auth y restricciones de clave/referrers. MFA/TOTP queda disponible para endurecimiento futuro.
+- El proyecto de pruebas ya tiene Hosting y Firestore. Storage en test requiere activar facturacion/Blaze; no enlazar facturacion sin autorizacion explicita. TOTP queda desactivado por defecto.
 - Si Google login devuelve `auth/unauthorized-domain`, agregar el hostname usado en navegador en Firebase Console > Authentication > Settings > Authorized domains. Para desarrollo local, autorizar `127.0.0.1` y `localhost` sin puerto.
-- En el modal `Cuenta y entornos`, cada entorno muestra el ID en un input seleccionable y botones para `Copiar ID`, `Copiar invitacion` y `Enviar correo` con `mailto:` prellenado.
+- En el modal `Cuenta y entornos`, cada entorno muestra el ID en un input seleccionable. Solo el propietario puede generar invitaciones seguras de supervisor: token de un solo uso, vencimiento de 7 dias, permisos explicitos y aprobacion final del propietario.
+- Las invitaciones de supervisor se crean y resuelven solo por Cloud Functions (`createSupervisorInvite`, `claimSupervisorInvite`, `approveSupervisorInvite`, `rejectSupervisorInvite`, `revokeSupervisorInvite`). El token real viaja solo en el enlace `?joinWorkspace=<id>&supervisorInvite=<token>`; Firestore guarda el hash como ID en `workspaces/{workspaceId}/supervisorInvites/{inviteId}`.
 - Si Firebase esta configurado, `js/firebaseShell.js` exige login Google antes de permitir cambios: abre automaticamente el modal de inicio de sesion y bloquea la app con `body.auth-gate-active` hasta que haya usuario autenticado.
-- Para unirse a un entorno, `js/workspaces.js` crea primero `workspaces/{workspaceId}/members/{uid}` y luego lee el workspace; `firebase.rules` permite esa creacion solo si el workspace existe. Despues de cambiar reglas, hay que publicarlas en Firebase Console o con Firebase CLI.
+- Para unirse como supervisor, el invitado solo reclama la invitacion y queda pendiente. El documento `members/{uid}` y `users/{uid}/workspaces/{workspaceId}` se crean atomicamente por Function cuando el propietario aprueba. Las reglas bloquean la autocreacion cliente con `inviteCode` heredado y no dan acceso amplio a miembros sin `permissions`.
+
+CI / pruebas:
+
+- `.github/workflows/security.yml` ejecuta auditorias `npm audit --audit-level=high`, chequeos de sintaxis, `npm run test:state-modules`, pruebas de Security Rules con emuladores y `npm run build`.
+- `tests/security-rules.test.mjs` cubre acceso modular, Storage, acceso de propietarios/supervisores sin MFA mientras TOTP esta desactivado e invitaciones seguras de supervisor.
+- `tests/state-modules.test.mjs` cubre clasificacion de modulos de estado.
 
 Verificacion ejecutada tras este avance:
 
@@ -405,6 +425,14 @@ node --check js\firebaseAppState.js
 node --check js\firebaseShell.js
 node --check js\firebaseMigration.js
 node --check js\main.js
+node --check js\firebaseClient.js
+node --check js\workspacePermissions.js
+node --check js\auditLog.js
+npm run test:state-modules
+npm run test:rules
+npm audit --audit-level=high
+Push-Location functions; npm audit --audit-level=high; Pop-Location
+npm run build
 Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/
 ```
 
@@ -452,6 +480,28 @@ node --check js\storage.js
 node --check js\auditLog.js
 ```
 
+Pruebas automatizadas:
+
+```powershell
+npm run test:state-modules
+npm run test:rules
+npm audit --audit-level=high
+Push-Location functions; npm audit --audit-level=high; Pop-Location
+```
+
+Hardening cloud:
+
+```powershell
+node scripts\cloud-hardening.mjs
+```
+
+Deploy productivo completo:
+
+```powershell
+npm run build
+firebase.cmd deploy --only firestore:rules,storage,functions,hosting --project calendarioturnos-7c4d9
+```
+
 Servidor local:
 
 ```powershell
@@ -481,7 +531,7 @@ git diff --stat
 
 ## Proximos Pendientes Recomendados
 
-1. Implementar pendiente de LOG: marcar anulado el registro `Asigno reemplazo de turno` cuando se anula desde LOG el permiso/ausencia que originaba ese reemplazo.
-2. Revisar manualmente la UI de Perfil tras los cambios de profesiones y layout.
-3. Considerar limpiar mojibake de `js/constants.js` con mucho cuidado, verificando que no rompa claves historicas.
-4. Crear una rutina manual de QA minima documentada para calendario, permisos, reemplazos, LOG, perfil y solicitudes.
+1. Revisar manualmente la UI de Perfil tras los cambios de profesiones y layout.
+2. Considerar limpiar mojibake de `js/constants.js` con mucho cuidado, verificando que no rompa claves historicas.
+3. Crear una rutina manual de QA minima documentada para calendario, permisos, reemplazos, LOG, perfil y solicitudes.
+4. Si se quiere staging completo, activar facturacion en `turnoplus-test-7c4d9` y luego habilitar Authentication/TOTP y Storage en ese proyecto.

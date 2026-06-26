@@ -896,6 +896,167 @@ function segmentTitle(segment) {
     return `Turno ${segment.label}`;
 }
 
+function clockIncidentTimeDetail({
+    side,
+    actual,
+    scheduled
+}) {
+    if (!actual || !scheduled) return "";
+
+    const actualLabel = formatSegmentTime(actual);
+    const scheduledLabel = formatSegmentTime(scheduled);
+
+    if (actual.getTime() === scheduled.getTime()) {
+        return `${side} ${actualLabel}`;
+    }
+
+    const isEntry = side === "Entrada";
+    const isAfter = actual > scheduled;
+    const minutes = isAfter
+        ? minutesBetween(scheduled, actual)
+        : minutesBetween(actual, scheduled);
+    const incident = isEntry
+        ? (
+            isAfter
+                ? `${minutes} min de atraso`
+                : `${minutes} min anticipada`
+        )
+        : (
+            isAfter
+                ? `${minutes} min posterior`
+                : `${minutes} min anticipada`
+        );
+
+    return `${side} ${actualLabel} (${incident}; programada ${scheduledLabel})`;
+}
+
+export function getClockIncidentDetail(
+    profile,
+    keyDay,
+    date,
+    state,
+    holidays = {}
+) {
+    const mark = getClockMark(profile, keyDay);
+
+    if (!mark?.segments) return "";
+
+    const scheduledState = getClockScheduleState(
+        profile,
+        keyDay,
+        state
+    );
+    const scheduledSegments = getScheduledSegmentsForProfile(
+        profile,
+        keyDay,
+        date,
+        scheduledState,
+        holidays
+    );
+    const usedMarks = new Set();
+    const details = [];
+
+    scheduledSegments.forEach(segment => {
+        const segmentMark = getSegmentMark(mark, segment);
+
+        if (!segmentMark) return;
+
+        usedMarks.add(segmentMark);
+
+        const hasMissing = Boolean(
+            segmentMark.missingEntry ||
+            segmentMark.missingExit
+        );
+
+        if (
+            segmentMark.rrhhPayApproved ||
+            (!hasMissing && segmentMark.discountWaived)
+        ) {
+            return;
+        }
+
+        const incidentParts = [];
+
+        if (segmentMark.missingEntry) {
+            incidentParts.push("Sin marcaje de entrada");
+        } else if (segmentMark.entryTime) {
+            incidentParts.push(
+                clockIncidentTimeDetail({
+                    side: "Entrada",
+                    actual: timeNearReference(
+                        date,
+                        segmentMark.entryTime,
+                        segment.start
+                    ),
+                    scheduled: segment.start
+                })
+            );
+        }
+
+        if (segmentMark.missingExit) {
+            incidentParts.push("Sin marcaje de salida");
+        } else if (segmentMark.exitTime) {
+            incidentParts.push(
+                clockIncidentTimeDetail({
+                    side: "Salida",
+                    actual: timeNearReference(
+                        date,
+                        segmentMark.exitTime,
+                        segment.end
+                    ),
+                    scheduled: segment.end
+                })
+            );
+        }
+
+        const note = String(
+            segmentMark.adminNote ||
+            segmentMark.comments ||
+            ""
+        ).trim();
+
+        if (note) {
+            incidentParts.push(`Comentario: ${note}`);
+        }
+
+        if (incidentParts.length) {
+            details.push(
+                `${segmentTitle(segment)}: ${incidentParts.filter(Boolean).join("; ")}`
+            );
+        }
+    });
+
+    Object.entries(mark.segments)
+        .filter(([, segmentMark]) =>
+            segmentMark &&
+            !usedMarks.has(segmentMark) &&
+            !segmentMark.rrhhPayApproved
+        )
+        .forEach(([segmentKey, segmentMark]) => {
+            const incidentParts = [];
+
+            if (segmentMark.missingEntry) {
+                incidentParts.push("Sin marcaje de entrada");
+            } else if (segmentMark.entryTime) {
+                incidentParts.push(`Entrada ${segmentMark.entryTime}`);
+            }
+
+            if (segmentMark.missingExit) {
+                incidentParts.push("Sin marcaje de salida");
+            } else if (segmentMark.exitTime) {
+                incidentParts.push(`Salida ${segmentMark.exitTime}`);
+            }
+
+            if (incidentParts.length) {
+                details.push(
+                    `${segmentKey.replace(/_/g, " ")}: ${incidentParts.join("; ")}`
+                );
+            }
+        });
+
+    return details.join("\n");
+}
+
 function clockTimeColumnHTML({
     segment,
     side,

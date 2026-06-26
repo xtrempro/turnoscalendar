@@ -5,7 +5,6 @@ import {
 } from "./firebaseClient.js";
 
 const ACTIVE_WORKSPACE_KEY = "firebaseActiveWorkspace";
-const INVITE_CODE_BYTES = 16;
 // Periodo de gracia antes de eliminar definitivamente un entorno.
 export const WORKSPACE_DELETION_GRACE_HOURS = 72;
 
@@ -22,29 +21,13 @@ function userPayload(user) {
     };
 }
 
-function createInviteCode() {
-    const bytes = new Uint8Array(INVITE_CODE_BYTES);
-
-    if (globalThis.crypto?.getRandomValues) {
-        globalThis.crypto.getRandomValues(bytes);
-    } else {
-        for (let index = 0; index < bytes.length; index++) {
-            bytes[index] = Math.floor(Math.random() * 256);
-        }
-    }
-
-    return Array.from(bytes)
-        .map(byte => byte.toString(16).padStart(2, "0"))
-        .join("");
-}
-
 function parseJoinInput(value) {
     const raw = String(value || "").trim();
 
     if (!raw) {
         return {
             workspaceId: "",
-            inviteCode: ""
+            supervisorInvite: ""
         };
     }
 
@@ -53,7 +36,7 @@ function parseJoinInput(value) {
 
         return {
             workspaceId: url.searchParams.get("joinWorkspace") || raw,
-            inviteCode: url.searchParams.get("inviteCode") || ""
+            supervisorInvite: url.searchParams.get("supervisorInvite") || ""
         };
     } catch (_error) {
         const parts = raw
@@ -63,9 +46,17 @@ function parseJoinInput(value) {
 
         return {
             workspaceId: parts[0] || "",
-            inviteCode: parts[1] || ""
+            supervisorInvite: parts[1] || ""
         };
     }
+}
+
+async function callWorkspaceFunction(name, payload = {}) {
+    const { functions, functionsModule } = await getFirebaseServices();
+    const callable = functionsModule.httpsCallable(functions, name);
+    const result = await callable(payload);
+
+    return result.data || {};
 }
 
 export function getActiveWorkspace() {
@@ -221,7 +212,6 @@ export async function createWorkspace(user, name) {
 
     const { db, firestoreModule } = await getFirebaseServices();
     const now = firestoreModule.serverTimestamp();
-    const inviteCode = createInviteCode();
     const workspaceRef =
         firestoreModule.doc(
             firestoreModule.collection(db, "workspaces")
@@ -230,7 +220,6 @@ export async function createWorkspace(user, name) {
         id: workspaceRef.id,
         name: cleanName,
         ownerUid: user.uid,
-        inviteCode,
         createdByEmail: user.email || "",
         createdAt: now,
         updatedAt: now
@@ -239,7 +228,6 @@ export async function createWorkspace(user, name) {
         role: "owner",
         email: user.email || "",
         displayName: user.displayName || "",
-        inviteCode,
         joinedAt: now
     };
 
@@ -279,7 +267,11 @@ export async function createWorkspace(user, name) {
     return active;
 }
 
-export async function prepareWorkspaceInvitation(user, workspace) {
+export async function createSupervisorInvitation(
+    user,
+    workspace,
+    permissions
+) {
     const cleanId = String(workspace?.id || "").trim();
 
     if (!user) {
@@ -290,51 +282,31 @@ export async function prepareWorkspaceInvitation(user, workspace) {
         throw new Error("No se pudo identificar el entorno.");
     }
 
-    const { db, firestoreModule } = await getFirebaseServices();
-    const workspaceRef =
-        firestoreModule.doc(db, "workspaces", cleanId);
-    const workspaceSnap =
-        await firestoreModule.getDoc(workspaceRef);
-
-    if (!workspaceSnap.exists()) {
-        throw new Error("No existe un entorno con ese ID.");
-    }
-
-    const workspaceData = workspaceSnap.data() || {};
-    let inviteCode = String(workspaceData.inviteCode || "").trim();
-
-    if (!inviteCode) {
-        if (workspaceData.ownerUid !== user.uid) {
-            throw new Error(
-                "Solo el propietario puede generar una invitacion segura para este entorno."
-            );
-        }
-
-        inviteCode = createInviteCode();
-        await firestoreModule.updateDoc(workspaceRef, {
-            inviteCode,
-            updatedAt: firestoreModule.serverTimestamp()
-        });
-    }
+    const invite = await callWorkspaceFunction("createSupervisorInvite", {
+        workspaceId: cleanId,
+        permissions
+    });
 
     return {
         ...workspace,
-        ...workspaceData,
         id: cleanId,
-        name: workspaceLabel({
-            ...workspace,
-            ...workspaceData,
-            id: cleanId
-        }),
-        inviteCode
+        name: invite.workspaceName || workspaceLabel(workspace),
+        supervisorInvite: invite.token || "",
+        supervisorInviteId: invite.inviteId || "",
+        supervisorInviteExpiresAt: invite.expiresAt || null,
+        permissions: invite.permissions || permissions || {}
     };
 }
 
-export async function joinWorkspace(user, workspaceInput, inviteCodeInput = "") {
+export async function claimSupervisorInvitation(
+    user,
+    workspaceInput,
+    tokenInput = ""
+) {
     const parsed = parseJoinInput(workspaceInput);
     const cleanId = String(parsed.workspaceId || "").trim();
-    const inviteCode =
-        String(inviteCodeInput || parsed.inviteCode || "").trim();
+    const token =
+        String(tokenInput || parsed.supervisorInvite || "").trim();
 
     if (!user) {
         throw new Error("Debes iniciar sesion para unirte a un entorno.");
@@ -344,69 +316,77 @@ export async function joinWorkspace(user, workspaceInput, inviteCodeInput = "") 
         throw new Error("Debes ingresar el ID del entorno.");
     }
 
-    if (!inviteCode) {
+    if (!token) {
         throw new Error(
-            "Debes usar un enlace de invitacion o ingresar el codigo de invitacion del entorno."
+            "Debes usar un enlace de invitacion segura. Los codigos antiguos ya no son validos."
         );
     }
 
+    return callWorkspaceFunction("claimSupervisorInvite", {
+        workspaceId: cleanId,
+        token
+    });
+}
+
+export async function approveSupervisorInvitation(
+    workspaceId,
+    inviteId,
+    permissionsOverride = null
+) {
+    return callWorkspaceFunction("approveSupervisorInvite", {
+        workspaceId,
+        inviteId,
+        ...(permissionsOverride
+            ? { permissionsOverride }
+            : {})
+    });
+}
+
+export async function rejectSupervisorInvitation(
+    workspaceId,
+    inviteId,
+    reason = ""
+) {
+    return callWorkspaceFunction("rejectSupervisorInvite", {
+        workspaceId,
+        inviteId,
+        reason
+    });
+}
+
+export async function revokeSupervisorInvitation(workspaceId, inviteId) {
+    return callWorkspaceFunction("revokeSupervisorInvite", {
+        workspaceId,
+        inviteId
+    });
+}
+
+export async function listSupervisorInvitations(workspaceId) {
+    if (!workspaceId) return [];
+
     const { db, firestoreModule } = await getFirebaseServices();
-    const workspaceRef =
-        firestoreModule.doc(db, "workspaces", cleanId);
-    const now = firestoreModule.serverTimestamp();
-
-    await firestoreModule.setDoc(
-        firestoreModule.doc(
+    const snap = await firestoreModule.getDocs(
+        firestoreModule.collection(
             db,
             "workspaces",
-            cleanId,
-            "members",
-            user.uid
-        ),
-        {
-            role: "member",
-            email: user.email || "",
-            displayName: user.displayName || "",
-            inviteCode,
-            joinedAt: now
-        },
-        { merge: true }
+            workspaceId,
+            "supervisorInvites"
+        )
     );
 
-    const workspaceSnap =
-        await firestoreModule.getDoc(workspaceRef);
+    return snap.docs
+        .map(docSnap => ({
+            id: docSnap.id,
+            ...docSnap.data()
+        }))
+        .sort((a, b) => {
+            const aCreated = a.createdAt?.toMillis
+                ? a.createdAt.toMillis()
+                : 0;
+            const bCreated = b.createdAt?.toMillis
+                ? b.createdAt.toMillis()
+                : 0;
 
-    if (!workspaceSnap.exists()) {
-        throw new Error("No existe un entorno con ese ID.");
-    }
-
-    const workspace = {
-        id: workspaceSnap.id,
-        ...workspaceSnap.data()
-    };
-
-    await firestoreModule.setDoc(
-        firestoreModule.doc(
-            db,
-            "users",
-            user.uid,
-            "workspaces",
-            cleanId
-        ),
-        {
-            name: workspaceLabel(workspace),
-            role: "member",
-            joinedAt: now
-        },
-        { merge: true }
-    );
-
-    const active = {
-        id: cleanId,
-        name: workspaceLabel(workspace),
-        role: "member"
-    };
-
-    setActiveWorkspace(active);
-    return active;
+            return bCreated - aCreated;
+        });
 }

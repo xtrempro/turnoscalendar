@@ -7,8 +7,6 @@ import {
     profileDraft,
     PROFILE_MODE,
     hasRotationChanged,
-    shouldRequireUnitEntryForRotation,
-    getDraftUnitEntryDate,
     supportsLibreRotation,
     isReplacementDraft,
     requiresReplacementContract,
@@ -39,12 +37,6 @@ export function validateProfileDraft() {
     if (!profileDraft.name.trim()) missing.push("nombre");
     if (!profileDraft.estamento) missing.push("estamento");
     if (
-        shouldRequireUnitEntryForRotation() &&
-        !getDraftUnitEntryDate()
-    ) {
-        missing.push("fecha de ingreso a la unidad");
-    }
-    if (
         profileDraft.rotationType === "libre" &&
         !supportsLibreRotation()
     ) {
@@ -72,6 +64,10 @@ export function validateProfileDraft() {
 
         if (!profileDraft.contractReason) {
             missing.push("motivo del reemplazo");
+        }
+
+        if (!profileDraft.contractLeaveRef) {
+            missing.push("permiso que origina el reemplazo");
         }
     }
 

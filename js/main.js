@@ -50,9 +50,12 @@ import {
     getClockMarkTimingFlags
 } from "./clockMarkUtils.js";
 import {
+    ATTACHMENT_ACCEPT,
+    deleteStoredAttachment,
+    hasAttachmentContent,
     normalizeAttachmentFiles,
-    readAttachmentFiles,
-    dataUrlToBlob
+    openAttachmentFile,
+    readAttachmentFiles
 } from "./attachmentUtils.js";
 import {
     formatSaldo,
@@ -134,7 +137,7 @@ import {
     getDraftUnitEntryDate,
     isBeforeDraftUnitEntryDate,
     rotationStartBeforeUnitEntryMessage,
-    shouldRequireUnitEntryForRotation,
+    isUnitEntryDateEnabled,
     isFirstProfileRotationConfig,
     getRotationConfigDefaultStart,
     hasGradeValueChanged,
@@ -171,6 +174,13 @@ import { renderDashboardPanel } from "./dashboard.js";
 import { initSystemSettings } from "./systemSettings.js";
 import { initFirebaseShell } from "./firebaseShell.js";
 import {
+    ensureFirebaseTotpEnrollment,
+    getCurrentFirebaseUser,
+    isFirebaseSessionMfaVerified,
+    signOutFirebase
+} from "./firebaseClient.js";
+import { getActiveWorkspace } from "./workspaces.js";
+import {
     startFirebaseAppStateSync,
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
@@ -193,6 +203,12 @@ import {
     startWorkerAvailabilitySync,
     stopWorkerAvailabilitySync
 } from "./workerAvailability.js";
+import {
+    cancelInterUnitLoan,
+    scheduleInterUnitStaffingPublish,
+    startInterUnitLoanSync,
+    stopInterUnitLoanSync
+} from "./firebaseInterUnitLoans.js";
 import {
     initSupervisorMessages,
     startSupervisorMessages,
@@ -287,6 +303,7 @@ import {
     getTurnChangeConfig
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
+import { registerShiftMove } from "./shiftMoves.js";
 import { renderReplacementLogHTML } from "./replacements.js";
 import {
     refreshWorkerRequestsNavBadge,
@@ -297,6 +314,7 @@ import {
 } from "./workerRequests.js";
 import {
     openWorkerAppInviteDialog,
+    sendWorkerAppInviteEmail,
     unlinkWorkerAppForProfile
 } from "./workerAppInvites.js";
 import {
@@ -315,9 +333,11 @@ import {
     canEditTarget,
     canViewTarget,
     firstViewableTarget,
+    listWorkspaceMembersForPermissions,
     loadWorkspacePermissions,
     startWorkspacePermissionListener,
-    stopWorkspacePermissionListener
+    stopWorkspacePermissionListener,
+    workspaceRequiresMfa
 } from "./workspacePermissions.js";
 import {
     getClockMarks,
@@ -348,10 +368,17 @@ import {
     existeBloque10Legal,
     validarCantidadLegalAnual
 } from "./leaveEngine.js";
+import {
+    installAppDialogs,
+    showConfirm
+} from "./dialogs.js";
 
+installAppDialogs();
 
 let selectionMode = null;
 let pendingRotationChange = null;
+let pendingShiftMove = null;
+let createAvailabilityBalances = null;
 let adminCantidad = 0;
 let compCantidad = 0;
 let legalCantidad = 0;
@@ -359,6 +386,7 @@ let licenseCantidad = 0;
 let licenseType = "license";
 let availabilityEditMode = false;
 let profileRotationMiniDate = new Date();
+let replacementContractMonthHint = "";
 let profileHoursSummaryRequest = 0;
 let clockMarksRenderRequest = 0;
 let calendarDirectEditEnabled = false;
@@ -401,6 +429,15 @@ const REPORT_MONTH_NAMES = [
     "Noviembre",
     "Diciembre"
 ];
+
+function defaultCreateAvailabilityBalances() {
+    return {
+        legal: 15,
+        comp: 10,
+        admin: 6,
+        hoursReturn: 0
+    };
+}
 
 function syncProfileProfessionField(data, editing) {
     if (!DOM.profileProfessionSelect) return;
@@ -465,6 +502,7 @@ function getProfileMetaLabel(profile) {
 
 
 window.selectionMode = null;
+window.pendingShiftMoveSourceKey = "";
 window.compCantidad = 0;
 window.legalCantidad = 0;
 window.licenseCantidad = 0;
@@ -615,7 +653,9 @@ function getLeaveBalances(
             );
 
     return {
-        legal: withManualBalance(manual.legal, calculated.legal),
+        legal: normalizeLegalBalanceValue(
+            withManualBalance(manual.legal, calculated.legal)
+        ),
         admin: withManualBalance(manual.admin, calculated.admin),
         comp: withManualBalance(manual.comp, calculated.comp),
         hoursReturn: Math.max(
@@ -624,6 +664,88 @@ function getLeaveBalances(
                 hoursReturnTotal - unavailableFutureHours
             )
         )
+    };
+}
+
+const COMP_ENTITLEMENT_OPTIONS = [10, 20];
+
+function normalizeLegalBalanceValue(value) {
+    return Math.max(
+        0,
+        Math.floor(normalizeBalanceValue(value))
+    );
+}
+
+function normalizeCompEntitlement(value) {
+    const numeric = Number(value);
+
+    return numeric > 10 ? 20 : 10;
+}
+
+function isCompensatoryBlockAmount(value) {
+    return COMP_ENTITLEMENT_OPTIONS.includes(Number(value));
+}
+
+function compDaysUsedForYear(
+    year = new Date().getFullYear(),
+    holidays = getCachedHolidays(year)
+) {
+    return contarHabiles(getCompDays(), year, holidays);
+}
+
+function compEntitlementFromBalance(
+    balance,
+    year = new Date().getFullYear(),
+    holidays = getCachedHolidays(year)
+) {
+    const used = compDaysUsedForYear(year, holidays);
+
+    return normalizeCompEntitlement(
+        normalizeBalanceValue(balance) + used
+    );
+}
+
+function compBalanceFromEntitlement(
+    entitlement,
+    year = new Date().getFullYear(),
+    holidays = getCachedHolidays(year)
+) {
+    const used = compDaysUsedForYear(year, holidays);
+    const cleanEntitlement = normalizeCompEntitlement(entitlement);
+
+    return Math.max(
+        0,
+        normalizeBalanceValue(cleanEntitlement - used)
+    );
+}
+
+function compEntitlementOptionsHTML(selected, used = 0) {
+    const cleanSelected = normalizeCompEntitlement(selected);
+
+    return COMP_ENTITLEMENT_OPTIONS.map(value => `
+        <option
+            value="${value}"
+            ${value === cleanSelected ? "selected" : ""}
+            ${used > value ? "disabled" : ""}
+        >
+            ${value} d&iacute;as
+        </option>
+    `).join("");
+}
+
+function readCompBalanceFromInput(year = new Date().getFullYear()) {
+    const input = document.getElementById("availabilityCompInput");
+
+    if (!input) {
+        return {
+            hasInput: false,
+            balance: undefined
+        };
+    }
+
+    return {
+        hasInput: true,
+        balance: compBalanceFromEntitlement(input.value, year)
     };
 }
 
@@ -679,22 +801,15 @@ function syncRutValidity(showMessage = false) {
     return !message;
 }
 
-function openAttachment(doc) {
-    if (!doc?.dataUrl) {
+async function openAttachment(doc) {
+    try {
+        await openAttachmentFile(doc, { newTab: true });
+    } catch (error) {
         alert(
-            "Este adjunto se registro antes de guardar el contenido del archivo. Debes quitarlo y volver a adjuntarlo para poder visualizarlo."
+            error?.message ||
+            "No se pudo abrir el archivo adjunto."
         );
-        return;
     }
-
-    const url = URL.createObjectURL(dataUrlToBlob(doc.dataUrl));
-    const opened = window.open(url, "_blank", "noopener");
-
-    if (!opened) {
-        alert("El navegador bloqueo la ventana emergente. Permite pop-ups para visualizar el documento.");
-    }
-
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function getProfileLogs(profileName) {
@@ -1003,6 +1118,7 @@ function getRotationModalMonth(type) {
     const source =
         type === "reemplazo"
             ? profileDraft.contractStart ||
+                replacementContractMonthHint ||
                 profileDraft.rotationStart ||
                 getDraftUnitEntryDate()
             : profileDraft.rotationStart ||
@@ -1016,6 +1132,225 @@ function getRotationModalMonth(type) {
     }
 
     return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+const REPLACEMENT_CONTRACT_LOOKBACK_MONTHS = 6;
+const REPLACEMENT_CONTRACT_LEAVE_TYPES = {
+    legal: "F. Legal",
+    comp: "F. Compensatorios",
+    license: "Licencia M\u00e9dica",
+    professional_license: "LM Profesional",
+    unpaid_leave: "Permiso sin Goce"
+};
+
+function replacementLeaveOptionId({
+    profileName,
+    type,
+    start,
+    end
+}) {
+    return [
+        profileName,
+        type,
+        start,
+        end
+    ].map(part =>
+        encodeURIComponent(String(part || ""))
+    ).join("|");
+}
+
+function replacementLeaveCutoffISO() {
+    const today = new Date();
+    const cutoff = new Date(
+        today.getFullYear(),
+        today.getMonth() - REPLACEMENT_CONTRACT_LOOKBACK_MONTHS,
+        today.getDate()
+    );
+
+    return toInputDate(cutoff);
+}
+
+function sortedCalendarKeys(keys) {
+    return Array.from(new Set(keys || []))
+        .filter(Boolean)
+        .sort((a, b) => parseKey(a) - parseKey(b));
+}
+
+function nextCalendarKeyAfter(key) {
+    const date = parseKey(key);
+
+    date.setDate(date.getDate() + 1);
+
+    return keyFromDate(date);
+}
+
+function nextBusinessLeaveKeyAfter(key) {
+    const date = parseKey(key);
+
+    do {
+        date.setDate(date.getDate() + 1);
+    } while (
+        !isBusinessDay(
+            date,
+            getCachedHolidays(date.getFullYear())
+        )
+    );
+
+    return keyFromDate(date);
+}
+
+function calendarKeysToReplacementLeaveOption({
+    profileName,
+    type,
+    label,
+    keys
+}) {
+    const sortedKeys = sortedCalendarKeys(keys);
+
+    if (!sortedKeys.length) return null;
+
+    const start = calendarKeyToInputDate(sortedKeys[0]);
+    const end = calendarKeyToInputDate(
+        sortedKeys[sortedKeys.length - 1]
+    );
+
+    if (!start || !end) return null;
+
+    const option = {
+        id: "",
+        profileName,
+        type,
+        label,
+        start,
+        end,
+        keys: sortedKeys
+    };
+
+    option.id = replacementLeaveOptionId(option);
+
+    return option;
+}
+
+function groupReplacementLeaveKeys({
+    profileName,
+    type,
+    label,
+    keys,
+    businessContinuity = false
+}) {
+    const sortedKeys = sortedCalendarKeys(keys);
+    const groups = [];
+    let current = [];
+
+    sortedKeys.forEach(key => {
+        const previous = current[current.length - 1];
+        const expectedNext = previous
+            ? (
+                businessContinuity
+                    ? nextBusinessLeaveKeyAfter(previous)
+                    : nextCalendarKeyAfter(previous)
+            )
+            : "";
+
+        if (previous && key !== expectedNext) {
+            groups.push(current);
+            current = [];
+        }
+
+        current.push(key);
+    });
+
+    if (current.length) groups.push(current);
+
+    return groups
+        .map(group => calendarKeysToReplacementLeaveOption({
+            profileName,
+            type,
+            label,
+            keys: group
+        }))
+        .filter(Boolean);
+}
+
+function normalizeReplacementAbsenceType(value) {
+    if (!value) return "";
+
+    if (typeof value === "object") {
+        return String(value.type || "");
+    }
+
+    return String(value);
+}
+
+function isReplacementLeaveOptionUsed(option) {
+    return getProfiles().some(profile =>
+        getContractsForProfile(profile.name)
+            .some(contract =>
+                contract.leaveRef === option.id ||
+                (
+                    !contract.leaveRef &&
+                    contract.replaces === option.profileName &&
+                    contract.reason === option.label &&
+                    contract.start === option.start &&
+                    contract.end === option.end
+                )
+            )
+    );
+}
+
+function getReplacementLeaveOptionsForProfile(profileName) {
+    const profile = getProfiles().find(item =>
+        item.name === profileName
+    );
+
+    if (!profile) return [];
+
+    const cutoff = replacementLeaveCutoffISO();
+    const legal = getJSON("legal_" + profile.name, {});
+    const comp = getJSON("comp_" + profile.name, {});
+    const absences = getJSON("absences_" + profile.name, {});
+    const options = [
+        ...groupReplacementLeaveKeys({
+            profileName: profile.name,
+            type: "legal",
+            label: REPLACEMENT_CONTRACT_LEAVE_TYPES.legal,
+            keys: Object.keys(legal).filter(key => legal[key]),
+            businessContinuity: true
+        }),
+        ...groupReplacementLeaveKeys({
+            profileName: profile.name,
+            type: "comp",
+            label: REPLACEMENT_CONTRACT_LEAVE_TYPES.comp,
+            keys: Object.keys(comp).filter(key => comp[key]),
+            businessContinuity: true
+        })
+    ];
+    const absenceTypes = Object.keys(REPLACEMENT_CONTRACT_LEAVE_TYPES)
+        .filter(type => type !== "legal" && type !== "comp");
+
+    absenceTypes.forEach(type => {
+        options.push(...groupReplacementLeaveKeys({
+            profileName: profile.name,
+            type,
+            label: REPLACEMENT_CONTRACT_LEAVE_TYPES[type],
+            keys: Object.keys(absences).filter(key =>
+                normalizeReplacementAbsenceType(absences[key]) === type
+            )
+        }));
+    });
+
+    return options
+        .filter(option => option.end >= cutoff)
+        .filter(option => !isReplacementLeaveOptionUsed(option))
+        .sort((a, b) =>
+            b.start.localeCompare(a.start) ||
+            a.label.localeCompare(b.label)
+        );
+}
+
+function findReplacementLeaveOption(profileName, optionId) {
+    return getReplacementLeaveOptionsForProfile(profileName)
+        .find(option => option.id === optionId) || null;
 }
 
 function openRotationConfigModal(type = profileDraft.rotationType) {
@@ -1038,7 +1373,8 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         contractStart: profileDraft.contractStart,
         contractEnd: profileDraft.contractEnd,
         contractReplaces: profileDraft.contractReplaces || "",
-        contractReason: profileDraft.contractReason || ""
+        contractReason: profileDraft.contractReason || "",
+        contractLeaveRef: profileDraft.contractLeaveRef || ""
     };
     const backdrop = document.createElement("div");
     let monthPicker = null;
@@ -1236,16 +1572,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         const selected = calendarKeyToInputDate(key);
 
         if (isReplacement) {
-            if (
-                !state.contractStart ||
-                state.contractEnd ||
-                compareISODate(selected, state.contractStart) < 0
-            ) {
-                state.contractStart = selected;
-                state.contractEnd = "";
-            } else {
-                state.contractEnd = selected;
-            }
+            return;
         } else {
             if (isBeforeDraftUnitEntryDate(selected)) {
                 alert(rotationStartBeforeUnitEntryMessage(selected));
@@ -1279,36 +1606,48 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         }
 
         const reasonField =
-            backdrop.querySelector("[data-contract-reason]");
+            backdrop.querySelector("[data-contract-leave-ref]");
 
         if (reasonField) {
-            state.contractReason = reasonField.value;
+            const leaveOption = findReplacementLeaveOption(
+                state.contractReplaces,
+                reasonField.value
+            );
+
+            if (leaveOption) {
+                state.contractLeaveRef = leaveOption.id;
+                state.contractReason = leaveOption.label;
+                state.contractStart = leaveOption.start;
+                state.contractEnd = leaveOption.end;
+            }
         }
 
         if (isReplacement) {
-            if (!state.contractStart || !state.contractEnd) {
-                alert("Debes seleccionar inicio y termino del contrato.");
-                return;
-            }
-
             if (!state.contractReplaces.trim()) {
                 alert("Debes indicar a quien reemplaza.");
                 targetField?.focus();
                 return;
             }
 
-            if (!state.contractReason) {
-                alert("Debes seleccionar el motivo del reemplazo.");
+            const selectedLeave = findReplacementLeaveOption(
+                state.contractReplaces,
+                state.contractLeaveRef
+            );
+
+            if (!selectedLeave) {
+                alert("Debes seleccionar un permiso/ausencia disponible para originar el contrato.");
                 reasonField?.focus();
                 return;
             }
 
-            profileDraft.contractStart = state.contractStart;
-            profileDraft.contractEnd = state.contractEnd;
+            profileDraft.contractStart = selectedLeave.start;
+            profileDraft.contractEnd = selectedLeave.end;
             profileDraft.contractReplaces =
                 state.contractReplaces.trim();
             profileDraft.contractReason =
-                state.contractReason;
+                selectedLeave.label;
+            profileDraft.contractLeaveRef =
+                selectedLeave.id;
             profileDraft.rotationFirstTurn = "larga";
         } else {
             if (!state.rotationStart) {
@@ -1333,11 +1672,56 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             profileDraft.contractEnd = "";
             profileDraft.contractReplaces = "";
             profileDraft.contractReason = "";
+            profileDraft.contractLeaveRef = "";
         }
 
         close();
         renderDashboardState();
     };
+    // Previsualiza el turno de un dia: si ya se eligio fecha de inicio, los dias
+    // desde esa fecha muestran la rotativa NUEVA (como quedaria al aplicarla);
+    // los anteriores conservan el estado actual. Es solo visual: si no se acepta
+    // el modal, no se escribe nada y se mantiene la rotativa anterior.
+    const getModalPreviewTurn = (key, iso) => {
+        if (isReplacement || !state.rotationStart) {
+            return getProfileRotationState(profile?.name, key);
+        }
+
+        if (compareISODate(iso, state.rotationStart) < 0) {
+            return getProfileRotationState(profile?.name, key);
+        }
+
+        const startDate = parseInputDate(state.rotationStart);
+        const date = parseKey(key);
+
+        // El motor aplica la rotativa solo dentro del anio del inicio.
+        if (date.getFullYear() !== startDate.getFullYear()) {
+            return TURNO.LIBRE;
+        }
+
+        if (type === "diurno") {
+            const holidays = getCachedHolidays(date.getFullYear());
+            return isBusinessDay(date, holidays) ? TURNO.DIURNO : TURNO.LIBRE;
+        }
+
+        if (type === "3turno" || type === "4turno") {
+            const sequence = getRotationSequence(type, state.firstTurn);
+
+            if (!sequence.length) return TURNO.LIBRE;
+
+            const dayIndex = Math.round(
+                (date - startDate) / 86400000
+            );
+            const index =
+                ((dayIndex % sequence.length) + sequence.length) %
+                sequence.length;
+
+            return sequence[index];
+        }
+
+        return TURNO.LIBRE;
+    };
+
     const renderCalendar = () => {
         const y = state.monthDate.getFullYear();
         const m = state.monthDate.getMonth();
@@ -1345,11 +1729,19 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         const days = new Date(y, m + 1, 0).getDate();
         const selectedKey = inputDateToCalendarKey(
             isReplacement
-                ? state.contractStart
+                ? (
+                    state.contractLeaveRef
+                        ? state.contractStart
+                        : ""
+                )
                 : state.rotationStart
         );
         const contractEndKey =
-            inputDateToCalendarKey(state.contractEnd);
+            inputDateToCalendarKey(
+                isReplacement && !state.contractLeaveRef
+                    ? ""
+                    : state.contractEnd
+            );
         const existingContracts =
             isReplacement && profile
                 ? getContractsForProfile(profile.name)
@@ -1368,10 +1760,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         for (let d = 1; d <= days; d++) {
             const key = `${y}-${m}-${d}`;
             const iso = calendarKeyToInputDate(key);
-            const stateTurn = getProfileRotationState(
-                profile?.name,
-                key
-            );
+            const stateTurn = getModalPreviewTurn(key, iso);
             const existingContract = existingContracts.find(contract =>
                 contract.start <= iso &&
                 contract.end >= iso
@@ -1390,7 +1779,9 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 isBeforeDraftUnitEntryDate(iso);
 
             cell.type = "button";
-            cell.className = "profile-mini-day is-pickable";
+            cell.className = isReplacement
+                ? "profile-mini-day"
+                : "profile-mini-day is-pickable";
             cell.dataset.key = key;
 
             if (beforeUnitEntry) {
@@ -1422,12 +1813,15 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 }
 
                 if (
+                    state.contractLeaveRef &&
                     state.contractStart &&
                     state.contractEnd &&
                     iso >= state.contractStart &&
                     iso <= state.contractEnd
                 ) {
                     cell.classList.add("is-contract-range");
+                    cell.title =
+                        `Contrato vigente: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)} | Reemplaza a: ${state.contractReplaces || "sin trabajador"}`;
                 }
             }
 
@@ -1436,8 +1830,16 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 <span>${d}</span>
                 <small>${
                     isReplacement
-                        ? existingContract
-                            ? "Vigente"
+                        ? (
+                            state.contractLeaveRef &&
+                            state.contractStart &&
+                            state.contractEnd &&
+                            iso >= state.contractStart &&
+                            iso <= state.contractEnd
+                        )
+                            ? "Contrato vigente"
+                            : existingContract
+                                ? "Contrato vigente"
                             : ""
                         : turnoLabel(stateTurn)
                 }</small>
@@ -1461,7 +1863,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             ? "Configurar contrato de reemplazo"
             : `Configurar ${getRotativaLabel(type)}`;
         const instructions = isReplacement
-            ? "Selecciona inicio y termino del contrato. Si el periodo cruza de mes, usa las flechas para navegar."
+            ? "Selecciona a quien reemplaza y luego el permiso/ausencia que origina el reemplazo. El contrato tomara exactamente las mismas fechas."
             : isHonoraria
                 ? `Selecciona el inicio de la rotativa dentro de la vigencia del contrato de Honorarios: ${formatDisplayDate(profileDraft.honorariaStart)} al ${formatDisplayDate(profileDraft.honorariaEnd)}.`
             : requiresRotationFirstTurn(type)
@@ -1476,6 +1878,42 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                     </button>
                 `)
                 .join("");
+        const replacementProfiles = isReplacement
+            ? getProfiles().filter(item => item.name !== profileDraft.name)
+            : [];
+        const replacementLeaveOptions = isReplacement
+            ? getReplacementLeaveOptionsForProfile(state.contractReplaces)
+            : [];
+        const selectedLeaveOption = isReplacement
+            ? replacementLeaveOptions.find(option =>
+                option.id === state.contractLeaveRef
+            )
+            : null;
+        const hasReplacementTarget = Boolean(
+            state.contractReplaces.trim()
+        );
+        const leaveOptionsHTML = replacementLeaveOptions.length
+            ? replacementLeaveOptions
+                .map(option => `
+                    <option value="${escapeHTML(option.id)}" ${option.id === state.contractLeaveRef ? "selected" : ""}>
+                        ${escapeHTML(option.label)} | ${escapeHTML(formatDisplayDate(option.start))} al ${escapeHTML(formatDisplayDate(option.end))}
+                    </option>
+                `)
+                .join("")
+            : `
+                <option value="" disabled>
+                    ${hasReplacementTarget
+                        ? "Sin permisos disponibles en los ultimos 6 meses"
+                        : "Selecciona primero a quien reemplaza"}
+                </option>
+            `;
+
+        if (isReplacement && state.contractLeaveRef && !selectedLeaveOption) {
+            state.contractLeaveRef = "";
+            state.contractReason = "";
+            state.contractStart = "";
+            state.contractEnd = "";
+        }
 
         backdrop.innerHTML = `
             <div class="turn-change-dialog rotation-config-dialog" role="dialog" aria-modal="true">
@@ -1491,22 +1929,23 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 ${isReplacement ? `
                     <label class="rotation-contract-field">
                         <span>Reemplaza a</span>
-                        <input data-contract-replaces type="text" list="rotationReplacementTargetOptions" value="${escapeHTML(state.contractReplaces)}" placeholder="Nombre del trabajador reemplazado">
-                        <datalist id="rotationReplacementTargetOptions">
-                            ${getProfiles()
-                                .filter(item => item.name !== profileDraft.name)
-                                .map(item => `<option value="${escapeHTML(item.name)}"></option>`)
+                        <select data-contract-replaces>
+                            <option value="">Seleccionar trabajador</option>
+                            ${replacementProfiles
+                                .map(item => `
+                                    <option value="${escapeHTML(item.name)}" ${item.name === state.contractReplaces ? "selected" : ""}>
+                                        ${escapeHTML(item.name)}
+                                    </option>
+                                `)
                                 .join("")}
-                        </datalist>
+                        </select>
                     </label>
 
                     <label class="rotation-contract-field">
                         <span>Motivo del Reemplazo</span>
-                        <select data-contract-reason>
-                            <option value="">Seleccionar</option>
-                            <option value="Licencia Médica" ${state.contractReason === "Licencia Médica" ? "selected" : ""}>Licencia Médica</option>
-                            <option value="F. Legal" ${state.contractReason === "F. Legal" ? "selected" : ""}>F. Legal</option>
-                            <option value="F. Compensatorios" ${state.contractReason === "F. Compensatorios" ? "selected" : ""}>F. Compensatorios</option>
+                        <select data-contract-leave-ref ${hasReplacementTarget && replacementLeaveOptions.length ? "" : "disabled"}>
+                            <option value="">Seleccionar permiso disponible</option>
+                            ${leaveOptionsHTML}
                         </select>
                     </label>
                 ` : ""}
@@ -1526,10 +1965,10 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 <div class="profile-mini-help">
                     ${isReplacement
                         ? state.contractStart && state.contractEnd
-                            ? `Contrato seleccionado: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)}.`
-                            : state.contractStart
-                                ? `Inicio seleccionado: ${formatDisplayDate(state.contractStart)}. Selecciona termino.`
-                                : "Selecciona el inicio del contrato."
+                            ? `Contrato segun permiso seleccionado: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)}${state.contractReason ? ` | ${escapeHTML(state.contractReason)}` : ""}.`
+                            : hasReplacementTarget
+                                ? "Selecciona el permiso/ausencia que origina el reemplazo."
+                                : "Selecciona a quien reemplaza para cargar sus permisos disponibles."
                         : state.rotationStart
                             ? `Fecha seleccionada: ${formatDisplayDate(state.rotationStart)}.`
                             : "Selecciona la fecha de inicio de la rotativa."}
@@ -1544,14 +1983,55 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
 
         backdrop
             .querySelector("[data-contract-replaces]")
-            ?.addEventListener("input", event => {
+            ?.addEventListener("change", event => {
                 state.contractReplaces = event.target.value;
+                state.contractLeaveRef = "";
+                state.contractReason = "";
+                state.contractStart = "";
+                state.contractEnd = "";
+                render();
             });
 
+        if (isReplacement) {
+            const validLeaveOptionIds = new Set(
+                replacementLeaveOptions.map(option => option.id)
+            );
+
+            backdrop
+                .querySelectorAll("[data-contract-leave-ref] option")
+                .forEach(option => {
+                    if (
+                        option.value &&
+                        !validLeaveOptionIds.has(option.value)
+                    ) {
+                        option.remove();
+                    }
+                });
+        }
+
         backdrop
-            .querySelector("[data-contract-reason]")
+            .querySelector("[data-contract-leave-ref]")
             ?.addEventListener("change", event => {
-                state.contractReason = event.target.value;
+                const leaveOption = findReplacementLeaveOption(
+                    state.contractReplaces,
+                    event.target.value
+                );
+
+                if (leaveOption) {
+                    state.contractLeaveRef = leaveOption.id;
+                    state.contractReason = leaveOption.label;
+                    state.contractStart = leaveOption.start;
+                    state.contractEnd = leaveOption.end;
+                    state.monthDate = parseInputDate(leaveOption.start);
+                    render();
+                    return;
+                }
+
+                state.contractLeaveRef = "";
+                state.contractReason = "";
+                state.contractStart = "";
+                state.contractEnd = "";
+                render();
             });
     };
 
@@ -1568,6 +2048,10 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         const dayButton =
             targetElement?.closest(".profile-mini-day");
         if (dayButton?.dataset.key && !dayButton.disabled) {
+            if (isReplacement) {
+                return;
+            }
+
             pickDate(dayButton.dataset.key);
             return;
         }
@@ -1781,8 +2265,9 @@ async function applyCalendarRotationChange(fecha) {
 
     const startISO = toInputDate(fecha);
     const type = pending.type;
-    const unitEntryDate =
-        normalizeStoredStart(profile.unitEntryDate || "");
+    const unitEntryDate = isUnitEntryDateEnabled()
+        ? normalizeStoredStart(profile.unitEntryDate || "")
+        : "";
     const firstTurn =
         requiresRotationFirstTurn(type)
             ? normalizeRotationFirstTurnForType(type, pending.firstTurn)
@@ -2323,11 +2808,11 @@ function renderProfileDocs(data, editing) {
                     <strong>${escapeHTML(doc.name)}</strong>
                     <small>
                         ${doc.type ? escapeHTML(doc.type) : "Archivo"}
-                        ${doc.dataUrl ? "" : " | volver a adjuntar para visualizar"}
+                        ${hasAttachmentContent(doc) ? "" : " | volver a adjuntar para visualizar"}
                     </small>
                 </span>
                 <span class="attachment-actions">
-                    <button class="secondary-button attachment-view" type="button" data-doc-view="${index}" ${doc.dataUrl ? "" : "disabled"}>
+                    <button class="secondary-button attachment-view" type="button" data-doc-view="${index}" ${hasAttachmentContent(doc) ? "" : "disabled"}>
                         Ver
                     </button>
                 ${editing ? `
@@ -2343,9 +2828,9 @@ function renderProfileDocs(data, editing) {
     DOM.profileDocsList
         .querySelectorAll("[data-doc-view]")
         .forEach(button => {
-            button.onclick = () => {
+            button.onclick = async () => {
                 const doc = docs[Number(button.dataset.docView)];
-                openAttachment(doc);
+                await openAttachment(doc);
             };
         });
 
@@ -2394,7 +2879,7 @@ function renderRecordCard(config, logs, editing) {
         ? `
             <label class="record-field">
                 <span>${config.fileLabel}</span>
-                <input data-record-file type="file" accept="application/pdf,image/*">
+                <input data-record-file type="file" accept="${ATTACHMENT_ACCEPT}">
             </label>
         `
         : "";
@@ -2535,8 +3020,10 @@ function renderDisponibilidadVacaciones() {
     if (!DOM.availabilitySummary) return;
 
     const profile = getPerfilActual();
+    const creating =
+        profileDraft.mode === PROFILE_MODE.CREATE;
 
-    if (!profile) {
+    if (!profile && !creating) {
         availabilityEditMode = false;
 
         DOM.availabilitySummary.innerHTML = `
@@ -2549,30 +3036,46 @@ function renderDisponibilidadVacaciones() {
     }
 
     const year = currentDate.getFullYear();
-    const saldos = getLeaveBalances(
+    const saldos = creating
+        ? (
+            createAvailabilityBalances ||
+            defaultCreateAvailabilityBalances()
+        )
+        : getLeaveBalances(
+            year,
+            getCachedHolidays(year),
+            {
+                month: currentDate.getMonth(),
+                profileName: profile.name
+            }
+        );
+    const holidays = getCachedHolidays(year);
+    const compUsed = creating
+        ? 0
+        : compDaysUsedForYear(year, holidays);
+    const compEntitlement = compEntitlementFromBalance(
+        saldos.comp,
         year,
-        getCachedHolidays(year),
-        {
-            month: currentDate.getMonth(),
-            profileName: profile.name
-        }
+        holidays
     );
     const showCompBalance = isProfileEditing()
         ? Boolean(profileDraft.shiftAssigned)
         : getShiftAssigned(profile.name);
 
-    if (availabilityEditMode) {
+    if (availabilityEditMode || creating) {
         DOM.availabilitySummary.innerHTML = `
             <div class="availability-list" style="--availability-columns: ${showCompBalance ? 4 : 3};">
                 <label class="availability-item">
                     <span>FL</span>
-                    <input id="availabilityLegalInput" type="number" min="0" step="0.5" value="${saldos.legal}">
+                    <input id="availabilityLegalInput" type="number" min="0" step="1" value="${normalizeLegalBalanceValue(saldos.legal)}">
                 </label>
 
                 ${showCompBalance ? `
                     <label class="availability-item">
-                        <span>FC</span>
-                        <input id="availabilityCompInput" type="number" min="0" step="1" value="${saldos.comp}">
+                        <span>FC anual</span>
+                        <select id="availabilityCompInput">
+                            ${compEntitlementOptionsHTML(compEntitlement, compUsed)}
+                        </select>
                     </label>
                 ` : ""}
 
@@ -2588,9 +3091,36 @@ function renderDisponibilidadVacaciones() {
             </div>
 
             <div class="availability-note">
-                Editando saldos vigentes del a\u00f1o ${year}.
+                ${creating
+                    ? `Saldos iniciales del a\u00f1o ${year}. Puedes modificarlos antes de guardar.`
+                    : `Editando saldos vigentes del a\u00f1o ${year}.`}
+                FL solo admite d&iacute;as completos. FC anual solo puede ser 10 o 20 d&iacute;as.
             </div>
         `;
+
+        if (creating) {
+            createAvailabilityBalances = {
+                ...defaultCreateAvailabilityBalances(),
+                ...saldos
+            };
+
+            [
+                ["availabilityLegalInput", "legal"],
+                ["availabilityCompInput", "comp"],
+                ["availabilityAdminInput", "admin"],
+                ["availabilityHoursReturnInput", "hoursReturn"]
+            ].forEach(([id, field]) => {
+                const input = document.getElementById(id);
+
+                if (!input) return;
+
+                input.oninput = () => {
+                    createAvailabilityBalances[field] =
+                        input.value;
+                };
+                input.onchange = input.oninput;
+            });
+        }
 
         return;
     }
@@ -2654,6 +3184,7 @@ function renderLeaveActionLabels() {
         DOM.hoursReturnBtn.disabled = true;
         DOM.unjustifiedAbsenceBtn.disabled = true;
         DOM.clockMarkBtn.disabled = true;
+        DOM.moveShiftBtn.disabled = true;
         if (profile && !isProfileActive(profile)) {
             DOM.adminBtnLabel.textContent = `${adminBase} (inactivo)`;
             DOM.compBtnLabel.textContent = `${compBase} (inactivo)`;
@@ -2704,6 +3235,7 @@ function renderLeaveActionLabels() {
     DOM.hoursReturnBtn.disabled = saldos.hoursReturn <= 0;
     DOM.unjustifiedAbsenceBtn.disabled = false;
     DOM.clockMarkBtn.disabled = false;
+    DOM.moveShiftBtn.disabled = false;
 }
 
 function syncEditRestrictedControls() {
@@ -2721,7 +3253,8 @@ function syncEditRestrictedControls() {
         DOM.unpaidLeaveBtn,
         DOM.hoursReturnBtn,
         DOM.unjustifiedAbsenceBtn,
-        DOM.clockMarkBtn
+        DOM.clockMarkBtn,
+        DOM.moveShiftBtn
     ].forEach(button => {
         if (!button) return;
 
@@ -2780,7 +3313,18 @@ function renderDashboardState() {
     DOM.profilePhoneInput.value = data.phone || "";
     delete DOM.profileBirthDateInput.dataset.birthDatePickerDefault;
     DOM.profileBirthDateInput.value = data.birthDate || "";
-    DOM.profileUnitEntryDateInput.value = data.unitEntryDate || "";
+    const unitEntryDateEnabled = isUnitEntryDateEnabled();
+
+    if (DOM.profileUnitEntryDateRow) {
+        DOM.profileUnitEntryDateRow.hidden = !unitEntryDateEnabled;
+        DOM.profileUnitEntryDateRow.classList.toggle(
+            "hidden",
+            !unitEntryDateEnabled
+        );
+    }
+
+    DOM.profileUnitEntryDateInput.value =
+        unitEntryDateEnabled ? data.unitEntryDate || "" : "";
     DOM.profileContractTypeSelect.value = data.contractType || "";
     DOM.profileRoleSelect.value = data.estamento || "";
     syncProfileProfessionField(data, editing);
@@ -2800,7 +3344,8 @@ function renderDashboardState() {
     DOM.profilePhoneInput.disabled = !editing;
     DOM.profileBirthDateInput.disabled = !editing;
     DOM.profileDocsInput.disabled = !editing;
-    DOM.profileUnitEntryDateInput.disabled = !editing;
+    DOM.profileUnitEntryDateInput.disabled =
+        !editing || !unitEntryDateEnabled;
     DOM.profileContractTypeSelect.disabled = !editing;
     DOM.profileRoleSelect.disabled = !editing;
     DOM.profileGradeSelect.disabled = !editing;
@@ -2857,14 +3402,22 @@ function renderDashboardState() {
         DOM.replacementTargetInput.value =
             data.contractReplaces || "";
         DOM.replacementTargetInput.disabled =
-            !editing || !isReplacementContract;
+            true;
     }
 
     if (DOM.replacementReasonSelect) {
+        DOM.replacementReasonSelect.innerHTML = `
+            <option value="">Definir desde Nuevo Contrato</option>
+            ${data.contractReason ? `
+                <option value="${escapeHTML(data.contractReason)}">
+                    ${escapeHTML(data.contractReason)}
+                </option>
+            ` : ""}
+        `;
         DOM.replacementReasonSelect.value =
             data.contractReason || "";
         DOM.replacementReasonSelect.disabled =
-            !editing || !isReplacementContract;
+            true;
     }
 
     if (DOM.replacementContractStatus) {
@@ -2885,7 +3438,7 @@ function renderDashboardState() {
             DOM.replacementContractStatus.innerHTML = contracts.length
                 ? contracts
                     .map(contract =>
-                        `${formatContractDate(contract.start)} - ${formatContractDate(contract.end)}${contract.reason ? ` | ${contract.reason}` : ""} | ${contract.replaces}`
+                        `${escapeHTML(formatContractDate(contract.start))} - ${escapeHTML(formatContractDate(contract.end))}${contract.reason ? ` | ${escapeHTML(contract.reason)}` : ""} | ${escapeHTML(contract.replaces)}`
                     )
                     .join("<br>")
                 : "Sin contratos registrados.";
@@ -3030,6 +3583,7 @@ function renderBotones() {
         "hidden",
         !hasProfile || !activeProfile || !shiftAssigned
     );
+    syncMoveShiftAvailability();
 
     updateHistoryNavState();
     updateTurnChangesNavState();
@@ -4282,7 +4836,7 @@ function renderClockMarkRecord(record) {
             <div class="clockmark-documents">
                 <label class="clockmark-file">
                     <span>Documentos</span>
-                    <input data-clock-documents type="file" multiple>
+                    <input data-clock-documents type="file" multiple accept="${ATTACHMENT_ACCEPT}">
                 </label>
 
                 <div class="attachment-list">
@@ -4293,11 +4847,11 @@ function renderClockMarkRecord(record) {
                                     <strong>${escapeHTML(doc.name || "Documento")}</strong>
                                     <small>
                                         ${doc.type ? escapeHTML(doc.type) : "Archivo"}
-                                        ${doc.dataUrl ? "" : " | volver a adjuntar para visualizar"}
+                                        ${hasAttachmentContent(doc) ? "" : " | volver a adjuntar para visualizar"}
                                     </small>
                                 </span>
                                 <span class="attachment-actions">
-                                    <button class="secondary-button attachment-view" type="button" data-clock-doc-view="${index}" ${doc.dataUrl ? "" : "disabled"}>
+                                    <button class="secondary-button attachment-view" type="button" data-clock-doc-view="${index}" ${hasAttachmentContent(doc) ? "" : "disabled"}>
                                         Ver
                                     </button>
                                     <button class="ghost-button attachment-remove" type="button" data-clock-doc-remove="${index}">
@@ -4475,7 +5029,14 @@ async function renderClockMarksPanel() {
                         ?.segments?.[card.dataset.segmentKey]
                         ?.documents || [];
                 const attachments =
-                    await readAttachmentFiles(input.files);
+                    await readAttachmentFiles(input.files, {
+                        moduleId: "clockmarks",
+                        ownerId: card.dataset.profile,
+                        recordId: [
+                            card.dataset.keyDay,
+                            card.dataset.segmentKey
+                        ].join("_")
+                    });
 
                 updateClockMarkReview(
                     card.dataset.profile,
@@ -4502,7 +5063,7 @@ async function renderClockMarksPanel() {
     DOM.clockMarksList
         .querySelectorAll("[data-clock-doc-view]")
         .forEach(button => {
-            button.onclick = () => {
+            button.onclick = async () => {
                 const card = button.closest(".clockmark-record");
                 const marks = getClockMarks(card.dataset.profile);
                 const doc =
@@ -4510,14 +5071,14 @@ async function renderClockMarksPanel() {
                         ?.segments?.[card.dataset.segmentKey]
                         ?.documents?.[Number(button.dataset.clockDocView)];
 
-                openAttachment(doc);
+                await openAttachment(doc);
             };
         });
 
     DOM.clockMarksList
         .querySelectorAll("[data-clock-doc-remove]")
         .forEach(button => {
-            button.onclick = () => {
+            button.onclick = async () => {
                 const card = button.closest(".clockmark-record");
                 const marks = getClockMarks(card.dataset.profile);
                 const currentDocuments =
@@ -4526,6 +5087,8 @@ async function renderClockMarksPanel() {
                         ?.documents || [];
                 const indexToRemove =
                     Number(button.dataset.clockDocRemove);
+                const removedDocument =
+                    currentDocuments[indexToRemove];
 
                 updateClockMarkReview(
                     card.dataset.profile,
@@ -4545,6 +5108,13 @@ async function renderClockMarksPanel() {
                     `${card.dataset.profile} | ${formatClockMarkDate(card.dataset.keyDay)}: se quito un documento adjunto.`,
                     { profile: card.dataset.profile }
                 );
+                await deleteStoredAttachment(removedDocument)
+                    .catch(error => {
+                        console.warn(
+                            "No se pudo eliminar el adjunto remoto.",
+                            error
+                        );
+                    });
                 renderClockMarksPanel();
             };
         });
@@ -4671,6 +5241,8 @@ function clearSelectionMode(shouldRefresh = true) {
     selectionMode = null;
     window.selectionMode = null;
     pendingRotationChange = null;
+    pendingShiftMove = null;
+    window.pendingShiftMoveSourceKey = "";
     compCantidad = 0;
     window.compCantidad = 0;
     legalCantidad = 0;
@@ -4720,12 +5292,408 @@ function activarModo(modo, texto) {
     refreshAll();
 }
 
+function isStandaloneApp() {
+    const standaloneMode = [
+        "(display-mode: standalone)",
+        "(display-mode: fullscreen)",
+        "(display-mode: minimal-ui)"
+    ].some(query => window.matchMedia?.(query).matches);
+
+    return standaloneMode || window.navigator.standalone === true;
+}
+
+function isMoveShiftAvailable() {
+    const hostname =
+        String(window.location.hostname || "").toLowerCase();
+    const isLocalDevelopment =
+        !hostname ||
+        hostname === "localhost" ||
+        hostname === "127.0.0.1" ||
+        hostname === "::1";
+    const isTurnoPlusWebsite =
+        hostname === "turnoplus.cl" ||
+        hostname.endsWith(".turnoplus.cl");
+
+    return (
+        !isStandaloneApp() &&
+        (isTurnoPlusWebsite || isLocalDevelopment)
+    );
+}
+
+function syncMoveShiftAvailability() {
+    if (!DOM.moveShiftBtn) return;
+
+    const available = isMoveShiftAvailable();
+
+    DOM.moveShiftBtn.classList.toggle("hidden", !available);
+    DOM.moveShiftBtn.setAttribute(
+        "aria-hidden",
+        available ? "false" : "true"
+    );
+}
+
+function shiftMoveTurnLabel(turn) {
+    return Number(turn) === TURNO.NOCHE
+        ? "Noche"
+        : "Larga";
+}
+
+function shiftMoveDayBlockReason(
+    profile,
+    keyDay,
+    {
+        source = false,
+        sourceKey = ""
+    } = {}
+) {
+    if (!profile || !keyDay) {
+        return "No se pudo identificar el trabajador o la fecha.";
+    }
+
+    const baseTurn = Number(
+        getTurnoBase(profile, keyDay)
+    ) || TURNO.LIBRE;
+    const programmedTurn = Number(
+        getTurnoProgramado(profile, keyDay)
+    ) || TURNO.LIBRE;
+    const actualTurn = Number(
+        aplicarCambiosTurno(
+            profile,
+            keyDay,
+            programmedTurn
+        )
+    ) || TURNO.LIBRE;
+    const admin = getAdminDays(profile);
+    const legal = getLegalDays(profile);
+    const comp = getCompDays(profile);
+    const absences = getAbsences(profile);
+
+    if (
+        admin[keyDay] ||
+        legal[keyDay] ||
+        comp[keyDay] ||
+        absences[keyDay]
+    ) {
+        return "La fecha tiene un permiso o ausencia aplicada.";
+    }
+
+    if (getHourReturn(profile, keyDay)) {
+        return "La fecha tiene una devolucion de horas aplicada.";
+    }
+
+    if (getClockMarks(profile)[keyDay]) {
+        return "La fecha ya tiene marcajes de reloj control.";
+    }
+
+    if (source) {
+        if (
+            baseTurn !== TURNO.LARGA &&
+            baseTurn !== TURNO.NOCHE
+        ) {
+            return "Selecciona un turno base Larga o Noche.";
+        }
+
+        if (
+            programmedTurn !== baseTurn ||
+            actualTurn !== baseTurn
+        ) {
+            return "El turno tiene modificaciones, reemplazos o cambios de turno asociados.";
+        }
+
+        return "";
+    }
+
+    if (keyDay === sourceKey) {
+        return "";
+    }
+
+    if (
+        baseTurn !== TURNO.LIBRE ||
+        programmedTurn !== TURNO.LIBRE ||
+        actualTurn !== TURNO.LIBRE
+    ) {
+        return "El dia de destino ya tiene un turno o una modificacion de calendario.";
+    }
+
+    return "";
+}
+
+function openMoveShiftDialog({
+    profile,
+    sourceKey,
+    sourceTurn
+}) {
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+        const sourceDate = parseKey(sourceKey);
+        const displayDate = Number.isNaN(sourceDate.getTime())
+            ? sourceKey
+            : formatDisplayDate(toISODate(sourceDate));
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.innerHTML = `
+            <form class="turn-change-dialog move-shift-dialog" role="dialog" aria-modal="true" aria-labelledby="moveShiftDialogTitle">
+                <strong id="moveShiftDialogTitle">Mover turno base</strong>
+                <p>
+                    Seleccionaste el siguiente turno de ${escapeHTML(profile)}:
+                </p>
+                <div class="turn-change-dialog__meta">
+                    ${escapeHTML(displayDate)} &middot; ${escapeHTML(shiftMoveTurnLabel(sourceTurn))}
+                </div>
+                <p>¿Con que horario se registrara en su nueva ubicacion?</p>
+                <div class="move-shift-options">
+                    <label class="move-shift-option">
+                        <input
+                            type="radio"
+                            name="destinationTurn"
+                            value="${TURNO.LARGA}"
+                            ${Number(sourceTurn) === TURNO.LARGA ? "checked" : ""}
+                        >
+                        <span>Larga</span>
+                    </label>
+                    <label class="move-shift-option">
+                        <input
+                            type="radio"
+                            name="destinationTurn"
+                            value="${TURNO.NOCHE}"
+                            ${Number(sourceTurn) === TURNO.NOCHE ? "checked" : ""}
+                        >
+                        <span>Noche</span>
+                    </label>
+                </div>
+                <div class="turn-change-dialog__actions">
+                    <button class="secondary-button" type="button" data-action="cancel">
+                        Cancelar
+                    </button>
+                    <button class="primary-button" type="submit" disabled>
+                        Continuar
+                    </button>
+                </div>
+            </form>
+        `;
+
+        const form = backdrop.querySelector("form");
+        const continueButton =
+            form.querySelector("button[type='submit']");
+
+        const close = value => {
+            document.removeEventListener("keydown", onKeydown);
+            backdrop.remove();
+            resolve(value);
+        };
+
+        const onKeydown = event => {
+            if (event.key === "Escape") {
+                close(null);
+            }
+        };
+
+        form
+            .querySelectorAll("input[name='destinationTurn']")
+            .forEach(input => {
+                input.onchange = () => {
+                    continueButton.disabled = false;
+                };
+            });
+
+        form
+            .querySelector("[data-action='cancel']")
+            .onclick = () => close(null);
+
+        form.onsubmit = event => {
+            event.preventDefault();
+
+            const selected = form.querySelector(
+                "input[name='destinationTurn']:checked"
+            );
+
+            if (!selected) return;
+
+            close(Number(selected.value));
+        };
+
+        backdrop.addEventListener("click", event => {
+            if (event.target === backdrop) {
+                close(null);
+            }
+        });
+
+        document.addEventListener("keydown", onKeydown);
+        document.body.appendChild(backdrop);
+        continueButton.disabled = false;
+        form
+            .querySelector(
+                "input[name='destinationTurn']:checked"
+            )
+            ?.focus();
+    });
+}
+
+async function activarSelectorMoverTurno() {
+    if (!isMoveShiftAvailable()) return;
+    if (!canModifyCurrentProfile()) return;
+
+    pendingShiftMove = null;
+    window.pendingShiftMoveSourceKey = "";
+
+    activarModo(
+        "moveshiftsource",
+        "Selecciona en el calendario el turno base Larga o Noche que deseas mover."
+    );
+
+    DOM.adminInfo.textContent =
+        "Solo se habilitan turnos base sin permisos, marcajes, reemplazos ni cambios de turno asociados.";
+}
+
+async function handleMoveShiftSourceSelection(fecha) {
+    const profile = getCurrentProfile();
+    const sourceKey = keyFromDate(fecha);
+    const blockReason = shiftMoveDayBlockReason(
+        profile,
+        sourceKey,
+        { source: true }
+    );
+
+    if (blockReason) {
+        alert(blockReason);
+        return;
+    }
+
+    const sourceTurn = getTurnoBase(profile, sourceKey);
+    const destinationTurn = await openMoveShiftDialog({
+        profile,
+        sourceKey,
+        sourceTurn
+    });
+
+    if (!destinationTurn) {
+        clearSelectionMode();
+        return;
+    }
+
+    pendingShiftMove = {
+        profile,
+        sourceKey,
+        sourceTurn,
+        destinationTurn
+    };
+    window.pendingShiftMoveSourceKey = sourceKey;
+
+    activarModo(
+        "moveshifttarget",
+        `Selecciona el dia donde reubicaras el turno ${shiftMoveTurnLabel(destinationTurn)}. Tambien puedes volver a elegir el mismo dia para cambiar solo el horario.`
+    );
+
+    DOM.adminInfo.textContent =
+        "El destino debe estar libre y no puede tener permisos, marcajes ni otras modificaciones.";
+}
+
+function handleMoveShiftTargetSelection(fecha) {
+    const move = pendingShiftMove;
+    const profile = getCurrentProfile();
+
+    if (!move || move.profile !== profile) {
+        alert("El trabajador seleccionado cambio. Inicia nuevamente Mover Turno.");
+        clearSelectionMode();
+        return;
+    }
+
+    const targetKey = keyFromDate(fecha);
+    const sourceReason = shiftMoveDayBlockReason(
+        profile,
+        move.sourceKey,
+        { source: true }
+    );
+
+    if (sourceReason) {
+        alert(`El turno de origen ya no esta disponible: ${sourceReason}`);
+        clearSelectionMode();
+        return;
+    }
+
+    const targetReason = shiftMoveDayBlockReason(
+        profile,
+        targetKey,
+        {
+            sourceKey: move.sourceKey
+        }
+    );
+
+    if (targetReason) {
+        alert(targetReason);
+        return;
+    }
+
+    if (
+        targetKey === move.sourceKey &&
+        Number(move.destinationTurn) === Number(move.sourceTurn)
+    ) {
+        alert("Selecciona otro dia o cambia el horario del turno.");
+        return;
+    }
+
+    pushHistory();
+
+    const data = getProfileData(profile);
+    const baseData = getBaseProfileData(profile);
+    const blocked = getBlockedDays(profile);
+
+    if (targetKey !== move.sourceKey) {
+        data[move.sourceKey] = TURNO.LIBRE;
+        baseData[move.sourceKey] = TURNO.LIBRE;
+        blocked[move.sourceKey] = true;
+    }
+
+    data[targetKey] = move.destinationTurn;
+    baseData[targetKey] = move.destinationTurn;
+    blocked[targetKey] = true;
+
+    saveProfileData(data, profile);
+    saveBaseProfileData(baseData, profile);
+    saveBlockedDays(blocked, profile);
+    registerShiftMove({
+        profile,
+        sourceKey: move.sourceKey,
+        targetKey,
+        sourceTurn: move.sourceTurn,
+        destinationTurn: move.destinationTurn
+    });
+
+    const sourceDate = parseKey(move.sourceKey);
+    const targetDate = parseKey(targetKey);
+    const sourceLabel = Number.isNaN(sourceDate.getTime())
+        ? move.sourceKey
+        : formatDisplayDate(toISODate(sourceDate));
+    const targetLabel = Number.isNaN(targetDate.getTime())
+        ? targetKey
+        : formatDisplayDate(toISODate(targetDate));
+
+    addAuditLog(
+        AUDIT_CATEGORY.CALENDAR,
+        "Movio turno base",
+        targetKey === move.sourceKey
+            ? `${profile}: cambio el turno base del ${sourceLabel} de ${shiftMoveTurnLabel(move.sourceTurn)} a ${shiftMoveTurnLabel(move.destinationTurn)}.`
+            : `${profile}: movio el turno base ${shiftMoveTurnLabel(move.sourceTurn)} del ${sourceLabel} al ${targetLabel} como ${shiftMoveTurnLabel(move.destinationTurn)}.`,
+        {
+            profile,
+            sourceKey: move.sourceKey,
+            targetKey,
+            sourceTurn: move.sourceTurn,
+            destinationTurn: move.destinationTurn
+        }
+    );
+
+    clearSelectionMode();
+}
+
 function startCreateMode() {
     if (!canEditCurrentProfileMenu()) return;
 
     clearSelectionMode(false);
     resetProfileDraft();
-    availabilityEditMode = false;
+    availabilityEditMode = true;
+    createAvailabilityBalances =
+        defaultCreateAvailabilityBalances();
     profileRotationMiniDate = new Date();
 
     profileDraft.mode = PROFILE_MODE.CREATE;
@@ -4745,6 +5713,7 @@ function startEditMode() {
     if (!profile) return;
 
     clearSelectionMode(false);
+    createAvailabilityBalances = null;
     availabilityEditMode = true;
     loadDraftFromProfile(profile);
     profileRotationMiniDate = profileDraft.rotationStart
@@ -4781,11 +5750,13 @@ function startReplacementContractEdit(profileName, keyDay) {
             : "";
     profileDraft.rotationStart = "";
     profileDraft.shiftAssigned = false;
-    profileDraft.contractStart =
+    replacementContractMonthHint =
         calendarKeyToInputDate(keyDay);
+    profileDraft.contractStart = "";
     profileDraft.contractEnd = "";
     profileDraft.contractReplaces = "";
     profileDraft.contractReason = "";
+    profileDraft.contractLeaveRef = "";
     profileRotationMiniDate = parseKey(keyDay);
 
     renderProfiles();
@@ -4803,6 +5774,7 @@ function exitProfileMode(selectedName = getCurrentProfile()) {
     clearSelectionMode(false);
     resetProfileDraft();
     availabilityEditMode = false;
+    createAvailabilityBalances = null;
     profileDraft.mode = PROFILE_MODE.VIEW;
 
     setCurrentProfile(selectedName || null);
@@ -4829,6 +5801,7 @@ function handleRotationSelectionChange() {
         profileDraft.contractEnd = "";
         profileDraft.contractReplaces = "";
         profileDraft.contractReason = "";
+        profileDraft.contractLeaveRef = "";
     }
 
     if (!profileDraft.rotationType) {
@@ -4858,6 +5831,7 @@ function handleRotationSelectionChange() {
         return;
     }
 
+    replacementContractMonthHint = "";
     openRotationConfigModal(profileDraft.rotationType);
 }
 
@@ -4877,9 +5851,203 @@ function validateDraft() {
     return false;
 }
 
+function normalizeProfileEmailKey(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
+async function workspaceMemberEmailKeys() {
+    const keys = new Set();
+    const currentUser = getCurrentFirebaseUser();
+    const currentUserEmail = normalizeProfileEmailKey(currentUser?.email);
+
+    if (currentUserEmail) {
+        keys.add(currentUserEmail);
+    }
+
+    const workspace = getActiveWorkspace();
+
+    if (!workspace?.id) return keys;
+
+    try {
+        const members = await listWorkspaceMembersForPermissions(workspace);
+
+        members.forEach(member => {
+            const email = normalizeProfileEmailKey(member.email);
+
+            if (email) keys.add(email);
+        });
+    } catch (error) {
+        console.warn(
+            "No se pudo validar correos de administradores del entorno.",
+            error
+        );
+    }
+
+    return keys;
+}
+
+async function validateProfileEmailPolicy({
+    nextEmailKey,
+    nextName,
+    originalName = ""
+}) {
+    if (!nextEmailKey) return true;
+
+    const duplicateProfile = getProfiles().find(profile =>
+        profile.name !== originalName &&
+        normalizeProfileEmailKey(profile.email) === nextEmailKey
+    );
+
+    if (!duplicateProfile) return true;
+
+    const privilegedEmails = await workspaceMemberEmailKeys();
+
+    if (privilegedEmails.has(nextEmailKey)) {
+        return true;
+    }
+
+    alert(
+        `Ya existe un trabajador creado con ese correo (${duplicateProfile.name}). Cada trabajador debe tener un correo distinto.`
+    );
+
+    return false;
+}
+
+async function validateProfileSavePreflight({
+    isCreating,
+    isEditing,
+    nextName,
+    nextEmailKey
+}) {
+    const profiles = getProfiles();
+    const originalName = isEditing
+        ? profileDraft.originalName
+        : "";
+    const nameExists = profiles.some(profile =>
+        profile.name !== originalName &&
+        profile.name === nextName
+    );
+
+    if ((isCreating || isEditing) && nameExists) {
+        alert("Ese perfil ya existe.");
+        return false;
+    }
+
+    return validateProfileEmailPolicy({
+        nextEmailKey,
+        nextName,
+        originalName
+    });
+}
+
 function futureKeys(map, startDate) {
     return Object.keys(map || {}).filter(key =>
         isDateKeyOnOrAfter(key, startDate)
+    );
+}
+
+function calendarKeyToSafeISO(key) {
+    const date = parseKey(key);
+
+    if (Number.isNaN(date.getTime())) {
+        return "";
+    }
+
+    return toISODate(date);
+}
+
+function firstStoredTurnDateForProfile(profileName) {
+    if (!profileName) return "";
+
+    const candidates = [];
+    const collect = map => {
+        Object.entries(map || {}).forEach(([key, value]) => {
+            if ((Number(value) || TURNO.LIBRE) <= TURNO.LIBRE) {
+                return;
+            }
+
+            const iso = calendarKeyToSafeISO(key);
+
+            if (iso) {
+                candidates.push(iso);
+            }
+        });
+    };
+
+    collect(getBaseProfileData(profileName));
+    collect(getProfileData(profileName));
+
+    return candidates.sort(compareISODate)[0] || "";
+}
+
+async function firstRotationTurnDate(
+    rotationType,
+    rotationStart,
+    firstTurn = "larga"
+) {
+    const startISO = normalizeStoredStart(rotationStart);
+
+    if (!startISO || !requiresRotationStart(rotationType)) {
+        return "";
+    }
+
+    if (rotationType === "diurno") {
+        const startDate = parseInputDate(startISO);
+        const holidays = await fetchHolidays(startDate.getFullYear());
+        const day = new Date(startDate);
+
+        while (day.getFullYear() === startDate.getFullYear()) {
+            if (isBusinessDay(day, holidays)) {
+                return toISODate(day);
+            }
+
+            day.setDate(day.getDate() + 1);
+        }
+
+        return startISO;
+    }
+
+    const sequence = getRotationSequence(rotationType, firstTurn);
+
+    if (!sequence.length) {
+        return startISO;
+    }
+
+    const firstTurnOffset = sequence.findIndex(turn =>
+        (Number(turn) || TURNO.LIBRE) > TURNO.LIBRE
+    );
+
+    if (firstTurnOffset <= 0) {
+        return startISO;
+    }
+
+    const date = parseInputDate(startISO);
+    date.setDate(date.getDate() + firstTurnOffset);
+
+    return toISODate(date);
+}
+
+async function inferProfileUnitEntryDate({
+    profileNames = [],
+    rotationType = "",
+    rotationStart = "",
+    rotationFirstTurn = "larga"
+} = {}) {
+    const storedDates = [
+        ...new Set(profileNames.filter(Boolean))
+    ]
+        .map(firstStoredTurnDateForProfile)
+        .filter(Boolean)
+        .sort(compareISODate);
+
+    if (storedDates.length) {
+        return storedDates[0];
+    }
+
+    return firstRotationTurnDate(
+        rotationType,
+        rotationStart,
+        rotationFirstTurn
     );
 }
 
@@ -5104,6 +6272,30 @@ async function guardarPerfil() {
             nextRotationType === "4turno"
         ) &&
         Boolean(profileDraft.shiftAssigned);
+    const nextRotationStart =
+        replacementContract ||
+        nextRotationType === "libre"
+            ? ""
+            : profileDraft.rotationStart;
+    const nextRotationFirstTurn =
+        normalizeRotationFirstTurnForType(
+            nextRotationType,
+            profileDraft.rotationFirstTurn
+        );
+    const nextUnitEntryDate = isUnitEntryDateEnabled()
+        ? (
+            normalizeStoredStart(profileDraft.unitEntryDate) ||
+            await inferProfileUnitEntryDate({
+                profileNames: [
+                    profileDraft.originalName,
+                    nextName
+                ],
+                rotationType: nextRotationType,
+                rotationStart: nextRotationStart,
+                rotationFirstTurn: nextRotationFirstTurn
+            })
+        )
+        : "";
     const nextProfilePayload = {
         name: nextName,
         email: profileDraft.email.trim(),
@@ -5114,7 +6306,7 @@ async function guardarPerfil() {
             ? [...profileDraft.docs]
             : [],
         active: profileDraft.active !== false,
-        unitEntryDate: profileDraft.unitEntryDate,
+        unitEntryDate: nextUnitEntryDate,
         contractType: profileDraft.contractType,
         honorariaStart: isHonorariaDraft()
             ? profileDraft.honorariaStart
@@ -5133,15 +6325,32 @@ async function guardarPerfil() {
         profession: nextProfession,
         grade: profileDraft.grade
     };
-    const nextRotationStart =
-        replacementContract ||
-        nextRotationType === "libre"
-            ? ""
-            : profileDraft.rotationStart;
-    const nextRotationFirstTurn =
-        normalizeRotationFirstTurnForType(
-            nextRotationType,
-            profileDraft.rotationFirstTurn
+    const nextEmailKey =
+        nextProfilePayload.email.toLowerCase();
+    const previousEmailKey = String(
+        previousSnapshot?.email || ""
+    ).trim().toLowerCase();
+    const emailChanged =
+        isEditing &&
+        nextEmailKey !== previousEmailKey;
+    const previousWorkerAppLink =
+        emailChanged && nextEmailKey
+            ? getWorkerAppLinkForProfile(
+                profileDraft.originalName
+            )
+            : null;
+    const shouldReplaceWorkerAppLink =
+        Boolean(
+            previousWorkerAppLink?.uid &&
+            nextEmailKey &&
+            nextProfilePayload.active
+        );
+    const shouldSendAutomaticWorkerInvite =
+        Boolean(nextEmailKey) &&
+        nextProfilePayload.active &&
+        (
+            isCreating ||
+            emailChanged
         );
     const shouldApplyRotation =
         (
@@ -5171,6 +6380,17 @@ async function guardarPerfil() {
     };
     let gradeEffectiveDate = "";
 
+    if (
+        !await validateProfileSavePreflight({
+            isCreating,
+            isEditing,
+            nextName,
+            nextEmailKey
+        })
+    ) {
+        return;
+    }
+
     if (isEditing && hasGradeValueChanged()) {
         gradeEffectiveDate =
             await requestGradeEffectiveDate(
@@ -5183,7 +6403,39 @@ async function guardarPerfil() {
         }
     }
 
+    if (
+        shouldReplaceWorkerAppLink &&
+        !await showConfirm(
+            `Al modificar el correo de ${nextName}, se desenlazará la PWA asociada a ${previousSnapshot.email || "su correo anterior"}.\n\nEl funcionario deberá volver a enlazarse con la invitación que se enviará a ${nextProfilePayload.email}.`,
+            {
+                title: "Cambiar correo enlazado",
+                tone: "warning",
+                confirmText: "Cambiar y reenlazar"
+            }
+        )
+    ) {
+        return;
+    }
+
+    let automaticInviteResult = null;
+
     try {
+        if (shouldReplaceWorkerAppLink) {
+            automaticInviteResult =
+                await sendWorkerAppInviteEmail({
+                    ...nextProfilePayload,
+                    name: nextName
+                }, {
+                    replaceLink: previousWorkerAppLink
+                });
+
+            if (!automaticInviteResult.sent) {
+                throw new Error(
+                    "No se pudo reemplazar el enlace de la PWA. El correo no fue modificado y la cuenta anterior conserva su acceso."
+                );
+            }
+        }
+
         if (isCreating) {
             const profiles = getProfiles();
 
@@ -5204,7 +6456,7 @@ async function guardarPerfil() {
                 nextName,
                 nextProfilePayload,
                 nextRotationStart ||
-                    profileDraft.unitEntryDate ||
+                    nextUnitEntryDate ||
                     toInputDate(new Date())
             );
         }
@@ -5254,7 +6506,11 @@ async function guardarPerfil() {
                 end: profileDraft.contractEnd,
                 replaces:
                     profileDraft.contractReplaces.trim(),
-                reason: profileDraft.contractReason
+                reason: profileDraft.contractReason,
+                leaveRef: profileDraft.contractLeaveRef,
+                leaveType: profileDraft.contractReason,
+                leaveStart: profileDraft.contractStart,
+                leaveEnd: profileDraft.contractEnd
             });
 
             createReplacementContractMemoTask({
@@ -5263,7 +6519,10 @@ async function guardarPerfil() {
             });
         }
 
-        if (isEditing && availabilityEditMode) {
+        if (
+            (isCreating || isEditing) &&
+            availabilityEditMode
+        ) {
             saveAvailabilityBalancesFromInputs(nextName);
         }
 
@@ -5303,6 +6562,52 @@ async function guardarPerfil() {
             }
         }
 
+        if (
+            shouldSendAutomaticWorkerInvite &&
+            !automaticInviteResult
+        ) {
+            automaticInviteResult =
+                await sendWorkerAppInviteEmail({
+                    ...nextProfilePayload,
+                    name: nextName
+                }, {
+                    ignoreExistingLink:
+                        shouldReplaceWorkerAppLink
+                });
+
+            if (automaticInviteResult.sent) {
+                addAuditLog(
+                    AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+                    "Envio invitacion app trabajador",
+                    `${nextName}: se envio automaticamente la invitacion de enlace a ${automaticInviteResult.email}.`,
+                    {
+                        profile: nextName,
+                        email: automaticInviteResult.email,
+                        automatic: true
+                    }
+                );
+            }
+        }
+
+        if (
+            shouldReplaceWorkerAppLink &&
+            automaticInviteResult?.sent
+        ) {
+            addAuditLog(
+                AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+                "Reemplazo enlace app trabajador",
+                `${nextName}: se revoco el enlace asociado a ${previousSnapshot.email || "correo anterior"} y se envio una nueva invitacion para ${nextProfilePayload.email}.`,
+                {
+                    profile: nextName,
+                    previousEmail:
+                        previousSnapshot.email || "",
+                    email: nextProfilePayload.email,
+                    previousWorkerUid:
+                        previousWorkerAppLink.uid || ""
+                }
+            );
+        }
+
         exitProfileMode(nextName);
         if (shouldApplyRotation) {
             await applyDraftRotation(
@@ -5335,6 +6640,13 @@ async function guardarPerfil() {
             );
         }
         refreshAll();
+        scheduleWorkerAppDataPublish(300);
+
+        if (automaticInviteResult?.status === "error") {
+            alert(
+                `El perfil de ${nextName} se guardo, pero no se pudo enviar la invitacion al correo ${nextProfilePayload.email}. Puedes reintentarlo con ENLACE APP.`
+            );
+        }
     } catch (error) {
         alert(
             error.message ||
@@ -5363,7 +6675,7 @@ function handleAvailabilityEdit() {
 
     const year = new Date().getFullYear();
     const balances = {
-        legal: normalizeBalanceValue(
+        legal: normalizeLegalBalanceValue(
             document.getElementById("availabilityLegalInput")?.value
         ),
         admin: normalizeBalanceValue(
@@ -5373,11 +6685,11 @@ function handleAvailabilityEdit() {
             document.getElementById("availabilityHoursReturnInput")?.value
         )
     };
-    const compInput =
-        document.getElementById("availabilityCompInput");
+    const compBalance =
+        readCompBalanceFromInput(year);
 
-    if (compInput) {
-        balances.comp = normalizeBalanceValue(compInput.value);
+    if (compBalance.hasInput) {
+        balances.comp = compBalance.balance;
     }
 
     saveManualLeaveBalances(year, balances, profile.name);
@@ -5393,6 +6705,7 @@ function handleAvailabilityEdit() {
 
     availabilityEditMode = false;
     refreshAll();
+    scheduleWorkerAppDataPublish(300);
 }
 
 function saveAvailabilityBalancesFromInputs(profileName) {
@@ -5410,15 +6723,23 @@ function saveAvailabilityBalancesFromInputs(profileName) {
     const year = new Date().getFullYear();
     const previous = getManualLeaveBalances(year, profileName);
     const balances = {
-        legal: normalizeBalanceValue(legalInput.value),
+        legal: normalizeLegalBalanceValue(legalInput.value),
         admin: normalizeBalanceValue(adminInput.value),
         hoursReturn: normalizeBalanceValue(hoursReturnInput.value)
     };
-    const compInput =
-        document.getElementById("availabilityCompInput");
+    const compBalance =
+        readCompBalanceFromInput(year);
 
-    if (compInput) {
-        balances.comp = normalizeBalanceValue(compInput.value);
+    if (compBalance.hasInput) {
+        balances.comp = compBalance.balance;
+    } else if (
+        profileDraft.mode === PROFILE_MODE.CREATE &&
+        createAvailabilityBalances
+    ) {
+        balances.comp = compBalanceFromEntitlement(
+            createAvailabilityBalances.comp,
+            year
+        );
     }
 
     const changed =
@@ -5513,8 +6834,11 @@ function activarSelectorComp() {
         return;
     }
 
-    if (!Number.isInteger(cantidad)) {
-        alert("El saldo de F. Compensatorio debe ser un numero entero para aplicar el bloque completo.");
+    if (
+        !Number.isInteger(cantidad) ||
+        !isCompensatoryBlockAmount(cantidad)
+    ) {
+        alert("El F. Compensatorio solo se puede aplicar como bloque completo de 10 o 20 dias habiles. Ajusta el cupo anual en el perfil del trabajador si corresponde.");
         return;
     }
 
@@ -6281,7 +7605,17 @@ function bindProfileForm() {
 
         try {
             const attachments =
-                await readAttachmentFiles(DOM.profileDocsInput.files);
+                await readAttachmentFiles(
+                    DOM.profileDocsInput.files,
+                    {
+                        moduleId: "profile",
+                        ownerId:
+                            profileDraft.id ||
+                            profileDraft.name ||
+                            "new-profile",
+                        recordId: "profile-documents"
+                    }
+                );
 
             profileDraft.docs = [
                 ...profileDraft.docs,
@@ -6295,7 +7629,7 @@ function bindProfileForm() {
     };
 
     DOM.profileUnitEntryDateInput.onchange = () => {
-        if (!isProfileEditing()) return;
+        if (!isProfileEditing() || !isUnitEntryDateEnabled()) return;
         profileDraft.unitEntryDate =
             DOM.profileUnitEntryDateInput.value;
     };
@@ -6315,6 +7649,7 @@ function bindProfileForm() {
             profileDraft.contractEnd = "";
             profileDraft.contractReplaces = "";
             profileDraft.contractReason = "";
+            profileDraft.contractLeaveRef = "";
         }
 
         if (!isHonorariaDraft()) {
@@ -6454,6 +7789,7 @@ function bindProfileForm() {
             profileDraft.shiftAssigned =
                 DOM.checkbox.checked;
             renderBotones();
+            renderDisponibilidadVacaciones();
             return;
         }
 
@@ -6991,6 +8327,23 @@ DOM.hoursReturnBtn.onclick = activarSelectorDevolucionHoras;
 DOM.unjustifiedAbsenceBtn.onclick =
     activarSelectorAusenciaInjustificada;
 DOM.clockMarkBtn.onclick = activarSelectorMarcajeReloj;
+DOM.moveShiftBtn.onclick = activarSelectorMoverTurno;
+syncMoveShiftAvailability();
+
+[
+    "(display-mode: standalone)",
+    "(display-mode: fullscreen)",
+    "(display-mode: minimal-ui)"
+].forEach(query => {
+    const media = window.matchMedia?.(query);
+
+    if (media?.addEventListener) {
+        media.addEventListener(
+            "change",
+            syncMoveShiftAvailability
+        );
+    }
+});
 
 DOM.prevBtn.onclick = () => prevMonth({ deferHeavy: true });
 DOM.nextBtn.onclick = () => nextMonth({ deferHeavy: true });
@@ -7054,6 +8407,16 @@ document.addEventListener("click", async event => {
         return;
     }
 
+    if (selectionMode === "moveshiftsource") {
+        await handleMoveShiftSourceSelection(fecha);
+        return;
+    }
+
+    if (selectionMode === "moveshifttarget") {
+        handleMoveShiftTargetSelection(fecha);
+        return;
+    }
+
     if (selectionMode === "hoursreturn") {
         await handleHoursReturnSelection(fecha);
         return;
@@ -7085,7 +8448,7 @@ document.addEventListener("click", async event => {
     if (selectionMode === "unjustified") {
         pushHistory();
         const aplicado =
-            aplicarAusenciaInjustificada(fecha);
+            await aplicarAusenciaInjustificada(fecha);
 
         if (!aplicado) {
             alert(
@@ -7206,8 +8569,30 @@ window.addEventListener("proturnos:memosChanged", () => {
 });
 
 window.addEventListener("proturnos:auditUndoApplied", event => {
+    const canceledReplacements =
+        event.detail?.canceledReplacements || [];
+
+    canceledReplacements.forEach(replacement => {
+        if (!replacement?.interUnitLoanId) return;
+
+        void cancelInterUnitLoan(
+            replacement.interUnitLoanId,
+            getActiveWorkspace()?.id || ""
+        ).catch(error => {
+            console.warn(
+                "No se pudo anular el prestamo entre unidades.",
+                error
+            );
+        });
+    });
+
     refreshAll();
     notifyWorkersOfAuditUndo(event.detail || {});
+});
+
+window.addEventListener("proturnos:interUnitLoansChanged", () => {
+    refreshAll();
+    scheduleInterUnitStaffingPublish(300);
 });
 
 const LEAVE_CANCELLATION_LABELS = {
@@ -7257,7 +8642,8 @@ function notifyWorkersOfAuditUndo(detail) {
 }
 
 window.addEventListener("proturnos:workerLinksChanged", () => {
-    renderDashboardState();
+    refreshAll();
+    scheduleWorkerAppDataPublish(300);
 });
 
 // Atajos de teclado globales para modales: Escape cierra/cancela y Enter
@@ -7375,6 +8761,24 @@ initSupervisorMessages({
     button: DOM.floatingMessagesBtn,
     badge: DOM.floatingMessagesBadge
 });
+
+let workspaceMfaPromise = null;
+
+async function enforceWorkspaceMfa(workspace) {
+    if (!workspace?.id || !workspaceRequiresMfa()) return true;
+    if (await isFirebaseSessionMfaVerified()) return true;
+    if (workspaceMfaPromise) return workspaceMfaPromise;
+
+    workspaceMfaPromise = ensureFirebaseTotpEnrollment({
+        reason:
+            "Tu cuenta tiene permisos de propietario o supervisor. Para acceder a esta unidad debes activar la verificacion TOTP."
+    }).finally(() => {
+        workspaceMfaPromise = null;
+    });
+
+    return workspaceMfaPromise;
+}
+
 initFirebaseShell({
     userChip: DOM.authUserChip,
     userName: DOM.authUserName,
@@ -7385,6 +8789,7 @@ initFirebaseShell({
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();
             stopWorkerAvailabilitySync();
+            stopInterUnitLoanSync();
             stopSupervisorMessages();
             stopWorkspacePermissionListener();
         }
@@ -7403,9 +8808,28 @@ initFirebaseShell({
                 syncWorkspacePermissionUI();
                 syncCalendarDirectEditToggle();
                 renderDashboardState();
+
+                if (workspaceRequiresMfa()) {
+                    enforceWorkspaceMfa(workspace).catch(async error => {
+                        console.warn(
+                            "La sesion privilegiada no completo MFA.",
+                            error
+                        );
+                        await signOutFirebase();
+                    });
+                }
             });
+
+            try {
+                await enforceWorkspaceMfa(workspace);
+            } catch (error) {
+                await signOutFirebase();
+                throw error;
+            }
+
             startWorkerRequestsRealtimeSync(workspace);
             startWorkerAppDataSync(workspace);
+            startInterUnitLoanSync(workspace);
             startWorkerAvailabilitySync(workspace, {
                 onChange: () => {
                     refreshAll();
@@ -7431,6 +8855,7 @@ initFirebaseShell({
                 onChange: () => {
                     syncWorkspaceStateViews();
                     scheduleWorkerAppDataPublish(300);
+                    scheduleInterUnitStaffingPublish(400);
                 }
             });
         } else {
@@ -7439,6 +8864,7 @@ initFirebaseShell({
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();
             stopWorkerAvailabilitySync();
+            stopInterUnitLoanSync();
             stopSupervisorMessages();
             stopFirebaseAppStateSync();
             stopWorkspacePermissionListener();

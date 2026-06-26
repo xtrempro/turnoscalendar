@@ -1,5 +1,7 @@
 {
   "projects": {
-    "default": "calendarioturnos-7c4d9"
+    "default": "calendarioturnos-7c4d9",
+    "production": "calendarioturnos-7c4d9",
+    "test": "turnoplus-test-7c4d9"
   }
 }

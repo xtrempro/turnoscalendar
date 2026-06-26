@@ -10,6 +10,7 @@ let redoStack = [];
 
 const PROFILE_BUCKET_LABELS = {
     admin: "permisos administrativos",
+    baseData: "turnos base",
     legal: "feriados legales",
     comp: "feriados compensatorios",
     leaveBalances: "saldos de vacaciones",
@@ -26,6 +27,7 @@ const PROFILE_BUCKET_LABELS = {
 
 const GLOBAL_BUCKET_LABELS = {
     replacements: "reemplazos",
+    shiftMoves: "turnos modificados",
     memos: "memorandum"
 };
 
@@ -260,6 +262,7 @@ function describeHistoryChange(type, current, target) {
 function snapshotProfile(p){
     return {
         data: getRaw(key(p,"data")),
+        baseData: getRaw(key(p,"baseData")),
         admin: getRaw(key(p,"admin")),
         legal: getRaw(key(p,"legal")),
         comp: getRaw(key(p,"comp")),
@@ -284,6 +287,7 @@ function snapshotProfile(p){
 
 function restoreProfile(p, state){
     setRaw(key(p,"data"), state.data || "{}");
+    setRaw(key(p,"baseData"), state.baseData || "{}");
     setRaw(key(p,"admin"), state.admin || "{}");
     setRaw(key(p,"legal"), state.legal || "{}");
     setRaw(key(p,"comp"), state.comp || "{}");
@@ -325,6 +329,7 @@ function snapshot(){
         profiles,
         ...snapshotProfile(p),
         swaps: getRaw("swaps"),
+        shiftMoves: getRaw("shiftMoves"),
         replacements: getRaw("replacements"),
         memos: getRaw("memos")
     };
@@ -346,6 +351,7 @@ function restore(state){
     }
 
     setRaw("swaps", state.swaps || "[]");
+    setRaw("shiftMoves", state.shiftMoves || "[]");
     setRaw("replacements", state.replacements || "[]");
     setRaw("memos", state.memos || "[]");
 }

@@ -25,11 +25,19 @@ import { obtenerLabelDia } from "./rulesEngine.js";
 import { canSwapProfiles, activeMonthlySwapCount } from "./swaps.js";
 import { getWorkerBlockedDays } from "./workerAvailability.js";
 import { buildWorkerHheeSummaries } from "./hoursReport.js";
+import { fetchHolidays, getCachedHolidays } from "./holidays.js";
+import { getTurnoColorConfig } from "./turnoColors.js";
+import { withManualBalance } from "./balanceUtils.js";
+import {
+    getDayColorGradient,
+    buildHexColorResolver
+} from "./dayColorBands.js";
 
 const PUBLISH_DELAY_MS = 1200;
 const INITIAL_PUBLISH_DELAY_MS = 2500;
 const SCHEDULE_MONTHS_BACK = 2;
 const SCHEDULE_MONTHS_FORWARD = 13;
+const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
 
 let activeWorkspace = null;
 let unsubscribeWorkerLinks = null;
@@ -248,6 +256,10 @@ function buildScheduleDays(profile) {
     const { start, end } = scheduleRange();
     const maps = profileLeaveMaps(profile.name);
     const days = {};
+    // Resolver de color en HEX (snapshot de los colores configurados) para que
+    // la PWA pinte las mismas bandas que el calendario.
+    const colorResolver = buildHexColorResolver(getTurnoColorConfig());
+    const holidaysByYear = {};
 
     for (
         let cursor = new Date(start);
@@ -256,6 +268,10 @@ function buildScheduleDays(profile) {
     ) {
         const iso = toISODate(cursor);
         const keyDay = keyFromDate(cursor);
+        const cursorYear = cursor.getFullYear();
+        if (!holidaysByYear[cursorYear]) {
+            holidaysByYear[cursorYear] = getCachedHolidays(cursorYear);
+        }
         const programmedTurn = getTurnoProgramado(profile.name, keyDay);
         const actualTurn = aplicarCambiosTurno(
             profile.name,
@@ -279,6 +295,16 @@ function buildScheduleDays(profile) {
             maps.absences[keyDay]
         );
         const label = turnoLabel(actualTurn) || "Libre";
+        const colorGradient = getDayColorGradient(
+            profile.name,
+            keyDay,
+            actualTurn,
+            cursor,
+            holidaysByYear[cursorYear],
+            maps.admin[keyDay],
+            baseTurn,
+            { resolveColor: colorResolver }
+        );
 
         days[iso] = {
             iso,
@@ -289,6 +315,7 @@ function buildScheduleDays(profile) {
             label,
             displayLabel: visualLabel || label,
             className: classNameForDay(actualTurn, hasLeave),
+            colorGradient: colorGradient || "",
             hasLeave
         };
     }
@@ -300,13 +327,134 @@ function buildScheduleDays(profile) {
     };
 }
 
-function currentYearBalances(profileName) {
-    const currentYear = new Date().getFullYear();
+function isBusinessDayForLegal(date, holidays) {
+    const day = date.getDay();
+
+    return day !== 0 &&
+        day !== 6 &&
+        !holidays[keyFromDate(date)];
+}
+
+async function hasContinuousLegalBlock(
+    profileName,
+    year,
+    holidays = null
+) {
+    const legal = getJSON("legal_" + profileName, {});
+    const yearHolidays = holidays || await fetchHolidays(year);
+    const cursor = new Date(year, 0, 1);
+    let currentRun = 0;
+
+    while (cursor.getFullYear() === year) {
+        const key = keyFromDate(cursor);
+
+        if (isBusinessDayForLegal(cursor, yearHolidays)) {
+            currentRun = legal[key] ? currentRun + 1 : 0;
+
+            if (currentRun >= LEGAL_CONTINUOUS_BLOCK_DAYS) {
+                return true;
+            }
+        }
+
+        cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return false;
+}
+
+function dateFromCalendarKey(key) {
+    const [year, month, day] = String(key || "")
+        .split("-")
+        .map(Number);
+
+    if (!year || !month || !day) return null;
+
+    return new Date(year, month - 1, day);
+}
+
+function usedBusinessDays(map, year, holidays) {
+    return Object.keys(map || {}).reduce((total, key) => {
+        if (!key.startsWith(`${year}-`)) return total;
+
+        const date = dateFromCalendarKey(key);
+
+        return date && isBusinessDayForLegal(date, holidays)
+            ? total + 1
+            : total;
+    }, 0);
+}
+
+function usedAdministrativeDays(map, year) {
+    return Object.entries(map || {}).reduce((total, [key, value]) => {
+        if (!key.startsWith(`${year}-`)) return total;
+
+        return total + (value === 1 ? 1 : 0.5);
+    }, 0);
+}
+
+async function balancesForYear(profileName, year) {
+    const maps = profileLeaveMaps(profileName);
+    const holidays = await fetchHolidays(year);
+    const manual = getManualLeaveBalances(year, profileName);
+    const calculated = {
+        legal: Math.max(
+            0,
+            15 - usedBusinessDays(maps.legal, year, holidays)
+        ),
+        admin: Math.max(
+            0,
+            6 - usedAdministrativeDays(maps.admin, year)
+        ),
+        comp: Math.max(
+            0,
+            10 - usedBusinessDays(maps.comp, year, holidays)
+        )
+    };
+    const legalContinuousBlockTaken =
+        await hasContinuousLegalBlock(profileName, year, holidays);
 
     return {
-        year: currentYear,
-        balances: getManualLeaveBalances(currentYear, profileName)
+        year,
+        balances: {
+            legal: Math.max(
+                0,
+                Math.floor(
+                    withManualBalance(manual.legal, calculated.legal)
+                )
+            ),
+            admin: withManualBalance(manual.admin, calculated.admin),
+            comp: withManualBalance(manual.comp, calculated.comp),
+            hoursReturn: withManualBalance(manual.hoursReturn, 0)
+        },
+        legalReserveDays: LEGAL_CONTINUOUS_BLOCK_DAYS,
+        legalContinuousBlockTaken,
+        legalReserveRequired: !legalContinuousBlockTaken
     };
+}
+
+async function leaveBalancesByScheduleYear(profileName, schedule) {
+    const startYear = Number(String(schedule.start || "").slice(0, 4));
+    const endYear = Number(String(schedule.end || "").slice(0, 4));
+    const currentYear = new Date().getFullYear();
+    const firstYear = Number.isFinite(startYear)
+        ? Math.min(startYear, currentYear)
+        : currentYear;
+    const lastYear = Number.isFinite(endYear)
+        ? Math.max(endYear, currentYear)
+        : currentYear;
+    const years = [];
+
+    for (let year = firstYear; year <= lastYear; year++) {
+        years.push(year);
+    }
+
+    const payloads = await Promise.all(
+        years.map(year => balancesForYear(profileName, year))
+    );
+
+    return Object.fromEntries(
+        payloads.map(payload => [String(payload.year), payload])
+    );
 }
 
 // Misma clave que usa staffing.js para los recordatorios del supervisor.
@@ -394,7 +542,12 @@ function buildSwapLimit(profileName) {
 
 async function buildWorkerAppPayload(link, profile, workspace) {
     const schedule = buildScheduleDays(profile);
-    const leaveBalances = currentYearBalances(profile.name);
+    const leaveBalancesByYear = await leaveBalancesByScheduleYear(
+        profile.name,
+        schedule
+    );
+    const currentYear = String(new Date().getFullYear());
+    const leaveBalances = leaveBalancesByYear[currentYear];
     const overtimeSummaries = await buildOvertimeSummaries(profile);
 
     return {
@@ -412,12 +565,13 @@ async function buildWorkerAppPayload(link, profile, workspace) {
             role: profile.estamento || "",
             profession: profile.profession || "",
             unit: workspace.name || link.workspaceName || "",
-            unitEntryDate: profile.unitEntryDate || "",
+            unitEntryDate: "",
             active: isProfileActive(profile)
         },
         rotativa: getRotativa(profile.name),
         shiftAssigned: Boolean(getShiftAssigned(profile.name)),
         leaveBalances,
+        leaveBalancesByYear,
         scheduleStart: schedule.start,
         scheduleEnd: schedule.end,
         days: schedule.days,

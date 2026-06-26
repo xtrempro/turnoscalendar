@@ -1,4 +1,7 @@
 import {
+    FIREBASE_REQUIRE_PRIVILEGED_MFA
+} from "./firebaseConfig.js";
+import {
     getCurrentFirebaseUser,
     getFirebaseServices,
     isFirebaseConfigured
@@ -88,12 +91,12 @@ function dispatchPermissionsChanged() {
 }
 
 export function normalizeMenuPermissions(permissions = {}) {
-    const normalized = defaultMenuPermissions();
+    const normalized = noAccessMenuPermissions();
 
     MENU_PERMISSION_DEFS.forEach(menu => {
         const raw = permissions?.[menu.key] || {};
-        const view = raw.view !== false;
-        const edit = view && raw.edit !== false;
+        const view = raw.view === true;
+        const edit = view && raw.edit === true;
 
         normalized[menu.key] = {
             view,
@@ -113,6 +116,15 @@ export function getWorkspacePermissionState() {
 
 export function isWorkspaceOwner() {
     return Boolean(permissionState.isOwner);
+}
+
+export function workspaceRequiresMfa() {
+    if (!FIREBASE_REQUIRE_PRIVILEGED_MFA) return false;
+    if (permissionState.isOwner) return true;
+
+    return MENU_PERMISSION_DEFS.some(menu =>
+        permissionState.permissions?.[menu.key]?.edit === true
+    );
 }
 
 export function menuKeyForTarget(targetId) {
@@ -252,34 +264,38 @@ export async function startWorkspacePermissionListener(
         user.uid
     );
 
+    const applyMemberSnapshot = snap => {
+        const memberExists = snap.exists();
+        const member = memberExists ? snap.data() || {} : {};
+        const role = memberExists
+            ? member.role || workspace.role || "member"
+            : initialOwner
+                ? "owner"
+                : "removed";
+        const isOwner = role === "owner";
+
+        permissionState = {
+            ready: true,
+            workspaceId: workspace.id,
+            uid: user.uid,
+            role,
+            isOwner,
+            permissions: isOwner
+                ? defaultMenuPermissions()
+                : memberExists
+                    ? normalizeMenuPermissions(member.permissions)
+                    : noAccessMenuPermissions()
+        };
+
+        dispatchPermissionsChanged();
+        onChange(getWorkspacePermissionState());
+    };
+
+    applyMemberSnapshot(await firestoreModule.getDoc(memberRef));
+
     unsubscribePermissions = firestoreModule.onSnapshot(
         memberRef,
-        snap => {
-            const memberExists = snap.exists();
-            const member = memberExists ? snap.data() || {} : {};
-            const role = memberExists
-                ? member.role || workspace.role || "member"
-                : initialOwner
-                    ? "owner"
-                    : "removed";
-            const isOwner = role === "owner";
-
-            permissionState = {
-                ready: true,
-                workspaceId: workspace.id,
-                uid: user.uid,
-                role,
-                isOwner,
-                permissions: isOwner
-                    ? defaultMenuPermissions()
-                    : memberExists
-                        ? normalizeMenuPermissions(member.permissions)
-                        : noAccessMenuPermissions()
-            };
-
-            dispatchPermissionsChanged();
-            onChange(getWorkspacePermissionState());
-        },
+        applyMemberSnapshot,
         error => {
             console.warn(
                 "No se pudieron sincronizar permisos del entorno.",

@@ -5,6 +5,7 @@ firebase-debug.log
 .env
 .env.*
 node_modules/
+.tools/
 
 .claude/
 dist/

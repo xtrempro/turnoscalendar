@@ -147,7 +147,7 @@
                             <label class="metric-row metric-row--field profile-file-row">
                                 <span class="metric-label">Documentos:</span>
                                 <span>
-                                    <input id="profileDocsField" type="file" multiple>
+                                    <input id="profileDocsField" type="file" multiple accept=".png,.jpg,.jpeg,.gif,.webp,.bmp,.heic,.heif,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx">
                                     <small class="field-help">Clip para CV, carnet de vacunas, licencias u otros documentos.</small>
                                 </span>
                             </label>
@@ -197,9 +197,9 @@
                         </div>
 
                         <div class="profile-form-grid">
-                            <label class="metric-row metric-row--field">
+                            <label id="profileUnitEntryDateRow" class="metric-row metric-row--field hidden" hidden>
                                 <span class="metric-label">Ingreso a la Unidad:</span>
-                                <input id="profileUnitEntryDateField" type="date">
+                                <input id="profileUnitEntryDateField" type="date" disabled>
                             </label>
 
                             <label class="metric-row metric-row--field">
@@ -212,51 +212,6 @@
                                     <option value="Reemplazo">Reemplazo</option>
                                     <option value="Otro">Otro</option>
                                 </select>
-                            </label>
-
-                            <label class="metric-row metric-row--field">
-                                <span class="metric-label">Estamento:</span>
-                                <select id="profileRoleField">
-                                    <option value="">Seleccionar</option>
-                                    <option value="Profesional">Profesional</option>
-                                    <option value="T&#233;cnico">T&#233;cnico</option>
-                                    <option value="Administrativo">Administrativo</option>
-                                    <option value="Auxiliar">Auxiliar</option>
-                                </select>
-                            </label>
-
-                            <label class="metric-row metric-row--field">
-                                <span class="metric-label">Profesi&#243;n:</span>
-                                <span class="profession-field-stack">
-                                    <select id="profileProfessionField"></select>
-                                    <input id="profileProfessionCustomField" class="hidden" type="text" list="profileProfessionOptions" placeholder="Profesi&#243;n">
-                                    <datalist id="profileProfessionOptions"></datalist>
-                                </span>
-                            </label>
-
-                            <label class="metric-row metric-row--field">
-                                <span class="metric-label">Rotativa:</span>
-                                <select id="profileRotationField">
-                                    <option value="">Seleccionar</option>
-                                    <option value="3turno">3er Turno</option>
-                                    <option value="4turno">4&#176; Turno</option>
-                                    <option value="diurno">Diurno</option>
-                                    <option value="libre" hidden disabled>Libre</option>
-                                </select>
-                            </label>
-
-                            <label id="shiftAssignedRow" class="metric-row metric-row--field metric-toggle">
-                                <span class="metric-label">Asignaci&#243;n de Turno:</span>
-                                <span class="toggle-check">
-                                    <input type="checkbox" id="shiftAssigned">
-                                </span>
-                            </label>
-
-                            <label class="metric-row metric-row--field metric-toggle">
-                                <span class="metric-label">Permiso Gremial:</span>
-                                <span class="toggle-check">
-                                    <input type="checkbox" id="profileUnionLeaveField">
-                                </span>
                             </label>
 
                             <label class="metric-row metric-row--field">
@@ -286,6 +241,51 @@
                                 </select>
                             </label>
 
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">Estamento:</span>
+                                <select id="profileRoleField">
+                                    <option value="">Seleccionar</option>
+                                    <option value="Profesional">Profesional</option>
+                                    <option value="T&#233;cnico">T&#233;cnico</option>
+                                    <option value="Administrativo">Administrativo</option>
+                                    <option value="Auxiliar">Auxiliar</option>
+                                </select>
+                            </label>
+
+                            <label id="shiftAssignedRow" class="metric-row metric-row--field metric-toggle">
+                                <span class="metric-label">Asignaci&#243;n de Turno:</span>
+                                <span class="toggle-check">
+                                    <input type="checkbox" id="shiftAssigned">
+                                </span>
+                            </label>
+
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">Profesi&#243;n:</span>
+                                <span class="profession-field-stack">
+                                    <select id="profileProfessionField"></select>
+                                    <input id="profileProfessionCustomField" class="hidden" type="text" list="profileProfessionOptions" placeholder="Profesi&#243;n">
+                                    <datalist id="profileProfessionOptions"></datalist>
+                                </span>
+                            </label>
+
+                            <label class="metric-row metric-row--field metric-toggle">
+                                <span class="metric-label">Permiso Gremial:</span>
+                                <span class="toggle-check">
+                                    <input type="checkbox" id="profileUnionLeaveField">
+                                </span>
+                            </label>
+
+                            <label class="metric-row metric-row--field">
+                                <span class="metric-label">Rotativa:</span>
+                                <select id="profileRotationField">
+                                    <option value="">Seleccionar</option>
+                                    <option value="3turno">3er Turno</option>
+                                    <option value="4turno">4&#176; Turno</option>
+                                    <option value="diurno">Diurno</option>
+                                    <option value="libre" hidden disabled>Libre</option>
+                                </select>
+                            </label>
+
                         </div>
 
                         <div id="profileRotationStatus" class="profile-status-note">
@@ -302,10 +302,7 @@
                             <label class="metric-row metric-row--field">
                                 <span class="metric-label">Motivo del Reemplazo:</span>
                                 <select id="replacementReasonField">
-                                    <option value="">Seleccionar</option>
-                                    <option value="Licencia M&#233;dica">Licencia M&#233;dica</option>
-                                    <option value="F. Legal">F. Legal</option>
-                                    <option value="F. Compensatorios">F. Compensatorios</option>
+                                    <option value="">Definir desde Nuevo Contrato</option>
                                 </select>
                             </label>
 
@@ -733,6 +730,20 @@
                                     </svg>
                                 </span>
                                 <span>MARCAJES RELOJ CONTROL</span>
+                            </button>
+
+                            <button id="moveShiftBtn" class="legend-action web-only-action" type="button" data-web-only>
+                                <span class="legend-dot tone-green">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                        <rect x="3" y="5" width="18" height="16" rx="2"></rect>
+                                        <path d="M8 3v4"></path>
+                                        <path d="M16 3v4"></path>
+                                        <path d="M3 10h18"></path>
+                                        <path d="m8 15 2-2 2 2"></path>
+                                        <path d="m16 16-2 2-2-2"></path>
+                                    </svg>
+                                </span>
+                                <span>MOVER TURNO</span>
                             </button>
                         </div>
 

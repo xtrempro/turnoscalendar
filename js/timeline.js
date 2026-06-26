@@ -14,6 +14,7 @@ import {
 } from "./turnEngine.js";
 import { TURNO, TURNO_COLOR } from "./constants.js";
 import { getTurnoColor } from "./turnoColors.js";
+import { getDayColorGradient } from "./dayColorBands.js";
 import { fetchHolidays } from "./holidays.js";
 import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { isBusinessDay } from "./calculations.js";
@@ -42,6 +43,7 @@ import {
     getHonorariaMonthlySummary
 } from "./honoraria.js";
 import {
+    getClockIncidentDetail,
     hasClockExtra,
     hasSevereClockIncident,
     hasSimpleClockIncident
@@ -840,10 +842,26 @@ export async function renderTimeline(){
                 getBlockedDayForProfile(profile.name, key);
             const hourReturn =
                 getHourReturn(profile.name, key);
+            // Mismo esquema de bandas que el calendario (turnos combinados +
+            // extension/reduccion de marcaje). Si devuelve gradiente, se usa.
+            const dayGradient =
+                (!workerBlockedDay && !hourReturn)
+                    ? getDayColorGradient(
+                        profile.name,
+                        key,
+                        getTurnoReal(profile.name, key),
+                        date,
+                        holidays,
+                        getAdmin(profile.name)[key],
+                        getTurnoBase(profile.name, key)
+                    )
+                    : null;
             const background = workerBlockedDay
                 ? timelineBlockedDayBackground(isInhabil)
                 : hourReturn
                 ? "linear-gradient(135deg, #0f766e, #14b8a6)"
+                : dayGradient
+                ? dayGradient
                 : timelineCellBackground(color, isInhabil);
             const contractError =
                 contractErrorMarker(profile.name, key);
@@ -861,6 +879,16 @@ export async function renderTimeline(){
             const simpleClockIncident =
                 !severeClockIncident &&
                 hasSimpleClockIncident(profile.name, key);
+            const clockIncidentDetail =
+                severeClockIncident || simpleClockIncident
+                    ? getClockIncidentDetail(
+                        profile.name,
+                        key,
+                        date,
+                        getTurnoReal(profile.name, key),
+                        holidays
+                    )
+                    : "";
             const clockExtra =
                 hasClockExtra(
                     profile.name,
@@ -901,7 +929,10 @@ export async function renderTimeline(){
             const title = contractError
                 ? "No tiene contrato vigente en la fecha seleccionada"
                 : severeClockIncident
-                    ? "Incidencia grave de marcaje"
+                    ? (
+                        clockIncidentDetail ||
+                        "Incidencia grave de marcaje"
+                    )
                     : needsReplacement
                         ? "Requiere reemplazo de turno base"
                         : showHonorariaLimit
@@ -911,7 +942,10 @@ export async function renderTimeline(){
                         : showClockExtra
                             ? "Requiere motivo por horas extras de marcaje"
                             : simpleClockIncident
-                                ? "Incidencia de marcaje"
+                                ? (
+                                    clockIncidentDetail ||
+                                    "Incidencia de marcaje"
+                                )
                         : hourReturn
                             ? `${hourReturn.fullTurn ? "Devoluci\u00f3n" : "Dev. Parcial"}: ${hourReturn.hours || 0} hrs.`
                         : replacement
@@ -938,13 +972,13 @@ export async function renderTimeline(){
             html += `
                 <td
                     class="mini ${workerBlockedDay ? "worker-blocked-mini" : ""} ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
-                    style="background:${background}"
+                    style="background:${escapeHtml(background)}"
                     title="${escapeHtml(titleText)}"
-                    ${contractError ? `data-contract-error-profile="${profile.name}" data-contract-error-key="${key}"` : ""}
-                    ${showHonorariaLimit ? `data-honoraria-limit-profile="${profile.name}" data-honoraria-limit-key="${key}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
-                    ${needsReplacement ? `data-replacement-profile="${profile.name}" data-replacement-key="${key}"` : ""}
-                    ${showExtraReason ? `data-extra-profile="${profile.name}" data-extra-key="${key}" data-extra-turn="${showExtraReason}"` : ""}
-                    ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${profile.name}" data-clock-extra-key="${key}" data-clock-extra-turn="${getTurnoReal(profile.name, key)}"` : ""}
+                    ${contractError ? `data-contract-error-profile="${escapeHtml(profile.name)}" data-contract-error-key="${escapeHtml(key)}"` : ""}
+                    ${showHonorariaLimit ? `data-honoraria-limit-profile="${escapeHtml(profile.name)}" data-honoraria-limit-key="${escapeHtml(key)}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
+                    ${needsReplacement ? `data-replacement-profile="${escapeHtml(profile.name)}" data-replacement-key="${escapeHtml(key)}"` : ""}
+                    ${showExtraReason ? `data-extra-profile="${escapeHtml(profile.name)}" data-extra-key="${escapeHtml(key)}" data-extra-turn="${escapeHtml(showExtraReason)}"` : ""}
+                    ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${escapeHtml(profile.name)}" data-clock-extra-key="${escapeHtml(key)}" data-clock-extra-turn="${escapeHtml(getTurnoReal(profile.name, key))}"` : ""}
                 >
                     ${marker ? `<span class="timeline-replacement-marker">${marker}</span>` : ""}
                 </td>

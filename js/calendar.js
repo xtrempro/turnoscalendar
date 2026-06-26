@@ -1,4 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
+import { showConfirm } from "./dialogs.js";
 import {
     aplicarCambiosTurno,
     fusionarTurnos,
@@ -24,8 +25,11 @@ import {
     getRotativa,
     getReplacementRequestConfig,
     getTurnChangeConfig,
+    getWorkerRequests,
+    getReplacements,
     isProfileActive,
-    profileCanCoverProfile
+    profileCanCoverProfile,
+    saveReplacements
 } from "./storage.js";
 import {
     tieneAusencia,
@@ -51,6 +55,7 @@ import {
     turnoLabel,
     aplicarClaseTurno
 } from "./uiEngine.js";
+import { getDayColorGradient } from "./dayColorBands.js";
 import {
     cancelTimelineRender,
     renderTimeline
@@ -62,8 +67,8 @@ import {
     getCambiosTurnoCalendario,
     swapCodeLabel
 } from "./swaps.js";
+import { getShiftMoveMarkers } from "./shiftMoves.js";
 import {
-    codeToTurno,
     getAbsenceLabelForProfileDate,
     getBackedTurnForWorker,
     getClockExtraBackupForWorker,
@@ -111,17 +116,19 @@ import {
     TURNO_CLASS
 } from "./constants.js";
 import {
-    exportLocalSnapshot,
-    getJSON,
-    replaceLocalSnapshot
+    getJSON
 } from "./persistence.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { listAcceptedLinkedWorkspaces } from "./firebaseLinkedUnits.js";
 import {
-    readFirebaseWorkspaceState,
-    writeFirebaseWorkspaceState
-} from "./firebaseWorkspaceState.js";
+    createInterUnitLoan,
+    readLinkedStaffingMonth
+} from "./firebaseInterUnitLoans.js";
 import { getBlockedDayForProfile } from "./workerAvailability.js";
+import {
+    acceptWorkerRequestById,
+    rejectWorkerRequestById
+} from "./workerRequests.js";
 
 export let currentDate = new Date();
 
@@ -156,6 +163,16 @@ const CALENDAR_MONTH_NAMES = [
     "Noviembre",
     "Diciembre"
 ];
+
+const PENDING_LEAVE_REQUEST_TYPES = new Set([
+    "admin",
+    "half_admin_morning",
+    "half_admin_afternoon",
+    "legal",
+    "comp",
+    "union_leave",
+    "unpaid_leave"
+]);
 
 function closeCalendarMonthPicker() {
     if (!calendarMonthPicker) return;
@@ -493,6 +510,225 @@ function dateFromKeyDay(keyDay) {
     return new Date(year || 0, month || 0, day || 1);
 }
 
+function isoFromKeyDay(keyDay) {
+    const date = dateFromKeyDay(keyDay);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0"),
+        String(date.getDate()).padStart(2, "0")
+    ].join("-");
+}
+
+function addDaysISO(iso, offset) {
+    const parts = String(iso || "").split("-").map(Number);
+    const date = new Date(
+        Number(parts[0]) || 0,
+        (Number(parts[1]) || 1) - 1,
+        Number(parts[2]) || 1
+    );
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    date.setDate(date.getDate() + Number(offset || 0));
+
+    return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0"),
+        String(date.getDate()).padStart(2, "0")
+    ].join("-");
+}
+
+function pendingLeaveRequestLabel(type) {
+    if (type === "admin") return "ADM";
+    if (type === "half_admin_morning") return "1/2M";
+    if (type === "half_admin_afternoon") return "1/2T";
+    if (type === "legal") return "FL";
+    if (type === "comp") return "FC";
+    if (type === "union_leave") return "PG";
+    if (type === "unpaid_leave") return "PSG";
+
+    return "Permiso";
+}
+
+function pendingLeaveRequestLongLabel(type) {
+    if (type === "admin") return "P. Administrativo";
+    if (type === "half_admin_morning") return "1/2 ADM Ma\u00f1ana";
+    if (type === "half_admin_afternoon") return "1/2 ADM Tarde";
+    if (type === "legal") return "F. Legal";
+    if (type === "comp") return "F. Compensatorio";
+    if (type === "union_leave") return "Permiso Gremial";
+    if (type === "unpaid_leave") return "Permiso sin Goce";
+
+    return "Permiso";
+}
+
+function pendingLeaveRequestEndDate(request) {
+    if (request.endDate) return request.endDate;
+
+    const days = Math.max(
+        1,
+        Math.ceil(Number(request.days) || 1)
+    );
+
+    return addDaysISO(request.date, days - 1);
+}
+
+function leaveRequestCoversISODate(request, iso) {
+    if (!request?.date || !iso) return false;
+
+    const endDate = pendingLeaveRequestEndDate(request);
+
+    return (
+        String(iso) >= String(request.date) &&
+        String(iso) <= String(endDate || request.date)
+    );
+}
+
+function getPendingLeaveRequestForDay(profileName, keyDay) {
+    const iso = isoFromKeyDay(keyDay);
+
+    if (!profileName || !iso) return null;
+
+    return getWorkerRequests().find(request =>
+        request.status === "pending" &&
+        request.profile === profileName &&
+        PENDING_LEAVE_REQUEST_TYPES.has(request.type) &&
+        leaveRequestCoversISODate(request, iso)
+    ) || null;
+}
+
+function pendingLeaveHoverTitle(request, profileName, keyDay, baseState) {
+    if (!request) return "";
+
+    const start = request.date
+        ? formatISODateForHover(request.date)
+        : leaveDateLabelFromKey(keyDay);
+    const end = pendingLeaveRequestEndDate(request);
+    const baseLabel = turnoLabel(baseState) || "Libre";
+
+    return [
+        "Solicitud pendiente",
+        `Trabajador: ${profileName}`,
+        `Tipo: ${pendingLeaveRequestLongLabel(request.type)}`,
+        `Inicio: ${start}`,
+        end && end !== request.date
+            ? `Termino: ${formatISODateForHover(end)}`
+            : "",
+        request.days ? `Dias: ${request.days}` : "",
+        `Turno base: ${baseLabel}`,
+        request.note ? `Detalle: ${request.note}` : ""
+    ].filter(Boolean).join("\n");
+}
+
+function openPendingLeaveRequestDialog({
+    request,
+    profile,
+    keyDay,
+    baseState
+}) {
+    if (!request) return;
+
+    const label = pendingLeaveRequestLongLabel(request.type);
+    const start = request.date
+        ? formatISODateForHover(request.date)
+        : leaveDateLabelFromKey(keyDay);
+    const end = pendingLeaveRequestEndDate(request);
+    const baseLabel = turnoLabel(baseState) || "Libre";
+    const canManage =
+        typeof window.workspaceCanEditTarget !== "function" ||
+        window.workspaceCanEditTarget("workerRequestsPanel");
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.innerHTML = `
+        <section class="turn-change-dialog leave-request-dialog" role="dialog" aria-modal="true" aria-labelledby="pendingLeaveRequestTitle">
+            <strong id="pendingLeaveRequestTitle">Solicitud pendiente</strong>
+            <div class="leave-detail-rows">
+                <div><span>Trabajador</span><b>${escapeHTML(profile)}</b></div>
+                <div><span>Tipo</span><b>${escapeHTML(label)}</b></div>
+                <div><span>Inicio</span><b>${escapeHTML(start)}</b></div>
+                ${end && end !== request.date
+                    ? `<div><span>T\u00e9rmino</span><b>${escapeHTML(formatISODateForHover(end))}</b></div>`
+                    : ""}
+                <div><span>D\u00edas</span><b>${escapeHTML(String(request.days || 1))}</b></div>
+                <div><span>Turno base</span><b>${escapeHTML(baseLabel)}</b></div>
+            </div>
+            ${request.note
+                ? `<p class="leave-detail-note">${escapeHTML(request.note)}</p>`
+                : ""}
+            ${canManage
+                ? `
+                    <div class="turn-change-dialog__actions">
+                        <button class="primary-button" type="button" data-action="accept">Aceptar</button>
+                        <button class="secondary-button" type="button" data-action="reject">Rechazar</button>
+                        <button class="ghost-button" type="button" data-action="close">Cerrar</button>
+                    </div>
+                `
+                : `
+                    <p class="leave-detail-note">Tu usuario solo puede revisar esta solicitud.</p>
+                    <div class="turn-change-dialog__actions">
+                        <button class="ghost-button" type="button" data-action="close">Cerrar</button>
+                    </div>
+                `}
+        </section>
+    `;
+
+    const close = () => {
+        document.removeEventListener("keydown", onKeydown);
+        backdrop.remove();
+    };
+    const onKeydown = event => {
+        if (event.key === "Escape") close();
+    };
+    const finish = async action => {
+        const button = backdrop.querySelector(`[data-action='${action}']`);
+
+        if (button) {
+            button.disabled = true;
+            button.textContent =
+                action === "accept" ? "Aceptando..." : "Rechazando...";
+        }
+
+        const ok = action === "accept"
+            ? await acceptWorkerRequestById(request.id)
+            : await rejectWorkerRequestById(request.id);
+
+        if (!ok) {
+            if (button) {
+                button.disabled = false;
+                button.textContent =
+                    action === "accept" ? "Aceptar" : "Rechazar";
+            }
+            return;
+        }
+
+        close();
+        window.dispatchEvent(
+            new CustomEvent("proturnos:workerRequestsChanged")
+        );
+        await renderCalendar({ deferHeavy: true });
+    };
+
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) close();
+    });
+    backdrop
+        .querySelector("[data-action='close']")
+        ?.addEventListener("click", close);
+    backdrop
+        .querySelector("[data-action='accept']")
+        ?.addEventListener("click", () => void finish("accept"));
+    backdrop
+        .querySelector("[data-action='reject']")
+        ?.addEventListener("click", () => void finish("reject"));
+
+    document.addEventListener("keydown", onKeydown);
+    document.body.appendChild(backdrop);
+}
+
 function scheduleCalendarAuditLog({
     profile,
     keyDay,
@@ -558,6 +794,7 @@ function buildDayCell({
     year,
     keyDay,
     label,
+    alternateLabel,
     badge,
     badges,
     title,
@@ -608,11 +845,19 @@ function buildDayCell({
             </span>
         `
         : "";
+    const labelHTML = alternateLabel
+        ? `
+            <span class="day-label day-label--alternating">
+                <span class="day-label__primary">${escapeHTML(label || "")}</span>
+                <span class="day-label__alternate">${escapeHTML(alternateLabel || "")}</span>
+            </span>
+        `
+        : `<span class="day-label">${escapeHTML(label || "")}</span>`;
 
     div.innerHTML = `
         <span class="day-number">${day}</span>
         <span class="day-label-stack">
-            <span class="day-label">${label || ""}</span>
+            ${labelHTML}
             ${badgeHTML}
         </span>
     `;
@@ -736,36 +981,6 @@ function replacementScopeProfiles(profileName, scope = "compatible") {
     );
 }
 
-function parseSnapshotJSON(snapshot, keyName, fallback) {
-    try {
-        const raw = snapshot?.[keyName];
-
-        if (raw === undefined || raw === null) return fallback;
-
-        return JSON.parse(raw);
-    } catch {
-        return fallback;
-    }
-}
-
-function remoteProfileMap(snapshot, prefix, profileName) {
-    return parseSnapshotJSON(
-        snapshot,
-        `${prefix}_${profileName}`,
-        {}
-    );
-}
-
-function remoteProfileHasAbsence(snapshot, profileName, keyDay) {
-    return tieneAusencia(
-        keyDay,
-        remoteProfileMap(snapshot, "admin", profileName),
-        remoteProfileMap(snapshot, "legal", profileName),
-        remoteProfileMap(snapshot, "comp", profileName),
-        remoteProfileMap(snapshot, "absences", profileName)
-    );
-}
-
 function keyToISODate(keyDay) {
     const parts = String(keyDay || "").split("-");
 
@@ -823,6 +1038,52 @@ function turnChangeHoverTitle(marker, profileName) {
         `Fecha devoluci\u00f3n: ${formatISODateForHover(swap.devolucion)}`,
         `Turno devoluci\u00f3n: ${swapCodeLabel(swap.turnoDevuelto)}`
     ].filter(Boolean).join("\n");
+}
+
+function formatShiftMoveDate(keyDay) {
+    const date = dateFromKeyDay(keyDay);
+
+    if (Number.isNaN(date.getTime())) {
+        return String(keyDay || "");
+    }
+
+    return new Intl.DateTimeFormat(
+        "es-CL",
+        {
+            day: "numeric",
+            month: "long",
+            year: "numeric"
+        }
+    ).format(date);
+}
+
+function shiftMoveTurnLabel(turn) {
+    return Number(turn) === TURNO.NOCHE
+        ? "Noche"
+        : "Larga";
+}
+
+function shiftMoveHoverTitle(marker) {
+    const move = marker?.move;
+
+    if (!move) return "";
+
+    const detail = [
+        "Turno modificado (TTMM)",
+        `Trabajador: ${move.profile}`,
+        `Origen: ${formatShiftMoveDate(move.sourceKey)} · ${shiftMoveTurnLabel(move.sourceTurn)}`,
+        `Destino: ${formatShiftMoveDate(move.targetKey)} · ${shiftMoveTurnLabel(move.destinationTurn)}`
+    ];
+
+    if (marker.role === "source") {
+        detail.push("Este dia quedo libre por el movimiento.");
+    } else if (marker.role === "target") {
+        detail.push("Este dia recibio el turno movido.");
+    } else {
+        detail.push("En este dia se modifico el horario del turno.");
+    }
+
+    return detail.join("\n");
 }
 
 function leaveTypeForDay(keyDay, admin, legal, comp, absences) {
@@ -1000,8 +1261,14 @@ function openLeaveDetailDialog({
         .querySelector("[data-action='undo']")
         ?.addEventListener("click", async event => {
             const button = event.currentTarget;
-            const confirmed = window.confirm(
-                `Deseas anular ${label} de ${profile}? Se cancelaran los reemplazos asociados y se notificara a los trabajadores.`
+            const confirmed = await showConfirm(
+                `Se anulará ${label} de ${profile}. También se cancelarán los reemplazos asociados y se notificará a los trabajadores.`,
+                {
+                    title: "Anular permiso",
+                    tone: "danger",
+                    confirmText: "Anular permiso",
+                    destructive: true
+                }
             );
 
             if (!confirmed) return;
@@ -1035,106 +1302,6 @@ function openLeaveDetailDialog({
 
     document.addEventListener("keydown", onKeydown);
     document.body.appendChild(backdrop);
-}
-
-function remoteFusionReplacementTurn(snapshot, profileName, keyDay, state) {
-    const iso = keyToISODate(keyDay);
-    const replacements =
-        parseSnapshotJSON(snapshot, "replacements", []);
-
-    return replacements
-        .filter(replacement =>
-            replacement &&
-            !replacement.canceled &&
-            replacement.worker === profileName &&
-            replacement.date === iso &&
-            replacement.addsShift !== false
-        )
-        .reduce(
-            (turno, replacement) =>
-                fusionarTurnos(turno, codeToTurno(replacement.turno)),
-            Number(state) || TURNO.LIBRE
-        );
-}
-
-function remoteApplySwaps(snapshot, profileName, keyDay, state) {
-    const iso = keyToISODate(keyDay);
-    const swaps = parseSnapshotJSON(snapshot, "swaps", []);
-    let turno = Number(state) || TURNO.LIBRE;
-
-    swaps.forEach(swap => {
-        if (
-            !swap ||
-            swap.canceled ||
-            swap.anulado ||
-            swap.status === "canceled" ||
-            swap.status === "anulado"
-        ) {
-            return;
-        }
-
-        if (!swap.skipFecha && swap.fecha === iso) {
-            if (swap.from === profileName) {
-                turno = TURNO.LIBRE;
-            }
-
-            if (swap.to === profileName) {
-                turno = fusionarTurnos(
-                    turno,
-                    codeToTurno(swap.turno)
-                );
-            }
-        }
-
-        if (!swap.skipDevolucion && swap.devolucion === iso) {
-            if (swap.to === profileName) {
-                const devuelve = codeToTurno(swap.turnoDevuelto);
-
-                if (turno === devuelve) {
-                    turno = TURNO.LIBRE;
-                } else if (
-                    turno === TURNO.TURNO24 &&
-                    devuelve === TURNO.LARGA
-                ) {
-                    turno = TURNO.NOCHE;
-                } else if (
-                    turno === TURNO.TURNO24 &&
-                    devuelve === TURNO.NOCHE
-                ) {
-                    turno = TURNO.LARGA;
-                } else {
-                    turno = TURNO.LIBRE;
-                }
-            }
-
-            if (swap.from === profileName) {
-                turno = fusionarTurnos(
-                    turno,
-                    codeToTurno(swap.turnoDevuelto)
-                );
-            }
-        }
-    });
-
-    return turno;
-}
-
-function remoteActualState(snapshot, profileName, keyDay) {
-    const data = remoteProfileMap(snapshot, "data", profileName);
-    const baseState = Number(data[keyDay]) || TURNO.LIBRE;
-    const withSwaps = remoteApplySwaps(
-        snapshot,
-        profileName,
-        keyDay,
-        baseState
-    );
-
-    return remoteFusionReplacementTurn(
-        snapshot,
-        profileName,
-        keyDay,
-        withSwaps
-    );
 }
 
 function previewDirectTurnChange(cell, nextTurn, date, holidays = {}) {
@@ -1174,19 +1341,6 @@ function previewDirectTurnChange(cell, nextTurn, date, holidays = {}) {
     }, 160);
 }
 
-function remoteTurnChangeConfig(snapshot) {
-    const config = parseSnapshotJSON(
-        snapshot,
-        "turnChangeConfig",
-        {}
-    );
-
-    return {
-        allowTwentyFourHourShifts:
-            config.allowTwentyFourHourShifts !== false
-    };
-}
-
 function combinedTurnChangeConfig(remoteConfig) {
     const localConfig = getTurnChangeConfig();
 
@@ -1221,41 +1375,6 @@ function canCoverLinkedShift(currentState, neededTurn, config) {
     );
 }
 
-function remoteMonthlyStats(
-    snapshot,
-    profiles,
-    y,
-    m,
-    days,
-    holidays
-) {
-    const localSnapshot = exportLocalSnapshot();
-    const statsByProfile = new Map();
-
-    replaceLocalSnapshot(snapshot, { silent: true });
-
-    try {
-        profiles.forEach(profile => {
-            const stats = calcularHorasMesPerfil(
-                profile.name,
-                y,
-                m,
-                days,
-                holidays,
-                getProfileData(profile.name),
-                {},
-                { d: 0, n: 0 }
-            );
-
-            statsByProfile.set(profile.name, stats);
-        });
-    } finally {
-        replaceLocalSnapshot(localSnapshot, { silent: true });
-    }
-
-    return statsByProfile;
-}
-
 async function linkedWorkspaceCandidates(
     profileName,
     keyDay,
@@ -1285,13 +1404,9 @@ async function linkedWorkspaceCandidates(
     const linkedWorkspaces =
         await listAcceptedLinkedWorkspaces(activeWorkspace);
     const candidates = [];
-    const y = monthContext.y;
-    const m = monthContext.m;
-    const days = monthContext.days;
-    const holidays = monthContext.holidays || {};
     const diagnostics = {
         readErrors: [],
-        emptySnapshots: [],
+        emptyMonths: [],
         totalProfiles: 0,
         compatibleProfiles: 0,
         availableProfiles: 0
@@ -1304,13 +1419,20 @@ async function linkedWorkspaceCandidates(
     }
 
     for (const workspace of linkedWorkspaces) {
-        let snapshot = null;
+        let staffingMonth = null;
 
         try {
-            snapshot = await readFirebaseWorkspaceState(workspace.id);
+            staffingMonth = await readLinkedStaffingMonth(
+                workspace.id,
+                keyDay,
+                {
+                    linkId: workspace.linkId,
+                    requesterWorkspaceId: activeWorkspace.id
+                }
+            );
         } catch (error) {
             console.warn(
-                "No se pudo leer unidad enlazada.",
+                "No se pudo leer disponibilidad de unidad enlazada.",
                 workspace.id,
                 error
             );
@@ -1320,51 +1442,37 @@ async function linkedWorkspaceCandidates(
             continue;
         }
 
-        if (!snapshot) {
-            diagnostics.emptySnapshots.push(
+        if (!staffingMonth) {
+            diagnostics.emptyMonths.push(
                 workspace.name || workspace.id
             );
             continue;
         }
 
-        const allProfiles =
-            parseSnapshotJSON(snapshot, "profiles", []);
+        const allProfiles = Array.isArray(staffingMonth.workers)
+            ? staffingMonth.workers
+            : [];
         const profiles = allProfiles
             .filter(profile =>
                 profile &&
-                profile.active !== false &&
                 profileCanCoverProfile(profile, baseProfile)
             );
 
-        diagnostics.totalProfiles += allProfiles.filter(profile =>
-            profile && profile.active !== false
-        ).length;
+        diagnostics.totalProfiles += allProfiles.length;
         diagnostics.compatibleProfiles += profiles.length;
 
-        const remoteConfig = remoteTurnChangeConfig(snapshot);
-        const coverConfig = combinedTurnChangeConfig(remoteConfig);
-        const statsByProfile = remoteMonthlyStats(
-            snapshot,
-            profiles,
-            y,
-            m,
-            days,
-            holidays
-        );
+        const coverConfig = combinedTurnChangeConfig({
+            allowTwentyFourHourShifts:
+                staffingMonth.allowTwentyFourHourShifts !== false
+        });
+        const iso = keyToISODate(keyDay);
 
         profiles.forEach(profile => {
-            const currentState = remoteActualState(
-                snapshot,
-                profile.name,
-                keyDay
-            );
+            const day = profile.days?.[iso] || null;
+            const currentState = Number(day?.turn) || TURNO.LIBRE;
 
             if (
-                remoteProfileHasAbsence(
-                    snapshot,
-                    profile.name,
-                    keyDay
-                ) ||
+                !day?.available ||
                 !canCoverLinkedShift(
                     currentState,
                     neededTurn,
@@ -1374,9 +1482,10 @@ async function linkedWorkspaceCandidates(
                 return;
             }
 
-            const stats = statsByProfile.get(profile.name) || {};
-            const hheeDiurnas = Number(stats.hheeDiurnas) || 0;
-            const hheeNocturnas = Number(stats.hheeNocturnas) || 0;
+            const hheeDiurnas =
+                Number(profile.hheeDiurnas) || 0;
+            const hheeNocturnas =
+                Number(profile.hheeNocturnas) || 0;
 
             diagnostics.availableProfiles++;
 
@@ -1388,6 +1497,13 @@ async function linkedWorkspaceCandidates(
                 isLinked: true,
                 workspaceId: workspace.id,
                 workspaceName: workspace.name || workspace.id,
+                linkId: workspace.linkId || "",
+                blockedDay: day.blocked
+                    ? {
+                        message:
+                            "El trabajador marco esta fecha como no disponible para reemplazos."
+                    }
+                    : null,
                 hheeDiurnas,
                 hheeNocturnas,
                 hhee: hheeDiurnas + hheeNocturnas
@@ -1398,10 +1514,10 @@ async function linkedWorkspaceCandidates(
     if (!candidates.length) {
         if (diagnostics.readErrors.length) {
             linkedReplacementStatus =
-                `No se pudo leer la unidad enlazada ${diagnostics.readErrors.join(", ")}. Revisa que firebase.rules este publicado y que el enlace siga activo.`;
-        } else if (diagnostics.emptySnapshots.length) {
+                `No se pudo leer la disponibilidad de ${diagnostics.readErrors.join(", ")}. Revisa que el enlace siga activo.`;
+        } else if (diagnostics.emptyMonths.length) {
             linkedReplacementStatus =
-                `La unidad enlazada ${diagnostics.emptySnapshots.join(", ")} aun no tiene datos vivos sincronizados. Abre esa unidad y espera que Firebase suba el estado.`;
+                `La unidad enlazada ${diagnostics.emptyMonths.join(", ")} aun no publico disponibilidad para este mes. Abre esa unidad y espera unos segundos.`;
         } else if (!diagnostics.totalProfiles) {
             linkedReplacementStatus =
                 "La unidad enlazada no tiene colaboradores activos sincronizados.";
@@ -1658,6 +1774,57 @@ function getPendingManualExtraTurn(
     );
 }
 
+function cancelManualExtraBackupsForTurnChange(
+    profileName,
+    keyDay,
+    nextTurn
+) {
+    const iso = isoFromKeyDay(keyDay);
+    const replacements = getReplacements();
+    const now = new Date().toISOString();
+    let canceledCount = 0;
+
+    const nextReplacements = replacements.map(replacement => {
+        if (
+            replacement.canceled ||
+            replacement.worker !== profileName ||
+            replacement.date !== iso ||
+            replacement.source !== "manual_extra"
+        ) {
+            return replacement;
+        }
+
+        canceledCount++;
+
+        return {
+            ...replacement,
+            canceled: true,
+            canceledAt: now,
+            canceledBy: "Calendario",
+            cancelReason: "manual_turn_changed"
+        };
+    });
+
+    if (!canceledCount) return 0;
+
+    saveReplacements(nextReplacements);
+    addAuditLog(
+        AUDIT_CATEGORY.OVERTIME,
+        "Anulo respaldo de turno extra",
+        `${profileName}: se quito el motivo/respaldo HHEE del ${iso} porque el turno manual fue modificado a ${turnoLabel(nextTurn) || "Libre"}.`,
+        {
+            profile: profileName,
+            keyDay,
+            date: iso,
+            nextTurn,
+            source: "manual_turn_changed",
+            canceledCount
+        }
+    );
+
+    return canceledCount;
+}
+
 async function getReplacementCandidates(
     profileName,
     keyDay,
@@ -1873,8 +2040,10 @@ function replacementDialogHTML({
                 class="replacement-candidate ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.isLinked ? "replacement-candidate--linked" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${pendingRequest ? "is-disabled" : ""}"
                 type="button"
                 data-worker="${escapeHTML(candidate.profile.name)}"
+                data-worker-profile-id="${escapeHTML(candidate.profile.id || "")}"
                 data-worker-workspace-id="${escapeHTML(candidate.workspaceId || "")}"
                 data-worker-workspace-name="${escapeHTML(candidate.workspaceName || "")}"
+                data-worker-link-id="${escapeHTML(candidate.linkId || "")}"
                 ${replacementCandidateCoverageAttrs(candidate)}
                 ${pendingRequest ? "disabled" : ""}
             >
@@ -2060,76 +2229,52 @@ async function openReplacementDialog(profileName, keyDay) {
             button.dataset.workerWorkspaceId || "";
         const workerWorkspaceName =
             button.dataset.workerWorkspaceName || "";
+        const workerProfileId =
+            button.dataset.workerProfileId || "";
+        const linkId = button.dataset.workerLinkId || "";
         const worker = button.dataset.worker || "";
         const activeWorkspace = getActiveWorkspace();
+        const replacedProfile = getProfiles().find(profile =>
+            profile.name === profileName
+        );
 
-        if (!workerWorkspaceId || !worker) {
+        if (
+            !workerWorkspaceId ||
+            !workerProfileId ||
+            !worker ||
+            !activeWorkspace?.id
+        ) {
             throw new Error(
                 "No se pudo identificar la unidad enlazada del trabajador."
             );
         }
 
-        const remoteReplacementId =
-            `loan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const remoteSnapshot =
-            await readFirebaseWorkspaceState(workerWorkspaceId);
-
-        if (!remoteSnapshot) {
-            throw new Error(
-                "La unidad enlazada aun no tiene datos vivos disponibles en Firebase."
-            );
-        }
-
-        const date = new Date(
-            Number(keyDay.split("-")[0]),
-            Number(keyDay.split("-")[1]),
-            Number(keyDay.split("-")[2])
-        );
-        const replacements =
-            parseSnapshotJSON(remoteSnapshot, "replacements", []);
-
-        replacements.push({
-            id: remoteReplacementId,
-            worker,
-            replaced: profileName,
-            reason: "",
-            source: "linked_unit_loan",
-            addsShift: true,
-            date: keyToISODate(keyDay),
-            turno: turnoToCode(neededTurn),
-            isLoan: true,
-            workerWorkspaceId,
-            workerWorkspaceName,
+        const result = await createInterUnitLoan({
+            linkId,
+            sourceWorkspaceId: workerWorkspaceId,
             hostWorkspaceId: activeWorkspace?.id || "",
-            hostWorkspaceName: activeWorkspace?.name || "",
+            workerProfileId,
+            replacedProfileId: replacedProfile?.id || "",
+            replacedProfileName: profileName,
+            date: keyToISODate(keyDay),
+            turnCode: turnoToCode(neededTurn),
             absenceType,
-            year: date.getFullYear(),
-            month: date.getMonth(),
-            createdAt: new Date().toISOString(),
-            canceled: false
         });
 
-        remoteSnapshot.replacements =
-            JSON.stringify(replacements);
-
-        await writeFirebaseWorkspaceState(
-            workerWorkspaceId,
-            remoteSnapshot
-        );
-
         saveReplacement({
+            id: `interunit_${result.loanId}`,
+            interUnitLoanId: result.loanId,
             worker,
             replaced: profileName,
             keyDay,
             turno: neededTurn,
             absenceType,
-            source: "linked_unit_loan",
+            source: "inter_unit_loan",
             isLoan: true,
             workerWorkspaceId,
             workerWorkspaceName,
             hostWorkspaceId: activeWorkspace?.id || "",
             hostWorkspaceName: activeWorkspace?.name || "",
-            remoteReplacementId
         });
     };
 
@@ -2592,12 +2737,12 @@ function extraReasonDialogHTML({
                     <button
                         class="replacement-candidate"
                         type="button"
-                        data-section-id="${section.id}"
+                        data-section-id="${escapeHTML(section.id)}"
                         data-match-index="${index}"
                     >
                         <span>
-                            <strong>${match.profile.name}</strong>
-                            <small>${match.absenceType} | ${turnoReplacementLabel(match.coveredTurn)}</small>
+                            <strong>${escapeHTML(match.profile.name)}</strong>
+                            <small>${escapeHTML(match.absenceType)} | ${escapeHTML(turnoReplacementLabel(match.coveredTurn))}</small>
                         </span>
                         <span>${match.exactMatch ? "Coincide" : "Parcial"}</span>
                     </button>
@@ -2609,16 +2754,16 @@ function extraReasonDialogHTML({
                 `;
 
             return `
-                <div class="overtime-backup-subsection" data-manual-section="${section.id}">
+                <div class="overtime-backup-subsection" data-manual-section="${escapeHTML(section.id)}">
                     <div class="overtime-backup-subsection__head">
-                        <span>${section.label}</span>
+                        <span>${escapeHTML(section.label)}</span>
                     </div>
                     <div class="replacement-candidate-list">
                         ${items}
                     </div>
                     <label class="extra-reason-field">
-                        <span>Motivo manual para ${section.label}</span>
-                        <textarea rows="3" data-manual-reason="${section.id}" placeholder="Ej: Campana de Invierno, Estacion de Trabajo"></textarea>
+                        <span>Motivo manual para ${escapeHTML(section.label)}</span>
+                        <textarea rows="3" data-manual-reason="${escapeHTML(section.id)}" placeholder="Ej: Campana de Invierno, Estacion de Trabajo"></textarea>
                     </label>
                 </div>
             `;
@@ -3055,6 +3200,13 @@ async function clickDia(
     keepCalendarDirectEditHistoryOpen(
         `Edicion directa de turnos desde ${keyDay}`
     );
+    if (Number(nuevo) !== Number(currentState)) {
+        cancelManualExtraBackupsForTurnChange(
+            getCurrentProfile(),
+            keyDay,
+            nuevo
+        );
+    }
     data[keyDay] = nuevo;
     saveProfileData(data);
     scheduleCalendarAuditLog({
@@ -3165,6 +3317,16 @@ export async function renderCalendar(options = {}) {
     for (let d = 1; d <= days; d++) {
         const keyDay = key(y, m, d);
         const baseState = getTurnoBase(activeProfile, keyDay);
+        const pendingLeaveRequest =
+            getPendingLeaveRequestForDay(activeProfile, keyDay);
+        const pendingLeaveLabel =
+            pendingLeaveRequest
+                ? pendingLeaveRequestLabel(pendingLeaveRequest.type)
+                : "";
+        const pendingLeaveBaseLabel =
+            pendingLeaveRequest
+                ? turnoLabel(baseState) || "Libre"
+                : "";
 
         const state = aplicarCambiosTurno(
             activeProfile,
@@ -3180,18 +3342,24 @@ export async function renderCalendar(options = {}) {
         const turnChangeMarkers =
             getCambiosTurnoCalendario(activeProfile, keyDay);
         const turnChangeMarker = turnChangeMarkers[0] || null;
+        const shiftMoveMarkers =
+            getShiftMoveMarkers(activeProfile, keyDay);
         const hourReturn = hourReturns[keyDay] || null;
         const label = hourReturn
             ? hourReturnCalendarLabel(hourReturn)
-            : obtenerLabelDia(
-            keyDay,
-            state,
-            admin,
-            legal,
-            comp,
-            absences,
-            turnoLabel
-        );
+            : (
+                pendingLeaveRequest
+                    ? pendingLeaveLabel
+                    : obtenerLabelDia(
+                        keyDay,
+                        state,
+                        admin,
+                        legal,
+                        comp,
+                        absences,
+                        turnoLabel
+                    )
+            );
         const turnChange = turnChangeMarker?.swap || null;
         const coveredReplacement =
             getReplacementForCoveredShift(activeProfile, keyDay);
@@ -3286,15 +3454,22 @@ export async function renderCalendar(options = {}) {
                 .map(marker => turnChangeHoverTitle(marker, activeProfile))
                 .filter(Boolean)
         )).join("\n\n");
+        const shiftMoveTitle = Array.from(new Set(
+            shiftMoveMarkers
+                .map(shiftMoveHoverTitle)
+                .filter(Boolean)
+        )).join("\n\n");
         const workerBlockedDay =
             getBlockedDayForProfile(activeProfile, keyDay);
-        const turnChangeBadges =
-            [
+        const calendarBadges =
+            Array.from(new Set([
+                ...(pendingLeaveRequest ? ["Pend."] : []),
                 ...(workerBlockedDay ? ["No disp."] : []),
-                ...turnChangeMarkers.map(marker => marker.label)
-            ];
+                ...turnChangeMarkers.map(marker => marker.label),
+                ...shiftMoveMarkers.map(marker => marker.label)
+            ]));
 
-        if (turnChangeBadges.length > 1) {
+        if (calendarBadges.length > 1) {
             hasMultipleBadgeDays = true;
         }
 
@@ -3304,9 +3479,12 @@ export async function renderCalendar(options = {}) {
             year: y,
             keyDay,
             label,
+            alternateLabel: pendingLeaveRequest
+                ? pendingLeaveBaseLabel
+                : "",
             badge,
-            badges: turnChangeBadges.length
-                ? turnChangeBadges
+            badges: calendarBadges.length
+                ? calendarBadges
                 : undefined,
             title: (() => {
                 const hrs = calcHours(date, state, holidays);
@@ -3355,14 +3533,26 @@ export async function renderCalendar(options = {}) {
                 })();
 
                 return [
+                    pendingLeaveHoverTitle(
+                        pendingLeaveRequest,
+                        activeProfile,
+                        keyDay,
+                        baseState
+                    ),
                     turnChangeTitle,
+                    shiftMoveTitle,
                     baseTitle,
                     leaveTitle
                 ].filter(Boolean).join("\n");
             })(),
             isWeekendDay,
             isHoliday: Boolean(isHoliday),
-            isDraftSelected: draftKey === keyDay
+            isDraftSelected:
+                draftKey === keyDay ||
+                (
+                    window.selectionMode === "moveshifttarget" &&
+                    window.pendingShiftMoveSourceKey === keyDay
+                )
         });
 
         if (turnChangeMarker) {
@@ -3372,8 +3562,17 @@ export async function renderCalendar(options = {}) {
             );
         }
 
+        if (shiftMoveMarkers.length) {
+            div.classList.add("shift-move-day");
+        }
+
         if (workerBlockedDay) {
             div.classList.add("worker-blocked-day");
+        }
+
+        if (pendingLeaveRequest) {
+            div.classList.add("pending-leave-request-day");
+            div.dataset.workerRequestId = pendingLeaveRequest.id;
         }
 
         if (!activeProfileEnabled) {
@@ -3429,7 +3628,17 @@ export async function renderCalendar(options = {}) {
             legal,
             comp,
             absences,
-            aplicarClaseTurno
+            aplicarClaseTurno,
+            getTurnoBase(activeProfile, keyDay),
+            getDayColorGradient(
+                activeProfile,
+                keyDay,
+                state,
+                date,
+                holidays,
+                admin[keyDay],
+                getTurnoBase(activeProfile, keyDay)
+            )
         );
 
         const bloqueado = estaBloqueadoModo(
@@ -3437,7 +3646,9 @@ export async function renderCalendar(options = {}) {
             keyDay,
             (
                 window.selectionMode === "admin" ||
-                window.selectionMode === "hoursreturn"
+                window.selectionMode === "hoursreturn" ||
+                window.selectionMode === "moveshiftsource" ||
+                window.selectionMode === "moveshifttarget"
             )
                 ? getTurnoBase(activeProfile, keyDay)
                 : state,
@@ -3454,7 +3665,10 @@ export async function renderCalendar(options = {}) {
                 licenseType: window.licenseType || "license",
                 rotativa: getRotativa(activeProfile),
                 holidays,
-                hourReturns
+                hourReturns,
+                actualState: state,
+                moveShiftSourceKey:
+                    window.pendingShiftMoveSourceKey || ""
             }
         );
 
@@ -3471,6 +3685,19 @@ export async function renderCalendar(options = {}) {
                 event.stopPropagation();
                 alert("Este perfil esta desactivado. Reactivalo desde Perfil para modificar su calendario.");
                 return;
+            }
+
+            if (
+                pendingLeaveRequest &&
+                !window.selectionMode
+            ) {
+                event.stopPropagation();
+                return openPendingLeaveRequestDialog({
+                    request: pendingLeaveRequest,
+                    profile: activeProfile,
+                    keyDay,
+                    baseState
+                });
             }
 
             if (

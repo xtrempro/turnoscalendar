@@ -15,6 +15,7 @@ import {
 } from "./turnEngine.js";
 import { getJSON } from "./persistence.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
+import { escapeHTML } from "./htmlUtils.js";
 import {
     getTurnoComponentes,
     getAbsenceType,
@@ -262,6 +263,7 @@ export function saveReplacement(data) {
 
     const record = {
         id,
+        interUnitLoanId: data.interUnitLoanId || "",
         requestId: data.requestId || "",
         requestGroupId: data.requestGroupId || "",
         worker: data.worker,
@@ -305,6 +307,7 @@ export function saveReplacement(data) {
         {
             profile: data.worker,
             replacementId: id,
+            interUnitLoanId: data.interUnitLoanId || "",
             worker: data.worker,
             replaced: data.replaced || "",
             isLoan: Boolean(data.isLoan),
@@ -973,9 +976,9 @@ function renderBackedOvertimeLogItem(record, profiles, holidays) {
 
     return `
         <div class="replacement-log__item">
-            <span>${formatDate(record.date)} - ${label}</span>
-            <span>${formatHours(hours)}</span>
-            <small>${detail}</small>
+            <span>${escapeHTML(formatDate(record.date))} - ${escapeHTML(label)}</span>
+            <span>${escapeHTML(formatHours(hours))}</span>
+            <small>${escapeHTML(detail)}</small>
         </div>
     `;
 }
@@ -983,9 +986,9 @@ function renderBackedOvertimeLogItem(record, profiles, holidays) {
 function renderUnbackedOvertimeLogItem(entry) {
     return `
         <div class="replacement-log__item">
-            <span>${formatDate(entry.date)} - ${entry.label}</span>
-            <span>${formatHours(entry.hours)}</span>
-            <small>${entry.detail}</small>
+            <span>${escapeHTML(formatDate(entry.date))} - ${escapeHTML(entry.label)}</span>
+            <span>${escapeHTML(formatHours(entry.hours))}</span>
+            <small>${escapeHTML(entry.detail)}</small>
         </div>
     `;
 }

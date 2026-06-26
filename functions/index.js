@@ -1,12 +1,17 @@
 const admin = require("firebase-admin");
+const { createHash, randomBytes } = require("node:crypto");
 const logger = require("firebase-functions/logger");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const {
   onDocumentCreated,
   onDocumentUpdated
 } = require("firebase-functions/v2/firestore");
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
-const { defineSecret, defineString } = require("firebase-functions/params");
+const {
+  defineSecret,
+  defineString
+} = require("firebase-functions/params");
 
 // API key de Resend. Configurar con: firebase functions:secrets:set RESEND_API_KEY
 const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
@@ -17,12 +22,29 @@ const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 const MAIL_FROM = defineString("MAIL_FROM", {
   default: "TurnoPlus <onboarding@resend.dev>"
 });
+// TurnoPlus y la PWA están registrados con reCAPTCHA Enterprise.
+// Las funciones de préstamos entre unidades siempre exigen App Check.
+const ENFORCE_APP_CHECK = true;
+// TOTP queda preparado para una etapa futura, pero no se exige por ahora.
+// Cambiar a true cuando se quiera reactivar MFA obligatorio para propietarios
+// y supervisores con permisos de edicion.
+const REQUIRE_PRIVILEGED_MFA = false;
+// Flujo preparado para centros que pidan doble chequeo por correo en la PWA.
+// En etapa comercial queda apagado: el correo de invitacion lleva directamente
+// al token de enlace y la PWA no debe mandar un segundo correo passwordless.
+const WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED = false;
 
 admin.initializeApp();
-setGlobalOptions({ region: "southamerica-west1" });
+setGlobalOptions({
+  region: "southamerica-west1",
+  // Evita que una ráfaga de eventos dispare instancias sin límite y eleve
+  // innecesariamente el costo o el impacto de un abuso.
+  maxInstances: 10
+});
 
 const db = admin.firestore();
 const WORKER_APP_BASE_URL = "https://turnoplusfuncionarios.web.app/";
+const DEFAULT_MAIL_FROM = "TurnoPlus <onboarding@resend.dev>";
 const APP_URL = `${WORKER_APP_BASE_URL}?screen=solicitudes`;
 const APP_ICON = `${WORKER_APP_BASE_URL}img/logo-turnoplus.png`;
 const APP_BADGE = `${WORKER_APP_BASE_URL}img/favicon-turnoplus-calendar.png`;
@@ -31,6 +53,300 @@ const INVALID_TOKEN_CODES = new Set([
   "messaging/invalid-registration-token",
   "messaging/registration-token-not-registered"
 ]);
+const VALID_INTER_UNIT_TURNS = new Set([
+  "L",
+  "N",
+  "24",
+  "D",
+  "D+N",
+  "HM",
+  "HT",
+  "18"
+]);
+const SUPERVISOR_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MENU_PERMISSION_KEYS = [
+  "turnos",
+  "weekly",
+  "tasks",
+  "kanban",
+  "agenda",
+  "profile",
+  "clockmarks",
+  "requests",
+  "memos",
+  "swap",
+  "hours",
+  "reports",
+  "dashboard",
+  "log"
+];
+
+function cleanCallableText(value, maxLength = 160) {
+  return String(value || "").trim().slice(0, maxLength);
+}
+
+function normalizeSupervisorPermissions(input = {}) {
+  return MENU_PERMISSION_KEYS.reduce((permissions, key) => {
+    const raw = input && typeof input === "object" ? input[key] || {} : {};
+    const view = raw.view === true;
+
+    permissions[key] = {
+      view,
+      edit: view && raw.edit === true
+    };
+
+    return permissions;
+  }, {});
+}
+
+function hasAnyPermission(permissions = {}) {
+  return MENU_PERMISSION_KEYS.some(key =>
+    permissions[key]?.view === true || permissions[key]?.edit === true
+  );
+}
+
+function createSupervisorInviteToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+function supervisorInviteIdFromToken(token) {
+  return createHash("sha256").update(String(token || "")).digest("hex");
+}
+
+function validISODate(value) {
+  const text = String(value || "");
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+
+  const date = new Date(`${text}T12:00:00Z`);
+  return !Number.isNaN(date.getTime()) &&
+    date.toISOString().slice(0, 10) === text;
+}
+
+function turnCodeToState(code) {
+  return {
+    L: 1,
+    N: 2,
+    "24": 3,
+    D: 4,
+    "D+N": 5,
+    HM: 6,
+    HT: 7,
+    "18": 8
+  }[code] || 0;
+}
+
+function canCoverInterUnitShift(currentState, turnCode, allow24) {
+  const neededState = turnCodeToState(turnCode);
+  const current = Number(currentState) || 0;
+
+  if (!neededState) return false;
+  if (current === 0) return true;
+
+  return allow24 !== false &&
+    (
+      (current === 1 && neededState === 2) ||
+      (current === 2 && neededState === 1)
+    );
+}
+
+function memberCanManageRequests(member = {}) {
+  const permissions = member.permissions || {};
+
+  return member.role === "owner" ||
+    permissions.requests?.edit === true ||
+    permissions.turnos?.edit === true;
+}
+
+function memberRequiresMfa(member = {}) {
+  const permissions = member.permissions || {};
+
+  return member.role === "owner" ||
+    Object.values(permissions).some(permission =>
+      permission?.edit === true
+    );
+}
+
+function tokenHasMfa(token = {}) {
+  return Boolean(token.firebase?.sign_in_second_factor);
+}
+
+function requireMemberMfa(member, token) {
+  if (
+    REQUIRE_PRIVILEGED_MFA &&
+    memberRequiresMfa(member) &&
+    !tokenHasMfa(token)
+  ) {
+    throw new HttpsError(
+      "permission-denied",
+      "Los propietarios y supervisores deben validar TOTP para continuar."
+    );
+  }
+}
+
+async function requireWorkspaceRequestManager(
+  workspaceId,
+  uid,
+  token
+) {
+  const memberSnap = await db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("members")
+    .doc(uid)
+    .get();
+
+  if (!memberSnap.exists || !memberCanManageRequests(memberSnap.data())) {
+    throw new HttpsError(
+      "permission-denied",
+      "No tienes permisos para gestionar prestamos en esta unidad."
+    );
+  }
+
+  const member = memberSnap.data();
+
+  requireMemberMfa(member, token);
+  return member;
+}
+
+async function requireWorkspaceMember(workspaceId, uid, token) {
+  const memberSnap = await db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("members")
+    .doc(uid)
+    .get();
+
+  if (!memberSnap.exists) {
+    throw new HttpsError(
+      "permission-denied",
+      "No perteneces a la unidad solicitante."
+    );
+  }
+
+  const member = memberSnap.data();
+
+  requireMemberMfa(member, token);
+  return member;
+}
+
+async function requireWorkspaceOwner(workspaceId, uid, token) {
+  const member = await requireWorkspaceMember(workspaceId, uid, token);
+
+  if (member.role !== "owner") {
+    throw new HttpsError(
+      "permission-denied",
+      "Solo el propietario puede administrar invitaciones de supervisor."
+    );
+  }
+
+  return member;
+}
+
+async function requireAcceptedWorkspaceLink(
+  linkId,
+  sourceWorkspaceId,
+  hostWorkspaceId
+) {
+  const linkSnap = await db.collection("workspaceLinks").doc(linkId).get();
+  const link = linkSnap.data() || {};
+  const matchesPair =
+    (
+      link.fromWorkspaceId === sourceWorkspaceId &&
+      link.toWorkspaceId === hostWorkspaceId
+    ) ||
+    (
+      link.fromWorkspaceId === hostWorkspaceId &&
+      link.toWorkspaceId === sourceWorkspaceId
+    );
+
+  if (!linkSnap.exists || link.status !== "accepted" || !matchesPair) {
+    throw new HttpsError(
+      "failed-precondition",
+      "El enlace entre unidades no esta activo."
+    );
+  }
+
+  return link;
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidEmail(value) {
+  return value.length <= 254 &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function maskedEmail(value) {
+  const [local = "", domain = ""] = normalizeEmail(value).split("@");
+  if (!domain) return "correo-invalido";
+
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+function safeMailFrom() {
+  const value = String(MAIL_FROM.value() || DEFAULT_MAIL_FROM).trim();
+
+  return value && !/[\r\n]/.test(value)
+    ? value.slice(0, 320)
+    : DEFAULT_MAIL_FROM;
+}
+
+function workerInviteUrl(workspaceId, token, email) {
+  const url = new URL(WORKER_APP_BASE_URL);
+
+  url.searchParams.set("workspace", workspaceId);
+  url.searchParams.set("invite", token);
+  if (email) url.searchParams.set("email", email);
+
+  return url.toString();
+}
+
+async function reserveInviteEmailSend(senderUid, email) {
+  const now = Date.now();
+  const hourMs = 60 * 60 * 1000;
+  const senderRef = db.collection("securityRateLimits").doc(
+    `invite_sender_${senderUid}`
+  );
+  const recipientHash = createHash("sha256")
+    .update(email)
+    .digest("hex")
+    .slice(0, 40);
+  const recipientRef = db.collection("securityRateLimits").doc(
+    `invite_recipient_${recipientHash}`
+  );
+
+  return db.runTransaction(async transaction => {
+    const [senderSnap, recipientSnap] = await Promise.all([
+      transaction.get(senderRef),
+      transaction.get(recipientRef)
+    ]);
+    const sender = senderSnap.data() || {};
+    const recipient = recipientSnap.data() || {};
+    const windowStartedAt = Number(sender.windowStartedAtMs) || now;
+    const withinWindow = now - windowStartedAt < hourMs;
+    const count = withinWindow ? Number(sender.count) || 0 : 0;
+    const recipientLastSentAt = Number(recipient.lastSentAtMs) || 0;
+
+    if (count >= 100 || now - recipientLastSentAt < 60 * 1000) {
+      return false;
+    }
+
+    transaction.set(senderRef, {
+      windowStartedAtMs: withinWindow ? windowStartedAt : now,
+      count: count + 1,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    transaction.set(recipientRef, {
+      lastSentAtMs: now,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    return true;
+  });
+}
 
 exports.sendWorkerAppInviteEmail = onDocumentCreated(
   {
@@ -39,9 +355,33 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
   },
   async (event) => {
     const invite = event.data?.data() || {};
-    const email = String(invite.email || "").trim();
+    const { workspaceId, token } = event.params;
+    const email = normalizeEmail(invite.email);
+    const senderUid = String(invite.createdByUid || "").trim();
 
-    if (invite.status !== "pending" || !email) {
+    if (
+      invite.status !== "pending" ||
+      !isValidEmail(email) ||
+      !senderUid ||
+      invite.workspaceId !== workspaceId ||
+      invite.token !== token
+    ) {
+      await event.data?.ref.set(
+        { emailStatus: "skipped_invalid_invite" },
+        { merge: true }
+      );
+      return;
+    }
+
+    if (!await reserveInviteEmailSend(senderUid, email)) {
+      logger.warn("Invitacion omitida por limite de envio.", {
+        senderUid,
+        recipient: maskedEmail(email)
+      });
+      await event.data.ref.set(
+        { emailStatus: "rate_limited" },
+        { merge: true }
+      );
       return;
     }
 
@@ -56,19 +396,26 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
       return;
     }
 
-    const workerName = String(invite.profileName || "trabajador").trim();
-    const unit = String(invite.workspaceName || "TurnoPlus").trim();
-    const inviteUrl = String(invite.inviteUrl || "");
-    const installUrl = String(invite.appInstallUrl || WORKER_APP_BASE_URL);
+    const workerName =
+      String(invite.profileName || "trabajador").trim().slice(0, 160);
+    const unit =
+      String(invite.workspaceName || "TurnoPlus").trim().slice(0, 160);
+    // Nunca se confia en enlaces almacenados por el cliente: se reconstruyen
+    // con el dominio oficial para impedir correos de phishing desde Firestore.
+    const inviteUrl = workerInviteUrl(workspaceId, token, email);
+    const installUrl = WORKER_APP_BASE_URL;
 
-    // Para correos no-Gmail: el boton del correo ES el enlace de ingreso
-    // passwordless (un correo, un clic). Para Gmail, el enlace abre la app y se
-    // inicia sesion con Google. Si falla la generacion (p. ej. dominio de
-    // continuacion no autorizado), se usa el enlace normal como respaldo.
+    // El boton del correo usa siempre el enlace directo de invitacion.
+    // El enlace passwordless queda preparado, pero apagado por defecto para
+    // evitar un segundo correo durante la etapa comercial.
     const isGoogleEmail = /@(?:gmail|googlemail)\.com$/i.test(email);
     let ctaUrl = inviteUrl;
 
-    if (!isGoogleEmail && inviteUrl) {
+    if (
+      WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED &&
+      !isGoogleEmail &&
+      inviteUrl
+    ) {
       try {
         ctaUrl = await admin.auth().generateSignInWithEmailLink(email, {
           url: inviteUrl,
@@ -94,12 +441,13 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
     try {
       const response = await fetch("https://api.resend.com/emails", {
         method: "POST",
+        signal: AbortSignal.timeout(15000),
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          from: MAIL_FROM.value(),
+          from: safeMailFrom(),
           to: [email],
           subject: "Invitacion a TurnoPlus Trabajador",
           html,
@@ -125,12 +473,12 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
       );
 
       logger.info("Correo de invitacion enviado.", {
-        email,
+        recipient: maskedEmail(email),
         id: result?.id || ""
       });
     } catch (error) {
       logger.error("No se pudo enviar correo de invitacion.", {
-        email,
+        recipient: maskedEmail(email),
         message: error.message
       });
       await event.data.ref.set(
@@ -141,6 +489,874 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
         { merge: true }
       );
     }
+  }
+);
+
+exports.createSupervisorInvite = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para crear una invitacion."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const permissions =
+      normalizeSupervisorPermissions(request.data?.permissions || {});
+
+    if (!workspaceId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la unidad."
+      );
+    }
+
+    if (!hasAnyPermission(permissions)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "La invitacion debe incluir al menos un permiso visible."
+      );
+    }
+
+    await requireWorkspaceOwner(workspaceId, uid, request.auth.token || {});
+
+    const workspaceRef = db.collection("workspaces").doc(workspaceId);
+    const workspaceSnap = await workspaceRef.get();
+
+    if (!workspaceSnap.exists) {
+      throw new HttpsError(
+        "not-found",
+        "La unidad no existe."
+      );
+    }
+
+    const token = createSupervisorInviteToken();
+    const inviteId = supervisorInviteIdFromToken(token);
+    const now = admin.firestore.Timestamp.now();
+    const expiresAt = admin.firestore.Timestamp.fromMillis(
+      Date.now() + SUPERVISOR_INVITE_TTL_MS
+    );
+    const workspace = workspaceSnap.data() || {};
+
+    await workspaceRef
+      .collection("supervisorInvites")
+      .doc(inviteId)
+      .set({
+        workspaceId,
+        workspaceName: cleanCallableText(workspace.name, 160),
+        tokenHash: inviteId,
+        status: "open",
+        permissions,
+        createdAt: now,
+        createdByUid: uid,
+        createdByEmail: cleanCallableText(request.auth.token?.email, 254),
+        createdByName: cleanCallableText(request.auth.token?.name, 160),
+        expiresAt,
+        updatedAt: now
+      });
+
+    return {
+      inviteId,
+      token,
+      workspaceId,
+      workspaceName: cleanCallableText(workspace.name, 160),
+      expiresAt: expiresAt.toMillis(),
+      permissions
+    };
+  }
+);
+
+exports.claimSupervisorInvite = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para solicitar acceso."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const token = cleanCallableText(request.data?.token, 200);
+
+    if (!workspaceId || !token) {
+      throw new HttpsError(
+        "invalid-argument",
+        "La invitacion no esta completa."
+      );
+    }
+
+    const inviteId = supervisorInviteIdFromToken(token);
+    const workspaceRef = db.collection("workspaces").doc(workspaceId);
+    const inviteRef =
+      workspaceRef.collection("supervisorInvites").doc(inviteId);
+    const result = await db.runTransaction(async transaction => {
+      const workspaceSnap = await transaction.get(workspaceRef);
+      const inviteSnap = await transaction.get(inviteRef);
+
+      if (!workspaceSnap.exists || !inviteSnap.exists) {
+        throw new HttpsError(
+          "not-found",
+          "La invitacion no existe o ya no esta disponible."
+        );
+      }
+
+      const invite = inviteSnap.data() || {};
+      const workspace = workspaceSnap.data() || {};
+      const now = admin.firestore.Timestamp.now();
+      const expiresAtMs = invite.expiresAt?.toMillis
+        ? invite.expiresAt.toMillis()
+        : 0;
+
+      if (invite.workspaceId !== workspaceId || invite.tokenHash !== inviteId) {
+        throw new HttpsError(
+          "permission-denied",
+          "La invitacion no corresponde a esta unidad."
+        );
+      }
+
+      if (invite.status === "claimed" && invite.claimedByUid === uid) {
+        return {
+          status: "claimed",
+          inviteId,
+          workspaceId,
+          workspaceName:
+            cleanCallableText(invite.workspaceName || workspace.name, 160)
+        };
+      }
+
+      if (invite.status !== "open") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Esta invitacion ya fue utilizada o cerrada."
+        );
+      }
+
+      if (!expiresAtMs || expiresAtMs <= Date.now()) {
+        transaction.update(inviteRef, {
+          status: "expired",
+          expiredAt: now,
+          updatedAt: now
+        });
+
+        return {
+          status: "expired",
+          inviteId,
+          workspaceId,
+          workspaceName:
+            cleanCallableText(invite.workspaceName || workspace.name, 160)
+        };
+      }
+
+      transaction.update(inviteRef, {
+        status: "claimed",
+        claimedAt: now,
+        claimedByUid: uid,
+        claimedByEmail: cleanCallableText(request.auth.token?.email, 254),
+        claimedByName: cleanCallableText(request.auth.token?.name, 160),
+        updatedAt: now
+      });
+
+      return {
+        status: "claimed",
+        inviteId,
+        workspaceId,
+        workspaceName:
+          cleanCallableText(invite.workspaceName || workspace.name, 160)
+      };
+    });
+
+    if (result.status === "expired") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Esta invitacion vencio. Solicita una nueva al propietario."
+      );
+    }
+
+    return result;
+  }
+);
+
+exports.approveSupervisorInvite = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para aprobar una invitacion."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const inviteId = cleanCallableText(request.data?.inviteId, 100);
+    const overrideProvided =
+      request.data &&
+      Object.prototype.hasOwnProperty.call(
+        request.data,
+        "permissionsOverride"
+      );
+
+    if (!workspaceId || !inviteId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la invitacion."
+      );
+    }
+
+    await requireWorkspaceOwner(workspaceId, uid, request.auth.token || {});
+
+    return db.runTransaction(async transaction => {
+      const workspaceRef = db.collection("workspaces").doc(workspaceId);
+      const inviteRef =
+        workspaceRef.collection("supervisorInvites").doc(inviteId);
+      const workspaceSnap = await transaction.get(workspaceRef);
+      const inviteSnap = await transaction.get(inviteRef);
+
+      if (!workspaceSnap.exists || !inviteSnap.exists) {
+        throw new HttpsError(
+          "not-found",
+          "La solicitud de invitacion no existe."
+        );
+      }
+
+      const workspace = workspaceSnap.data() || {};
+      const invite = inviteSnap.data() || {};
+
+      if (invite.workspaceId !== workspaceId || invite.status !== "claimed") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Solo se pueden aprobar invitaciones reclamadas y pendientes."
+        );
+      }
+
+      const memberUid = cleanCallableText(invite.claimedByUid, 160);
+      const permissions = normalizeSupervisorPermissions(
+        overrideProvided
+          ? request.data.permissionsOverride || {}
+          : invite.permissions || {}
+      );
+
+      if (!memberUid) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La invitacion no tiene usuario solicitante."
+        );
+      }
+
+      if (!hasAnyPermission(permissions)) {
+        throw new HttpsError(
+          "invalid-argument",
+          "La aprobacion debe incluir al menos un permiso visible."
+        );
+      }
+
+      const memberRef =
+        workspaceRef.collection("members").doc(memberUid);
+      const memberSnap = await transaction.get(memberRef);
+
+      if (memberSnap.exists) {
+        throw new HttpsError(
+          "already-exists",
+          "Este usuario ya tiene acceso a la unidad."
+        );
+      }
+
+      const now = admin.firestore.Timestamp.now();
+      const workspaceName = cleanCallableText(workspace.name, 160);
+
+      transaction.set(memberRef, {
+        role: "member",
+        email: cleanCallableText(invite.claimedByEmail, 254),
+        displayName: cleanCallableText(invite.claimedByName, 160),
+        permissions,
+        supervisorInviteId: inviteId,
+        joinedAt: now,
+        approvedAt: now,
+        approvedByUid: uid,
+        permissionsUpdatedAt: now
+      });
+      transaction.set(
+        db.collection("users")
+          .doc(memberUid)
+          .collection("workspaces")
+          .doc(workspaceId),
+        {
+          name: workspaceName || workspaceId,
+          role: "member",
+          joinedAt: now
+        },
+        { merge: true }
+      );
+      transaction.update(inviteRef, {
+        status: "approved",
+        approvedAt: now,
+        approvedByUid: uid,
+        approvedByEmail: cleanCallableText(request.auth.token?.email, 254),
+        approvedByName: cleanCallableText(request.auth.token?.name, 160),
+        finalPermissions: permissions,
+        updatedAt: now
+      });
+
+      return {
+        status: "approved",
+        inviteId,
+        workspaceId,
+        memberUid,
+        permissions
+      };
+    });
+  }
+);
+
+exports.rejectSupervisorInvite = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para rechazar una invitacion."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const inviteId = cleanCallableText(request.data?.inviteId, 100);
+    const reason = cleanCallableText(request.data?.reason, 500);
+
+    if (!workspaceId || !inviteId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la invitacion."
+      );
+    }
+
+    await requireWorkspaceOwner(workspaceId, uid, request.auth.token || {});
+
+    const inviteRef = db
+      .collection("workspaces")
+      .doc(workspaceId)
+      .collection("supervisorInvites")
+      .doc(inviteId);
+    const now = admin.firestore.Timestamp.now();
+
+    await db.runTransaction(async transaction => {
+      const inviteSnap = await transaction.get(inviteRef);
+      const invite = inviteSnap.data() || {};
+
+      if (!inviteSnap.exists || invite.workspaceId !== workspaceId) {
+        throw new HttpsError(
+          "not-found",
+          "La solicitud de invitacion no existe."
+        );
+      }
+
+      if (invite.status !== "claimed") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Solo se pueden rechazar solicitudes pendientes."
+        );
+      }
+
+      transaction.update(inviteRef, {
+        status: "rejected",
+        rejectedAt: now,
+        rejectedByUid: uid,
+        rejectedByEmail: cleanCallableText(request.auth.token?.email, 254),
+        rejectedByName: cleanCallableText(request.auth.token?.name, 160),
+        rejectReason: reason,
+        updatedAt: now
+      });
+    });
+
+    return {
+      status: "rejected",
+      inviteId,
+      workspaceId
+    };
+  }
+);
+
+exports.revokeSupervisorInvite = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para revocar una invitacion."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const inviteId = cleanCallableText(request.data?.inviteId, 100);
+
+    if (!workspaceId || !inviteId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la invitacion."
+      );
+    }
+
+    await requireWorkspaceOwner(workspaceId, uid, request.auth.token || {});
+
+    const inviteRef = db
+      .collection("workspaces")
+      .doc(workspaceId)
+      .collection("supervisorInvites")
+      .doc(inviteId);
+    const now = admin.firestore.Timestamp.now();
+
+    await db.runTransaction(async transaction => {
+      const inviteSnap = await transaction.get(inviteRef);
+      const invite = inviteSnap.data() || {};
+
+      if (!inviteSnap.exists || invite.workspaceId !== workspaceId) {
+        throw new HttpsError(
+          "not-found",
+          "La invitacion no existe."
+        );
+      }
+
+      if (!["open", "claimed"].includes(invite.status)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Esta invitacion ya esta cerrada."
+        );
+      }
+
+      transaction.update(inviteRef, {
+        status: "revoked",
+        revokedAt: now,
+        revokedByUid: uid,
+        revokedByEmail: cleanCallableText(request.auth.token?.email, 254),
+        revokedByName: cleanCallableText(request.auth.token?.name, 160),
+        updatedAt: now
+      });
+    });
+
+    return {
+      status: "revoked",
+      inviteId,
+      workspaceId
+    };
+  }
+);
+
+exports.createInterUnitLoan = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para registrar un prestamo."
+      );
+    }
+
+    const data = request.data || {};
+    const linkId = cleanCallableText(data.linkId, 220);
+    const sourceWorkspaceId =
+      cleanCallableText(data.sourceWorkspaceId, 160);
+    const hostWorkspaceId =
+      cleanCallableText(data.hostWorkspaceId, 160);
+    const workerProfileId =
+      cleanCallableText(data.workerProfileId, 120);
+    const replacedProfileId =
+      cleanCallableText(data.replacedProfileId, 120);
+    const replacedProfileName =
+      cleanCallableText(data.replacedProfileName, 160);
+    const date = cleanCallableText(data.date, 10);
+    const turnCode = cleanCallableText(data.turnCode, 8);
+    const absenceType = cleanCallableText(data.absenceType, 160);
+
+    if (
+      !linkId ||
+      !sourceWorkspaceId ||
+      !hostWorkspaceId ||
+      sourceWorkspaceId === hostWorkspaceId ||
+      !workerProfileId ||
+      !replacedProfileName ||
+      !validISODate(date) ||
+      !VALID_INTER_UNIT_TURNS.has(turnCode)
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Los datos del prestamo no son validos."
+      );
+    }
+
+    await Promise.all([
+      requireWorkspaceRequestManager(
+        hostWorkspaceId,
+        uid,
+        request.auth.token
+      ),
+      requireAcceptedWorkspaceLink(
+        linkId,
+        sourceWorkspaceId,
+        hostWorkspaceId
+      )
+    ]);
+
+    const month = date.slice(0, 7);
+    const staffingRef = db
+      .collection("workspaces")
+      .doc(sourceWorkspaceId)
+      .collection("linkedStaffingMonths")
+      .doc(month);
+    const [staffingSnap, sourceWorkspaceSnap, hostWorkspaceSnap] =
+      await Promise.all([
+        staffingRef.get(),
+        db.collection("workspaces").doc(sourceWorkspaceId).get(),
+        db.collection("workspaces").doc(hostWorkspaceId).get()
+      ]);
+
+    if (
+      !staffingSnap.exists ||
+      !sourceWorkspaceSnap.exists ||
+      !hostWorkspaceSnap.exists
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Una de las unidades aun no tiene disponibilidad publicada."
+      );
+    }
+
+    const staffing = staffingSnap.data() || {};
+    const worker = Array.isArray(staffing.workers)
+      ? staffing.workers.find(item =>
+        cleanCallableText(item?.id, 120) === workerProfileId
+      )
+      : null;
+    const day = worker?.days?.[date] || null;
+
+    if (
+      !worker ||
+      day?.available !== true ||
+      !canCoverInterUnitShift(
+        day.turn,
+        turnCode,
+        staffing.allowTwentyFourHourShifts
+      )
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El trabajador ya no esta disponible para ese turno."
+      );
+    }
+
+    const loanId = `loan_${createHash("sha256")
+      .update(`${sourceWorkspaceId}|${workerProfileId}|${date}`)
+      .digest("hex")
+      .slice(0, 32)}`;
+    const sourceAssignmentRef = db
+      .collection("workspaces")
+      .doc(sourceWorkspaceId)
+      .collection("loanAssignments")
+      .doc(loanId);
+    const hostAssignmentRef = db
+      .collection("workspaces")
+      .doc(hostWorkspaceId)
+      .collection("loanAssignments")
+      .doc(loanId);
+    const sourceWorkspace = sourceWorkspaceSnap.data() || {};
+    const hostWorkspace = hostWorkspaceSnap.data() || {};
+    const createdAtISO = new Date().toISOString();
+
+    await db.runTransaction(async transaction => {
+      const sourceAssignmentSnap =
+        await transaction.get(sourceAssignmentRef);
+      const currentAssignment = sourceAssignmentSnap.data() || {};
+
+      if (
+        sourceAssignmentSnap.exists &&
+        currentAssignment.status === "active"
+      ) {
+        throw new HttpsError(
+          "already-exists",
+          "El trabajador ya tiene un prestamo activo en esa fecha."
+        );
+      }
+
+      const assignment = {
+        loanId,
+        linkId,
+        status: "active",
+        sourceWorkspaceId,
+        sourceWorkspaceName:
+          cleanCallableText(sourceWorkspace.name, 160),
+        hostWorkspaceId,
+        hostWorkspaceName:
+          cleanCallableText(hostWorkspace.name, 160),
+        workerProfileId,
+        workerName: cleanCallableText(worker.name, 160),
+        workerEstamento: cleanCallableText(worker.estamento, 100),
+        workerProfession: cleanCallableText(worker.profession, 160),
+        replacedProfileId,
+        replacedProfileName,
+        date,
+        turnCode,
+        absenceType,
+        createdByUid: uid,
+        createdByName: cleanCallableText(
+          request.auth.token.name ||
+          request.auth.token.email ||
+          "Supervisor",
+          160
+        ),
+        createdAtISO,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      transaction.set(sourceAssignmentRef, {
+        ...assignment,
+        workspaceRole: "source"
+      });
+      transaction.set(hostAssignmentRef, {
+        ...assignment,
+        workspaceRole: "host"
+      });
+    });
+
+    logger.info("Prestamo entre unidades creado.", {
+      loanId,
+      sourceWorkspaceId,
+      hostWorkspaceId,
+      createdByUid: uid
+    });
+
+    return {
+      ok: true,
+      loanId,
+      workerName: cleanCallableText(worker.name, 160)
+    };
+  }
+);
+
+exports.getLinkedStaffingMonth = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para consultar unidades enlazadas."
+      );
+    }
+
+    const data = request.data || {};
+    const linkId = cleanCallableText(data.linkId, 220);
+    const sourceWorkspaceId =
+      cleanCallableText(data.sourceWorkspaceId, 160);
+    const requesterWorkspaceId =
+      cleanCallableText(data.requesterWorkspaceId, 160);
+    const month = cleanCallableText(data.month, 7);
+
+    if (
+      !linkId ||
+      !sourceWorkspaceId ||
+      !requesterWorkspaceId ||
+      sourceWorkspaceId === requesterWorkspaceId ||
+      !/^\d{4}-\d{2}$/.test(month)
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "La consulta de disponibilidad no es valida."
+      );
+    }
+
+    await Promise.all([
+      requireWorkspaceMember(
+        requesterWorkspaceId,
+        uid,
+        request.auth.token
+      ),
+      requireAcceptedWorkspaceLink(
+        linkId,
+        sourceWorkspaceId,
+        requesterWorkspaceId
+      )
+    ]);
+
+    const staffingSnap = await db
+      .collection("workspaces")
+      .doc(sourceWorkspaceId)
+      .collection("linkedStaffingMonths")
+      .doc(month)
+      .get();
+
+    if (!staffingSnap.exists) {
+      return { exists: false, month };
+    }
+
+    const staffing = staffingSnap.data() || {};
+
+    return {
+      exists: true,
+      month,
+      workspaceId: sourceWorkspaceId,
+      workspaceName: cleanCallableText(
+        staffing.workspaceName,
+        160
+      ),
+      allowTwentyFourHourShifts:
+        staffing.allowTwentyFourHourShifts !== false,
+      workers: Array.isArray(staffing.workers)
+        ? staffing.workers
+        : [],
+      updatedAtISO: cleanCallableText(
+        staffing.updatedAtISO,
+        40
+      )
+    };
+  }
+);
+
+exports.cancelInterUnitLoan = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para anular un prestamo."
+      );
+    }
+
+    const loanId = cleanCallableText(request.data?.loanId, 160);
+    const workspaceId =
+      cleanCallableText(request.data?.workspaceId, 160);
+
+    if (!loanId || !workspaceId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar el prestamo."
+      );
+    }
+
+    await requireWorkspaceRequestManager(
+      workspaceId,
+      uid,
+      request.auth.token
+    );
+
+    const localRef = db
+      .collection("workspaces")
+      .doc(workspaceId)
+      .collection("loanAssignments")
+      .doc(loanId);
+    const localSnap = await localRef.get();
+    const assignment = localSnap.data() || {};
+
+    if (!localSnap.exists) {
+      throw new HttpsError(
+        "not-found",
+        "El prestamo ya no existe."
+      );
+    }
+
+    if (
+      workspaceId !== assignment.sourceWorkspaceId &&
+      workspaceId !== assignment.hostWorkspaceId
+    ) {
+      throw new HttpsError(
+        "permission-denied",
+        "El prestamo no pertenece a esta unidad."
+      );
+    }
+
+    const sourceRef = db
+      .collection("workspaces")
+      .doc(assignment.sourceWorkspaceId)
+      .collection("loanAssignments")
+      .doc(loanId);
+    const hostRef = db
+      .collection("workspaces")
+      .doc(assignment.hostWorkspaceId)
+      .collection("loanAssignments")
+      .doc(loanId);
+    const canceledAtISO = new Date().toISOString();
+
+    await db.runTransaction(async transaction => {
+      const [sourceSnap, hostSnap] = await Promise.all([
+        transaction.get(sourceRef),
+        transaction.get(hostRef)
+      ]);
+
+      if (!sourceSnap.exists && !hostSnap.exists) {
+        throw new HttpsError(
+          "not-found",
+          "El prestamo ya no existe."
+        );
+      }
+
+      const cancellation = {
+        status: "canceled",
+        canceledByUid: uid,
+        canceledByName: cleanCallableText(
+          request.auth.token.name ||
+          request.auth.token.email ||
+          "Supervisor",
+          160
+        ),
+        canceledAtISO,
+        canceledAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      if (sourceSnap.exists) {
+        transaction.set(sourceRef, cancellation, { merge: true });
+      }
+      if (hostSnap.exists) {
+        transaction.set(hostRef, cancellation, { merge: true });
+      }
+    });
+
+    logger.info("Prestamo entre unidades anulado.", {
+      loanId,
+      workspaceId,
+      canceledByUid: uid
+    });
+
+    return { ok: true, loanId };
   }
 );
 
@@ -785,12 +2001,34 @@ exports.purgeWorkspaceDeletions = onSchedule(
 
       try {
         // 1. Quitar el entorno del indice de cada miembro (users/{uid}/workspaces).
-        const membersSnap = await wsRef.collection("members").get();
-        const batch = db.batch();
+        const [membersSnap, workerLinksSnap, invitesSnap] = await Promise.all([
+          wsRef.collection("members").get(),
+          wsRef.collection("workerLinks").get(),
+          wsRef.collection("workerAppInvites").get()
+        ]);
+        const writer = db.bulkWriter();
+
         membersSnap.docs.forEach((member) => {
-          batch.delete(
+          writer.delete(
             db.collection("users").doc(member.id).collection("workspaces").doc(wsId)
           );
+        });
+        workerLinksSnap.docs.forEach((link) => {
+          writer.delete(
+            db.collection("users").doc(link.id).collection("workerLinks").doc(wsId)
+          );
+        });
+        invitesSnap.docs.forEach((invite) => {
+          const email = normalizeEmail(invite.data()?.email);
+
+          if (isValidEmail(email)) {
+            writer.delete(
+              db.collection("workerAppEmailInvites")
+                .doc(email)
+                .collection("items")
+                .doc(invite.id)
+            );
+          }
         });
 
         // 2. Eliminar los enlaces con otras unidades (ambos lados).
@@ -802,9 +2040,11 @@ exports.purgeWorkspaceDeletions = onSchedule(
           .collection("workspaceLinks")
           .where("toWorkspaceId", "==", wsId)
           .get();
-        [...linksFrom.docs, ...linksTo.docs].forEach((link) => batch.delete(link.ref));
+        [...linksFrom.docs, ...linksTo.docs].forEach((link) =>
+          writer.delete(link.ref)
+        );
 
-        await batch.commit();
+        await writer.close();
 
         // 3. Borrado recursivo del entorno (doc + subcolecciones).
         await db.recursiveDelete(wsRef);
@@ -866,8 +2106,7 @@ exports.notifyWorkerPeerMessageCreated = onDocumentCreated(
     const { workspaceId, threadId, messageId } = event.params;
     const senderUid = String(message.senderUid || "");
     const targetUid = String(message.targetUid || "");
-    const text = String(message.text || "").trim();
-    const senderName = String(message.senderName || "trabajador").trim();
+    const text = String(message.text || "").trim().slice(0, 2000);
 
     if (
       !senderUid ||
@@ -877,6 +2116,34 @@ exports.notifyWorkerPeerMessageCreated = onDocumentCreated(
     ) {
       return;
     }
+
+    const workspaceRef = db.collection("workspaces").doc(workspaceId);
+    const [threadSnap, senderLinkSnap, targetLinkSnap] = await Promise.all([
+      workspaceRef.collection("workerPeerThreads").doc(threadId).get(),
+      workspaceRef.collection("workerLinks").doc(senderUid).get(),
+      workspaceRef.collection("workerLinks").doc(targetUid).get()
+    ]);
+    const participants = threadSnap.data()?.participantUids || [];
+
+    if (
+      !threadSnap.exists ||
+      !senderLinkSnap.exists ||
+      !targetLinkSnap.exists ||
+      !Array.isArray(participants) ||
+      !participants.includes(senderUid) ||
+      !participants.includes(targetUid)
+    ) {
+      logger.warn("Mensaje entre trabajadores con relacion invalida.", {
+        workspaceId,
+        threadId,
+        messageId
+      });
+      return;
+    }
+
+    const senderName = String(
+      senderLinkSnap.data()?.profileName || "trabajador"
+    ).trim().slice(0, 160);
 
     const result = await sendWorkerPush({
       workspaceId,
@@ -1083,17 +2350,14 @@ function buildInviteEmail({ workerName, unit, ctaUrl, installUrl, isGoogleEmail 
   const safeUnit = escapeHtml(unit);
   const safeCta = escapeHtml(ctaUrl);
   const safeInstall = escapeHtml(installUrl);
-  const ctaLabel = isGoogleEmail ? "Enlazar mi app" : "Entrar a mi app";
-  const accessNote = isGoogleEmail
-    ? "Toca el boton para abrir la app e iniciar sesion con tu cuenta Google."
-    : "Toca el boton para entrar directo a tu app (sin contrasena). El enlace es personal; no lo compartas.";
+  const ctaLabel = "Enlazar mi app";
+  const accessNote =
+    "Toca el boton para abrir tu invitacion y enlazar la app. No enviaremos un segundo correo de verificacion; el enlace es personal, no lo compartas.";
 
   const text = [
     `Hola ${workerName}.`,
     `Te invitamos a enlazar tu aplicacion TurnoPlus Trabajador con ${unit}.`,
-    isGoogleEmail
-      ? `Abre este enlace e inicia sesion con tu cuenta Google: ${ctaUrl}`
-      : `Entra directo con este enlace (es personal, no lo compartas): ${ctaUrl}`,
+    `Abre este enlace personal para enlazar tu app: ${ctaUrl}`,
     `Para tenerla como app en tu celular: abre ${installUrl} y, en el menu del navegador, elige "Agregar a pantalla de inicio" o "Instalar app".`,
     "Si no esperabas esta invitacion, puedes ignorar este correo."
   ].join("\n\n");

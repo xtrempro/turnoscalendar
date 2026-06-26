@@ -650,6 +650,22 @@ export function obtenerLabelDia(
    CLASES ESPECIALES CSS
 ====================================================== */
 
+// Clase de division para 1/2 ADM segun el turno base (larga/diurno) y la mitad
+// (0.5M = admin arriba, 0.5T = admin abajo). Devuelve null si el base no aplica.
+function halfAdminSplitClass(halfAdmin, baseTurn) {
+    const baseName =
+        baseTurn === TURNO.DIURNO
+            ? "diurno"
+            : baseTurn === TURNO.LARGA
+                ? "larga"
+                : null;
+
+    if (!baseName) return null;
+
+    const which = halfAdmin === "0.5M" ? "m" : "t";
+    return `turno-split--adm-${which}-${baseName}`;
+}
+
 export function aplicarClasesEspeciales(
     div,
     keyDay,
@@ -661,7 +677,9 @@ export function aplicarClasesEspeciales(
     legal,
     comp,
     absences,
-    aplicarClaseTurnoFn
+    aplicarClaseTurnoFn,
+    baseTurn = null,
+    dayGradient = null
 ) {
     if (isWeekend) {
         div.classList.add("weekend");
@@ -671,7 +689,25 @@ export function aplicarClasesEspeciales(
         div.classList.add("holiday");
     }
 
-    aplicarClaseTurnoFn(div, state);
+    // 1/2 ADM (mañana/tarde): el dia se divide en dos colores (administrativo +
+    // el turno base sobre el que se aplico, larga o diurno). Si se conoce el
+    // base, se usa la clase de division; si no, se cae al color normal.
+    const halfAdmin = admin[keyDay];
+    const halfAdminSplit =
+        (halfAdmin === "0.5M" || halfAdmin === "0.5T")
+            ? halfAdminSplitClass(halfAdmin, baseTurn)
+            : null;
+
+    if (dayGradient) {
+        // Bandas proporcionales (turnos combinados + extension/reduccion de
+        // marcaje). Tiene prioridad sobre las clases de color.
+        div.style.setProperty("background", dayGradient, "important");
+        div.classList.add("turno-split");
+    } else if (halfAdminSplit) {
+        div.classList.add("turno-split", halfAdminSplit);
+    } else {
+        aplicarClaseTurnoFn(div, state);
+    }
 
     if (
         (isWeekend || isHoliday) &&
@@ -689,9 +725,13 @@ export function aplicarClasesEspeciales(
     }
 
     if (
-        admin[keyDay] === "0.5M" ||
-        admin[keyDay] === "0.5T" ||
-        admin[keyDay] === 0.5
+        (
+            halfAdmin === "0.5M" ||
+            halfAdmin === "0.5T" ||
+            halfAdmin === 0.5
+        ) &&
+        !halfAdminSplit &&
+        !dayGradient
     ) {
         div.classList.add(
             "half-admin-day"
@@ -757,6 +797,50 @@ export function estaBloqueadoModo(
         Boolean(options.hourReturns?.[keyDay]);
     const hasFullHourReturn =
         Boolean(options.hourReturns?.[keyDay]?.fullTurn);
+    const actualState =
+        Number(options.actualState) || TURNO.LIBRE;
+
+    if (selectionMode === "moveshiftsource") {
+        const baseState = Number(state) || TURNO.LIBRE;
+
+        return (
+            (
+                baseState !== TURNO.LARGA &&
+                baseState !== TURNO.NOCHE
+            ) ||
+            actualState !== baseState ||
+            hasHourReturn ||
+            tieneAusencia(
+                keyDay,
+                admin,
+                legal,
+                comp,
+                absences
+            )
+        );
+    }
+
+    if (selectionMode === "moveshifttarget") {
+        const isSourceDay =
+            options.moveShiftSourceKey === keyDay;
+
+        if (isSourceDay) {
+            return false;
+        }
+
+        return (
+            Number(state) !== TURNO.LIBRE ||
+            actualState !== TURNO.LIBRE ||
+            hasHourReturn ||
+            tieneAusencia(
+                keyDay,
+                admin,
+                legal,
+                comp,
+                absences
+            )
+        );
+    }
 
     if (selectionMode === "halfadmin") {
         return (

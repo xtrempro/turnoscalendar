@@ -6,9 +6,67 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function hasMfa() {
+      return signedIn() &&
+        request.auth.token.firebase != null &&
+        "sign_in_second_factor" in request.auth.token.firebase &&
+        request.auth.token.firebase.sign_in_second_factor != null;
+    }
+
+    function mfaRequirementActive() {
+      // TOTP queda listo para reactivarse, pero no se exige en esta etapa
+      // comercial inicial.
+      return false;
+    }
+
+    function memberData(workspaceId) {
+      return get(
+        /databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)
+      ).data;
+    }
+
+    function memberRequiresMfa(workspaceId) {
+      let member = memberData(workspaceId);
+      let permissions =
+        "permissions" in member ? member.permissions : {};
+
+      return member.role == "owner" ||
+        ("turnos" in permissions && permissions.turnos.edit == true) ||
+        ("weekly" in permissions && permissions.weekly.edit == true) ||
+        ("tasks" in permissions && permissions.tasks.edit == true) ||
+        ("kanban" in permissions && permissions.kanban.edit == true) ||
+        ("agenda" in permissions && permissions.agenda.edit == true) ||
+        ("profile" in permissions && permissions.profile.edit == true) ||
+        ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
+        ("requests" in permissions && permissions.requests.edit == true) ||
+        ("memos" in permissions && permissions.memos.edit == true) ||
+        ("swap" in permissions && permissions.swap.edit == true) ||
+        ("hours" in permissions && permissions.hours.edit == true) ||
+        ("reports" in permissions && permissions.reports.edit == true) ||
+        ("dashboard" in permissions && permissions.dashboard.edit == true) ||
+        ("log" in permissions && permissions.log.edit == true);
+    }
+
+    function memberHasExplicitAccess(workspaceId) {
+      let member = memberData(workspaceId);
+
+      return member.role == "owner" ||
+        (
+          member.role == "member" &&
+          "permissions" in member &&
+          member.permissions is map
+        );
+    }
+
     function isMember(workspaceId) {
       return signedIn() &&
-        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+        memberHasExplicitAccess(workspaceId) &&
+        (
+          !mfaRequirementActive() ||
+          !memberRequiresMfa(workspaceId) ||
+          hasMfa()
+        );
     }
 
     function workspaceExists(workspaceId) {
@@ -16,24 +74,8 @@ service cloud.firestore {
     }
 
     function isOwner(workspaceId) {
-      return signedIn() &&
-        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role == "owner";
-    }
-
-    function isLinkedOperator(workspaceId) {
-      return signedIn() &&
-        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/linkedOperators/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/workspaces/$(workspaceId)/linkedOperators/$(request.auth.uid)).data.linkId is string &&
-        exists(/databases/$(database)/documents/workspaceLinks/$(get(/databases/$(database)/documents/workspaces/$(workspaceId)/linkedOperators/$(request.auth.uid)).data.linkId)) &&
-        get(/databases/$(database)/documents/workspaceLinks/$(get(/databases/$(database)/documents/workspaces/$(workspaceId)/linkedOperators/$(request.auth.uid)).data.linkId)).data.status == "accepted" &&
-        (
-          get(/databases/$(database)/documents/workspaceLinks/$(get(/databases/$(database)/documents/workspaces/$(workspaceId)/linkedOperators/$(request.auth.uid)).data.linkId)).data.fromWorkspaceId == workspaceId ||
-          get(/databases/$(database)/documents/workspaceLinks/$(get(/databases/$(database)/documents/workspaces/$(workspaceId)/linkedOperators/$(request.auth.uid)).data.linkId)).data.toWorkspaceId == workspaceId
-        );
-    }
-
-    function canUseWorkspaceState(workspaceId) {
-      return isMember(workspaceId) || isLinkedOperator(workspaceId);
+      return isMember(workspaceId) &&
+        memberData(workspaceId).role == "owner";
     }
 
     function isLinkedWorker(workspaceId, userId) {
@@ -52,83 +94,160 @@ service cloud.firestore {
     }
 
     function canAccessWorkerPeerThread(workspaceId, threadId) {
-      return isMember(workspaceId) ||
-        (
-          isCurrentLinkedWorker(workspaceId) &&
-          exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)) &&
-          request.auth.uid in get(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids
-        );
+      return isCurrentLinkedWorker(workspaceId) &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids;
     }
 
     function canAccessWorkerPeerThreadAfter(workspaceId, threadId) {
-      return isMember(workspaceId) ||
-        (
-          isCurrentLinkedWorker(workspaceId) &&
-          existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)) &&
-          request.auth.uid in getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids
-        );
+      return isCurrentLinkedWorker(workspaceId) &&
+        existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)) &&
+        request.auth.uid in getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids;
     }
 
     function canMemberWriteWorkspaceState(workspaceId) {
       let member =
         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
-      let permissions = member.permissions;
+      let permissions =
+        "permissions" in member ? member.permissions : {};
 
-      return member.role == "owner" ||
-        !("permissions" in member) ||
-        ("turnos" in permissions && permissions.turnos.edit == true) ||
-        ("weekly" in permissions && permissions.weekly.edit == true) ||
-        ("tasks" in permissions && permissions.tasks.edit == true) ||
-        ("kanban" in permissions && permissions.kanban.edit == true) ||
-        ("agenda" in permissions && permissions.agenda.edit == true) ||
-        ("profile" in permissions && permissions.profile.edit == true) ||
-        ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
-        ("requests" in permissions && permissions.requests.edit == true) ||
-        ("memos" in permissions && permissions.memos.edit == true) ||
-        ("swap" in permissions && permissions.swap.edit == true) ||
-        ("hours" in permissions && permissions.hours.edit == true) ||
-        ("staffing" in permissions && permissions.staffing.edit == true) ||
-        ("reports" in permissions && permissions.reports.edit == true) ||
-        ("log" in permissions && permissions.log.edit == true);
+      return isMember(workspaceId) &&
+        (
+          member.role == "owner" ||
+          ("turnos" in permissions && permissions.turnos.edit == true) ||
+          ("weekly" in permissions && permissions.weekly.edit == true) ||
+          ("tasks" in permissions && permissions.tasks.edit == true) ||
+          ("kanban" in permissions && permissions.kanban.edit == true) ||
+          ("agenda" in permissions && permissions.agenda.edit == true) ||
+          ("profile" in permissions && permissions.profile.edit == true) ||
+          ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
+          ("requests" in permissions && permissions.requests.edit == true) ||
+          ("memos" in permissions && permissions.memos.edit == true) ||
+          ("swap" in permissions && permissions.swap.edit == true) ||
+          ("hours" in permissions && permissions.hours.edit == true) ||
+          ("reports" in permissions && permissions.reports.edit == true) ||
+          ("log" in permissions && permissions.log.edit == true)
+        );
     }
 
-    function workspaceInviteMatches(workspaceId) {
-      return request.resource.data.inviteCode is string &&
-        request.resource.data.inviteCode ==
-          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.inviteCode;
+    function canManageProfiles(workspaceId) {
+      let member =
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
+      let permissions =
+        "permissions" in member ? member.permissions : {};
+
+      return isMember(workspaceId) &&
+        (
+          member.role == "owner" ||
+          ("profile" in permissions && permissions.profile.edit == true)
+        );
+    }
+
+    function canManageRequests(workspaceId) {
+      let member =
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
+      let permissions =
+        "permissions" in member ? member.permissions : {};
+
+      return isMember(workspaceId) &&
+        (
+          member.role == "owner" ||
+          ("requests" in permissions && permissions.requests.edit == true) ||
+          ("turnos" in permissions && permissions.turnos.edit == true)
+        );
+    }
+
+    function canEditMenu(workspaceId, menuKey) {
+      let member =
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
+      let permissions =
+        "permissions" in member ? member.permissions : {};
+
+      return isMember(workspaceId) &&
+        (
+          member.role == "owner" ||
+          (
+            menuKey in permissions &&
+            permissions[menuKey].edit == true
+          )
+        );
+    }
+
+    function canViewMenu(workspaceId, menuKey) {
+      let member =
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
+      let permissions =
+        "permissions" in member ? member.permissions : {};
+
+      return isMember(workspaceId) &&
+        (
+          member.role == "owner" ||
+          (
+            menuKey in permissions &&
+            permissions[menuKey].view == true
+          )
+        );
+    }
+
+    function canReadStateModule(workspaceId, moduleId) {
+      return isOwner(workspaceId) ||
+        (moduleId == "profile" && canViewMenu(workspaceId, "profile")) ||
+        (moduleId == "turnos" && canViewMenu(workspaceId, "turnos")) ||
+        (moduleId == "clockmarks" && canViewMenu(workspaceId, "clockmarks")) ||
+        (moduleId == "requests" && canViewMenu(workspaceId, "requests")) ||
+        (moduleId == "memos" && canViewMenu(workspaceId, "memos")) ||
+        (moduleId == "swap" && canViewMenu(workspaceId, "swap")) ||
+        (moduleId == "hours" && canViewMenu(workspaceId, "hours")) ||
+        (moduleId == "weekly" && canViewMenu(workspaceId, "weekly")) ||
+        (moduleId == "tasks" && canViewMenu(workspaceId, "tasks")) ||
+        (moduleId == "agenda" && canViewMenu(workspaceId, "agenda")) ||
+        (moduleId == "reports" && canViewMenu(workspaceId, "reports")) ||
+        (moduleId == "log" && canViewMenu(workspaceId, "log"));
+    }
+
+    function canWriteStateModule(workspaceId, moduleId) {
+      return isOwner(workspaceId) ||
+        (moduleId == "profile" && canEditMenu(workspaceId, "profile")) ||
+        (moduleId == "turnos" && canEditMenu(workspaceId, "turnos")) ||
+        (moduleId == "clockmarks" && canEditMenu(workspaceId, "clockmarks")) ||
+        (moduleId == "requests" && canEditMenu(workspaceId, "requests")) ||
+        (moduleId == "memos" && canEditMenu(workspaceId, "memos")) ||
+        (moduleId == "swap" && canEditMenu(workspaceId, "swap")) ||
+        (moduleId == "hours" && canEditMenu(workspaceId, "hours")) ||
+        (moduleId == "weekly" && canEditMenu(workspaceId, "weekly")) ||
+        (moduleId == "tasks" && canEditMenu(workspaceId, "tasks")) ||
+        (moduleId == "agenda" && canEditMenu(workspaceId, "agenda")) ||
+        (moduleId == "reports" && canEditMenu(workspaceId, "reports")) ||
+        (moduleId == "log" && canEditMenu(workspaceId, "log"));
+    }
+
+    function validText(value, maxLength) {
+      return value is string && value.size() <= maxLength;
+    }
+
+    function optionalText(data, key, maxLength) {
+      return !(key in data) || validText(data[key], maxLength);
     }
 
     function canCreateOwnWorkspaceMember(workspaceId, userId) {
       return signedIn() &&
         userId == request.auth.uid &&
         workspaceExists(workspaceId) &&
-        (
-          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid ||
-          (
-            request.resource.data.role == "member" &&
-            workspaceInviteMatches(workspaceId)
-          )
-        );
-    }
-
-    function linkAcceptedAfter(linkId) {
-      return existsAfter(/databases/$(database)/documents/workspaceLinks/$(linkId)) &&
-        getAfter(/databases/$(database)/documents/workspaceLinks/$(linkId)).data.status == "accepted";
-    }
-
-    function canCreateReciprocalLinkedOperator(workspaceId, userId) {
-      return signedIn() &&
-        userId == request.auth.uid &&
-        request.resource.data.uid == userId &&
-        request.resource.data.linkId is string &&
-        linkAcceptedAfter(request.resource.data.linkId) &&
-        getAfter(/databases/$(database)/documents/workspaceLinks/$(request.resource.data.linkId)).data.fromWorkspaceId == workspaceId &&
-        isMember(getAfter(/databases/$(database)/documents/workspaceLinks/$(request.resource.data.linkId)).data.toWorkspaceId);
+        request.resource.data.role == "owner" &&
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid &&
+        (!mfaRequirementActive() || hasMfa());
     }
 
     function workerInviteNotExpired() {
       return !("expiresAt" in resource.data) ||
         resource.data.expiresAt > request.time;
+    }
+
+    function workerInviteEmailAuthRequired() {
+      // Modo promocional: el token del enlace de invitacion permite vincular
+      // sin enviar un segundo correo de autenticacion. Cambiar a true para
+      // exigir que el trabajador confirme su email con Firebase Auth.
+      return false;
     }
 
     function canReadWorkerInvite(inviteId) {
@@ -144,7 +263,17 @@ service cloud.firestore {
         request.resource.data.token == inviteId &&
         request.resource.data.status == "accepted" &&
         request.resource.data.workerUid == request.auth.uid &&
-        request.resource.data.workerEmail == request.auth.token.email &&
+        (
+          (
+            workerInviteEmailAuthRequired() &&
+            request.auth.token.email != null &&
+            request.resource.data.workerEmail == request.auth.token.email
+          ) ||
+          (
+            !workerInviteEmailAuthRequired() &&
+            request.resource.data.workerEmail == resource.data.email
+          )
+        ) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           "status",
           "workerUid",
@@ -161,7 +290,18 @@ service cloud.firestore {
         getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.token == inviteId &&
         getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.status == "accepted" &&
         getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.workerUid == userId &&
-        getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.workerEmail == request.auth.token.email;
+        (
+          (
+            workerInviteEmailAuthRequired() &&
+            request.auth.token.email != null &&
+            getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.workerEmail == request.auth.token.email
+          ) ||
+          (
+            !workerInviteEmailAuthRequired() &&
+            getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.workerEmail ==
+              getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerAppInvites/$(inviteId)).data.email
+          )
+        );
     }
 
     function linkIdentityUnchanged() {
@@ -173,12 +313,31 @@ service cloud.firestore {
     function canResolveWorkspaceLink() {
       return resource.data.status == "pending" &&
         isMember(resource.data.toWorkspaceId) &&
-        request.resource.data.status in ["accepted", "rejected"];
+        request.resource.data.status in ["accepted", "rejected"] &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status",
+          "toWorkspaceName",
+          "acceptedAt",
+          "acceptedByUid",
+          "acceptedByName",
+          "rejectedAt",
+          "rejectedByUid",
+          "rejectedByName",
+          "rejectReason",
+          "updatedAt"
+        ]);
     }
 
     function canUnlinkWorkspaceLink() {
       return resource.data.status == "accepted" &&
         request.resource.data.status == "unlinked" &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status",
+          "unlinkedAt",
+          "unlinkedByUid",
+          "unlinkedByName",
+          "updatedAt"
+        ]) &&
         (
           isMember(resource.data.fromWorkspaceId) ||
           isMember(resource.data.toWorkspaceId)
@@ -193,7 +352,13 @@ service cloud.firestore {
       }
 
       match /workerLinks/{workspaceId} {
-        allow read, write: if signedIn() && request.auth.uid == userId;
+        allow read, create, update: if signedIn() &&
+          request.auth.uid == userId;
+        allow delete: if signedIn() &&
+          (
+            request.auth.uid == userId ||
+            canManageProfiles(workspaceId)
+          );
       }
     }
 
@@ -201,8 +366,12 @@ service cloud.firestore {
       allow create: if signedIn() &&
         request.resource.data.fromWorkspaceId is string &&
         request.resource.data.toWorkspaceId is string &&
+        request.resource.data.fromWorkspaceId != request.resource.data.toWorkspaceId &&
         request.resource.data.status == "pending" &&
         request.resource.data.requestedByUid == request.auth.uid &&
+        optionalText(request.resource.data, "fromWorkspaceName", 160) &&
+        optionalText(request.resource.data, "toWorkspaceName", 160) &&
+        optionalText(request.resource.data, "requestedByName", 160) &&
         isMember(request.resource.data.fromWorkspaceId) &&
         workspaceExists(request.resource.data.toWorkspaceId);
 
@@ -219,26 +388,41 @@ service cloud.firestore {
     }
 
     match /workerAppEmailInvites/{emailKey}/items/{inviteId} {
-      allow read: if signedIn();
+      // Un trabajador solo puede leer las invitaciones dirigidas a SU propio
+      // correo (la clave del documento es el email normalizado en minusculas).
+      // El supervisor no lee esta coleccion (solo escribe/borra), por lo que no
+      // necesita acceso de lectura aqui. Antes era "if signedIn()", lo que
+      // permitia a cualquier usuario enumerar invitaciones de cualquier correo.
+      allow read: if signedIn() &&
+        request.auth.token.email != null &&
+        emailKey == request.auth.token.email.lower();
       allow create, update: if signedIn() &&
         request.resource.data.workspaceId is string &&
-        isMember(request.resource.data.workspaceId);
+        validText(request.resource.data.email, 254) &&
+        validText(request.resource.data.token, 160) &&
+        request.resource.data.token == inviteId &&
+        request.resource.data.emailKey == emailKey &&
+        request.resource.data.email.lower() == emailKey &&
+        request.resource.data.createdByUid == request.auth.uid &&
+        optionalText(request.resource.data, "profileName", 160) &&
+        optionalText(request.resource.data, "workspaceName", 160) &&
+        canManageProfiles(request.resource.data.workspaceId);
       allow delete: if signedIn() &&
         resource.data.workspaceId is string &&
-        isMember(resource.data.workspaceId);
+        canManageProfiles(resource.data.workspaceId);
     }
 
     match /workspaces/{workspaceId} {
       allow create: if signedIn() &&
+        (!mfaRequirementActive() || hasMfa()) &&
         request.resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.inviteCode is string;
+        !("inviteCode" in request.resource.data);
       allow get: if isMember(workspaceId);
       allow list: if false;
       allow update: if isOwner(workspaceId) &&
         request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly([
             "name",
-            "inviteCode",
             "updatedAt",
             "deletionStatus",
             "deletionRequestedAt",
@@ -249,46 +433,98 @@ service cloud.firestore {
       allow delete: if isOwner(workspaceId);
 
       match /members/{userId} {
-        allow read: if isMember(workspaceId);
+        allow get: if signedIn() &&
+          (request.auth.uid == userId || isOwner(workspaceId));
+        allow list: if isOwner(workspaceId);
         allow create: if canCreateOwnWorkspaceMember(workspaceId, userId);
         allow update, delete: if isOwner(workspaceId);
       }
 
-      match /linkedOperators/{userId} {
-        allow read: if isMember(workspaceId) ||
-          (signedIn() && request.auth.uid == userId);
-        allow create, update: if (
-          isMember(workspaceId) &&
-          request.resource.data.uid == userId
-        ) || canCreateReciprocalLinkedOperator(workspaceId, userId);
-        allow delete: if isOwner(workspaceId);
+      match /supervisorInvites/{inviteId} {
+        allow get: if isOwner(workspaceId) ||
+          (
+            signedIn() &&
+            resource.data.claimedByUid == request.auth.uid
+          );
+        allow list: if isOwner(workspaceId);
+        allow create, update, delete: if false;
       }
 
       match /system/appState {
-        allow read: if canUseWorkspaceState(workspaceId);
-        allow write: if isLinkedOperator(workspaceId) ||
-          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+        allow read, write: if false;
       }
 
       match /appStateChunks/{chunkId} {
-        allow read: if canUseWorkspaceState(workspaceId);
-        allow write: if isLinkedOperator(workspaceId) ||
-          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+        allow read, write: if false;
+      }
+
+      match /stateModules/{moduleId} {
+        allow read: if canReadStateModule(workspaceId, moduleId);
+        allow create, update: if
+          canWriteStateModule(workspaceId, moduleId) &&
+          request.resource.data.moduleId == moduleId &&
+          request.resource.data.permission is string &&
+          request.resource.data.chunkCount is int &&
+          request.resource.data.chunkCount >= 1 &&
+          request.resource.data.chunkCount <= 100 &&
+          request.resource.data.charCount is int &&
+          request.resource.data.charCount >= 0 &&
+          request.resource.data.hash is string &&
+          request.resource.data.hash.size() <= 160;
+        allow delete: if canWriteStateModule(workspaceId, moduleId);
+
+        match /chunks/{chunkId} {
+          allow read: if canReadStateModule(workspaceId, moduleId);
+          allow create, update: if
+            canWriteStateModule(workspaceId, moduleId) &&
+            request.resource.data.moduleId == moduleId &&
+            request.resource.data.index is int &&
+            request.resource.data.index >= 0 &&
+            request.resource.data.index < 100 &&
+            request.resource.data.text is string &&
+            request.resource.data.text.size() <= 450000;
+          allow delete: if canWriteStateModule(workspaceId, moduleId);
+        }
+      }
+
+      // Proyeccion operativa minima para prestamos. Una unidad enlazada solo
+      // ve nombre, profesion, turnos y disponibilidad del mes; nunca accede al
+      // snapshot completo, RUT, correo, documentos, permisos ni configuracion.
+      match /linkedStaffingMonths/{monthId} {
+        allow read: if isMember(workspaceId);
+        allow create, update: if
+          isMember(workspaceId) &&
+          canMemberWriteWorkspaceState(workspaceId) &&
+          request.resource.data.workspaceId == workspaceId &&
+          request.resource.data.month == monthId &&
+          request.resource.data.workers is list &&
+          request.resource.data.workers.size() <= 500;
+        allow delete: if isMember(workspaceId) &&
+          canMemberWriteWorkspaceState(workspaceId);
+      }
+
+      // Solo las Cloud Functions crean o anulan estos documentos. Los clientes
+      // autenticados de cada unidad pueden leer su propia proyeccion.
+      match /loanAssignments/{loanId} {
+        allow read: if isMember(workspaceId);
+        allow write: if false;
       }
 
       match /system/localStorageSnapshot {
-        allow read, write: if isMember(workspaceId);
+        allow read: if isMember(workspaceId);
+        allow write: if false;
       }
 
       match /profiles/{profileId} {
-        allow read, write: if isMember(workspaceId);
+        allow read: if isMember(workspaceId);
+        allow write: if canManageProfiles(workspaceId);
       }
 
       match /replacementRequests/{requestId} {
         allow read: if isMember(workspaceId) ||
           (signedIn() && resource.data.workerUid == request.auth.uid);
-        allow create, delete: if isMember(workspaceId);
-        allow update: if isMember(workspaceId) ||
+        allow create, delete: if canManageRequests(workspaceId);
+        allow update: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             resource.data.workerUid == request.auth.uid &&
@@ -309,17 +545,33 @@ service cloud.firestore {
       match /workerBlockedDays/{blockedDayId} {
         allow read: if isMember(workspaceId) ||
           (signedIn() && resource.data.workerUid == request.auth.uid);
-        allow create, update: if isMember(workspaceId) ||
+        allow create: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             request.resource.data.workerUid == request.auth.uid &&
             request.resource.data.workspaceId == workspaceId &&
             request.resource.data.source == "worker_app" &&
             request.resource.data.date is string &&
+            blockedDayId == request.auth.uid + "_" + request.resource.data.date &&
             request.resource.data.status == "active" &&
+            optionalText(request.resource.data, "reason", 500) &&
+            optionalText(request.resource.data, "supervisorMessage", 2000) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow delete: if isMember(workspaceId) ||
+        allow update: if canManageRequests(workspaceId) ||
+          (
+            signedIn() &&
+            resource.data.workerUid == request.auth.uid &&
+            request.resource.data.workerUid == request.auth.uid &&
+            request.resource.data.workspaceId == workspaceId &&
+            request.resource.data.source == "worker_app" &&
+            request.resource.data.date is string &&
+            blockedDayId == request.auth.uid + "_" + request.resource.data.date &&
+            optionalText(request.resource.data, "reason", 500) &&
+            optionalText(request.resource.data, "supervisorMessage", 2000) &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
+        allow delete: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             resource.data.workerUid == request.auth.uid &&
@@ -337,15 +589,30 @@ service cloud.firestore {
             ) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow create: if isMember(workspaceId) ||
+        allow create: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             request.resource.data.createdByUid == request.auth.uid &&
             request.resource.data.status in ["pending", "active"] &&
             request.resource.data.source == "worker_app" &&
+            validText(request.resource.data.type, 60) &&
+            optionalText(request.resource.data, "note", 2000) &&
+            optionalText(request.resource.data, "detail", 2000) &&
+            optionalText(request.resource.data, "rejectReason", 1000) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow update, delete: if isMember(workspaceId);
+        allow update: if canManageRequests(workspaceId);
+        // El trabajador puede retirar (eliminar) una solicitud propia que siga
+        // PENDIENTE creada desde la app; asi se quita del supervisor. No puede
+        // tocar solicitudes ya aceptadas/rechazadas ni de otros.
+        allow delete: if canManageRequests(workspaceId) ||
+          (
+            signedIn() &&
+            resource.data.createdByUid == request.auth.uid &&
+            resource.data.status == "pending" &&
+            resource.data.source == "worker_app" &&
+            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
+          );
       }
 
       match /workerSwapCandidates/{userId} {
@@ -354,20 +621,22 @@ service cloud.firestore {
             signedIn() &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow create, update, delete: if isLinkedOperator(workspaceId) ||
-          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+        allow create, update, delete: if
+          isMember(workspaceId) &&
+          canMemberWriteWorkspaceState(workspaceId);
       }
 
       match /workerMessageDirectory/{userId} {
         allow read: if isMember(workspaceId) ||
           isCurrentLinkedWorker(workspaceId);
-        allow create, update, delete: if isLinkedOperator(workspaceId) ||
-          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+        allow create, update, delete: if
+          isMember(workspaceId) &&
+          canMemberWriteWorkspaceState(workspaceId);
       }
 
       match /workerPeerThreads/{threadId} {
         allow read: if canAccessWorkerPeerThread(workspaceId, threadId);
-        allow create: if isMember(workspaceId) ||
+        allow create: if
           (
             isCurrentLinkedWorker(workspaceId) &&
             request.resource.data.workspaceId == workspaceId &&
@@ -380,18 +649,18 @@ service cloud.firestore {
             request.auth.uid in request.resource.data.participantUids &&
             request.resource.data.targetUid in request.resource.data.participantUids
           );
-        allow update: if isMember(workspaceId) ||
+        allow update: if
           (
             isCurrentLinkedWorker(workspaceId) &&
             request.auth.uid in resource.data.participantUids &&
             request.resource.data.workspaceId == resource.data.workspaceId &&
             request.resource.data.participantUids == resource.data.participantUids
           );
-        allow delete: if isMember(workspaceId);
+        allow delete: if isOwner(workspaceId);
 
         match /messages/{messageId} {
           allow read: if canAccessWorkerPeerThread(workspaceId, threadId);
-          allow create: if isMember(workspaceId) ||
+          allow create: if
             (
               isCurrentLinkedWorker(workspaceId) &&
               canAccessWorkerPeerThreadAfter(workspaceId, threadId) &&
@@ -400,10 +669,12 @@ service cloud.firestore {
               request.resource.data.senderUid == request.auth.uid &&
               request.resource.data.targetUid is string &&
               request.resource.data.targetUid != request.auth.uid &&
+              validText(request.resource.data.text, 2000) &&
+              optionalText(request.resource.data, "senderName", 160) &&
               request.resource.data.targetUid in getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids &&
               workerLinkExists(workspaceId, request.resource.data.targetUid)
             );
-          allow update, delete: if isMember(workspaceId);
+          allow update, delete: if isOwner(workspaceId);
         }
       }
 
@@ -417,7 +688,7 @@ service cloud.firestore {
             ) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow create: if isMember(workspaceId) ||
+        allow create: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             request.resource.data.createdByUid == request.auth.uid &&
@@ -430,7 +701,7 @@ service cloud.firestore {
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid)) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.resource.data.targetUid))
           );
-        allow update: if isMember(workspaceId) ||
+        allow update: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             resource.data.targetUid == request.auth.uid &&
@@ -452,7 +723,7 @@ service cloud.firestore {
             ]) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow delete: if isMember(workspaceId);
+        allow delete: if canManageRequests(workspaceId);
       }
 
       match /workerSwapOpenRequests/{openId} {
@@ -462,7 +733,7 @@ service cloud.firestore {
             resource.data.createdByUid == request.auth.uid &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow create: if isMember(workspaceId) ||
+        allow create: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             request.resource.data.createdByUid == request.auth.uid &&
@@ -472,27 +743,33 @@ service cloud.firestore {
             request.resource.data.ownDate is string &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow update, delete: if isMember(workspaceId);
+        allow update, delete: if canManageRequests(workspaceId);
       }
 
       match /workerAppInvites/{inviteId} {
         allow create: if isMember(workspaceId) &&
           request.resource.data.workspaceId == workspaceId &&
           request.resource.data.token == inviteId &&
-          request.resource.data.status == "pending";
-        allow get: if isMember(workspaceId) ||
+          request.resource.data.status == "pending" &&
+          validText(request.resource.data.email, 254) &&
+          request.resource.data.createdByUid == request.auth.uid &&
+          optionalText(request.resource.data, "profileName", 160) &&
+          optionalText(request.resource.data, "workspaceName", 160) &&
+          optionalText(request.resource.data, "inviteUrl", 2048) &&
+          canManageProfiles(workspaceId);
+        allow get: if canManageProfiles(workspaceId) ||
           canReadWorkerInvite(inviteId);
-        allow list: if isMember(workspaceId);
-        allow update: if isMember(workspaceId) ||
+        allow list: if canManageProfiles(workspaceId);
+        allow update: if canManageProfiles(workspaceId) ||
           canAcceptWorkerInvite(workspaceId, inviteId);
-        allow delete: if isMember(workspaceId);
+        allow delete: if canManageProfiles(workspaceId);
       }
 
       match /workerLinks/{userId} {
         allow read: if isMember(workspaceId) ||
           (signedIn() && request.auth.uid == userId);
         allow create, update: if (
-          isMember(workspaceId) &&
+          canManageProfiles(workspaceId) &&
           request.resource.data.uid == userId
         ) || (
           signedIn() &&
@@ -506,39 +783,38 @@ service cloud.firestore {
             userId
           )
         );
-        allow delete: if isMember(workspaceId);
+        allow delete: if canManageProfiles(workspaceId);
       }
 
       match /workerPushTokens/{userId} {
-        allow read: if isMember(workspaceId) ||
-          (signedIn() && request.auth.uid == userId);
+        allow read: if signedIn() && request.auth.uid == userId;
         allow create, update: if signedIn() &&
           request.auth.uid == userId &&
           exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId)) &&
           request.resource.data.uid == userId &&
           request.resource.data.workspaceId == workspaceId;
-        allow delete: if isMember(workspaceId) ||
+        allow delete: if canManageProfiles(workspaceId) ||
           (signedIn() && request.auth.uid == userId);
 
         match /tokens/{tokenId} {
-          allow read: if isMember(workspaceId) ||
-            (signedIn() && request.auth.uid == userId);
+          allow read: if signedIn() && request.auth.uid == userId;
           allow create, update: if signedIn() &&
             request.auth.uid == userId &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId)) &&
             request.resource.data.uid == userId &&
             request.resource.data.workspaceId == workspaceId &&
             request.resource.data.token is string &&
+            request.resource.data.token.size() <= 4096 &&
             request.resource.data.active is bool;
-          allow delete: if isMember(workspaceId) ||
+          allow delete: if canManageProfiles(workspaceId) ||
             (signedIn() && request.auth.uid == userId);
         }
       }
 
       match /workerMessages/{userId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canManageRequests(workspaceId) ||
           (signedIn() && request.auth.uid == userId);
-        allow create, update: if isMember(workspaceId) ||
+        allow create, update: if canManageRequests(workspaceId) ||
           (
             signedIn() &&
             request.auth.uid == userId &&
@@ -546,28 +822,32 @@ service cloud.firestore {
             request.resource.data.uid == userId &&
             request.resource.data.workspaceId == workspaceId
           );
-        allow delete: if isMember(workspaceId);
+        allow delete: if canManageRequests(workspaceId);
 
         match /messages/{messageId} {
-          allow read: if isMember(workspaceId) ||
+          allow read: if canManageRequests(workspaceId) ||
             (signedIn() && request.auth.uid == userId);
-          allow create: if isMember(workspaceId) ||
+          allow create: if validText(request.resource.data.text, 2000) &&
             (
+              canManageRequests(workspaceId) ||
+              (
               signedIn() &&
               request.auth.uid == userId &&
               exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(userId)) &&
               request.resource.data.workerUid == userId &&
-              request.resource.data.workspaceId == workspaceId
+              request.resource.data.workspaceId == workspaceId &&
+              validText(request.resource.data.text, 2000)
+              )
             );
-          allow update, delete: if isMember(workspaceId);
+          allow update, delete: if canManageRequests(workspaceId);
         }
       }
 
       match /workerAppData/{userId} {
-        allow get: if canUseWorkspaceState(workspaceId) ||
-          (signedIn() && request.auth.uid == userId);
-        allow list: if canUseWorkspaceState(workspaceId);
-        allow create: if isLinkedOperator(workspaceId) ||
+        allow get: if isMember(workspaceId) ||
+          isLinkedWorker(workspaceId, userId);
+        allow list: if isMember(workspaceId);
+        allow create: if
           (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId)) ||
           (
             isLinkedWorker(workspaceId, userId) &&
@@ -580,7 +860,7 @@ service cloud.firestore {
               "updatedAt"
             ])
           );
-        allow update: if isLinkedOperator(workspaceId) ||
+        allow update: if
           (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId)) ||
           (
             isLinkedWorker(workspaceId, userId) &&
@@ -593,8 +873,9 @@ service cloud.firestore {
               "updatedAt"
             ])
           );
-        allow delete: if isLinkedOperator(workspaceId) ||
-          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId));
+        allow delete: if
+          isMember(workspaceId) &&
+          canMemberWriteWorkspaceState(workspaceId);
       }
 
       match /{document=**} {

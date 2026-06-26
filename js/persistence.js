@@ -3,7 +3,9 @@ const INTERNAL_KEYS = new Set([
     "proturnos_theme",
     "firebaseActiveWorkspace",
     "proturnos_firebase_client_id",
-    "proturnos_appstate_dirty_at"
+    "proturnos_appstate_dirty_at",
+    "proturnos_state_modules_dirty",
+    "shiftMovesAuditMigrationV1"
 ]);
 const INTERNAL_KEY_PREFIXES = [
     "firebase:",
@@ -209,6 +211,52 @@ export function replaceLocalSnapshot(snapshot = {}, {
 
     if (!silent && changedKeys.size) {
         notifyPersistenceChanged([...changedKeys], "replace");
+    }
+}
+
+export function replaceLocalSnapshotSubset(
+    snapshot = {},
+    belongsToSubset = () => false,
+    { silent = true } = {}
+) {
+    const store = storage();
+    if (!store || !snapshot || typeof snapshot !== "object") return;
+
+    const entries = Object.entries(snapshot)
+        .filter(([key, value]) =>
+            !isInternalKey(key) &&
+            belongsToSubset(key) &&
+            value !== null &&
+            value !== undefined
+        );
+    const nextKeys = new Set(entries.map(([key]) => key));
+    const changedKeys = new Set();
+
+    if (silent) suppressChangeEvents++;
+
+    try {
+        listKeys().forEach(key => {
+            if (isInternalKey(key) || !belongsToSubset(key)) return;
+            if (nextKeys.has(key)) return;
+
+            store.removeItem(key);
+            changedKeys.add(key);
+        });
+
+        entries.forEach(([key, value]) => {
+            const nextValue = String(value);
+
+            if (store.getItem(key) !== nextValue) {
+                store.setItem(key, nextValue);
+                changedKeys.add(key);
+            }
+        });
+    } finally {
+        if (silent) suppressChangeEvents--;
+    }
+
+    if (!silent && changedKeys.size) {
+        notifyPersistenceChanged([...changedKeys], "replace-subset");
     }
 }
 

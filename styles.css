@@ -23,6 +23,271 @@
     --timeline-holiday: rgba(239, 68, 68, 0.12);
 }
 
+/* Dialogos ejecutivos compartidos: reemplazan alert, confirm y prompt nativos. */
+body.app-dialog-open {
+    overflow: hidden;
+}
+
+.app-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: grid;
+    place-items: center;
+    padding: 22px;
+    background:
+        radial-gradient(circle at 50% 25%, rgba(29, 108, 255, 0.16), transparent 34%),
+        rgba(5, 12, 24, 0.66);
+    opacity: 0;
+    visibility: hidden;
+    backdrop-filter: blur(10px) saturate(0.85);
+    transition:
+        opacity 0.18s ease,
+        visibility 0.18s ease;
+}
+
+.app-dialog-backdrop.is-visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+.app-dialog-backdrop.is-closing {
+    opacity: 0;
+}
+
+.app-dialog {
+    --dialog-tone: var(--accent);
+    --dialog-tone-soft: rgba(29, 108, 255, 0.13);
+    position: relative;
+    width: min(100%, 520px);
+    max-height: min(760px, calc(100vh - 44px));
+    overflow: auto;
+    padding: 28px;
+    border: 1px solid var(--border-strong);
+    border-radius: 24px;
+    color: var(--text);
+    background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 42%),
+        var(--panel);
+    box-shadow:
+        0 32px 90px rgba(3, 10, 23, 0.34),
+        0 12px 28px rgba(3, 10, 23, 0.16);
+    transform: translateY(14px) scale(0.975);
+    opacity: 0;
+    transition:
+        transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 0.16s ease;
+}
+
+.app-dialog-backdrop.is-visible .app-dialog {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+}
+
+.app-dialog--success {
+    --dialog-tone: #16a35a;
+    --dialog-tone-soft: rgba(34, 197, 94, 0.14);
+}
+
+.app-dialog--warning {
+    --dialog-tone: #d88b06;
+    --dialog-tone-soft: rgba(245, 158, 11, 0.15);
+}
+
+.app-dialog--danger {
+    --dialog-tone: #e24444;
+    --dialog-tone-soft: rgba(239, 68, 68, 0.14);
+}
+
+.app-dialog__accent {
+    position: absolute;
+    inset: 0 28px auto;
+    height: 3px;
+    border-radius: 0 0 999px 999px;
+    background: linear-gradient(90deg, transparent, var(--dialog-tone), transparent);
+    opacity: 0.9;
+}
+
+.app-dialog__header {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    min-width: 0;
+}
+
+.app-dialog__icon {
+    display: grid;
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    place-items: center;
+    border: 1px solid var(--dialog-tone-soft);
+    border-radius: 16px;
+    color: var(--dialog-tone);
+    background: var(--dialog-tone-soft);
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.app-dialog__icon svg {
+    width: 25px;
+    height: 25px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.app-dialog__heading {
+    min-width: 0;
+}
+
+.app-dialog__eyebrow {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--dialog-tone);
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.app-dialog__heading h2 {
+    margin: 0;
+    color: var(--text);
+    font-size: clamp(1.18rem, 4vw, 1.42rem);
+    line-height: 1.18;
+}
+
+.app-dialog__body {
+    padding: 22px 2px 6px;
+}
+
+.app-dialog__message {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.96rem;
+    line-height: 1.65;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+}
+
+.app-dialog__field {
+    display: grid;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+.app-dialog__field-label {
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.app-dialog__input {
+    width: 100%;
+    min-height: 46px;
+    padding: 0 14px;
+    border: 1px solid var(--field-border);
+    border-radius: 13px;
+    color: var(--text);
+    background: var(--field);
+    box-shadow: inset 0 1px 2px rgba(8, 20, 40, 0.04);
+    transition:
+        border-color 0.16s ease,
+        box-shadow 0.16s ease;
+}
+
+.app-dialog__input:focus {
+    border-color: var(--dialog-tone);
+    box-shadow: 0 0 0 4px var(--dialog-tone-soft);
+}
+
+.app-dialog__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding-top: 22px;
+}
+
+.app-dialog__button {
+    min-width: 122px;
+    min-height: 44px;
+    padding: 0 18px;
+    border-radius: 13px;
+    font-size: 0.88rem;
+    font-weight: 800;
+    transition:
+        transform 0.15s ease,
+        box-shadow 0.15s ease,
+        background 0.15s ease;
+}
+
+.app-dialog__button:hover {
+    transform: translateY(-1px);
+}
+
+.app-dialog__button:focus-visible {
+    box-shadow: 0 0 0 4px var(--dialog-tone-soft);
+}
+
+.app-dialog__button--secondary {
+    border: 1px solid var(--border-strong);
+    color: var(--text-soft);
+    background: var(--panel-alt);
+}
+
+.app-dialog__button--secondary:hover {
+    color: var(--text);
+    background: var(--panel-hover);
+}
+
+.app-dialog__button--primary {
+    color: #fff;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    box-shadow: 0 10px 22px rgba(29, 108, 255, 0.22);
+}
+
+.app-dialog__button--danger {
+    background: linear-gradient(135deg, #ef5350, #cf3232);
+    box-shadow: 0 10px 22px rgba(207, 50, 50, 0.22);
+}
+
+@media (max-width: 560px) {
+    .app-dialog-backdrop {
+        align-items: end;
+        padding: 12px;
+    }
+
+    .app-dialog {
+        width: 100%;
+        max-height: calc(100vh - 24px);
+        padding: 23px 20px 20px;
+        border-radius: 22px;
+    }
+
+    .app-dialog__actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .app-dialog-backdrop[data-dialog-type="alert"] .app-dialog__actions {
+        grid-template-columns: 1fr;
+    }
+
+    .app-dialog__button {
+        width: 100%;
+        min-width: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-dialog-backdrop,
+    .app-dialog {
+        transition: none;
+    }
+}
+
 * {
     box-sizing: border-box;
 }
@@ -1503,7 +1768,8 @@ body[data-active-view="profile"] #profileSection .record-item__values {
 }
 
 body[data-active-view="profile"] #profileSection .profile-availability-card .availability-item,
-body[data-active-view="profile"] #profileSection .profile-availability-card .availability-item input {
+body[data-active-view="profile"] #profileSection .profile-availability-card .availability-item input,
+body[data-active-view="profile"] #profileSection .profile-availability-card .availability-item select {
     font-size: 0.78rem;
 }
 
@@ -1726,7 +1992,8 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     color: var(--text);
 }
 
-.profile-availability-card .availability-item input {
+.profile-availability-card .availability-item input,
+.profile-availability-card .availability-item select {
     width: 74px;
     padding: 7px 8px;
     background: var(--panel-alt);
@@ -1736,7 +2003,8 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
 }
 
 .profile-availability-card .availability-item input:disabled,
-.profile-availability-card .availability-item input[readonly] {
+.profile-availability-card .availability-item input[readonly],
+.profile-availability-card .availability-item select:disabled {
     background: var(--panel-alt);
     border-color: var(--border);
     color: var(--text);
@@ -3802,6 +4070,61 @@ body.theme-light .day.worker-blocked-day {
     line-height: 1.1;
 }
 
+.day-label--alternating {
+    display: grid;
+    min-height: 1.1em;
+}
+
+.day-label--alternating > span {
+    grid-area: 1 / 1;
+}
+
+.day-label__primary {
+    animation: pendingLeavePrimaryBlink 1.35s ease-in-out infinite;
+}
+
+.day-label__alternate {
+    animation: pendingLeaveAlternateBlink 1.35s ease-in-out infinite;
+}
+
+@keyframes pendingLeavePrimaryBlink {
+    0%,
+    45% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    50%,
+    95% {
+        opacity: 0;
+        transform: translateY(2px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes pendingLeaveAlternateBlink {
+    0%,
+    45% {
+        opacity: 0;
+        transform: translateY(-2px);
+    }
+
+    50%,
+    95% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    100% {
+        opacity: 0;
+        transform: translateY(-2px);
+    }
+}
+
 .day-label-stack {
     display: flex;
     flex-direction: column;
@@ -3869,6 +4192,42 @@ body.theme-light .day.worker-blocked-day {
     letter-spacing: 0;
     overflow-wrap: anywhere;
     text-align: center;
+}
+
+.shift-move-day {
+    box-shadow: inset 0 0 0 2px rgba(13, 148, 136, 0.58);
+}
+
+.shift-move-day .day-badge {
+    max-width: 100%;
+    background: rgba(13, 148, 136, 0.94);
+    color: #fff;
+    line-height: 1.05;
+    letter-spacing: 0;
+    overflow-wrap: anywhere;
+    text-align: center;
+}
+
+.day.pending-leave-request-day {
+    border-color: rgba(249, 115, 22, 0.78);
+    background:
+        linear-gradient(135deg, rgba(249, 115, 22, 0.92), rgba(251, 146, 60, 0.78)),
+        var(--field);
+    color: #fff;
+    box-shadow:
+        inset 0 0 0 2px rgba(255, 255, 255, 0.2),
+        0 12px 28px rgba(249, 115, 22, 0.2);
+}
+
+.day.pending-leave-request-day .day-badge {
+    background: rgba(15, 23, 42, 0.82);
+    color: #fff;
+    letter-spacing: 0;
+}
+
+.day.pending-leave-request-day .day-label {
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(15, 23, 42, 0.28);
 }
 
 .day.needs-replacement {
@@ -3963,6 +4322,93 @@ body.theme-light .day.worker-blocked-day {
     backdrop-filter: blur(8px);
 }
 
+.firebase-mfa-backdrop {
+    z-index: 12000;
+}
+
+.firebase-mfa-dialog {
+    width: min(560px, calc(100vw - 28px));
+    display: grid;
+    gap: 20px;
+}
+
+.firebase-mfa-dialog > header {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+}
+
+.firebase-mfa-dialog h3,
+.firebase-mfa-dialog p {
+    margin: 0;
+}
+
+.firebase-mfa-dialog header p {
+    margin-top: 6px;
+    color: var(--muted);
+    line-height: 1.45;
+}
+
+.firebase-mfa-shield {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    flex: 0 0 42px;
+    border-radius: 13px;
+    color: #ffffff;
+    background: linear-gradient(135deg, #1677ff, #08a88a);
+    font-size: 1.2rem;
+    font-weight: 800;
+}
+
+.firebase-mfa-content,
+.firebase-mfa-step {
+    display: grid;
+    gap: 14px;
+}
+
+.firebase-mfa-step {
+    padding: 15px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel);
+}
+
+.firebase-mfa-content label {
+    display: grid;
+    gap: 7px;
+}
+
+.firebase-mfa-secret-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+}
+
+.firebase-mfa-content input,
+.firebase-mfa-content textarea {
+    width: 100%;
+}
+
+.firebase-mfa-content [data-mfa-error] {
+    min-height: 1.2em;
+    color: var(--red);
+}
+
+.firebase-mfa-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+@media (max-width: 520px) {
+    .firebase-mfa-secret-row,
+    .firebase-mfa-actions {
+        grid-template-columns: 1fr;
+    }
+}
+
 .day.honoraria-limit-day:not(.needs-replacement):not(.contract-error-day):not(.clock-severe-day) {
     box-shadow:
         inset 0 0 0 2px rgba(220, 38, 38, 0.82),
@@ -4021,6 +4467,65 @@ body.auth-gate-active .app-shell {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
+}
+
+.move-shift-dialog {
+    width: min(480px, 100%);
+}
+
+.move-shift-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 0 0 18px;
+}
+
+.move-shift-option {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    min-width: 0;
+    min-height: 58px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--field);
+    color: var(--text-strong);
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.move-shift-option:has(input:checked) {
+    border-color: rgba(29, 108, 255, 0.52);
+    background: rgba(29, 108, 255, 0.1);
+    box-shadow: inset 0 0 0 1px rgba(29, 108, 255, 0.18);
+}
+
+.move-shift-dialog .move-shift-option input[type="radio"] {
+    position: static;
+    width: 18px;
+    min-width: 18px;
+    height: 18px;
+    min-height: 18px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    box-shadow: none;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex: 0 0 18px;
+}
+
+.move-shift-option span {
+    line-height: 1.1;
+}
+
+@media (max-width: 460px) {
+    .move-shift-options {
+        grid-template-columns: 1fr;
+    }
 }
 
 .leave-detail-dialog {
@@ -4302,6 +4807,12 @@ body.auth-gate-active .app-shell {
     background: var(--panel-alt);
     color: var(--text-muted);
     line-height: 1.4;
+}
+
+.firebase-dialog-note--success {
+    background: rgba(34, 197, 94, 0.13);
+    color: #15803d;
+    font-weight: 750;
 }
 
 .firebase-dialog-grid {
@@ -4586,6 +5097,29 @@ body.auth-gate-active .app-shell {
     min-height: 34px;
     padding-inline: 12px;
     font-size: 0.82rem;
+}
+
+.supervisor-invite-dialog {
+    width: min(720px, calc(100vw - 32px));
+}
+
+.supervisor-invite-permissions {
+    max-height: min(48vh, 440px);
+    overflow: auto;
+    padding-right: 4px;
+}
+
+.supervisor-invite-error {
+    background: rgba(239, 68, 68, 0.1);
+    color: #b91c1c;
+}
+
+.supervisor-invite-actions {
+    grid-template-columns: 1fr 1fr 1fr;
+}
+
+.supervisor-invite-item {
+    align-items: flex-start;
 }
 
 .replacement-dialog .turn-change-dialog__actions {
@@ -5910,6 +6444,96 @@ body.theme-dark .overtime-backup-subsection {
     color: var(--turno-text-8-extra, #ffffff) !important;
 }
 
+/* Turnos de doble color: el dia se divide en mitad superior / inferior. Los
+   colores derivan de los componentes y siguen las variables configurables en
+   Ajustes. El texto va en blanco con sombra para ser legible sobre ambos. */
+.turno-split {
+    color: #ffffff !important;
+    text-shadow: 0 1px 2px rgba(15, 23, 42, 0.6) !important;
+}
+
+.turno-split--24 {
+    background: linear-gradient(
+        to bottom,
+        var(--turno-color-1, #22c55e) 0 50%,
+        var(--turno-color-2, #1d6cff) 50% 100%
+    ) !important;
+}
+
+.turno-split--dn {
+    background: linear-gradient(
+        to bottom,
+        var(--turno-color-4, #0b8853) 0 50%,
+        var(--turno-color-2, #1d6cff) 50% 100%
+    ) !important;
+}
+
+.turno-split--18 {
+    background: linear-gradient(
+        to bottom,
+        var(--color-extension, #f59e0b) 0 33.333%,
+        var(--turno-color-2, #1d6cff) 33.333% 100%
+    ) !important;
+}
+
+.day.replacement-day.turno-split--24 {
+    background: linear-gradient(
+        to bottom,
+        var(--turno-color-1-extra, #22c55e) 0 50%,
+        var(--turno-color-2-extra, #1d6cff) 50% 100%
+    ) !important;
+}
+
+.day.replacement-day.turno-split--dn {
+    background: linear-gradient(
+        to bottom,
+        var(--turno-color-4-extra, #0b8853) 0 50%,
+        var(--turno-color-2-extra, #1d6cff) 50% 100%
+    ) !important;
+}
+
+.day.replacement-day.turno-split--18 {
+    background: linear-gradient(
+        to bottom,
+        var(--color-extension, #f59e0b) 0 33.333%,
+        var(--turno-color-2-extra, #1d6cff) 33.333% 100%
+    ) !important;
+}
+
+/* 1/2 ADM: admin + turno base (larga o diurno). Manana = admin arriba; tarde =
+   admin abajo. 50/50. */
+.turno-split--adm-m-larga {
+    background: linear-gradient(
+        to bottom,
+        var(--color-admin, #f97316) 0 50%,
+        var(--turno-color-1, #22c55e) 50% 100%
+    ) !important;
+}
+
+.turno-split--adm-m-diurno {
+    background: linear-gradient(
+        to bottom,
+        var(--color-admin, #f97316) 0 50%,
+        var(--turno-color-4, #0b8853) 50% 100%
+    ) !important;
+}
+
+.turno-split--adm-t-larga {
+    background: linear-gradient(
+        to bottom,
+        var(--turno-color-1, #22c55e) 0 50%,
+        var(--color-admin, #f97316) 50% 100%
+    ) !important;
+}
+
+.turno-split--adm-t-diurno {
+    background: linear-gradient(
+        to bottom,
+        var(--turno-color-4, #0b8853) 0 50%,
+        var(--color-admin, #f97316) 50% 100%
+    ) !important;
+}
+
 .weekend:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.union-leave-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.hours-return-day):not(.legal-day):not(.comp-day),
 .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):not(.yellow):not(.half-morning):not(.half-afternoon):not(.eighteen):not(.admin-day):not(.half-admin-day):not(.license-day):not(.union-leave-day):not(.professional-license-day):not(.unpaid-leave-day):not(.unjustified-absence-day):not(.hours-return-day):not(.legal-day):not(.comp-day) {
     background: rgba(255, 255, 255, 0.06);
@@ -5953,7 +6577,8 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 }
 
 .admin-day {
-    background: linear-gradient(135deg, #f97316, #fb923c) !important;
+    background: var(--color-admin, #f97316) !important;
+    color: var(--color-admin-text, #ffffff) !important;
 }
 
 .half-admin-day {
@@ -5962,7 +6587,8 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 }
 
 .legal-day {
-    background: linear-gradient(135deg, #0ea5a6, #1bc7bf) !important;
+    background: var(--color-legal, #0ea5a6) !important;
+    color: var(--color-legal-text, #ffffff) !important;
 }
 
 .legal-soft {
@@ -5970,7 +6596,8 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 }
 
 .comp-day {
-    background: linear-gradient(135deg, #8b2bd9, #ba52ec) !important;
+    background: var(--color-comp, #8b2bd9) !important;
+    color: var(--color-comp-text, #ffffff) !important;
 }
 
 .comp-soft {
@@ -5978,7 +6605,8 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 }
 
 .license-day {
-    background: linear-gradient(135deg, #e64747, #ff6767) !important;
+    background: var(--color-license, #e64747) !important;
+    color: var(--color-license-text, #ffffff) !important;
 }
 
 .union-leave-day {
@@ -5986,20 +6614,22 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 }
 
 .professional-license-day {
-    background: linear-gradient(135deg, #2563eb, #4f8cff) !important;
+    background: var(--color-professional_license, #2563eb) !important;
+    color: var(--color-professional_license-text, #ffffff) !important;
 }
 
 .unpaid-leave-day {
-    background: linear-gradient(135deg, #6b7280, #9ca3af) !important;
+    background: var(--color-unpaid_leave, #6b7280) !important;
+    color: var(--color-unpaid_leave-text, #ffffff) !important;
 }
 
 .unjustified-absence-day {
-    background:
-        linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(239, 68, 68, 0.9)) !important;
+    background: var(--color-unjustified_absence, #b91c1c) !important;
+    color: var(--color-unjustified_absence-text, #ffffff) !important;
 }
 
 .hours-return-day {
-    background: linear-gradient(135deg, #0f766e, #14b8a6) !important;
+    background: var(--color-hours_return, #14b8a6) !important;
 }
 
 .hours-return-day--partial {
@@ -6133,11 +6763,15 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     font-weight: 600;
 }
 
-.availability-item input {
+.availability-item input,
+.availability-item select {
     width: 110px;
     min-width: 0;
     padding: 8px 10px;
     border-radius: 10px;
+}
+
+.availability-item input {
     text-align: right;
 }
 
@@ -9871,6 +10505,12 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     cursor: not-allowed;
     opacity: 0.68;
     filter: grayscale(0.7);
+}
+
+@media (display-mode: standalone), (display-mode: fullscreen), (display-mode: minimal-ui) {
+    [data-web-only] {
+        display: none !important;
+    }
 }
 
 ::-webkit-scrollbar {

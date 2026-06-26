@@ -1,4 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
+import { showConfirm } from "./dialogs.js";
 import {
     DEFAULT_GRADE_HOUR_CONFIG,
     getGradeHourConfig,
@@ -35,6 +36,8 @@ import {
 } from "./workspacePermissions.js";
 import {
     TURNO_COLOR_CODES,
+    TURNO_COLOR_SETTINGS_CODES,
+    NAMED_TURNO_COLORS,
     turnoColorLabel,
     getTurnoColorConfig,
     saveTurnoColorConfig,
@@ -575,7 +578,7 @@ function renderUsersPanel() {
 
 function renderColorsPanel() {
     const config = colorConfigDraft || getTurnoColorConfig();
-    const rows = TURNO_COLOR_CODES.map(code => `
+    const baseRows = TURNO_COLOR_SETTINGS_CODES.map(code => `
         <div class="settings-color-row">
             <span class="settings-color-name">${escapeHTML(turnoColorLabel(code))}</span>
             <label class="settings-color-field">
@@ -588,18 +591,36 @@ function renderColorsPanel() {
             </label>
         </div>
     `).join("");
+    const namedRows = NAMED_TURNO_COLORS.map(item => `
+        <div class="settings-color-row">
+            <span class="settings-color-name">${escapeHTML(item.label)}</span>
+            <label class="settings-color-field">
+                <span>Color</span>
+                <input type="color" data-named-color="${escapeHTML(item.key)}" value="${escapeHTML(config.named[item.key])}">
+            </label>
+        </div>
+    `).join("");
 
     return `
         <div class="settings-section">
-            <h4 class="settings-subtitle">Colores de turnos</h4>
+            <h4 class="settings-subtitle">Colores de turnos base</h4>
             <p class="settings-hint">
-                Define el color de cada turno en el calendario y el timeline. La columna
-                "Extra" es el color cuando el turno es de reemplazo (turno extra), para
-                distinguirlo del turno base.
+                Define el color de los turnos base. La columna "Extra" es el color
+                cuando el turno es de reemplazo, para distinguirlo del turno base.
             </p>
             <div class="settings-color-grid">
-                ${rows}
+                ${baseRows}
             </div>
+
+            <h4 class="settings-subtitle">Colores de permisos y horas</h4>
+            <p class="settings-hint">
+                Color de cada permiso, devolucion/extension de horas y reduccion de
+                jornada en el calendario.
+            </p>
+            <div class="settings-color-grid">
+                ${namedRows}
+            </div>
+
             <button class="secondary-button settings-reset-colors" type="button" data-settings-reset-colors>
                 Restablecer colores por defecto
             </button>
@@ -611,6 +632,8 @@ function readColorConfig(backdrop) {
     const base = {};
     const extra = {};
 
+    const current = colorConfigDraft || getTurnoColorConfig();
+
     for (const code of TURNO_COLOR_CODES) {
         const baseInput = backdrop.querySelector(
             `[data-turno-color="${code}"][data-color-kind="base"]`
@@ -618,13 +641,22 @@ function readColorConfig(backdrop) {
         const extraInput = backdrop.querySelector(
             `[data-turno-color="${code}"][data-color-kind="extra"]`
         );
-        const current = colorConfigDraft || getTurnoColorConfig();
 
         base[code] = baseInput?.value || current.base[code];
         extra[code] = extraInput?.value || current.extra[code];
     }
 
-    return { base, extra };
+    const named = {};
+
+    for (const item of NAMED_TURNO_COLORS) {
+        const input = backdrop.querySelector(
+            `[data-named-color="${item.key}"]`
+        );
+
+        named[item.key] = input?.value || current.named[item.key];
+    }
+
+    return { base, extra, named };
 }
 
 function renderActivePanel(config) {
@@ -1070,8 +1102,14 @@ function bindBackdrop(backdrop) {
             }
 
             const label = memberLabel(member);
-            const confirmed = window.confirm(
-                `Eliminar a ${label} del entorno? Este usuario dejara de tener acceso a los menus y datos compartidos.`
+            const confirmed = await showConfirm(
+                `${label} dejará de tener acceso a los menús y datos compartidos de este entorno.`,
+                {
+                    title: "Quitar acceso al entorno",
+                    tone: "danger",
+                    confirmText: "Quitar acceso",
+                    destructive: true
+                }
             );
 
             if (!confirmed) return;

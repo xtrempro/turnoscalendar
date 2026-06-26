@@ -2,6 +2,7 @@ import { escapeHTML } from "./htmlUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import { getCurrentFirebaseUser, getFirebaseServices } from "./firebaseClient.js";
 import { getWorkerAppLinks } from "./workerAppDataSync.js";
+import { showConfirm } from "./dialogs.js";
 
 let activeWorkspace = null;
 let unreadUnsubscribe = null;
@@ -410,7 +411,7 @@ function renderMessagesLayout(workers, worker) {
                     : `<div class="supervisor-messages-empty">Sin mensajes todavia.</div>`}
             </div>
             <form class="supervisor-message-form" data-supervisor-message-form>
-                <textarea name="message" rows="2" placeholder="Escribe un mensaje para ${escapeHTML(worker?.name || "el trabajador")}"></textarea>
+                <textarea name="message" rows="2" maxlength="2000" placeholder="Escribe un mensaje para ${escapeHTML(worker?.name || "el trabajador")}"></textarea>
                 <button class="primary-button" type="submit">Enviar</button>
             </form>
         </section>
@@ -470,7 +471,7 @@ function renderMassLayout(workers) {
                     <button type="button" class="supervisor-mass-chip" data-mass-group="${escapeHTML(group.label)}">${escapeHTML(group.label)} (${group.uids.length})</button>
                 `).join("")}
             </div>
-            <textarea class="supervisor-mass-text" data-mass-text rows="4" placeholder="Escribe el mensaje para los trabajadores seleccionados (por ejemplo, el link de una reunion).">${escapeHTML(massText)}</textarea>
+            <textarea class="supervisor-mass-text" data-mass-text rows="4" maxlength="2000" placeholder="Escribe el mensaje para los trabajadores seleccionados (por ejemplo, el link de una reunion).">${escapeHTML(massText)}</textarea>
             <button class="primary-button supervisor-mass-send" type="button" data-mass-send ${massSending ? "disabled" : ""}>
                 ${massSending ? "Enviando..." : `Enviar a ${selectedCount}`}
             </button>
@@ -576,8 +577,13 @@ async function sendMassMessage() {
     }
 
     if (
-        !window.confirm(
-            `Enviar este mensaje a ${recipients.length} trabajador(es)?`
+        !await showConfirm(
+            `El mensaje se enviará a ${recipients.length} trabajador(es).`,
+            {
+                title: "Confirmar envío masivo",
+                tone: "info",
+                confirmText: "Enviar mensaje"
+            }
         )
     ) {
         return;

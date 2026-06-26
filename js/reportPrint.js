@@ -3,6 +3,37 @@
 
 import { escapeHTML } from "./htmlUtils.js";
 
+function sanitizePrintHTML(value) {
+    const template = document.createElement("template");
+    template.innerHTML = String(value || "");
+
+    template.content
+        .querySelectorAll(
+            "script, iframe, frame, object, embed, base, meta, link, form"
+        )
+        .forEach(element => element.remove());
+
+    template.content.querySelectorAll("*").forEach(element => {
+        Array.from(element.attributes).forEach(attribute => {
+            const name = attribute.name.toLowerCase();
+            const content = attribute.value.trim().toLowerCase();
+
+            if (
+                name.startsWith("on") ||
+                name === "srcdoc" ||
+                (
+                    ["href", "src", "xlink:href", "formaction"].includes(name) &&
+                    /^(?:javascript|vbscript):/.test(content)
+                )
+            ) {
+                element.removeAttribute(attribute.name);
+            }
+        });
+    });
+
+    return template.innerHTML;
+}
+
 export function printReportPreviewHTML(html, title) {
     if (!html) {
         alert("No fue posible generar el reporte para imprimir.");
@@ -21,12 +52,16 @@ export function printReportPreviewHTML(html, title) {
     }
 
     printWindow.document.open();
+    const safeHTML = sanitizePrintHTML(html);
+
     printWindow.document.write(`
         <!doctype html>
         <html lang="es">
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta name="referrer" content="no-referrer">
+                <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; base-uri 'none'; form-action 'none'">
                 <title>${escapeHTML(title || "Reporte")}</title>
                 <link rel="stylesheet" href="styles.css">
                 <style>
@@ -238,7 +273,7 @@ export function printReportPreviewHTML(html, title) {
             </head>
             <body class="theme-light">
                 <main class="report-print-page">
-                    ${html}
+                    ${safeHTML}
                 </main>
             </body>
         </html>

@@ -1,50 +1,73 @@
 import { getFirebaseServices } from "./firebaseClient.js";
 import {
     exportLocalSnapshot,
+    getJSON,
     getRaw,
     isInternalKey,
     removeKey,
     replaceLocalSnapshot,
+    replaceLocalSnapshotSubset,
+    setJSON,
     setRaw
 } from "./persistence.js";
-import { canEditAnyMenu } from "./workspacePermissions.js";
+import {
+    canEditMenu,
+    canViewMenu,
+    isWorkspaceOwner
+} from "./workspacePermissions.js";
+import {
+    splitSnapshotByStateModule,
+    stateModuleForKey,
+    stateModuleIds,
+    stateModulePermission
+} from "./firebaseStateModules.js";
 
 const CLIENT_ID_KEY = "proturnos_firebase_client_id";
-const LOCAL_DIRTY_KEY = "proturnos_appstate_dirty_at";
+const LEGACY_DIRTY_KEY = "proturnos_appstate_dirty_at";
+const DIRTY_MODULES_KEY = "proturnos_state_modules_dirty";
 const CHUNK_SIZE = 450000;
 
 let activeWorkspaceId = "";
 let unsubscribeState = null;
+let stateSyncStarting = false;
 let syncTimer = null;
-let syncInFlight = false;
 let applyingRemoteState = false;
 let waitingInitialState = false;
 let servicesCache = null;
 let onStateChanged = () => {};
-let lastUploadedHash = "";
-let lastAppliedHash = "";
 let syncGeneration = 0;
+const uploadsInFlight = new Set();
+const lastUploadedHashes = new Map();
+const lastAppliedHashes = new Map();
 
-function stateDocPath(workspaceId) {
-    return [
+function moduleDocRef(db, firestoreModule, workspaceId, moduleId) {
+    return firestoreModule.doc(
+        db,
         "workspaces",
         workspaceId,
-        "system",
-        "appState"
-    ];
+        "stateModules",
+        moduleId
+    );
 }
 
-function chunkDocId(index) {
-    return `part_${String(index).padStart(4, "0")}`;
-}
-
-function chunksCollection(db, firestoreModule, workspaceId) {
+function moduleChunksCollection(
+    db,
+    firestoreModule,
+    workspaceId,
+    moduleId
+) {
     return firestoreModule.collection(
         db,
         "workspaces",
         workspaceId,
-        "appStateChunks"
+        "stateModules",
+        moduleId,
+        "chunks"
     );
+}
+
+function chunkDocId(index) {
+    return `part_${String(index).padStart(4, "0")}`;
 }
 
 function getClientId() {
@@ -57,21 +80,39 @@ function getClientId() {
         `client_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
     setRaw(CLIENT_ID_KEY, nextId);
-
     return nextId;
 }
 
-function markLocalDirty() {
-    setRaw(LOCAL_DIRTY_KEY, String(Date.now()));
+function dirtyModules() {
+    const value = getJSON(DIRTY_MODULES_KEY, {});
+
+    return value && typeof value === "object" ? value : {};
 }
 
-function getLocalDirtyAt() {
-    return Number(getRaw(LOCAL_DIRTY_KEY, "0")) || 0;
+function markModulesDirty(moduleIds) {
+    const next = dirtyModules();
+    const now = Date.now();
+
+    moduleIds.forEach(moduleId => {
+        next[moduleId] = now;
+    });
+
+    setJSON(DIRTY_MODULES_KEY, next);
 }
 
-function clearLocalDirtyIfSynced(uploadedHash) {
-    if (hashString(currentLocalStateString()) === uploadedHash) {
-        removeKey(LOCAL_DIRTY_KEY);
+function clearModuleDirty(moduleId, uploadedHash) {
+    if (hashString(currentModuleStateString(moduleId)) !== uploadedHash) {
+        return;
+    }
+
+    const next = dirtyModules();
+
+    delete next[moduleId];
+
+    if (Object.keys(next).length) {
+        setJSON(DIRTY_MODULES_KEY, next);
+    } else {
+        removeKey(DIRTY_MODULES_KEY);
     }
 }
 
@@ -88,8 +129,14 @@ function stableSnapshotString(snapshot = {}) {
     return JSON.stringify(ordered);
 }
 
-function currentLocalStateString() {
-    return stableSnapshotString(exportLocalSnapshot());
+function currentModuleSnapshot(moduleId) {
+    return splitSnapshotByStateModule(
+        exportLocalSnapshot()
+    )[moduleId] || {};
+}
+
+function currentModuleStateString(moduleId) {
+    return stableSnapshotString(currentModuleSnapshot(moduleId));
 }
 
 function hashString(value) {
@@ -121,6 +168,26 @@ async function services() {
     return servicesCache;
 }
 
+function canWriteModule(moduleId) {
+    const permission = stateModulePermission(moduleId);
+
+    if (permission === "owner") {
+        return isWorkspaceOwner();
+    }
+
+    return canEditMenu(permission);
+}
+
+function canReadModule(moduleId) {
+    const permission = stateModulePermission(moduleId);
+
+    if (permission === "owner") {
+        return isWorkspaceOwner();
+    }
+
+    return canViewMenu(permission);
+}
+
 function dispatchStatus(detail) {
     if (typeof window === "undefined") return;
 
@@ -131,59 +198,58 @@ function dispatchStatus(detail) {
     );
 }
 
-async function uploadAppState() {
+async function uploadModule(moduleId) {
     if (
         !activeWorkspaceId ||
         applyingRemoteState ||
         waitingInitialState ||
-        !canEditAnyMenu()
+        uploadsInFlight.has(moduleId) ||
+        !canWriteModule(moduleId)
     ) {
         return;
     }
 
-    if (syncInFlight) {
-        scheduleAppStateUpload();
-        return;
-    }
-
-    syncInFlight = true;
+    uploadsInFlight.add(moduleId);
 
     try {
         const workspaceId = activeWorkspaceId;
-        const stateString = currentLocalStateString();
+        const stateString = currentModuleStateString(moduleId);
         const stateHash = hashString(stateString);
 
-        if (stateHash === lastUploadedHash) return;
+        if (stateHash === lastUploadedHashes.get(moduleId)) {
+            clearModuleDirty(moduleId, stateHash);
+            return;
+        }
 
         const chunks = splitChunks(stateString);
         const nextChunkIds = new Set(
             chunks.map((_chunk, index) => chunkDocId(index))
         );
-        const {
-            db,
-            firestoreModule
-        } = await services();
+        const { db, firestoreModule } = await services();
 
         if (workspaceId !== activeWorkspaceId) return;
 
-        const batch = firestoreModule.writeBatch(db);
-        const chunkCollection =
-            chunksCollection(db, firestoreModule, workspaceId);
+        const chunkCollection = moduleChunksCollection(
+            db,
+            firestoreModule,
+            workspaceId,
+            moduleId
+        );
         const existingChunks =
             await firestoreModule.getDocs(chunkCollection);
 
         if (workspaceId !== activeWorkspaceId) return;
 
+        const batch = firestoreModule.writeBatch(db);
+
         chunks.forEach((chunk, index) => {
             batch.set(
                 firestoreModule.doc(
-                    db,
-                    "workspaces",
-                    workspaceId,
-                    "appStateChunks",
+                    chunkCollection,
                     chunkDocId(index)
                 ),
                 {
+                    moduleId,
                     index,
                     text: chunk,
                     updatedAt: firestoreModule.serverTimestamp()
@@ -198,42 +264,65 @@ async function uploadAppState() {
         });
 
         batch.set(
-            firestoreModule.doc(
+            moduleDocRef(
                 db,
-                ...stateDocPath(workspaceId)
+                firestoreModule,
+                workspaceId,
+                moduleId
             ),
             {
+                moduleId,
+                permission: stateModulePermission(moduleId),
                 chunkCount: chunks.length,
                 charCount: stateString.length,
                 hash: stateHash,
                 clientId: getClientId(),
                 updatedAtISO: new Date().toISOString(),
                 updatedAt: firestoreModule.serverTimestamp()
-            },
-            { merge: true }
+            }
         );
-
-        if (workspaceId !== activeWorkspaceId) return;
 
         await batch.commit();
 
         if (workspaceId !== activeWorkspaceId) return;
 
-        lastUploadedHash = stateHash;
-        clearLocalDirtyIfSynced(stateHash);
+        lastUploadedHashes.set(moduleId, stateHash);
+        clearModuleDirty(moduleId, stateHash);
         dispatchStatus({
-            type: "app-state-uploaded",
+            type: "app-state-module-uploaded",
+            moduleId,
             chunkCount: chunks.length,
             hash: stateHash
         });
     } catch (error) {
-        console.warn("No se pudo sincronizar el estado Firebase.", error);
+        console.warn(
+            `No se pudo sincronizar el modulo ${moduleId}.`,
+            error
+        );
         dispatchStatus({
             type: "app-state-error",
+            moduleId,
             message: error.message || "Error sincronizando estado"
         });
     } finally {
-        syncInFlight = false;
+        uploadsInFlight.delete(moduleId);
+    }
+}
+
+async function uploadDirtyModules() {
+    if (
+        !activeWorkspaceId ||
+        applyingRemoteState ||
+        waitingInitialState
+    ) {
+        return;
+    }
+
+    const pending = Object.keys(dirtyModules())
+        .filter(moduleId => stateModuleIds().includes(moduleId));
+
+    for (const moduleId of pending) {
+        await uploadModule(moduleId);
     }
 }
 
@@ -241,23 +330,28 @@ function scheduleAppStateUpload() {
     if (
         !activeWorkspaceId ||
         applyingRemoteState ||
-        waitingInitialState ||
-        !canEditAnyMenu()
+        waitingInitialState
     ) {
         return;
     }
 
     clearTimeout(syncTimer);
-    syncTimer = setTimeout(uploadAppState, 900);
+    syncTimer = setTimeout(uploadDirtyModules, 900);
 }
 
-async function readRemoteStateString(workspaceId, expectedChunkCount) {
-    const {
-        db,
-        firestoreModule
-    } = await services();
+async function readRemoteModuleSnapshot(
+    workspaceId,
+    moduleId,
+    expectedChunkCount
+) {
+    const { db, firestoreModule } = await services();
     const snap = await firestoreModule.getDocs(
-        chunksCollection(db, firestoreModule, workspaceId)
+        moduleChunksCollection(
+            db,
+            firestoreModule,
+            workspaceId,
+            moduleId
+        )
     );
     const chunks = snap.docs
         .map(docSnap => ({
@@ -275,14 +369,37 @@ async function readRemoteStateString(workspaceId, expectedChunkCount) {
         chunks.length < Number(expectedChunkCount)
     ) {
         throw new Error(
-            "La copia remota aun no esta completa. Intenta nuevamente."
+            `El modulo ${moduleId} aun no esta completo.`
         );
     }
 
-    return chunks.map(chunk => chunk.text).join("");
+    const stateString = chunks.map(chunk => chunk.text).join("");
+
+    return {
+        stateString,
+        snapshot: JSON.parse(stateString || "{}")
+    };
 }
 
-async function applyRemoteState(manifest, workspaceId, generation) {
+function remoteIsOlderThanLocal(moduleId, manifest) {
+    const localDirtyAt =
+        Number(dirtyModules()[moduleId]) || 0;
+    const remoteUpdatedAt =
+        Date.parse(manifest?.updatedAtISO || "") || 0;
+
+    return Boolean(
+        localDirtyAt &&
+        remoteUpdatedAt &&
+        localDirtyAt > remoteUpdatedAt
+    );
+}
+
+async function applyRemoteModule(
+    moduleId,
+    manifest,
+    workspaceId,
+    generation
+) {
     if (
         workspaceId !== activeWorkspaceId ||
         generation !== syncGeneration
@@ -291,116 +408,154 @@ async function applyRemoteState(manifest, workspaceId, generation) {
     }
 
     const remoteHash = String(manifest?.hash || "");
+    const localHash = hashString(currentModuleStateString(moduleId));
 
     if (
         remoteHash &&
         (
-            remoteHash === lastAppliedHash ||
-            remoteHash === lastUploadedHash ||
-            remoteHash === hashString(currentLocalStateString())
+            remoteHash === lastAppliedHashes.get(moduleId) ||
+            remoteHash === lastUploadedHashes.get(moduleId) ||
+            remoteHash === localHash
         )
     ) {
         return;
     }
 
-    // Si lo local tiene cambios sin subir mas recientes que lo remoto (p. ej.
-    // un guardado reciente seguido de un refresco antes de sincronizar), no se
-    // debe sobrescribir lo local: se conserva y se sube en su lugar.
-    const localDirtyAt = getLocalDirtyAt();
-
-    if (localDirtyAt) {
-        const localHash = hashString(currentLocalStateString());
-        const remoteUpdatedAt = Date.parse(manifest?.updatedAtISO || "") || 0;
-
-        if (
-            localHash !== lastUploadedHash &&
-            remoteUpdatedAt &&
-            localDirtyAt > remoteUpdatedAt
-        ) {
-            scheduleAppStateUpload();
-            return;
-        }
-    }
-
-    const stateString = await readRemoteStateString(
-        workspaceId,
-        manifest?.chunkCount || 0
-    );
-    const snapshot = JSON.parse(stateString || "{}");
-
-    if (
-        workspaceId !== activeWorkspaceId ||
-        generation !== syncGeneration
-    ) {
-        return;
-    }
-
-    applyingRemoteState = true;
-
-    try {
-        replaceLocalSnapshot(snapshot, { silent: true });
-        lastAppliedHash = remoteHash || hashString(stateString);
-    } finally {
-        applyingRemoteState = false;
-    }
-
-    dispatchStatus({
-        type: "app-state-applied",
-        hash: lastAppliedHash
-    });
-    onStateChanged(snapshot);
-}
-
-async function applyEmptyRemoteState(workspaceId, generation) {
-    if (
-        workspaceId !== activeWorkspaceId ||
-        generation !== syncGeneration
-    ) {
-        return;
-    }
-
-    const stateString = stableSnapshotString({});
-
-    applyingRemoteState = true;
-
-    try {
-        replaceLocalSnapshot({}, { silent: true });
-        lastAppliedHash = hashString(stateString);
-    } finally {
-        applyingRemoteState = false;
-    }
-
-    dispatchStatus({
-        type: "app-state-applied",
-        hash: lastAppliedHash,
-        empty: true
-    });
-    onStateChanged({});
-}
-
-async function handleRemoteSnapshot(docSnap, workspaceId, generation) {
-    if (
-        workspaceId !== activeWorkspaceId ||
-        generation !== syncGeneration
-    ) {
-        return;
-    }
-
-    waitingInitialState = false;
-
-    if (!docSnap.exists()) {
-        lastAppliedHash = "";
-        await applyEmptyRemoteState(workspaceId, generation);
+    if (remoteIsOlderThanLocal(moduleId, manifest)) {
         scheduleAppStateUpload();
         return;
     }
 
+    const { stateString, snapshot } =
+        await readRemoteModuleSnapshot(
+            workspaceId,
+            moduleId,
+            manifest?.chunkCount || 0
+        );
+
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) {
+        return;
+    }
+
+    applyingRemoteState = true;
+
     try {
-        await applyRemoteState(docSnap.data(), workspaceId, generation);
+        replaceLocalSnapshotSubset(
+            snapshot,
+            key => stateModuleForKey(key) === moduleId,
+            { silent: true }
+        );
+        lastAppliedHashes.set(
+            moduleId,
+            remoteHash || hashString(stateString)
+        );
+    } finally {
+        applyingRemoteState = false;
+    }
+
+    dispatchStatus({
+        type: "app-state-module-applied",
+        moduleId,
+        hash: lastAppliedHashes.get(moduleId)
+    });
+    onStateChanged(snapshot);
+}
+
+async function applyInitialModules(
+    moduleDocs,
+    workspaceId,
+    generation
+) {
+    const mergedSnapshot = {};
+    const manifests = moduleDocs.filter(({ docSnap }) =>
+        docSnap.exists()
+    );
+
+    for (const { moduleId, docSnap } of manifests) {
+        const manifest = docSnap.data() || {};
+        const { stateString, snapshot } =
+            await readRemoteModuleSnapshot(
+                workspaceId,
+                moduleId,
+                manifest.chunkCount || 0
+            );
+
+        Object.assign(mergedSnapshot, snapshot);
+        lastAppliedHashes.set(
+            moduleId,
+            String(manifest.hash || "") || hashString(stateString)
+        );
+    }
+
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) {
+        return;
+    }
+
+    applyingRemoteState = true;
+
+    try {
+        replaceLocalSnapshot(mergedSnapshot, { silent: true });
+    } finally {
+        applyingRemoteState = false;
+    }
+
+    waitingInitialState = false;
+    dispatchStatus({
+        type: "app-state-applied",
+        modules: manifests.map(({ moduleId }) => moduleId),
+        empty: manifests.length === 0
+    });
+    onStateChanged(mergedSnapshot);
+    scheduleAppStateUpload();
+}
+
+async function handleModuleSnapshot(
+    docSnap,
+    moduleId,
+    workspaceId,
+    generation
+) {
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) {
+        return;
+    }
+
+    try {
+        if (!docSnap.exists()) {
+            applyingRemoteState = true;
+            try {
+                replaceLocalSnapshotSubset(
+                    {},
+                    key => stateModuleForKey(key) === moduleId,
+                    { silent: true }
+                );
+            } finally {
+                applyingRemoteState = false;
+            }
+            lastAppliedHashes.delete(moduleId);
+            onStateChanged({});
+            return;
+        }
+
+        await applyRemoteModule(
+            moduleId,
+            docSnap.data() || {},
+            workspaceId,
+            generation
+        );
     } catch (error) {
-        console.warn("No se pudo aplicar estado remoto Firebase.", error);
+        console.warn("No se pudo aplicar estado modular Firebase.", error);
         dispatchStatus({
             type: "app-state-error",
+            moduleId,
             message: error.message || "Error leyendo estado remoto"
         });
     }
@@ -417,7 +572,10 @@ export async function startFirebaseAppStateSync(
             ? options.onChange
             : () => {};
 
-    if (activeWorkspaceId === workspaceId && unsubscribeState) {
+    if (
+        activeWorkspaceId === workspaceId &&
+        (unsubscribeState || stateSyncStarting)
+    ) {
         return;
     }
 
@@ -429,46 +587,82 @@ export async function startFirebaseAppStateSync(
     if (!activeWorkspaceId) return;
 
     waitingInitialState = true;
+    stateSyncStarting = true;
 
     try {
-        const {
-            db,
-            firestoreModule
-        } = await services();
-
-        unsubscribeState = firestoreModule.onSnapshot(
-            firestoreModule.doc(
+        const { db, firestoreModule } = await services();
+        const readableModules = stateModuleIds().filter(canReadModule);
+        const moduleRefs = readableModules.map(moduleId => ({
+            moduleId,
+            ref: moduleDocRef(
                 db,
-                ...stateDocPath(workspaceId)
-            ),
-            docSnap =>
-                handleRemoteSnapshot(docSnap, workspaceId, generation),
-            error => {
-                if (
-                    workspaceId === activeWorkspaceId &&
-                    generation === syncGeneration
-                ) {
-                    waitingInitialState = false;
+                firestoreModule,
+                workspaceId,
+                moduleId
+            )
+        }));
+        const moduleDocs = await Promise.all(
+            moduleRefs.map(async ({ moduleId, ref }) => ({
+                moduleId,
+                docSnap: await firestoreModule.getDoc(ref)
+            }))
+        );
 
-                    // Acceso denegado al entorno activo = el entorno fue
-                    // eliminado o se perdio la membresia. Se avisa para sacar
-                    // al usuario y limpiar el estado local en cache.
-                    if (error?.code === "permission-denied") {
+        await applyInitialModules(
+            moduleDocs,
+            workspaceId,
+            generation
+        );
+
+        if (
+            workspaceId !== activeWorkspaceId ||
+            generation !== syncGeneration
+        ) {
+            return;
+        }
+
+        const unsubscribers = moduleRefs.map(({ moduleId, ref }) =>
+            firestoreModule.onSnapshot(
+                ref,
+                docSnap =>
+                    handleModuleSnapshot(
+                        docSnap,
+                        moduleId,
+                        workspaceId,
+                        generation
+                    ),
+                error => {
+                    if (
+                        workspaceId === activeWorkspaceId &&
+                        generation === syncGeneration
+                    ) {
                         dispatchStatus({
-                            type: "app-state-access-lost",
-                            workspaceId
+                            type: "app-state-error",
+                            moduleId,
+                            message:
+                                error.message ||
+                                "No se pudo leer el modulo remoto"
                         });
                     }
+                    console.warn(
+                        `No se pudo leer el modulo ${moduleId}.`,
+                        error
+                    );
                 }
-                console.warn("No se pudo leer estado Firebase.", error);
-            }
+            )
         );
+
+        unsubscribeState = () => {
+            unsubscribers.forEach(unsubscribe => unsubscribe());
+        };
     } catch (error) {
         waitingInitialState = false;
         console.warn(
-            "No se pudo iniciar sincronizacion de estado Firebase.",
+            "No se pudo iniciar sincronizacion modular Firebase.",
             error
         );
+    } finally {
+        stateSyncStarting = false;
     }
 }
 
@@ -482,26 +676,27 @@ export function stopFirebaseAppStateSync() {
     }
 
     activeWorkspaceId = "";
-    syncInFlight = false;
+    stateSyncStarting = false;
     applyingRemoteState = false;
     waitingInitialState = false;
-    lastUploadedHash = "";
-    lastAppliedHash = "";
-    // Limpia la marca de "cambios locales sin subir": pertenece al entorno que
-    // se deja. Si no se limpia, al cambiar de entorno se interpretaria el estado
-    // local (recien vaciado) como mas nuevo que el destino y se subiria encima,
-    // BORRANDO los datos del entorno destino.
-    removeKey(LOCAL_DIRTY_KEY);
+    uploadsInFlight.clear();
+    lastUploadedHashes.clear();
+    lastAppliedHashes.clear();
+    removeKey(LEGACY_DIRTY_KEY);
+    removeKey(DIRTY_MODULES_KEY);
     syncGeneration++;
 }
 
 if (typeof window !== "undefined") {
     window.addEventListener("proturnos:persistenceChanged", event => {
         const keys = event.detail?.keys || [];
+        const stateKeys = keys.filter(key => !isInternalKey(key));
 
-        if (keys.length && keys.every(isInternalKey)) return;
+        if (!stateKeys.length) return;
 
-        markLocalDirty();
+        markModulesDirty(
+            new Set(stateKeys.map(stateModuleForKey))
+        );
         scheduleAppStateUpload();
     });
 }

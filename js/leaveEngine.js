@@ -47,6 +47,7 @@ import {
     puedeReemplazarAusencia
 } from "./rulesEngine.js";
 import { createLeaveMemoTask } from "./memos.js";
+import { showConfirm } from "./dialogs.js";
 
 /* =========================================
 HELPERS
@@ -59,7 +60,7 @@ function formatKey(key) {
     return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
-function confirmCancelTurnChanges(profile, keys, label) {
+async function confirmCancelTurnChanges(profile, keys, label) {
     const swaps = getActiveSwapsForProfileKeys(profile, keys);
 
     if (!swaps.length) return true;
@@ -79,8 +80,11 @@ function confirmCancelTurnChanges(profile, keys, label) {
     ].join("\n");
     const accepted =
         typeof window === "undefined" ||
-        typeof window.confirm !== "function" ||
-        window.confirm(message);
+        await showConfirm(message, {
+            title: "Cambios de turno asociados",
+            tone: "warning",
+            confirmText: "Aplicar y anular cambios"
+        });
 
     if (!accepted) return false;
 
@@ -147,7 +151,7 @@ function validarRangoAusencias(fechas){
     return true;
 }
 
-export function aplicarAusenciaInjustificada(fecha){
+export async function aplicarAusenciaInjustificada(fecha){
     const currentProfile = getCurrentProfile();
 
     if (!currentProfile) return false;
@@ -174,7 +178,7 @@ export function aplicarAusenciaInjustificada(fecha){
     }
 
     if (
-        !confirmCancelTurnChanges(
+        !await confirmCancelTurnChanges(
             currentProfile,
             [key],
             "Ausencia Injustificada"
@@ -293,7 +297,7 @@ export async function aplicarAdministrativo(fecha, cantidad = 1){
     }
 
     if (
-        !confirmCancelTurnChanges(
+        !await confirmCancelTurnChanges(
             currentProfile,
             keys,
             "P. Administrativo"
@@ -357,7 +361,7 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
     if(admin[key]) return false;
 
     if (
-        !confirmCancelTurnChanges(
+        !await confirmCancelTurnChanges(
             currentProfile,
             [key],
             tipo === "M"
@@ -470,17 +474,18 @@ export async function validarCantidadLegalAnual(cantidad, year = new Date().getF
     }
 
     const yaTieneBloque10 = await existeBloque10Legal(year);
+    const solicitudCumpleBloque10 = cantidad >= 10;
     const dejaReserva10 = saldo - cantidad >= 10;
 
     if (
         !yaTieneBloque10 &&
-        cantidad < 10 &&
+        !solicitudCumpleBloque10 &&
         !dejaReserva10
     ) {
         return {
             ok: false,
             saldo,
-            message: "El trabajador a\u00fan debe reservar saldo para solicitar 10 F. Legales continuos. Reduce la cantidad o solicita un bloque de al menos 10 d\u00edas."
+            message: "El trabajador a\u00fan debe reservar saldo para solicitar 10 F. Legales continuos. Reduce la cantidad o solicita ahora un bloque de al menos 10 d\u00edas h\u00e1biles."
         };
     }
 
@@ -545,7 +550,7 @@ export async function aplicarLegal(fecha, cantidad){
     if(!validarRangoAusencias(nuevos)) return false;
 
     if (
-        !confirmCancelTurnChanges(
+        !await confirmCancelTurnChanges(
             getCurrentProfile(),
             nuevos,
             "F. Legal"
@@ -602,6 +607,8 @@ export async function aplicarLegal(fecha, cantidad){
 COMPENSATORIO
 ========================================= */
 
+const COMPENSATORY_BLOCK_OPTIONS = new Set([10, 20]);
+
 function ultimoLegalHasta(fechaLimite){
 
     const legal = getLegalDays();
@@ -627,7 +634,12 @@ function ultimoLegalHasta(fechaLimite){
 export async function aplicarComp(fecha, cantidad = 10){
     const total = Number(cantidad);
 
-    if (!total || total <= 0 || !Number.isInteger(total)) {
+    if (
+        !total ||
+        total <= 0 ||
+        !Number.isInteger(total) ||
+        !COMPENSATORY_BLOCK_OPTIONS.has(total)
+    ) {
         return false;
     }
 
@@ -702,7 +714,7 @@ export async function aplicarComp(fecha, cantidad = 10){
     }
 
     if (
-        !confirmCancelTurnChanges(
+        !await confirmCancelTurnChanges(
             getCurrentProfile(),
             nuevos,
             "F. Compensatorio"
@@ -919,7 +931,7 @@ export async function aplicarLicencia(
     }
 
     if (
-        !confirmCancelTurnChanges(
+        !await confirmCancelTurnChanges(
             getCurrentProfile(),
             keys,
             absenceLabel(type)

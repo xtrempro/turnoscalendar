@@ -6,12 +6,60 @@ import {
 } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { getWorkerAppLinkForProfile } from "./workerAppDataSync.js";
+import { showConfirm } from "./dialogs.js";
+import { getProfiles } from "./storage.js";
+import { listWorkspaceMembersForPermissions } from "./workspacePermissions.js";
 
 const WORKER_APP_URL = "https://turnoplusfuncionarios.web.app/";
 const INVITE_DURATION_DAYS = 14;
 
 function normalizeEmail(value) {
     return String(value || "").trim().toLowerCase();
+}
+
+async function workspaceMemberEmailKeys(workspace, user) {
+    const keys = new Set();
+    const userEmail = normalizeEmail(user?.email);
+
+    if (userEmail) keys.add(userEmail);
+    if (!workspace?.id) return keys;
+
+    try {
+        const members = await listWorkspaceMembersForPermissions(workspace);
+
+        members.forEach(member => {
+            const email = normalizeEmail(member.email);
+
+            if (email) keys.add(email);
+        });
+    } catch (error) {
+        console.warn(
+            "No se pudo validar correos administradores antes de invitar.",
+            error
+        );
+    }
+
+    return keys;
+}
+
+async function assertWorkerEmailCanBeInvited(profile, email, workspace, user) {
+    if (!email) return;
+
+    const duplicateProfile = getProfiles().find(item =>
+        item.name !== profile.name &&
+        normalizeEmail(item.email) === email
+    );
+
+    if (!duplicateProfile) return;
+
+    const privilegedEmails =
+        await workspaceMemberEmailKeys(workspace, user);
+
+    if (privilegedEmails.has(email)) return;
+
+    throw new Error(
+        `Ya existe un trabajador creado con ese correo (${duplicateProfile.name}). Cada trabajador debe tener un correo distinto.`
+    );
 }
 
 function createInviteToken() {
@@ -101,6 +149,37 @@ function closeInviteDialog(backdrop) {
     backdrop?.remove();
 }
 
+async function deleteWorkerEmailInviteMirror(
+    firestoreModule,
+    db,
+    email,
+    inviteId
+) {
+    const cleanEmail = normalizeEmail(email);
+
+    if (!cleanEmail || !inviteId) return;
+
+    try {
+        await firestoreModule.deleteDoc(
+            firestoreModule.doc(
+                db,
+                "workerAppEmailInvites",
+                cleanEmail,
+                "items",
+                inviteId
+            )
+        );
+    } catch (error) {
+        // Este indice es solo una copia para que la PWA encuentre invitaciones
+        // por correo. Si no existe, o si quedo con otro email antiguo, no debe
+        // impedir el desenlace real (workerLinks es el acceso efectivo).
+        console.warn(
+            "No se pudo limpiar el indice de invitacion por correo.",
+            error
+        );
+    }
+}
+
 function showInviteDialog({
     profile,
     workspace,
@@ -178,6 +257,11 @@ function showInviteDialog({
 
 async function unlinkWorkerApp(workspaceId, link) {
     const { db, firestoreModule } = await getFirebaseServices();
+    const batch = firestoreModule.writeBatch(db);
+    const emailInviteCleanup = {
+        email: normalizeEmail(link.workerEmail),
+        inviteId: link.inviteId || ""
+    };
 
     // Se ELIMINA el documento (no se deja como "unlinked"): las reglas de
     // Firestore consideran "enlazado" a un trabajador por la EXISTENCIA del
@@ -185,7 +269,7 @@ async function unlinkWorkerApp(workspaceId, link) {
     // "unlinked", el trabajador seguiria pudiendo leer datos y enviar
     // solicitudes (el documento existe), aunque el web lo oculte. Eliminarlo
     // revoca el acceso por completo.
-    await firestoreModule.deleteDoc(
+    batch.delete(
         firestoreModule.doc(
             db,
             "workspaces",
@@ -193,6 +277,35 @@ async function unlinkWorkerApp(workspaceId, link) {
             "workerLinks",
             link.uid
         )
+    );
+    batch.delete(
+        firestoreModule.doc(
+            db,
+            "users",
+            link.uid,
+            "workerLinks",
+            workspaceId
+        )
+    );
+
+    if (link.inviteId) {
+        batch.delete(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspaceId,
+                "workerAppInvites",
+                link.inviteId
+            )
+        );
+    }
+
+    await batch.commit();
+    await deleteWorkerEmailInviteMirror(
+        firestoreModule,
+        db,
+        emailInviteCleanup.email,
+        emailInviteCleanup.inviteId
     );
 }
 
@@ -258,8 +371,14 @@ function showUnlinkDialog({ profile, workspace, link }) {
     backdrop
         .querySelector("[data-worker-invite-action='unlink']")
         ?.addEventListener("click", async event => {
-            const confirmed = window.confirm(
-                `Deseas desenlazar la app de ${profileName}? Dejara de recibir su informacion en la app y debera enlazarse nuevamente.`
+            const confirmed = await showConfirm(
+                `${profileName} dejará de recibir información en la app y deberá enlazarse nuevamente.`,
+                {
+                    title: "Desenlazar aplicación",
+                    tone: "danger",
+                    confirmText: "Desenlazar",
+                    destructive: true
+                }
             );
 
             if (!confirmed) return;
@@ -270,6 +389,7 @@ function showUnlinkDialog({ profile, workspace, link }) {
             try {
                 await unlinkWorkerApp(workspace.id, link);
                 closeInviteDialog(backdrop);
+                alert("App desenlazada correctamente.");
             } catch (error) {
                 console.error(error);
                 button.disabled = false;
@@ -284,38 +404,70 @@ function showUnlinkDialog({ profile, workspace, link }) {
     document.body.appendChild(backdrop);
 }
 
-export async function openWorkerAppInviteDialog(profile) {
+async function createWorkerAppInvite(
+    profile,
+    {
+        requireEmail = false,
+        ignoreExistingLink = false,
+        replaceLink = null
+    } = {}
+) {
     if (!profile?.name) {
-        alert("Selecciona un trabajador para generar el enlace.");
-        return;
+        throw new Error(
+            "Selecciona un trabajador para generar el enlace."
+        );
     }
 
     const user = getCurrentFirebaseUser();
     const workspace = getActiveWorkspace();
 
     if (!user) {
-        alert("Debes iniciar sesion para enviar enlaces de la app.");
-        return;
+        throw new Error(
+            "Debes iniciar sesion para enviar enlaces de la app."
+        );
     }
 
     if (!workspace?.id) {
-        alert("Selecciona un entorno Firebase antes de enviar el enlace.");
-        return;
+        throw new Error(
+            "Selecciona un entorno Firebase antes de enviar el enlace."
+        );
     }
 
-    const existingLink = getWorkerAppLinkForProfile(profile);
+    const existingLink = ignoreExistingLink || replaceLink
+        ? null
+        : getWorkerAppLinkForProfile(profile);
 
     if (existingLink) {
-        showUnlinkDialog({ profile, workspace, link: existingLink });
-        return;
+        return {
+            status: "linked",
+            profile,
+            workspace,
+            link: existingLink
+        };
     }
 
     const email = normalizeEmail(profile.email);
     const phoneE164 = normalizeChileMobile(profile.phone);
 
+    await assertWorkerEmailCanBeInvited(
+        profile,
+        email,
+        workspace,
+        user
+    );
+
+    if (requireEmail && !email) {
+        return {
+            status: "no_email",
+            profile,
+            workspace
+        };
+    }
+
     if (!email && !phoneE164) {
-        alert("El perfil necesita correo o telefono para enviar la invitacion.");
-        return;
+        throw new Error(
+            "El perfil necesita correo o telefono para enviar la invitacion."
+        );
     }
 
     const { db, firestoreModule } = await getFirebaseServices();
@@ -353,6 +505,50 @@ export async function openWorkerAppInviteDialog(profile) {
         expiresAt
     };
     const batch = firestoreModule.writeBatch(db);
+    let previousEmailInviteCleanup = null;
+
+    if (replaceLink?.uid) {
+        batch.delete(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspace.id,
+                "workerLinks",
+                replaceLink.uid
+            )
+        );
+        batch.delete(
+            firestoreModule.doc(
+                db,
+                "users",
+                replaceLink.uid,
+                "workerLinks",
+                workspace.id
+            )
+        );
+
+        if (replaceLink.inviteId) {
+            batch.delete(
+                firestoreModule.doc(
+                    db,
+                    "workspaces",
+                    workspace.id,
+                    "workerAppInvites",
+                    replaceLink.inviteId
+                )
+            );
+
+            const previousEmail =
+                normalizeEmail(replaceLink.workerEmail);
+
+            if (previousEmail) {
+                previousEmailInviteCleanup = {
+                    email: previousEmail,
+                    inviteId: replaceLink.inviteId
+                };
+            }
+        }
+    }
 
     batch.set(canonicalRef, payload);
 
@@ -374,11 +570,85 @@ export async function openWorkerAppInviteDialog(profile) {
 
     await batch.commit();
 
-    showInviteDialog({
+    if (previousEmailInviteCleanup) {
+        await deleteWorkerEmailInviteMirror(
+            firestoreModule,
+            db,
+            previousEmailInviteCleanup.email,
+            previousEmailInviteCleanup.inviteId
+        );
+    }
+
+    return {
+        status: "created",
         profile,
         workspace,
         inviteUrl,
         email,
         phoneE164
-    });
+    };
+}
+
+/**
+ * Crea una invitacion pendiente para que Cloud Functions envie el correo.
+ * No abre modales: se usa al guardar un perfil con correo nuevo o modificado.
+ */
+export async function sendWorkerAppInviteEmail(
+    profile,
+    {
+        ignoreExistingLink = false,
+        replaceLink = null
+    } = {}
+) {
+    try {
+        const result = await createWorkerAppInvite(
+            profile,
+            {
+                requireEmail: true,
+                ignoreExistingLink,
+                replaceLink
+            }
+        );
+
+        return {
+            sent: result.status === "created",
+            status: result.status,
+            email: result.email || normalizeEmail(profile?.email),
+            inviteUrl: result.inviteUrl || ""
+        };
+    } catch (error) {
+        console.warn(
+            "No se pudo crear la invitacion automatica de la app.",
+            error
+        );
+
+        return {
+            sent: false,
+            status: "error",
+            email: normalizeEmail(profile?.email),
+            error
+        };
+    }
+}
+
+export async function openWorkerAppInviteDialog(profile) {
+    try {
+        const result = await createWorkerAppInvite(profile);
+
+        if (result.status === "linked") {
+            showUnlinkDialog({
+                profile: result.profile,
+                workspace: result.workspace,
+                link: result.link
+            });
+            return;
+        }
+
+        showInviteDialog(result);
+    } catch (error) {
+        alert(
+            error.message ||
+            "No se pudo generar la invitacion para la app."
+        );
+    }
 }

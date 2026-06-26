@@ -265,6 +265,13 @@ function requestDays(request, fallback = 1) {
         : fallback;
 }
 
+function normalizeCompensatoryBlockAmount(value) {
+    const amount = Number(value);
+
+    if (amount === 10 || amount === 20) return amount;
+    return 0;
+}
+
 function normalizeBalanceValue(value) {
     return Math.round(Number(value || 0) * 10) / 10;
 }
@@ -372,10 +379,20 @@ async function applyLeaveRequest(request, profile, date) {
 
         if (request.type === "comp") {
             const manual = getManualLeaveBalances(year, profile);
-            const fallback = Number(manual.comp) > 0
-                ? Number(manual.comp)
-                : 10;
-            const amount = requestDays(request, fallback);
+            const availableBlock = normalizeCompensatoryBlockAmount(
+                Number(manual.comp) > 0
+                    ? Number(manual.comp)
+                    : 10
+            );
+            const requestedBlock = normalizeCompensatoryBlockAmount(
+                requestDays(request, availableBlock || 10)
+            );
+            const amount = requestedBlock || availableBlock;
+
+            if (!amount) {
+                return false;
+            }
+
             balanceField = "comp";
             balanceAmount = amount;
             return aplicarComp(date, amount);
@@ -1129,7 +1146,7 @@ async function acceptRequest(request) {
 
     if (!result.ok) {
         alert(result.message);
-        return;
+        return false;
     }
 
     saveUpdatedRequest(request.id, {
@@ -1148,12 +1165,14 @@ async function acceptRequest(request) {
             requestType: request.type
         }
     );
+
+    return true;
 }
 
 async function rejectRequest(request) {
     const reason = await showRejectDialog(request);
 
-    if (!reason) return;
+    if (!reason) return false;
 
     saveUpdatedRequest(request.id, {
         status: "rejected",
@@ -1183,6 +1202,34 @@ async function rejectRequest(request) {
             requestType: request.type
         }
     );
+
+    return true;
+}
+
+export async function acceptWorkerRequestById(requestId) {
+    const request = getWorkerRequests().find(item =>
+        item.id === requestId
+    );
+
+    if (!request || request.status !== "pending") {
+        alert("Esta solicitud ya no esta pendiente.");
+        return false;
+    }
+
+    return acceptRequest(request);
+}
+
+export async function rejectWorkerRequestById(requestId) {
+    const request = getWorkerRequests().find(item =>
+        item.id === requestId
+    );
+
+    if (!request || request.status !== "pending") {
+        alert("Esta solicitud ya no esta pendiente.");
+        return false;
+    }
+
+    return rejectRequest(request);
 }
 
 async function acceptWorkspaceLinkRequest(request) {

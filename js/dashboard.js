@@ -266,7 +266,7 @@ function profileOverlapsStaffingYear(profile, year, type) {
         }
 
         return dateRangeOverlapsYear(
-            profile.contractStart || profile.unitEntryDate,
+            profile.contractStart,
             profile.contractEnd,
             year,
             { includeUndated }
@@ -276,8 +276,7 @@ function profileOverlapsStaffingYear(profile, year, type) {
     if (type === "honorarios") {
         return dateRangeOverlapsYear(
             profile.honorariaStart ||
-                profile.contractStart ||
-                profile.unitEntryDate,
+                profile.contractStart,
             profile.honorariaEnd || profile.contractEnd,
             year,
             { includeUndated }
@@ -285,7 +284,7 @@ function profileOverlapsStaffingYear(profile, year, type) {
     }
 
     return dateRangeOverlapsYear(
-        profile.unitEntryDate || profile.contractStart,
+        profile.contractStart,
         profile.contractEnd,
         year,
         { includeUndated }

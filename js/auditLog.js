@@ -12,6 +12,7 @@ import {
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
+import { showConfirm } from "./dialogs.js";
 
 const KEY = "auditLog";
 const MAX_LOGS = 1500;
@@ -759,6 +760,7 @@ function cancelReplacementsForAbsence(profile, removedKeys, sourceLog) {
 
     saveReplacements(nextReplacements);
     cancelLinkedReplacementRequests(canceled, sourceLog);
+    cancelReplacementAuditLogs(canceled, sourceLog, now, actor);
 
     canceled.forEach(replacement => {
         const date = replacement.date || "fecha sin detalle";
@@ -777,6 +779,50 @@ function cancelReplacementsForAbsence(profile, removedKeys, sourceLog) {
     });
 
     return canceled;
+}
+
+function cancelReplacementAuditLogs(
+    replacements,
+    sourceLog,
+    canceledAt,
+    canceledBy
+) {
+    const replacementIds = new Set(
+        replacements
+            .map(replacement => String(replacement?.id || ""))
+            .filter(Boolean)
+    );
+
+    if (!replacementIds.size) return;
+
+    let changed = false;
+    const nextLogs = getAuditLogs().map(log => {
+        const replacementId = String(
+            log?.meta?.replacementId || ""
+        );
+
+        if (
+            log.id === sourceLog.id ||
+            log.canceledAt ||
+            log.category !== AUDIT_CATEGORY.OVERTIME ||
+            !replacementIds.has(replacementId)
+        ) {
+            return log;
+        }
+
+        changed = true;
+        return {
+            ...log,
+            canceledAt,
+            canceledBy,
+            cancellationDetails:
+                `Reemplazo anulado automaticamente al deshacer desde LOG: ${sourceLog.action || "permiso/ausencia"}.`
+        };
+    });
+
+    if (changed) {
+        setJSON(KEY, nextLogs.slice(-MAX_LOGS));
+    }
 }
 
 function cancelReplacementFromLog(log) {
@@ -1176,8 +1222,13 @@ export function renderAuditLogPanel() {
         button.onclick = async event => {
             event.stopPropagation();
 
-            const confirmed = window.confirm(
-                "Deseas deshacer esta accion? El registro quedara marcado como anulado."
+            const confirmed = await showConfirm(
+                "El registro quedará marcado como anulado y se intentará revertir la acción en el calendario.",
+                {
+                    title: "Deshacer acción",
+                    tone: "warning",
+                    confirmText: "Deshacer"
+                }
             );
 
             if (!confirmed) return;

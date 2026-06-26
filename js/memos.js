@@ -1,6 +1,12 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
 import { getJSON, setJSON } from "./persistence.js";
+import {
+    ATTACHMENT_ACCEPT,
+    hasAttachmentContent,
+    openAttachmentFile,
+    readAttachmentFile
+} from "./attachmentUtils.js";
 
 const MEMOS_KEY = "memos";
 const STATUS_PENDING = "pending";
@@ -24,8 +30,9 @@ function normalizeStatus(status) {
 function normalizeDocument(doc = {}) {
     const name = String(doc.name || "").trim();
     const dataUrl = String(doc.dataUrl || "");
+    const storagePath = String(doc.storagePath || "");
 
-    if (!name || !dataUrl) return null;
+    if (!name || (!dataUrl && !storagePath)) return null;
 
     return {
         id: String(doc.id || makeId("memo_doc")),
@@ -33,6 +40,8 @@ function normalizeDocument(doc = {}) {
         type: String(doc.type || "application/octet-stream"),
         size: Number(doc.size) || 0,
         dataUrl,
+        storagePath,
+        uploadedByUid: String(doc.uploadedByUid || ""),
         attachedAt: doc.attachedAt || new Date().toISOString()
     };
 }
@@ -453,24 +462,22 @@ function attachMemoDocument(id, document) {
     }
 }
 
-function fileToMemoDocument(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-
-        reader.onerror = () => reject(reader.error);
-        reader.onload = () => resolve({
-            id: makeId("memo_doc"),
-            name: file.name,
-            type: file.type || "application/octet-stream",
-            size: file.size || 0,
-            dataUrl: reader.result,
-            attachedAt: new Date().toISOString()
-        });
-        reader.readAsDataURL(file);
+async function fileToMemoDocument(file, memoId) {
+    const document = await readAttachmentFile(file, {
+        moduleId: "memos",
+        ownerId: memoId,
+        recordId: "memo-documents"
     });
+
+    return {
+        ...document,
+        attachedAt:
+            document?.addedAt ||
+            new Date().toISOString()
+    };
 }
 
-function openMemoDocument(memoId, documentId) {
+async function openMemoDocument(memoId, documentId) {
     if (typeof window === "undefined") return;
 
     const memo = getMemos().find(item => item.id === memoId);
@@ -478,15 +485,13 @@ function openMemoDocument(memoId, documentId) {
         item.id === documentId
     );
 
-    if (!document?.dataUrl) return;
+    if (!hasAttachmentContent(document)) return;
 
-    const link = window.document.createElement("a");
-
-    link.href = document.dataUrl;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.download = document.name;
-    link.click();
+    try {
+        await openAttachmentFile(document);
+    } catch (error) {
+        alert(error?.message || "No se pudo abrir el documento.");
+    }
 }
 
 function statusButtonHTML(status, label, count) {
@@ -515,7 +520,7 @@ function documentsHTML(memo) {
                 : `<small>Sin documentos adjuntos.</small>`}
             <label class="memo-file-button">
                 Adjuntar documento
-                <input type="file" data-memo-file="${escapeHTML(memo.id)}">
+                <input type="file" accept="${ATTACHMENT_ACCEPT}" data-memo-file="${escapeHTML(memo.id)}">
             </label>
         </div>
     `;
@@ -644,7 +649,10 @@ export function renderMemosPanel() {
             if (!file) return;
 
             try {
-                const document = await fileToMemoDocument(file);
+                const document = await fileToMemoDocument(
+                    file,
+                    input.dataset.memoFile
+                );
                 attachMemoDocument(input.dataset.memoFile, document);
             } catch (error) {
                 alert("No se pudo adjuntar el documento.");
@@ -656,8 +664,8 @@ export function renderMemosPanel() {
     });
 
     panel.querySelectorAll("[data-memo-doc]").forEach(button => {
-        button.onclick = () => {
-            openMemoDocument(
+        button.onclick = async () => {
+            await openMemoDocument(
                 button.dataset.memoId,
                 button.dataset.memoDoc
             );

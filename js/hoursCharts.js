@@ -165,12 +165,12 @@ function renderProfileHistoryChart(rows, profileName, year, month) {
                     : 0;
 
                 return `
-                    <div class="hhee-history-item" title="${row.label}: ${formatHour(row.day)}h diurnas / ${formatHour(row.night)}h nocturnas">
+                    <div class="hhee-history-item" title="${escapeHTML(row.label)}: ${escapeHTML(formatHour(row.day))}h diurnas / ${escapeHTML(formatHour(row.night))}h nocturnas">
                         <div class="hhee-history-stack" style="height:${height}%">
                             <span class="hhee-bar-night" style="height:${nightPercent}%"></span>
                             <span class="hhee-bar-day" style="height:${dayPercent}%"></span>
                         </div>
-                        <small>${row.label}</small>
+                        <small>${escapeHTML(row.label)}</small>
                     </div>
                 `;
             }).join("")}

@@ -1,7 +1,13 @@
 import { isoFromKey, parseKeyParts as parseKey } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
-import { readFileAsDataURL, dataUrlToBlob } from "./attachmentUtils.js";
+import {
+    ATTACHMENT_ACCEPT,
+    deleteStoredAttachment,
+    hasAttachmentContent,
+    openAttachmentFile,
+    readAttachmentFiles
+} from "./attachmentUtils.js";
 import {
     getCurrentProfile,
     getProfiles,
@@ -23,6 +29,7 @@ import { getJSON, setJSON } from "./persistence.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
+import { showConfirm } from "./dialogs.js";
 import {
     formatContractDate,
     getAllReplacementContracts,
@@ -816,35 +823,20 @@ function staffingReminderDefaultDate() {
     ].join("-");
 }
 
-async function readApplicantDocuments(files) {
-    const docs = [];
-
-    for (const file of Array.from(files || [])) {
-        docs.push({
-            name: file.name,
-            type: file.type || "Archivo",
-            size: file.size || 0,
-            dataUrl: await readFileAsDataURL(file)
-        });
-    }
-
-    return docs;
+async function readApplicantDocuments(files, applicantId) {
+    return readAttachmentFiles(files, {
+        moduleId: "weekly",
+        ownerId: applicantId,
+        recordId: "applicant-documents"
+    });
 }
 
-function openApplicantDocument(doc) {
-    if (!doc?.dataUrl) {
-        alert("Este documento no tiene contenido disponible para visualizar.");
-        return;
+async function openApplicantDocument(doc) {
+    try {
+        await openAttachmentFile(doc, { newTab: true });
+    } catch (error) {
+        alert(error?.message || "No se pudo abrir el documento.");
     }
-
-    const url = URL.createObjectURL(dataUrlToBlob(doc.dataUrl));
-    const opened = window.open(url, "_blank", "noopener");
-
-    if (!opened) {
-        alert("El navegador bloqueo la ventana emergente. Permite pop-ups para visualizar el documento.");
-    }
-
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 function formatFileSize(size) {
@@ -1164,8 +1156,8 @@ export function renderStaffingMedicalChart() {
                 <div>
                     <h4>Licencias \u00faltimos 2 a\u00f1os</h4>
                     <p>
-                        ${selectedProfile.name} vs ${peers.length} trabajador(es)
-                        ${selectedProfile.estamento} | ${firstLabel} - ${latestLabel}
+                        ${escapeHTML(selectedProfile.name)} vs ${peers.length} trabajador(es)
+                        ${escapeHTML(selectedProfile.estamento)} | ${escapeHTML(firstLabel)} - ${escapeHTML(latestLabel)}
                     </p>
                 </div>
 
@@ -1198,14 +1190,14 @@ export function renderStaffingMedicalChart() {
                         (row.peerMode / maxValue) * 100;
 
                     return `
-                        <div class="medical-chart-month" title="${row.label}: LM ${row.license}, LMP ${row.professional}, promedio pares ${formatDecimal(row.peerAverage)}, moda pares ${formatDecimal(row.peerMode)}">
+                        <div class="medical-chart-month" title="${escapeHTML(row.label)}: LM ${row.license}, LMP ${row.professional}, promedio pares ${escapeHTML(formatDecimal(row.peerAverage))}, moda pares ${escapeHTML(formatDecimal(row.peerMode))}">
                             <div class="medical-chart-bar">
                                 <span class="medical-ref medical-ref--average" style="bottom:${averageBottom}%"></span>
                                 <span class="medical-ref medical-ref--mode" style="bottom:${modeBottom}%"></span>
                                 <span class="medical-stack medical-stack--professional" style="height:${professionalHeight}%"></span>
                                 <span class="medical-stack medical-stack--license" style="height:${licenseHeight}%"></span>
                             </div>
-                            <small>${row.label}</small>
+                            <small>${escapeHTML(row.label)}</small>
                         </div>
                     `;
                 }).join("")}
@@ -1331,7 +1323,7 @@ function renderApplicantDocuments(applicant) {
                 </small>
             </span>
             <span class="attachment-actions">
-                <button class="secondary-button attachment-view" type="button" data-applicant-doc="${escapeHTML(applicant.id)}" data-doc-index="${index}" ${doc.dataUrl ? "" : "disabled"}>
+                <button class="secondary-button attachment-view" type="button" data-applicant-doc="${escapeHTML(applicant.id)}" data-doc-index="${index}" ${hasAttachmentContent(doc) ? "" : "disabled"}>
                     Ver
                 </button>
             </span>
@@ -1465,7 +1457,7 @@ function renderApplicantsPanel() {
             </label>
             <label>
                 <span>Documentos</span>
-                <input name="documents" type="file" multiple>
+                <input name="documents" type="file" multiple accept="${ATTACHMENT_ACCEPT}">
             </label>
             <label>
                 <span>Experiencia Laboral</span>
@@ -1543,12 +1535,15 @@ function bindApplicantsPanel(target) {
             }
 
             try {
+                const applicantId =
+                    `app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
                 const documents = await readApplicantDocuments(
-                    form.elements.documents?.files
+                    form.elements.documents?.files,
+                    applicantId
                 );
                 const applicants = getApplicants();
                 const record = {
-                    id: `app_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                    id: applicantId,
                     name,
                     phone: String(formData.get("phone") || "").trim(),
                     receivedDate:
@@ -1588,7 +1583,7 @@ function bindApplicantsPanel(target) {
     target
         .querySelectorAll("[data-applicant-delete]")
         .forEach(button => {
-            button.onclick = () => {
+            button.onclick = async () => {
                 const id = button.dataset.applicantDelete;
                 const applicants = getApplicants();
                 const applicant = applicants.find(item =>
@@ -1597,12 +1592,30 @@ function bindApplicantsPanel(target) {
 
                 if (
                     !applicant ||
-                    !confirm(`Eliminar postulante ${applicant.name}?`)
+                    !await showConfirm(
+                        `Se eliminará el registro de ${applicant.name} y sus documentos asociados.`,
+                        {
+                            title: "Eliminar postulante",
+                            tone: "danger",
+                            confirmText: "Eliminar",
+                            destructive: true
+                        }
+                    )
                 ) {
                     return;
                 }
 
                 saveApplicants(applicants.filter(item => item.id !== id));
+                await Promise.all(
+                    (applicant.documents || []).map(document =>
+                        deleteStoredAttachment(document).catch(error => {
+                            console.warn(
+                                "No se pudo eliminar un adjunto remoto.",
+                                error
+                            );
+                        })
+                    )
+                );
                 addAuditLog(
                     AUDIT_CATEGORY.STAFFING,
                     "Elimino postulante",
@@ -1616,14 +1629,14 @@ function bindApplicantsPanel(target) {
     target
         .querySelectorAll("[data-applicant-doc]")
         .forEach(button => {
-            button.onclick = () => {
+            button.onclick = async () => {
                 const applicant = getApplicants().find(item =>
                     item.id === button.dataset.applicantDoc
                 );
                 const doc =
                     applicant?.documents?.[Number(button.dataset.docIndex)];
 
-                openApplicantDocument(doc);
+                await openApplicantDocument(doc);
             };
         });
 }
@@ -3581,11 +3594,11 @@ export function renderReplacementContractsLog(){
             <h4>Contratos personal Reemplazo</h4>
             ${contracts.map(contract => `
                 <article class="staffing-contract-item">
-                    <strong>${contract.worker}</strong>
-                    <span>${contract.estamento}</span>
+                    <strong>${escapeHTML(contract.worker)}</strong>
+                    <span>${escapeHTML(contract.estamento)}</span>
                     <small>
-                        ${formatContractDate(contract.start)} - ${formatContractDate(contract.end)}
-                        | Reemplaza a: ${contract.replaces}
+                        ${escapeHTML(formatContractDate(contract.start))} - ${escapeHTML(formatContractDate(contract.end))}
+                        | Reemplaza a: ${escapeHTML(contract.replaces)}
                     </small>
                 </article>
             `).join("")}

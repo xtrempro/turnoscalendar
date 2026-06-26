@@ -12,6 +12,7 @@ import { getHourReturn } from "./hourReturns.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
+import { showConfirm } from "./dialogs.js";
 
 const TASKS_KEY = "weekly_task_assignment_tasks";
 const ASSIGNMENTS_KEY = "weekly_task_assignment_entries";
@@ -1318,8 +1319,20 @@ function bindShellEvents(root) {
     root
         .querySelectorAll("[data-task-delete]")
         .forEach(button => {
-            button.onclick = () => {
-                if (!confirm("Eliminar esta tarea y sus asignaciones?")) return;
+            button.onclick = async () => {
+                if (
+                    !await showConfirm(
+                        "Se eliminará la tarea junto con todas sus asignaciones.",
+                        {
+                            title: "Eliminar tarea",
+                            tone: "danger",
+                            confirmText: "Eliminar",
+                            destructive: true
+                        }
+                    )
+                ) {
+                    return;
+                }
                 deleteTask(button.dataset.taskDelete);
                 renderTaskAssignmentsPanel();
             };

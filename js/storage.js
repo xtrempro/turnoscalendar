@@ -1460,6 +1460,15 @@ export function updateProfile(oldName, nextProfile){
 
     saveSwaps(swaps);
 
+    const shiftMoves = getJSON("shiftMoves", []).map(move => ({
+        ...move,
+        profile: move.profile === oldName
+            ? targetName
+            : move.profile
+    }));
+
+    setJSON("shiftMoves", shiftMoves);
+
     const replacements = getReplacements().map(replacement => ({
         ...replacement,
         worker: replacement.worker === oldName

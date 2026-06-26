@@ -3,6 +3,7 @@ import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
+import { showConfirm } from "./dialogs.js";
 
 const LEGACY_STORAGE_KEY = "kanban_cards";
 const STORAGE_KEY_PREFIX = "kanban_private_cards";
@@ -356,8 +357,20 @@ function bindKanbanEvents(root) {
     }
 
     root.querySelectorAll("[data-kanban-delete]").forEach(button => {
-        button.onclick = () => {
-            if (!confirm("Eliminar esta tarjeta?")) return;
+        button.onclick = async () => {
+            if (
+                !await showConfirm(
+                    "La tarjeta se eliminará del tablero.",
+                    {
+                        title: "Eliminar tarjeta",
+                        tone: "danger",
+                        confirmText: "Eliminar",
+                        destructive: true
+                    }
+                )
+            ) {
+                return;
+            }
 
             deleteCard(button.dataset.kanbanDelete);
             renderKanbanBoard();

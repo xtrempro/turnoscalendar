@@ -6,22 +6,138 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    function isWorkspaceMember(workspaceId) {
+    function hasMfa() {
       return signedIn() &&
-        firestore.exists(/databases/(default)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+        request.auth.token.firebase != null &&
+        request.auth.token.firebase.sign_in_second_factor != null;
     }
 
-    function allowedFile() {
-      return request.resource.size < 10 * 1024 * 1024 &&
-        request.resource.contentType.matches(
-          "image/.*|application/pdf|application/msword|application/vnd.openxmlformats-officedocument.wordprocessingml.document|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet|text/plain"
+    function mfaRequirementActive() {
+      // TOTP queda listo para reactivarse, pero no se exige en esta etapa
+      // comercial inicial.
+      return false;
+    }
+
+    function member(workspaceId) {
+      return firestore.get(
+        /databases/(default)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)
+      ).data;
+    }
+
+    function memberRequiresMfa(workspaceId) {
+      let data = member(workspaceId);
+      let permissions =
+        "permissions" in data ? data.permissions : {};
+
+      return data.role == "owner" ||
+        ("turnos" in permissions && permissions.turnos.edit == true) ||
+        ("weekly" in permissions && permissions.weekly.edit == true) ||
+        ("tasks" in permissions && permissions.tasks.edit == true) ||
+        ("kanban" in permissions && permissions.kanban.edit == true) ||
+        ("agenda" in permissions && permissions.agenda.edit == true) ||
+        ("profile" in permissions && permissions.profile.edit == true) ||
+        ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
+        ("requests" in permissions && permissions.requests.edit == true) ||
+        ("memos" in permissions && permissions.memos.edit == true) ||
+        ("swap" in permissions && permissions.swap.edit == true) ||
+        ("hours" in permissions && permissions.hours.edit == true) ||
+        ("reports" in permissions && permissions.reports.edit == true) ||
+        ("dashboard" in permissions && permissions.dashboard.edit == true) ||
+        ("log" in permissions && permissions.log.edit == true);
+    }
+
+    function isWorkspaceMember(workspaceId) {
+      return signedIn() &&
+        firestore.exists(/databases/(default)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+        (
+          !mfaRequirementActive() ||
+          !memberRequiresMfa(workspaceId) ||
+          hasMfa()
         );
     }
 
-    match /workspaces/{workspaceId}/{allPaths=**} {
-      allow read: if isWorkspaceMember(workspaceId);
-      allow create, update: if isWorkspaceMember(workspaceId) && allowedFile();
-      allow delete: if isWorkspaceMember(workspaceId);
+    function isWorkspaceOwner(workspaceId) {
+      return isWorkspaceMember(workspaceId) &&
+        member(workspaceId).role == "owner";
+    }
+
+    function canViewModule(workspaceId, moduleId) {
+      let permissions =
+        "permissions" in member(workspaceId)
+          ? member(workspaceId).permissions
+          : {};
+
+      return isWorkspaceOwner(workspaceId) ||
+        (
+          moduleId in permissions &&
+          permissions[moduleId].view == true
+        );
+    }
+
+    function canEditModule(workspaceId, moduleId) {
+      let permissions =
+        "permissions" in member(workspaceId)
+          ? member(workspaceId).permissions
+          : {};
+
+      return isWorkspaceOwner(workspaceId) ||
+        (
+          moduleId in permissions &&
+          permissions[moduleId].edit == true
+        );
+    }
+
+    function allowedFile() {
+      // Solo imagenes raster (NO svg, que puede contener scripts), PDF, Office y
+      // texto plano. Limite de 5 MB para reducir abuso y mantener los adjuntos
+      // compatibles con el almacenamiento local/offline del navegador.
+      return request.resource.size > 0 &&
+        request.resource.size <= 5 * 1024 * 1024 &&
+        request.resource.contentType.matches(
+          "image/(png|jpeg|gif|webp|bmp|heic|heif)|application/pdf|application/msword|application/vnd.openxmlformats-officedocument.wordprocessingml.document|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet|text/plain|text/csv"
+        );
+    }
+
+    match /workspaces/{workspaceId}/attachments/{moduleId}/{ownerId}/{recordId}/{fileName} {
+      allow read: if isWorkspaceMember(workspaceId) &&
+        (
+          canViewModule(workspaceId, moduleId) ||
+          resource.metadata.uploadedByUid == request.auth.uid
+        );
+
+      allow create: if
+        isWorkspaceMember(workspaceId) &&
+        canEditModule(workspaceId, moduleId) &&
+        allowedFile() &&
+        request.resource.metadata.workspaceId == workspaceId &&
+        request.resource.metadata.moduleId == moduleId &&
+        request.resource.metadata.ownerId == ownerId &&
+        request.resource.metadata.recordId == recordId &&
+        request.resource.metadata.uploadedByUid == request.auth.uid;
+
+      allow update: if
+        isWorkspaceMember(workspaceId) &&
+        (
+          canEditModule(workspaceId, moduleId) ||
+          resource.metadata.uploadedByUid == request.auth.uid
+        ) &&
+        allowedFile() &&
+        request.resource.metadata.workspaceId == resource.metadata.workspaceId &&
+        request.resource.metadata.moduleId == resource.metadata.moduleId &&
+        request.resource.metadata.ownerId == resource.metadata.ownerId &&
+        request.resource.metadata.recordId == resource.metadata.recordId &&
+        request.resource.metadata.uploadedByUid == resource.metadata.uploadedByUid;
+
+      allow delete: if
+        isWorkspaceMember(workspaceId) &&
+        (
+          canEditModule(workspaceId, moduleId) ||
+          resource.metadata.uploadedByUid == request.auth.uid
+        );
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

@@ -1,0 +1,68 @@
+name: Security checks
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Java 21 para Firebase Emulator
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Instalar dependencias web
+        run: npm ci
+
+      - name: Instalar dependencias de Functions
+        working-directory: functions
+        run: npm ci
+
+      - name: Instalar Firebase CLI
+        run: npm install --global firebase-tools@15.15.0
+
+      - name: Auditar dependencias web
+        run: npm audit --audit-level=high
+
+      - name: Auditar dependencias de Functions
+        working-directory: functions
+        run: npm audit --audit-level=high
+
+      - name: Validar sintaxis
+        run: |
+          node --check js/firebaseClient.js
+          node --check js/firebaseAppState.js
+          node --check js/firebaseStateModules.js
+          node --check js/attachmentUtils.js
+          node --check js/auditLog.js
+          node --check functions/index.js
+
+      - name: Probar clasificacion modular
+        run: npm run test:state-modules
+
+      - name: Probar Security Rules
+        run: npm run test:rules
+
+      - name: Compilar aplicacion
+        run: npm run build

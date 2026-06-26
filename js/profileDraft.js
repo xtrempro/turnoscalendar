@@ -37,6 +37,11 @@ export const PROFILE_MODE = {
 };
 
 export const PROFILE_BIRTH_DATE_DEFAULT = "2000-01-01";
+export const PROFILE_UNIT_ENTRY_DATE_ENABLED = false;
+
+export function isUnitEntryDateEnabled() {
+    return PROFILE_UNIT_ENTRY_DATE_ENABLED;
+}
 
 // Valores por defecto al limpiar el borrador (no incluye `mode`). Es una factory
 // para devolver siempre un `docs` (array) nuevo y evitar referencias compartidas.
@@ -69,6 +74,7 @@ function clearedDraftValues() {
         contractEnd: "",
         contractReplaces: "",
         contractReason: "",
+        contractLeaveRef: "",
         honorariaStart: "",
         honorariaEnd: "",
         honorariaHourlyRate: "",
@@ -147,6 +153,8 @@ export function hasRotationChanged() {
 }
 
 export function getDraftUnitEntryDate() {
+    if (!PROFILE_UNIT_ENTRY_DATE_ENABLED) return "";
+
     return normalizeStoredStart(profileDraft.unitEntryDate || "");
 }
 
@@ -199,6 +207,10 @@ export function isFirstProfileRotationConfig(type = profileDraft.rotationType) {
 export function getRotationConfigDefaultStart(type = profileDraft.rotationType) {
     if (!requiresRotationStart(type)) {
         return "";
+    }
+
+    if (!PROFILE_UNIT_ENTRY_DATE_ENABLED) {
+        return toInputDate(new Date());
     }
 
     const unitEntryDate = getDraftUnitEntryDate();
@@ -261,7 +273,9 @@ export function loadDraftFromProfile(profile){
         : [];
     profileDraft.active = isProfileActive(profile);
     profileDraft.unit = "";
-    profileDraft.unitEntryDate = profile.unitEntryDate || "";
+    profileDraft.unitEntryDate = PROFILE_UNIT_ENTRY_DATE_ENABLED
+        ? profile.unitEntryDate || ""
+        : "";
     profileDraft.contractType = legacyReplacement
         ? "Reemplazo"
         : profile.contractType || "";
@@ -281,6 +295,11 @@ export function loadDraftFromProfile(profile){
         : rotationStart;
     profileDraft.rotationFirstTurn =
         normalizeRotationFirstTurn(rotativa.firstTurn);
+    profileDraft.contractStart = "";
+    profileDraft.contractEnd = "";
+    profileDraft.contractReplaces = "";
+    profileDraft.contractReason = "";
+    profileDraft.contractLeaveRef = "";
     profileDraft.honorariaStart = profile.honorariaStart || "";
     profileDraft.honorariaEnd = profile.honorariaEnd || "";
     profileDraft.honorariaHourlyRate =
@@ -301,7 +320,8 @@ export function hasPendingReplacementContract() {
         profileDraft.contractStart ||
         profileDraft.contractEnd ||
         profileDraft.contractReplaces.trim() ||
-        profileDraft.contractReason
+        profileDraft.contractReason ||
+        profileDraft.contractLeaveRef
     );
 }
 

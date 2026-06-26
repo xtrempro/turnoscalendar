@@ -2,7 +2,7 @@
 // instantaneas y un offline basico. NO intercepta peticiones cross-origin
 // (Firebase, Firestore, CDN del SDK, fuentes) para no interferir con la nube.
 
-const CACHE = "proturnos-shell-v1";
+const CACHE = "proturnos-shell-v2";
 const OFFLINE_URL = "/index.html";
 
 self.addEventListener("install", event => {
@@ -41,9 +41,11 @@ self.addEventListener("fetch", event => {
         event.respondWith(
             fetch(request)
                 .then(response => {
-                    caches.open(CACHE)
-                        .then(cache => cache.put(OFFLINE_URL, response.clone()))
-                        .catch(() => {});
+                    if (response.ok) {
+                        caches.open(CACHE)
+                            .then(cache => cache.put(OFFLINE_URL, response.clone()))
+                            .catch(() => {});
+                    }
                     return response;
                 })
                 .catch(() => caches.match(OFFLINE_URL))
@@ -57,10 +59,12 @@ self.addEventListener("fetch", event => {
             caches.match(request).then(cached =>
                 cached ||
                 fetch(request).then(response => {
-                    const copy = response.clone();
-                    caches.open(CACHE)
-                        .then(cache => cache.put(request, copy))
-                        .catch(() => {});
+                    if (response.ok) {
+                        const copy = response.clone();
+                        caches.open(CACHE)
+                            .then(cache => cache.put(request, copy))
+                            .catch(() => {});
+                    }
                     return response;
                 })
             )
@@ -73,10 +77,12 @@ self.addEventListener("fetch", event => {
         caches.match(request).then(cached => {
             const network = fetch(request)
                 .then(response => {
-                    const copy = response.clone();
-                    caches.open(CACHE)
-                        .then(cache => cache.put(request, copy))
-                        .catch(() => {});
+                    if (response.ok) {
+                        const copy = response.clone();
+                        caches.open(CACHE)
+                            .then(cache => cache.put(request, copy))
+                            .catch(() => {});
+                    }
                     return response;
                 })
                 .catch(() => cached);

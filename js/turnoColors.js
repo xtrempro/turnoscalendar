@@ -9,8 +9,42 @@ import { getJSON, setJSON } from "./persistence.js";
 
 const CONFIG_KEY = "turnoColorConfig";
 
-// Codigos de turno con color configurable.
+// Codigos de turno con color configurable (se siguen seteando como variables).
 export const TURNO_COLOR_CODES = [1, 2, 3, 4, 5, 6, 7, 8];
+
+// Codigos de turno BASE con color propio en Ajustes: solo Larga, Noche y
+// Diurno. El resto (24, D+N, 18h) se pintan con dos colores derivados de estos,
+// y los permisos/horas usan los colores con nombre de abajo.
+export const TURNO_COLOR_SETTINGS_CODES = [1, 2, 4];
+
+// Colores de permisos y horas (un solo color cada uno). No son codigos de turno.
+// Se aplican como variables CSS: --color-<key> (y --color-<key>-text).
+export const NAMED_TURNO_COLORS = [
+    { key: "admin", label: "Administrativo", default: "#f97316" },
+    { key: "extension", label: "Extensión horaria", default: "#f59e0b" },
+    { key: "reduction", label: "Reducción horaria", default: "#dc2626" },
+    { key: "legal", label: "F. Legal", default: "#0ea5a6" },
+    { key: "comp", label: "F. Compensatorio", default: "#8b2bd9" },
+    { key: "license", label: "Licencia Médica", default: "#e64747" },
+    { key: "professional_license", label: "LM Profesional", default: "#2563eb" },
+    { key: "unpaid_leave", label: "Permiso sin Goce", default: "#6b7280" },
+    { key: "hours_return", label: "Devolución de horas", default: "#14b8a6" },
+    { key: "unjustified_absence", label: "Ausencia injustificada", default: "#b91c1c" }
+];
+
+const NAMED_DEFAULTS = Object.fromEntries(
+    NAMED_TURNO_COLORS.map(item => [item.key, item.default])
+);
+
+function buildNamedColors(saved) {
+    const named = {};
+
+    for (const item of NAMED_TURNO_COLORS) {
+        named[item.key] = normalizeHex(saved?.[item.key], item.default);
+    }
+
+    return named;
+}
 
 // Clase CSS que usa el calendario para cada codigo de turno (TURNO_CLASS).
 export const TURNO_CODE_CLASS = {
@@ -66,7 +100,9 @@ export function getTurnoColorConfig() {
         extra[code] = normalizeHex(saved?.extra?.[code], base[code]);
     }
 
-    cachedConfig = { base, extra };
+    const named = buildNamedColors(saved?.named);
+
+    cachedConfig = { base, extra, named };
     return cachedConfig;
 }
 
@@ -79,7 +115,9 @@ export function saveTurnoColorConfig(config) {
         extra[code] = normalizeHex(config?.extra?.[code], base[code]);
     }
 
-    setJSON(CONFIG_KEY, { base, extra });
+    const named = buildNamedColors(config?.named);
+
+    setJSON(CONFIG_KEY, { base, extra, named });
     cachedConfig = null;
 }
 
@@ -97,7 +135,7 @@ export function getDefaultTurnoColorConfig() {
         extra[code] = DEFAULT_BASE[code];
     }
 
-    return { base, extra };
+    return { base, extra, named: { ...NAMED_DEFAULTS } };
 }
 
 export function defaultTurnoColor(code) {
@@ -134,7 +172,7 @@ export function applyTurnoColors() {
 
     // Relee fresco una vez por render (cubre cambios por sync de estado).
     cachedConfig = null;
-    const { base, extra } = getTurnoColorConfig();
+    const { base, extra, named } = getTurnoColorConfig();
     const root = document.documentElement;
 
     for (const code of TURNO_COLOR_CODES) {
@@ -142,5 +180,11 @@ export function applyTurnoColors() {
         root.style.setProperty(`--turno-text-${code}`, contrastTextColor(base[code]));
         root.style.setProperty(`--turno-color-${code}-extra`, extra[code]);
         root.style.setProperty(`--turno-text-${code}-extra`, contrastTextColor(extra[code]));
+    }
+
+    for (const item of NAMED_TURNO_COLORS) {
+        const value = named[item.key];
+        root.style.setProperty(`--color-${item.key}`, value);
+        root.style.setProperty(`--color-${item.key}-text`, contrastTextColor(value));
     }
 }

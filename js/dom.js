@@ -19,6 +19,7 @@ export const DOM = {
     profileDocsInput: document.getElementById("profileDocsField"),
     profileDocsList: document.getElementById("profileDocsList"),
     profileActiveToggle: document.getElementById("profileActiveToggle"),
+    profileUnitEntryDateRow: document.getElementById("profileUnitEntryDateRow"),
     profileUnitEntryDateInput: document.getElementById("profileUnitEntryDateField"),
     profileContractTypeSelect: document.getElementById("profileContractTypeField"),
     profileRoleSelect: document.getElementById("profileRoleField"),
@@ -72,6 +73,7 @@ export const DOM = {
     hoursReturnBtnLabel: document.getElementById("hoursReturnBtnLabel"),
     unjustifiedAbsenceBtn: document.getElementById("unjustifiedAbsenceBtn"),
     clockMarkBtn: document.getElementById("clockMarkBtn"),
+    moveShiftBtn: document.getElementById("moveShiftBtn"),
 
     /* navegacion */
     prevBtn: document.getElementById("prevBtn"),

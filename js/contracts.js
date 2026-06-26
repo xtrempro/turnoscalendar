@@ -34,6 +34,10 @@ export function normalizeContract(contract = {}) {
         end: String(contract.end || ""),
         replaces: String(contract.replaces || "").trim(),
         reason: String(contract.reason || "").trim(),
+        leaveRef: String(contract.leaveRef || "").trim(),
+        leaveType: String(contract.leaveType || "").trim(),
+        leaveStart: String(contract.leaveStart || "").trim(),
+        leaveEnd: String(contract.leaveEnd || "").trim(),
         createdAt:
             contract.createdAt ||
             new Date().toISOString()
