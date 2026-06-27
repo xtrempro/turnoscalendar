@@ -6,6 +6,7 @@ import {
 } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { getWorkerAppLinkForProfile } from "./workerAppDataSync.js";
+import { performWorkerAppUnlink } from "./workerAppUnlink.js";
 import { showConfirm } from "./dialogs.js";
 import { getProfiles } from "./storage.js";
 import { listWorkspaceMembersForPermissions } from "./workspacePermissions.js";
@@ -370,31 +371,36 @@ function showUnlinkDialog({ profile, workspace, link }) {
 
     backdrop
         .querySelector("[data-worker-invite-action='unlink']")
-        ?.addEventListener("click", async event => {
-            const confirmed = await showConfirm(
-                `${profileName} dejará de recibir información en la app y deberá enlazarse nuevamente.`,
-                {
-                    title: "Desenlazar aplicación",
-                    tone: "danger",
-                    confirmText: "Desenlazar",
-                    destructive: true
-                }
-            );
-
-            if (!confirmed) return;
-
+        ?.addEventListener("click", event => {
+            // currentTarget deja de estar disponible en cuanto el listener
+            // cede el control con await. Se captura antes de abrir el modal de
+            // confirmacion para que el desenlace pueda continuar al aceptarlo.
             const button = event.currentTarget;
-            button.disabled = true;
 
-            try {
-                await unlinkWorkerApp(workspace.id, link);
-                closeInviteDialog(backdrop);
-                alert("App desenlazada correctamente.");
-            } catch (error) {
-                console.error(error);
-                button.disabled = false;
-                alert(error.message || "No se pudo desenlazar la app del trabajador.");
-            }
+            void performWorkerAppUnlink({
+                button,
+                confirm: () => showConfirm(
+                    `${profileName} dejará de recibir información en la app y deberá enlazarse nuevamente.`,
+                    {
+                        title: "Desenlazar aplicación",
+                        tone: "danger",
+                        confirmText: "Desenlazar",
+                        destructive: true
+                    }
+                ),
+                unlink: () => unlinkWorkerApp(workspace.id, link),
+                onSuccess: () => {
+                    closeInviteDialog(backdrop);
+                    alert("App desenlazada correctamente.");
+                },
+                onError: error => {
+                    console.error(error);
+                    alert(
+                        error.message ||
+                        "No se pudo desenlazar la app del trabajador."
+                    );
+                }
+            });
         });
 
     backdrop

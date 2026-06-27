@@ -12,6 +12,7 @@
     "test:replacement-leaves": "node --test tests/replacement-leave-grouping.test.mjs",
     "test:replacement-candidates": "node --test tests/replacement-contract-candidates.test.mjs",
     "test:replacement-rotation": "node --test tests/replacement-rotation.test.mjs",
+    "test:worker-app-unlink": "node --test tests/worker-app-unlink.test.mjs",
     "test:rules": "firebase emulators:exec --project demo-proturnos --only firestore,storage \"node --test tests/security-rules.test.mjs\""
   },
   "devDependencies": {
