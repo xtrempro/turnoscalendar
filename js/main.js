@@ -67,6 +67,10 @@ import {
     sortReplacementLeaveKeys
 } from "./replacementLeaveGrouping.js";
 import {
+    buildReplacementContractCandidates,
+    resolveReplacementContractSelection
+} from "./replacementContractCandidates.js";
+import {
     profileUsesProfession,
     formatProfession,
     replaceProfessionOptions
@@ -1562,6 +1566,27 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
 
         render();
     };
+    const applyReplacementLeaveOptionToState = (
+        leaveOption,
+        options = {}
+    ) => {
+        if (!leaveOption) {
+            state.contractLeaveRef = "";
+            state.contractReason = "";
+            state.contractStart = "";
+            state.contractEnd = "";
+            return;
+        }
+
+        state.contractLeaveRef = leaveOption.id;
+        state.contractReason = leaveOption.label;
+        state.contractStart = leaveOption.start;
+        state.contractEnd = leaveOption.end;
+
+        if (options.syncMonth !== false) {
+            state.monthDate = parseInputDate(leaveOption.start);
+        }
+    };
     const save = () => {
         const targetField =
             backdrop.querySelector("[data-contract-replaces]");
@@ -1817,6 +1842,78 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
     const render = () => {
         closeRotationMonthPicker();
 
+        const replacementCandidates = isReplacement
+            ? buildReplacementContractCandidates({
+                profiles: getProfiles(),
+                replacementProfile: {
+                    ...(profile || {}),
+                    name: profileDraft.name || profile?.name || "",
+                    estamento:
+                        profileDraft.estamento ||
+                        profile?.estamento ||
+                        ""
+                },
+                getLeaveOptions:
+                    getReplacementLeaveOptionsForProfile
+            })
+            : [];
+        const currentTargetIsEligible =
+            replacementCandidates.some(candidate =>
+                candidate.profile.name === state.contractReplaces
+            );
+        const resolvedReplacementSelection = isReplacement
+            ? resolveReplacementContractSelection(
+                replacementCandidates,
+                {
+                    profileName: state.contractReplaces,
+                    leaveId: currentTargetIsEligible
+                        ? state.contractLeaveRef
+                        : ""
+                }
+            )
+            : { profileName: "", leaveOption: null };
+
+        if (isReplacement) {
+            const targetChanged =
+                state.contractReplaces !==
+                resolvedReplacementSelection.profileName;
+
+            if (targetChanged) {
+                applyReplacementLeaveOptionToState(null);
+            }
+
+            state.contractReplaces =
+                resolvedReplacementSelection.profileName;
+
+            if (
+                resolvedReplacementSelection.leaveOption &&
+                state.contractLeaveRef !==
+                    resolvedReplacementSelection.leaveOption.id
+            ) {
+                applyReplacementLeaveOptionToState(
+                    resolvedReplacementSelection.leaveOption
+                );
+            } else if (
+                !resolvedReplacementSelection.leaveOption &&
+                state.contractLeaveRef
+            ) {
+                applyReplacementLeaveOptionToState(null);
+            }
+        }
+
+        const replacementProfiles = replacementCandidates.map(
+            candidate => candidate.profile
+        );
+        const selectedReplacementCandidate =
+            replacementCandidates.find(candidate =>
+                candidate.profile.name === state.contractReplaces
+            ) || null;
+        const replacementLeaveOptions =
+            selectedReplacementCandidate?.leaveOptions || [];
+        const selectedLeaveOption = replacementLeaveOptions.find(option =>
+            option.id === state.contractLeaveRef
+        ) || null;
+
         const heading = state.monthDate.toLocaleString(
             "es-CL",
             {
@@ -1843,17 +1940,6 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                     </button>
                 `)
                 .join("");
-        const replacementProfiles = isReplacement
-            ? getProfiles().filter(item => item.name !== profileDraft.name)
-            : [];
-        const replacementLeaveOptions = isReplacement
-            ? getReplacementLeaveOptionsForProfile(state.contractReplaces)
-            : [];
-        const selectedLeaveOption = isReplacement
-            ? replacementLeaveOptions.find(option =>
-                option.id === state.contractLeaveRef
-            )
-            : null;
         const hasReplacementTarget = Boolean(
             state.contractReplaces.trim()
         );
@@ -1895,7 +1981,11 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                     <label class="rotation-contract-field">
                         <span>Reemplaza a</span>
                         <select data-contract-replaces>
-                            <option value="">Seleccionar trabajador</option>
+                            <option value="" ${replacementProfiles.length ? "" : "disabled"}>
+                                ${replacementProfiles.length
+                                    ? "Seleccionar trabajador"
+                                    : "Sin trabajadores compatibles con permisos disponibles"}
+                            </option>
                             ${replacementProfiles
                                 .map(item => `
                                     <option value="${escapeHTML(item.name)}" ${item.name === state.contractReplaces ? "selected" : ""}>
@@ -1983,19 +2073,12 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 );
 
                 if (leaveOption) {
-                    state.contractLeaveRef = leaveOption.id;
-                    state.contractReason = leaveOption.label;
-                    state.contractStart = leaveOption.start;
-                    state.contractEnd = leaveOption.end;
-                    state.monthDate = parseInputDate(leaveOption.start);
+                    applyReplacementLeaveOptionToState(leaveOption);
                     render();
                     return;
                 }
 
-                state.contractLeaveRef = "";
-                state.contractReason = "";
-                state.contractStart = "";
-                state.contractEnd = "";
+                applyReplacementLeaveOptionToState(null);
                 render();
             });
     };
