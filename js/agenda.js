@@ -8,12 +8,45 @@ import {
     readAttachmentFile
 } from "./attachmentUtils.js";
 import { showConfirm } from "./dialogs.js";
+import { AGENDA_SEED } from "./agendaSeed.js";
 
 const STORAGE_KEY = "agenda_contacts";
+const SEED_FLAG_KEY = "agenda_seeded_v1";
 const NEW_CONTACT_ID = "__new_contact__";
 
 let selectedContactId = NEW_CONTACT_ID;
 let agendaSearch = "";
+let seedChecked = false;
+
+// Carga inicial (una sola vez) del directorio institucional. Solo siembra si la
+// agenda esta vacia y no se ha sembrado antes; luego cada supervisor edita/borra
+// su propia copia local (la agenda no se sincroniza entre usuarios).
+function ensureSeeded() {
+    if (seedChecked) return;
+    seedChecked = true;
+
+    if (getJSON(SEED_FLAG_KEY, false) === true) return;
+
+    const existing = getJSON(STORAGE_KEY, []);
+
+    if (!Array.isArray(existing) || existing.length === 0) {
+        setJSON(
+            STORAGE_KEY,
+            AGENDA_SEED.map(([unidad, cargo, name, telefono, email], index) =>
+                normalizeContact({
+                    id: `agenda_seed_${index}`,
+                    unidad,
+                    cargo,
+                    name,
+                    extension: telefono,
+                    email
+                }, index)
+            )
+        );
+    }
+
+    setJSON(SEED_FLAG_KEY, true);
+}
 
 function normalizeSearch(value) {
     return normalizeText(value);
@@ -43,6 +76,7 @@ function normalizeContact(contact = {}, index = 0) {
                     .slice(2, 8)}`
         ),
         name: String(contact.name || "").trim(),
+        unidad: String(contact.unidad || "").trim(),
         cargo: String(contact.cargo || "").trim(),
         email: String(contact.email || "").trim(),
         extension: String(contact.extension || "").trim(),
@@ -57,14 +91,24 @@ function normalizeContact(contact = {}, index = 0) {
     };
 }
 
+function hasContactData(contact) {
+    return Boolean(contact.name || contact.cargo || contact.unidad);
+}
+
 function getContacts() {
+    ensureSeeded();
+
     const raw = getJSON(STORAGE_KEY, []);
     const contacts = Array.isArray(raw) ? raw : [];
 
     return contacts
         .map(normalizeContact)
-        .filter(contact => contact.name)
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .filter(hasContactData)
+        .sort((a, b) =>
+            a.unidad.localeCompare(b.unidad) ||
+            a.name.localeCompare(b.name) ||
+            a.cargo.localeCompare(b.cargo)
+        );
 }
 
 function saveContacts(contacts) {
@@ -72,7 +116,7 @@ function saveContacts(contacts) {
         STORAGE_KEY,
         contacts
             .map(normalizeContact)
-            .filter(contact => contact.name)
+            .filter(hasContactData)
     );
 }
 
@@ -91,7 +135,7 @@ function filterContacts(contacts) {
     if (!query) return contacts;
 
     return contacts.filter(contact =>
-        [contact.name, contact.cargo].some(value =>
+        [contact.name, contact.cargo, contact.unidad].some(value =>
             normalizeSearch(value).includes(query)
         )
     );
@@ -116,13 +160,19 @@ async function openAttachment(attachment) {
 
 function renderContactItem(contact) {
     const active = contact.id === selectedContactId;
-    const subtitle = contact.cargo || contact.email || "Sin cargo";
+    const displayName = contact.name || contact.cargo || contact.unidad || "Contacto";
+    const subtitleParts = [];
+
+    if (contact.name && contact.cargo) subtitleParts.push(contact.cargo);
+    if (contact.unidad) subtitleParts.push(contact.unidad);
+
+    const subtitle = subtitleParts.join(" · ") || contact.email || "Sin datos";
 
     return `
         <button class="profile-item agenda-contact-item${active ? " active" : ""}" type="button" data-agenda-contact="${escapeHTML(contact.id)}">
-            <span class="profile-item__avatar">${escapeHTML(getInitials(contact.name).toUpperCase())}</span>
+            <span class="profile-item__avatar">${escapeHTML(getInitials(displayName).toUpperCase())}</span>
             <span class="profile-item__content">
-                <strong>${escapeHTML(contact.name)}</strong>
+                <strong>${escapeHTML(displayName)}</strong>
                 <span>${escapeHTML(subtitle)}</span>
             </span>
         </button>
@@ -198,13 +248,18 @@ function renderForm(contact) {
 
             <div class="agenda-form-grid">
                 <label class="metric-row metric-row--field">
+                    <span class="metric-label">Unidad:</span>
+                    <input name="unidad" type="text" maxlength="160" placeholder="Unidad" value="${escapeHTML(contact?.unidad || "")}">
+                </label>
+
+                <label class="metric-row metric-row--field">
                     <span class="metric-label">Nombre:</span>
-                    <input name="name" type="text" maxlength="120" placeholder="Nombre del contacto" value="${escapeHTML(contact?.name || "")}" required>
+                    <input name="name" type="text" maxlength="120" placeholder="Nombre del contacto" value="${escapeHTML(contact?.name || "")}">
                 </label>
 
                 <label class="metric-row metric-row--field">
                     <span class="metric-label">Cargo:</span>
-                    <input name="cargo" type="text" maxlength="120" placeholder="Cargo" value="${escapeHTML(contact?.cargo || "")}">
+                    <input name="cargo" type="text" maxlength="160" placeholder="Cargo" value="${escapeHTML(contact?.cargo || "")}">
                 </label>
 
                 <label class="metric-row metric-row--field">
@@ -274,7 +329,7 @@ function renderShell() {
                     <circle cx="11" cy="11" r="7"></circle>
                     <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
                 </svg>
-                <input data-agenda-search type="search" placeholder="Buscar por nombre o cargo" value="${escapeHTML(agendaSearch)}">
+                <input data-agenda-search type="search" placeholder="Buscar por nombre, cargo o unidad" value="${escapeHTML(agendaSearch)}">
             </label>
 
             <div class="profile-list agenda-contact-list" data-agenda-list>
@@ -337,9 +392,11 @@ function bindAgendaEvents(root) {
 
         const data = new FormData(form);
         const name = String(data.get("name") || "").trim();
+        const cargo = String(data.get("cargo") || "").trim();
+        const unidad = String(data.get("unidad") || "").trim();
 
-        if (!name) {
-            alert("Ingresa el nombre del contacto.");
+        if (!name && !cargo && !unidad) {
+            alert("Ingresa al menos nombre, cargo o unidad.");
             return;
         }
 
@@ -374,7 +431,8 @@ function bindAgendaEvents(root) {
                     .toString(36)
                     .slice(2, 8)}`,
             name,
-            cargo: data.get("cargo"),
+            unidad,
+            cargo,
             email: data.get("email"),
             extension: data.get("extension"),
             mobile: data.get("mobile"),

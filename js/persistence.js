@@ -5,7 +5,11 @@ const INTERNAL_KEYS = new Set([
     "proturnos_firebase_client_id",
     "proturnos_appstate_dirty_at",
     "proturnos_state_modules_dirty",
-    "shiftMovesAuditMigrationV1"
+    "shiftMovesAuditMigrationV1",
+    // La agenda es local por supervisor (no se sincroniza entre usuarios del
+    // mismo entorno): cada uno edita/borra su propia copia.
+    "agenda_contacts",
+    "agenda_seeded_v1"
 ]);
 const INTERNAL_KEY_PREFIXES = [
     "firebase:",
