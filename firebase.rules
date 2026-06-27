@@ -601,22 +601,26 @@ service cloud.firestore {
             optionalText(request.resource.data, "rejectReason", 1000) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow update: if canManageRequests(workspaceId) &&
-          (
-            resource.data.status != "canceled" ||
-            request.resource.data.status == "canceled"
-          );
-        // El trabajador puede retirar (eliminar) una solicitud propia que siga
-        // PENDIENTE creada desde la app; asi se quita del supervisor. No puede
-        // tocar solicitudes ya aceptadas/rechazadas ni de otros.
-        allow delete: if canManageRequests(workspaceId) ||
-          (
+        allow update: if (
+            canManageRequests(workspaceId) &&
+            (
+              resource.data.status != "canceled" ||
+              request.resource.data.status == "canceled"
+            )
+          ) || (
+            // El trabajador puede ANULAR (status -> "canceled") una solicitud
+            // propia que siga pendiente, creada desde la app. No puede cambiar
+            // el tipo, el autor ni tocar solicitudes ajenas o ya resueltas.
             signedIn() &&
             resource.data.createdByUid == request.auth.uid &&
-            resource.data.status == "pending" &&
             resource.data.source == "worker_app" &&
+            resource.data.status == "pending" &&
+            request.resource.data.status == "canceled" &&
+            request.resource.data.createdByUid == resource.data.createdByUid &&
+            request.resource.data.type == resource.data.type &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
+        allow delete: if canManageRequests(workspaceId);
       }
 
       match /workerSwapCandidates/{userId} {
