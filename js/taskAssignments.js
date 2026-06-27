@@ -10,7 +10,7 @@ import { getTurnoReal } from "./turnEngine.js";
 import { getAbsenceType } from "./rulesEngine.js";
 import { getHourReturn } from "./hourReturns.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
-import { fetchHolidays } from "./holidays.js";
+import { fetchHolidays, getCachedHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { showConfirm } from "./dialogs.js";
 
@@ -210,20 +210,70 @@ function normalizeDefaultInterval(value) {
         : 1;
 }
 
+// Tope de las periodicidades "Cada N turnos hábil" (solo tareas diurnas).
+const MAX_HABIL_INTERVAL = 5;
+
+function normalizeHabilInterval(value) {
+    const numberValue = Math.floor(Number(value));
+
+    return Number.isFinite(numberValue) &&
+        numberValue >= 1 &&
+        numberValue <= MAX_HABIL_INTERVAL
+        ? numberValue
+        : 1;
+}
+
+// La periodicidad se guarda como { interval, habilOnly }. En el <select> se
+// codifica como "h<N>" para "Cada N turnos hábil" (la secuencia cuenta solo
+// turnos en dias habiles) y "<N>" para las normales (todos los turnos
+// programados, habiles e inhabiles).
+function encodeIntervalValue(interval, habilOnly) {
+    return habilOnly
+        ? `h${normalizeHabilInterval(interval)}`
+        : String(normalizeDefaultInterval(interval));
+}
+
+function parseIntervalValue(value) {
+    const raw = String(value || "").trim().toLowerCase();
+
+    if (raw.startsWith("h")) {
+        return {
+            interval: normalizeHabilInterval(raw.slice(1)),
+            habilOnly: true
+        };
+    }
+
+    return {
+        interval: normalizeDefaultInterval(raw),
+        habilOnly: false
+    };
+}
+
+function isBusinessKeyDay(keyDay) {
+    const date = parseKey(keyDay);
+
+    if (!isValidDate(date)) return false;
+
+    return isBusinessDay(date, getCachedHolidays(date.getFullYear()));
+}
+
 function normalizeTaskDefaultRules(task) {
     const rules = new Map();
     const defaultWorkers = Array.isArray(task?.defaultWorkers)
         ? task.defaultWorkers
         : [task?.defaultWorker];
-    const addRule = (workerName, interval = 1, anchorKeyDay = "") => {
+    const addRule = (workerName, interval = 1, anchorKeyDay = "", habilOnly = false) => {
         const cleanWorker = String(workerName || "").trim();
 
         if (!cleanWorker) return;
 
         rules.set(cleanWorker, {
             workerName: cleanWorker,
-            interval: normalizeDefaultInterval(interval),
-            anchorKeyDay: String(anchorKeyDay || "")
+            interval: habilOnly
+                ? normalizeHabilInterval(interval)
+                : normalizeDefaultInterval(interval),
+            anchorKeyDay: String(anchorKeyDay || ""),
+            habilOnly: Boolean(habilOnly)
         });
     };
 
@@ -234,7 +284,8 @@ function normalizeTaskDefaultRules(task) {
             addRule(
                 rule?.workerName || rule?.worker || rule?.name,
                 rule?.interval,
-                rule?.anchorKeyDay || rule?.anchor || rule?.startKeyDay
+                rule?.anchorKeyDay || rule?.anchor || rule?.startKeyDay,
+                rule?.habilOnly === true || rule?.habil === true
             );
         });
     }
@@ -377,7 +428,7 @@ function isValidDate(date) {
     return date instanceof Date && !Number.isNaN(date.getTime());
 }
 
-function countScheduledTurns(profile, shift, startDate, endDate) {
+function countScheduledTurns(profile, shift, startDate, endDate, habilOnly = false) {
     if (!isValidDate(startDate) || !isValidDate(endDate)) return 0;
     if (endDate < startDate) return 0;
 
@@ -394,7 +445,13 @@ function countScheduledTurns(profile, shift, startDate, endDate) {
     let count = 0;
 
     while (cursor <= end) {
-        if (isScheduledForShift(profile, keyFromDate(cursor), shift)) {
+        if (
+            isScheduledForShift(profile, keyFromDate(cursor), shift) &&
+            (
+                !habilOnly ||
+                isBusinessDay(cursor, getCachedHolidays(cursor.getFullYear()))
+            )
+        ) {
             count += 1;
         }
         cursor.setDate(cursor.getDate() + 1);
@@ -406,7 +463,15 @@ function countScheduledTurns(profile, shift, startDate, endDate) {
 function shouldApplyDefaultRule(rule, profile, keyDay, shift) {
     if (!isScheduledForShift(profile, keyDay, shift)) return false;
 
-    const interval = normalizeDefaultInterval(rule?.interval);
+    const habilOnly = rule?.habilOnly === true;
+
+    // "Cada N turnos hábil": la tarea solo se predefine en dias habiles y la
+    // secuencia se cuenta unicamente sobre turnos en dias habiles.
+    if (habilOnly && !isBusinessKeyDay(keyDay)) return false;
+
+    const interval = habilOnly
+        ? normalizeHabilInterval(rule?.interval)
+        : normalizeDefaultInterval(rule?.interval);
 
     if (interval <= 1) return true;
 
@@ -419,7 +484,8 @@ function shouldApplyDefaultRule(rule, profile, keyDay, shift) {
         profile,
         shift,
         anchor,
-        target
+        target,
+        habilOnly
     );
 
     return scheduledCount > 0 && (scheduledCount - 1) % interval === 0;
@@ -928,7 +994,8 @@ function taskWithDefaultWorkerRule(
     workerName,
     enabled,
     interval,
-    anchorKeyDay
+    anchorKeyDay,
+    habilOnly = false
 ) {
     const defaultWorkerRules = normalizeTaskDefaultRules({
         defaultWorkers: [],
@@ -938,8 +1005,9 @@ function taskWithDefaultWorkerRule(
             ...(enabled
                 ? [{
                     workerName,
-                    interval: normalizeDefaultInterval(interval),
-                    anchorKeyDay
+                    interval,
+                    anchorKeyDay,
+                    habilOnly: Boolean(habilOnly)
                 }]
                 : [])
         ]
@@ -959,7 +1027,8 @@ function updateTaskDefaultWorkerRule(
     workerName,
     enabled,
     interval,
-    anchorKeyDay
+    anchorKeyDay,
+    habilOnly = false
 ) {
     const cleanWorker = String(workerName || "").trim();
 
@@ -973,7 +1042,8 @@ function updateTaskDefaultWorkerRule(
                     cleanWorker,
                     enabled,
                     interval,
-                    anchorKeyDay
+                    anchorKeyDay,
+                    habilOnly
                 )
                 : task
         )
@@ -1051,12 +1121,11 @@ function syncWorkerDefaultForCurrentWeek(taskId, workerName, preserveKeyDay) {
     if (changed) saveWeekAssignments(assignments);
 }
 
-function renderDefaultIntervalOptions(selectedInterval) {
-    const selected = normalizeDefaultInterval(selectedInterval);
-
-    return Array.from({ length: 10 }, (_item, index) => {
-        const value = index + 1;
-        const label = value === 1
+function renderDefaultIntervalOptions(selectedValue, shift) {
+    const selected = String(selectedValue || "1");
+    const normalOptions = Array.from({ length: 10 }, (_item, index) => {
+        const value = String(index + 1);
+        const label = value === "1"
             ? "Cada turno"
             : `Cada ${value} turnos`;
 
@@ -1065,7 +1134,32 @@ function renderDefaultIntervalOptions(selectedInterval) {
                 ${escapeHTML(label)}
             </option>
         `;
-    }).join("");
+    });
+
+    // Solo tareas diurnas: periodicidades que cuentan unicamente turnos en dias
+    // habiles (la secuencia salta los dias inhabiles).
+    if (shift !== "day") {
+        return normalOptions.join("");
+    }
+
+    const habilOptions = Array.from(
+        { length: MAX_HABIL_INTERVAL },
+        (_item, index) => {
+            const n = index + 1;
+            const value = `h${n}`;
+            const label = n === 1
+                ? "Cada turno hábil"
+                : `Cada ${n} turnos hábil`;
+
+            return `
+                <option value="${value}" ${value === selected ? "selected" : ""}>
+                    ${escapeHTML(label)}
+                </option>
+            `;
+        }
+    );
+
+    return [...normalOptions, ...habilOptions].join("");
 }
 
 function deleteTask(taskId) {
@@ -1232,7 +1326,10 @@ function openWorkerDefaultDialog({ taskId, workerName, shift, keyDay }) {
             <label class="task-assignment-worker-default-field">
                 <span>Periodicidad</span>
                 <select data-worker-default-interval>
-                    ${renderDefaultIntervalOptions(rule?.interval || 1)}
+                    ${renderDefaultIntervalOptions(
+                        encodeIntervalValue(rule?.interval || 1, rule?.habilOnly === true),
+                        shift
+                    )}
                 </select>
             </label>
             <div class="task-assignment-dialog__actions">
@@ -1256,12 +1353,15 @@ function openWorkerDefaultDialog({ taskId, workerName, shift, keyDay }) {
     backdrop.querySelector("[data-dialog-close]")?.addEventListener("click", close);
     backdrop.querySelector("[data-dialog-cancel]")?.addEventListener("click", close);
     backdrop.querySelector("[data-dialog-save]")?.addEventListener("click", () => {
+        const parsedInterval = parseIntervalValue(intervalSelect.value);
+
         updateTaskDefaultWorkerRule(
             task.id,
             cleanWorker,
             enabledInput.checked,
-            intervalSelect.value,
-            keyDay
+            parsedInterval.interval,
+            keyDay,
+            parsedInterval.habilOnly
         );
         syncWorkerDefaultForCurrentWeek(task.id, cleanWorker, keyDay);
 
