@@ -63,6 +63,10 @@ import {
     withManualBalance
 } from "./balanceUtils.js";
 import {
+    groupContinuousReplacementLeaveKeys,
+    sortReplacementLeaveKeys
+} from "./replacementLeaveGrouping.js";
+import {
     profileUsesProfession,
     formatProfession,
     replaceProfessionOptions
@@ -1173,42 +1177,13 @@ function replacementLeaveCutoffISO() {
     return toInputDate(cutoff);
 }
 
-function sortedCalendarKeys(keys) {
-    return Array.from(new Set(keys || []))
-        .filter(Boolean)
-        .sort((a, b) => parseKey(a) - parseKey(b));
-}
-
-function nextCalendarKeyAfter(key) {
-    const date = parseKey(key);
-
-    date.setDate(date.getDate() + 1);
-
-    return keyFromDate(date);
-}
-
-function nextBusinessLeaveKeyAfter(key) {
-    const date = parseKey(key);
-
-    do {
-        date.setDate(date.getDate() + 1);
-    } while (
-        !isBusinessDay(
-            date,
-            getCachedHolidays(date.getFullYear())
-        )
-    );
-
-    return keyFromDate(date);
-}
-
 function calendarKeysToReplacementLeaveOption({
     profileName,
     type,
     label,
     keys
 }) {
-    const sortedKeys = sortedCalendarKeys(keys);
+    const sortedKeys = sortReplacementLeaveKeys(keys);
 
     if (!sortedKeys.length) return null;
 
@@ -1241,29 +1216,16 @@ function groupReplacementLeaveKeys({
     keys,
     businessContinuity = false
 }) {
-    const sortedKeys = sortedCalendarKeys(keys);
-    const groups = [];
-    let current = [];
-
-    sortedKeys.forEach(key => {
-        const previous = current[current.length - 1];
-        const expectedNext = previous
-            ? (
-                businessContinuity
-                    ? nextBusinessLeaveKeyAfter(previous)
-                    : nextCalendarKeyAfter(previous)
+    const groups = groupContinuousReplacementLeaveKeys(
+        keys,
+        {
+            businessContinuity,
+            isBusinessDay: date => isBusinessDay(
+                date,
+                getCachedHolidays(date.getFullYear())
             )
-            : "";
-
-        if (previous && key !== expectedNext) {
-            groups.push(current);
-            current = [];
         }
-
-        current.push(key);
-    });
-
-    if (current.length) groups.push(current);
+    );
 
     return groups
         .map(group => calendarKeysToReplacementLeaveOption({
