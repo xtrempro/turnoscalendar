@@ -253,7 +253,7 @@ export async function aplicarAdministrativo(fecha, cantidad = 1){
     const comp = getCompDays();
     const absences = getAbsences();
     const shiftAssigned =
-        getShiftAssigned();
+        getShiftAssigned(getCurrentProfile(), fecha);
     const currentProfile =
         getCurrentProfile();
 

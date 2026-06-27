@@ -25,7 +25,7 @@ import {
 import {
     getRotativa,
     isProfileActive,
-    getShiftAssigned,
+    getShiftAssignmentConfiguredState,
     normalizeProfession,
     getCurrentProfile
 } from "./storage.js";
@@ -306,7 +306,8 @@ export function loadDraftFromProfile(profile){
         String(profile.honorariaHourlyRate || "");
     profileDraft.honorariaMaxMonthlyHours =
         String(profile.honorariaMaxMonthlyHours || "");
-    profileDraft.shiftAssigned = getShiftAssigned(profile.name);
+    profileDraft.shiftAssigned =
+        getShiftAssignmentConfiguredState(profile.name);
 }
 
 // --- Predicados de contrato del borrador (movidos desde main.js) ---

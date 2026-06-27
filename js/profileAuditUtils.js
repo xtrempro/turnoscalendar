@@ -1,7 +1,11 @@
 // Helpers de auditoria de perfil: snapshot del estado contractual/rotativa y
 // descripcion legible de los cambios entre dos snapshots (para el log).
 
-import { getProfiles, getShiftAssigned, getRotativa } from "./storage.js";
+import {
+    getProfiles,
+    getShiftAssignmentConfiguredState,
+    getRotativa
+} from "./storage.js";
 import { normalizeRotationFirstTurn } from "./rotationUtils.js";
 
 /**
@@ -19,7 +23,7 @@ export function auditProfileSnapshot(profileName) {
 
     return {
         ...profile,
-        shiftAssigned: getShiftAssigned(profileName),
+        shiftAssigned: getShiftAssignmentConfiguredState(profileName),
         rotativa: getRotativa(profileName)
     };
 }

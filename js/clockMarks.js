@@ -205,8 +205,8 @@ export function getClockScheduleState(profile, keyDay, state) {
     return Number(state) || TURNO.LIBRE;
 }
 
-function usesAssignedHalfAdminSchedule(profile) {
-    return getShiftAssigned(profile) &&
+function usesAssignedHalfAdminSchedule(profile, date) {
+    return getShiftAssigned(profile, date) &&
         getRotativa(profile).type !== "diurno";
 }
 
@@ -224,7 +224,10 @@ function halfAdminDiurnoSplit(date) {
 
 function getHalfAdminScheduledSegments(profile, keyDay, date) {
     const admin = getJSON(`admin_${profile}`, {});
-    const assignedSchedule = usesAssignedHalfAdminSchedule(profile);
+    const assignedSchedule = usesAssignedHalfAdminSchedule(
+        profile,
+        date
+    );
 
     if (admin[keyDay] === "0.5M") {
         const split = halfAdminDiurnoSplit(date);

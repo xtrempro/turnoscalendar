@@ -8,6 +8,7 @@
     "deploy": "node build.mjs && firebase deploy --only hosting",
     "deploy:security": "node build.mjs && firebase deploy --only firestore:rules,storage,hosting --project calendarioturnos-7c4d9",
     "test:state-modules": "node --test tests/state-modules.test.mjs",
+    "test:shift-assignment": "node --test tests/shift-assignment-history.test.mjs",
     "test:rules": "firebase emulators:exec --project demo-proturnos --only firestore,storage \"node --test tests/security-rules.test.mjs\""
   },
   "devDependencies": {

@@ -6,7 +6,7 @@ import {
     getCurrentProfile,
     getRotativa,
     isProfileActive,
-    getShiftAssigned
+    getShiftAssignmentConfiguredState
 } from "./storage.js";
 import { profileDraft, PROFILE_MODE } from "./profileDraft.js";
 import { normalizeStoredStart } from "./dateUtils.js";
@@ -159,6 +159,6 @@ export function getDisplayedProfileData(){
         honorariaHourlyRate: String(profile.honorariaHourlyRate || ""),
         honorariaMaxMonthlyHours: String(profile.honorariaMaxMonthlyHours || ""),
         unionLeaveEnabled: Boolean(profile.unionLeaveEnabled),
-        shiftAssigned: getShiftAssigned(profile.name)
+        shiftAssigned: getShiftAssignmentConfiguredState(profile.name)
     };
 }

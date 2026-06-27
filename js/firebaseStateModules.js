@@ -42,6 +42,7 @@ const PREFIX_KEY_MODULES = [
     ["baseData_", "profile"],
     ["rotativa_", "profile"],
     ["shift_", "profile"],
+    ["shiftAssignmentHistory_", "profile"],
     ["gradeHistory_", "profile"],
     ["contractHistory_", "profile"],
     ["replacementContracts_", "profile"],

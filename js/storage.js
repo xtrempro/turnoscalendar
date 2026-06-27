@@ -1171,12 +1171,163 @@ export function saveBlockedDays(data, profile = currentProfile){
     setJSON("blocked_" + profile, data);
 }
 
-export function getShiftAssigned(profile = currentProfile){
-    return getJSON("shift_" + profile, false);
+const SHIFT_ASSIGNMENT_HISTORY_PREFIX = "shiftAssignmentHistory_";
+
+function normalizeShiftAssignmentMonth(value = new Date()) {
+    if (typeof value === "string") {
+        const match = value.trim().match(/^(\d{4})-(\d{2})/);
+
+        if (match) {
+            const year = Number(match[1]);
+            const month = Number(match[2]);
+
+            if (year >= 1900 && month >= 1 && month <= 12) {
+                return `${year}-${String(month).padStart(2, "0")}`;
+            }
+        }
+    }
+
+    const date = value instanceof Date
+        ? value
+        : new Date(value);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function normalizeShiftAssignmentHistory(raw, legacyAssigned = false) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    const events = Array.isArray(source.events)
+        ? source.events
+            .map(event => ({
+                month: normalizeShiftAssignmentMonth(event?.month),
+                assigned: event?.assigned === true,
+                createdAt: String(event?.createdAt || "")
+            }))
+            .filter(event => event.month)
+            .sort((a, b) => a.month.localeCompare(b.month))
+        : [];
+
+    return {
+        baseline: typeof source.baseline === "boolean"
+            ? source.baseline
+            : Boolean(legacyAssigned),
+        events
+    };
+}
+
+export function getShiftAssignmentHistory(profile = currentProfile) {
+    if (!profile) {
+        return { baseline: false, events: [] };
+    }
+
+    const legacyAssigned = getJSON("shift_" + profile, false);
+
+    return normalizeShiftAssignmentHistory(
+        getJSON(SHIFT_ASSIGNMENT_HISTORY_PREFIX + profile, null),
+        legacyAssigned
+    );
+}
+
+export function getShiftAssignmentConfiguredState(
+    profile = currentProfile
+) {
+    const history = getShiftAssignmentHistory(profile);
+    const lastEvent = history.events.at(-1);
+
+    return lastEvent
+        ? lastEvent.assigned
+        : Boolean(getJSON("shift_" + profile, false));
+}
+
+export function getShiftAssigned(
+    profile = currentProfile,
+    date = new Date()
+) {
+    if (!profile) return false;
+
+    const rawHistory = getJSON(
+        SHIFT_ASSIGNMENT_HISTORY_PREFIX + profile,
+        null
+    );
+
+    if (!rawHistory || !Array.isArray(rawHistory.events)) {
+        return Boolean(getJSON("shift_" + profile, false));
+    }
+
+    const targetMonth = normalizeShiftAssignmentMonth(date);
+    const history = normalizeShiftAssignmentHistory(
+        rawHistory,
+        getJSON("shift_" + profile, false)
+    );
+    let assigned = history.baseline;
+
+    history.events.forEach(event => {
+        if (!targetMonth || event.month <= targetMonth) {
+            assigned = event.assigned;
+        }
+    });
+
+    return assigned;
 }
 
 export function setShiftAssigned(value, profile = currentProfile){
     setJSON("shift_" + profile, Boolean(value));
+}
+
+export function recordShiftAssignmentChange(
+    value,
+    effectiveMonth,
+    profile = currentProfile
+) {
+    if (!profile) return null;
+
+    const month = normalizeShiftAssignmentMonth(effectiveMonth);
+
+    if (!month) {
+        throw new Error(
+            "El mes de vigencia de la asignacion de turno no es valido."
+        );
+    }
+
+    const legacyAssigned = Boolean(
+        getJSON("shift_" + profile, false)
+    );
+    const rawHistory = getJSON(
+        SHIFT_ASSIGNMENT_HISTORY_PREFIX + profile,
+        null
+    );
+    const history = normalizeShiftAssignmentHistory(
+        rawHistory,
+        legacyAssigned
+    );
+    const nextEvent = {
+        month,
+        assigned: Boolean(value),
+        createdAt: new Date().toISOString()
+    };
+    const events = history.events
+        .filter(event => event.month !== month);
+
+    events.push(nextEvent);
+    events.sort((a, b) => a.month.localeCompare(b.month));
+
+    const nextHistory = {
+        baseline: rawHistory && typeof rawHistory.baseline === "boolean"
+            ? rawHistory.baseline
+            : legacyAssigned,
+        events
+    };
+    const configuredState = events.at(-1)?.assigned ?? nextHistory.baseline;
+
+    setJSON(
+        SHIFT_ASSIGNMENT_HISTORY_PREFIX + profile,
+        nextHistory
+    );
+    setShiftAssigned(configuredState, profile);
+
+    return nextEvent;
 }
 
 export function getValorHora(profile = currentProfile, date = null){
@@ -1413,6 +1564,7 @@ export function updateProfile(oldName, nextProfile){
         "blocked_",
         "baseData_",
         "shift_",
+        "shiftAssignmentHistory_",
         "admin_",
         "legal_",
         "comp_",

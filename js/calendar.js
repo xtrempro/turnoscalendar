@@ -3245,7 +3245,10 @@ async function clickDia(
         { includeReplacements: false }
     );
     const manualExtra = Boolean(
-        getShiftAssigned(getCurrentProfile()) &&
+        getShiftAssigned(
+            getCurrentProfile(),
+            options.date || dateFromKeyDay(keyDay)
+        ) &&
         getTurnoExtraAgregado(effectiveBaseTurn, nuevo)
     );
 
@@ -3441,7 +3444,7 @@ export async function renderCalendar(options = {}) {
                 data
             );
         const manualExtra = Boolean(
-            getShiftAssigned(activeProfile) &&
+            getShiftAssigned(activeProfile, date) &&
             getManualExtraTurn(
                 activeProfile,
                 keyDay,
@@ -3738,7 +3741,7 @@ export async function renderCalendar(options = {}) {
             legal,
             comp,
             absences,
-            getShiftAssigned(),
+            getShiftAssigned(activeProfile, date),
             {
                 compCantidad: window.compCantidad || 0,
                 legalCantidad: window.legalCantidad || 0,

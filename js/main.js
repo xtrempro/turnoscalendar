@@ -273,6 +273,8 @@ import {
     setCurrentProfile,
     getCurrentProfile,
     getShiftAssigned,
+    getShiftAssignmentConfiguredState,
+    recordShiftAssignmentChange,
     setShiftAssigned,
     getAdminDays,
     saveAdminDays,
@@ -370,7 +372,8 @@ import {
 } from "./leaveEngine.js";
 import {
     installAppDialogs,
-    showConfirm
+    showConfirm,
+    showPrompt
 } from "./dialogs.js";
 
 installAppDialogs();
@@ -3060,7 +3063,7 @@ function renderDisponibilidadVacaciones() {
     );
     const showCompBalance = isProfileEditing()
         ? Boolean(profileDraft.shiftAssigned)
-        : getShiftAssigned(profile.name);
+        : getShiftAssigned(profile.name, currentDate);
 
     if (availabilityEditMode || creating) {
         DOM.availabilitySummary.innerHTML = `
@@ -4177,7 +4180,10 @@ function renderClockMarksProfiles() {
     });
 }
 
-function isFourthShiftNoAssignmentProfile(profileName) {
+function isFourthShiftNoAssignmentProfile(
+    profileName,
+    monthDate = new Date()
+) {
     if (!profileName) return false;
 
     const rotativa = getRotativa(profileName);
@@ -4186,7 +4192,7 @@ function isFourthShiftNoAssignmentProfile(profileName) {
         rotativa.type === "3turno" ||
         rotativa.type === "4turno"
     ) &&
-        !getShiftAssigned(profileName);
+        !getShiftAssigned(profileName, monthDate);
 }
 
 function formatReportPlanillaTitle(date) {
@@ -4432,11 +4438,11 @@ function buildSpecificReportPreviewHTML(profile, date) {
         return buildDiurnoReportPreviewHTML(profile, date);
     }
 
-    if (isAssignedShiftReportProfile(profile.name)) {
+    if (isAssignedShiftReportProfile(profile.name, date)) {
         return buildAssignedShiftReportPreviewHTML(profile, date);
     }
 
-    if (isFourthShiftNoAssignmentProfile(profile.name)) {
+    if (isFourthShiftNoAssignmentProfile(profile.name, date)) {
         return buildNoAssignmentReportPreviewHTML(profile, date);
     }
 
@@ -4484,7 +4490,10 @@ async function renderReportsDetail() {
     }
 
     const rotativa = getRotativa(profile.name);
-    const hasShiftAssigned = getShiftAssigned(profile.name);
+    const hasShiftAssigned = getShiftAssigned(
+        profile.name,
+        reportDate
+    );
     const replacementReport =
         isReplacementReportProfile(profile.name);
     const rotationStatus = replacementReport
@@ -4496,9 +4505,9 @@ async function renderReportsDetail() {
                 : "sin asignaci\u00f3n de turno"
         ].join(" ");
     const canShowFourthShiftReport =
-        isFourthShiftNoAssignmentProfile(profile.name);
+        isFourthShiftNoAssignmentProfile(profile.name, reportDate);
     const canShowAssignedShiftReport =
-        isAssignedShiftReportProfile(profile.name);
+        isAssignedShiftReportProfile(profile.name, reportDate);
     const canShowReplacementReport =
         replacementReport;
     const canShowDiurnoReport =
@@ -6242,6 +6251,41 @@ async function applyDraftRotation(
     aplicarCuartoTurnoDesde(startDate, firstTurn);
 }
 
+async function requestShiftAssignmentEffectiveMonth(assigned) {
+    const action = assigned
+        ? "comienza a aplicarse"
+        : "deja de aplicarse";
+    const title = assigned
+        ? "Inicio de asignacion de turno"
+        : "Termino de asignacion de turno";
+
+    while (true) {
+        const value = await showPrompt(
+            `Selecciona el mes desde el cual ${action} la asignacion de turno. El cambio regira desde el dia 1 de ese mes.`,
+            {
+                title,
+                tone: assigned ? "info" : "warning",
+                inputType: "month",
+                inputLabel: assigned
+                    ? "Mes de inicio"
+                    : "Primer mes sin asignacion",
+                value: toMonthInputValue(new Date()),
+                confirmText: "Guardar vigencia"
+            }
+        );
+
+        if (value === null) return "";
+
+        const month = String(value || "").trim();
+
+        if (/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+            return month;
+        }
+
+        alert("Selecciona un mes valido para la vigencia.");
+    }
+}
+
 async function guardarPerfil() {
     if (!canEditCurrentProfileMenu()) return;
     if (!validateDraft()) return;
@@ -6272,6 +6316,13 @@ async function guardarPerfil() {
             nextRotationType === "4turno"
         ) &&
         Boolean(profileDraft.shiftAssigned);
+    const previousShiftAssigned = isEditing
+        ? getShiftAssignmentConfiguredState(
+            profileDraft.originalName
+        )
+        : false;
+    const shiftAssignmentChanged =
+        previousShiftAssigned !== nextShiftAssigned;
     const nextRotationStart =
         replacementContract ||
         nextRotationType === "libre"
@@ -6379,6 +6430,7 @@ async function guardarPerfil() {
         }
     };
     let gradeEffectiveDate = "";
+    let shiftAssignmentEffectiveMonth = "";
 
     if (
         !await validateProfileSavePreflight({
@@ -6389,6 +6441,17 @@ async function guardarPerfil() {
         })
     ) {
         return;
+    }
+
+    if (shiftAssignmentChanged) {
+        shiftAssignmentEffectiveMonth =
+            await requestShiftAssignmentEffectiveMonth(
+                nextShiftAssigned
+            );
+
+        if (!shiftAssignmentEffectiveMonth) {
+            return;
+        }
     }
 
     if (isEditing && hasGradeValueChanged()) {
@@ -6486,7 +6549,27 @@ async function guardarPerfil() {
             );
         }
 
-        setShiftAssigned(nextShiftAssigned);
+        if (shiftAssignmentChanged) {
+            recordShiftAssignmentChange(
+                nextShiftAssigned,
+                shiftAssignmentEffectiveMonth,
+                nextName
+            );
+            addAuditLog(
+                AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+                nextShiftAssigned
+                    ? "Programo asignacion de turno"
+                    : "Programo termino de asignacion de turno",
+                `${nextName}: asignacion de turno ${nextShiftAssigned ? "activa" : "inactiva"} desde ${shiftAssignmentEffectiveMonth}.`,
+                {
+                    profile: nextName,
+                    assigned: nextShiftAssigned,
+                    effectiveMonth: shiftAssignmentEffectiveMonth
+                }
+            );
+        } else if (isCreating) {
+            setShiftAssigned(false, nextName);
+        }
         saveRotativa({
             type: nextRotationType,
             start: nextRotationStart,
@@ -6842,7 +6925,7 @@ function activarSelectorComp() {
         return;
     }
 
-    if (!getShiftAssigned()) {
+    if (!getShiftAssigned(getCurrentProfile(), currentDate)) {
         alert("Solo disponible con asignacion de turno activa.");
         return;
     }
@@ -7303,7 +7386,7 @@ function activarSelectorAdmin() {
         "admin",
         getRotativa(getCurrentProfile()).type === "diurno"
             ? "Selecciona un turno Diurno en dia habil para el permiso administrativo."
-            : getShiftAssigned()
+            : getShiftAssigned(getCurrentProfile(), currentDate)
                 ? "Selecciona un turno Larga o Noche valido para el permiso administrativo."
                 : "Selecciona un turno Larga o Noche en dia habil para el permiso administrativo."
     );
@@ -7784,7 +7867,7 @@ function bindProfileForm() {
         };
     }
 
-    DOM.checkbox.onchange = () => {
+    DOM.checkbox.onchange = async () => {
         if (isProfileEditing()) {
             profileDraft.shiftAssigned =
                 DOM.checkbox.checked;
@@ -7795,12 +7878,38 @@ function bindProfileForm() {
 
         if (!getCurrentProfile()) return;
 
-        setShiftAssigned(DOM.checkbox.checked);
+        const profileName = getCurrentProfile();
+        const previous = getShiftAssignmentConfiguredState(
+            profileName
+        );
+        const next = DOM.checkbox.checked;
+
+        if (previous === next) return;
+
+        const effectiveMonth =
+            await requestShiftAssignmentEffectiveMonth(next);
+
+        if (!effectiveMonth) {
+            DOM.checkbox.checked = previous;
+            return;
+        }
+
+        recordShiftAssignmentChange(
+            next,
+            effectiveMonth,
+            profileName
+        );
         addAuditLog(
             AUDIT_CATEGORY.COLLABORATOR_UPDATED,
-            "Modifico asignacion de turno",
-            `${getCurrentProfile()}: asignacion de turno ${yesNoLabel(DOM.checkbox.checked)}.`,
-            { profile: getCurrentProfile() }
+            next
+                ? "Programo asignacion de turno"
+                : "Programo termino de asignacion de turno",
+            `${profileName}: asignacion de turno ${next ? "activa" : "inactiva"} desde ${effectiveMonth}.`,
+            {
+                profile: profileName,
+                assigned: next,
+                effectiveMonth
+            }
         );
         renderBotones();
         refreshAll();

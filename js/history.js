@@ -19,6 +19,7 @@ const PROFILE_BUCKET_LABELS = {
     abs: "permisos o ausencias",
     blocked: "bloqueos del calendario",
     shift: "asignacion de turno",
+    shiftAssignmentHistory: "vigencia de asignacion de turno",
     clockMarks: "marcajes",
     replacementContracts: "contratos de reemplazo",
     gradeHistory: "historial de grado",
@@ -276,6 +277,9 @@ function snapshotProfile(p){
         abs: getRaw(key(p,"absences")),
         blocked: getRaw(key(p,"blocked")),
         shift: getRaw(key(p,"shift")),
+        shiftAssignmentHistory: getRaw(
+            key(p,"shiftAssignmentHistory")
+        ),
         clockMarks: getRaw(key(p,"clockMarks")),
         replacementContracts: getRaw(
             key(p,"replacementContracts")
@@ -303,6 +307,10 @@ function restoreProfile(p, state){
     setRaw(key(p,"absences"), state.abs || "{}");
     setRaw(key(p,"blocked"), state.blocked || "{}");
     setRaw(key(p,"shift"), state.shift || "false");
+    setRaw(
+        key(p,"shiftAssignmentHistory"),
+        state.shiftAssignmentHistory || "{}"
+    );
     setRaw(key(p,"clockMarks"), state.clockMarks || "{}");
     setRaw(
         key(p,"replacementContracts"),

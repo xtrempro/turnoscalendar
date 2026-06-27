@@ -262,7 +262,6 @@ function buildScheduleDays(profile) {
     const { start, end } = scheduleRange();
     const maps = profileLeaveMaps(profile.name);
     const profileData = getJSON("data_" + profile.name, {});
-    const shiftAssigned = getShiftAssigned(profile.name);
     const days = {};
     // Resolver de color en HEX (snapshot de los colores configurados) para que
     // la PWA pinte las mismas bandas que el calendario.
@@ -302,7 +301,7 @@ function buildScheduleDays(profile) {
             { includeReplacements: false }
         );
         const manualExtra = Boolean(
-            shiftAssigned &&
+            getShiftAssigned(profile.name, cursor) &&
             getTurnoExtraAgregado(
                 baseWithSwaps,
                 programmedWithSwaps

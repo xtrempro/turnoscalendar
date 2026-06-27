@@ -140,32 +140,38 @@ function rotationLabel(type) {
     return "Sin rotativa";
 }
 
-function reportKind(profileName) {
+function reportKind(profileName, monthDate = new Date()) {
     const type = getRotativa(profileName).type;
 
     if (isReplacementProfile(profileName)) return "replacement";
-    if (getShiftAssigned(profileName) || type === "diurno") {
+    if (getShiftAssigned(profileName, monthDate) || type === "diurno") {
         return "extra-only";
     }
 
     return "shift-base";
 }
 
-function isNoAssignmentShiftProfile(profileName) {
+function isNoAssignmentShiftProfile(
+    profileName,
+    monthDate = new Date()
+) {
     const type = getRotativa(profileName).type;
 
     return (
         (type === "3turno" || type === "4turno") &&
-        !getShiftAssigned(profileName)
+        !getShiftAssigned(profileName, monthDate)
     );
 }
 
-export function isAssignedShiftReportProfile(profileName) {
+export function isAssignedShiftReportProfile(
+    profileName,
+    monthDate = new Date()
+) {
     const type = getRotativa(profileName).type;
 
     return (
         (type === "3turno" || type === "4turno") &&
-        getShiftAssigned(profileName)
+        getShiftAssigned(profileName, monthDate)
     );
 }
 
@@ -1748,7 +1754,7 @@ function noAssignmentProfileRows(model) {
         { campo: "Unidad", valor: workspace?.name || "Sin entorno activo" },
         { campo: "Contrato", valor: model.profile.contractType || "Sin registro" },
         { campo: "Grado", valor: model.profile.grade || "Sin registro" },
-        { campo: "Asignaci\u00f3n de Turno", valor: getShiftAssigned(model.profile.name) ? "S\u00cd" : "NO" },
+        { campo: "Asignaci\u00f3n de Turno", valor: getShiftAssigned(model.profile.name, model.monthDate) ? "S\u00cd" : "NO" },
         { campo: "Estamento", valor: model.profile.estamento || "Sin registro" },
         { campo: "Rotativa", valor: rotationLabel(rotativa.type) },
         { campo: "Profesi\u00f3n", valor: model.profile.profession || "Sin informaci\u00f3n" },
@@ -2013,7 +2019,7 @@ function buildWorkbookHTML({
         { campo: "Profesi\u00f3n", valor: profile.profession || "Sin informaci\u00f3n" },
         { campo: "Grado", valor: profile.grade || "Sin registro" },
         { campo: "Rotativa", valor: rotationLabel(rotativa.type) },
-        { campo: "Asignaci\u00f3n de turno", valor: getShiftAssigned(profile.name) ? "S\u00ed" : "No" },
+        { campo: "Asignaci\u00f3n de turno", valor: getShiftAssigned(profile.name, monthDate) ? "S\u00ed" : "No" },
         { campo: "Mes reportado", valor: monthLabel(monthDate) }
     ];
 
@@ -2105,7 +2111,7 @@ export async function buildNoAssignmentReportPreviewHTML(
     profile,
     monthDate = new Date()
 ) {
-    if (!profile?.name || !isNoAssignmentShiftProfile(profile.name)) {
+    if (!profile?.name || !isNoAssignmentShiftProfile(profile.name, monthDate)) {
         return "";
     }
 
@@ -2172,7 +2178,7 @@ export async function buildAssignedShiftReportPreviewHTML(
     profile,
     monthDate = new Date()
 ) {
-    if (!profile?.name || !isAssignedShiftReportProfile(profile.name)) {
+    if (!profile?.name || !isAssignedShiftReportProfile(profile.name, monthDate)) {
         return "";
     }
 
@@ -2279,7 +2285,7 @@ export async function buildWorkerHheeMonthSummary(
             stats,
             contractOnly: true
         });
-    } else if (isAssignedShiftReportProfile(profile.name)) {
+    } else if (isAssignedShiftReportProfile(profile.name, monthDate)) {
         model = buildAssignedShiftReportModel({
             profile,
             monthDate,
@@ -2347,7 +2353,7 @@ export async function exportNoAssignmentShiftReport(
         return;
     }
 
-    if (!isNoAssignmentShiftProfile(profile.name)) {
+    if (!isNoAssignmentShiftProfile(profile.name, monthDate)) {
         alert("Este reporte solo aplica para 3er o 4\u00b0 turno sin Asignaci\u00f3n de Turno.");
         return;
     }
@@ -2428,7 +2434,7 @@ export async function exportAssignedShiftReport(
         return;
     }
 
-    if (!isAssignedShiftReportProfile(profile.name)) {
+    if (!isAssignedShiftReportProfile(profile.name, monthDate)) {
         alert("Este reporte solo aplica para 3er o 4\u00b0 turno con Asignaci\u00f3n de Turno.");
         return;
     }
@@ -2527,12 +2533,12 @@ export async function exportHoursReport(profile, monthDate = new Date()) {
         return;
     }
 
-    if (isNoAssignmentShiftProfile(profile.name)) {
+    if (isNoAssignmentShiftProfile(profile.name, monthDate)) {
         await exportNoAssignmentShiftReport(profile, monthDate);
         return;
     }
 
-    if (isAssignedShiftReportProfile(profile.name)) {
+    if (isAssignedShiftReportProfile(profile.name, monthDate)) {
         await exportAssignedShiftReport(profile, monthDate);
         return;
     }
@@ -2552,7 +2558,7 @@ export async function exportHoursReport(profile, monthDate = new Date()) {
         {},
         { d: 0, n: 0 }
     );
-    const kind = reportKind(profile.name);
+    const kind = reportKind(profile.name, monthDate);
     const dayRows = buildDayRows(
         profile,
         year,

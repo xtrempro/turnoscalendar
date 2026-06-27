@@ -316,8 +316,8 @@ function timelineFilterHTML(groups, selectedKeys, lockedKey) {
     `;
 }
 
-function dayExtraAlertClass(nombre, value) {
-    if (!getShiftAssigned(nombre)) {
+function dayExtraAlertClass(nombre, value, monthDate = new Date()) {
+    if (!getShiftAssigned(nombre, monthDate)) {
         return "";
     }
 
@@ -818,7 +818,7 @@ export async function renderTimeline(){
             </td>
         `;
         html += `
-            <td class="timeline-hhee timeline-hhee--day${dayExtraAlertClass(profile.name, dayHhee)}${honorariaHheeClass}">
+            <td class="timeline-hhee timeline-hhee--day${dayExtraAlertClass(profile.name, dayHhee, new Date(year, month, 1))}${honorariaHheeClass}">
                 ${formatTimelineHours(dayHhee)}
             </td>
             <td class="timeline-hhee timeline-hhee--night${honorariaHheeClass}">

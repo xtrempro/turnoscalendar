@@ -10,6 +10,7 @@ test("clasifica las claves persistidas por modulo de seguridad", () => {
     const cases = {
         profiles: "profile",
         baseData_worker_1: "profile",
+        shiftAssignmentHistory_worker_1: "profile",
         data_worker_1: "turnos",
         absences_worker_1: "turnos",
         clockMarks_worker_1: "clockmarks",

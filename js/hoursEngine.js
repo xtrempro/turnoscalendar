@@ -802,7 +802,7 @@ function getCalculationMode(nombre, y, m, days, data) {
             : "diurno";
     }
 
-    return getShiftAssigned(nombre)
+    return getShiftAssigned(nombre, new Date(y, m, 1))
         ? "assigned"
         : "aggregate";
 }

@@ -166,6 +166,7 @@ Claves principales:
 - `absences_<perfil>`: licencias, permisos sin goce, ausencias injustificadas y LM profesional.
 - `rotativa_<perfil>`: tipo de rotativa, inicio y primer turno.
 - `shift_<perfil>`: asignacion de turno activa/inactiva.
+- `shiftAssignmentHistory_<perfil>`: cambios mensuales de asignacion de turno; cada evento rige desde el dia 1 del mes indicado.
 - `carry_<perfil>_<year>_<month>`: arrastre mensual.
 - `leaveBalances_<perfil>`: saldos manuales de permisos/vacaciones por anio.
 - `leaveBalances_<perfil>[anio].hoursReturn`: saldo para la funcionalidad `Devolucion de Horas`; se edita en `Perfil > Vacaciones Disponibles > Horas para devolucion` y alimenta el contador del boton `DEVOLUCION DE HORAS (0)` en el menu Turnos.
@@ -535,3 +536,4 @@ git diff --stat
 2. Considerar limpiar mojibake de `js/constants.js` con mucho cuidado, verificando que no rompa claves historicas.
 3. Crear una rutina manual de QA minima documentada para calendario, permisos, reemplazos, LOG, perfil y solicitudes.
 4. Si se quiere staging completo, activar facturacion en `turnoplus-test-7c4d9` y luego habilitar Authentication/TOTP y Storage en ese proyecto.
+5. Pendiente archivado: admitir cambios de asignacion de turno a mitad de mes. Ese caso debera dividir el periodo en dos tramos y generar dos informes con motores de calculo distintos. Por ahora solo se permiten vigencias desde el dia 1 de un mes.
