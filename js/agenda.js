@@ -12,40 +12,44 @@ import { AGENDA_SEED } from "./agendaSeed.js";
 
 const STORAGE_KEY = "agenda_contacts";
 const SEED_FLAG_KEY = "agenda_seeded_v1";
+const SEED_VERSION = 1;
 const NEW_CONTACT_ID = "__new_contact__";
 
 let selectedContactId = NEW_CONTACT_ID;
 let agendaSearch = "";
 let seedChecked = false;
 
-// Carga inicial (una sola vez) del directorio institucional. Solo siembra si la
-// agenda esta vacia y no se ha sembrado antes; luego cada supervisor edita/borra
-// su propia copia local (la agenda no se sincroniza entre usuarios).
+// Carga inicial (una sola vez por version) del directorio institucional. Agrega
+// los contactos del seed que falten (por id estable, sin duplicar) a lo que ya
+// tenga el supervisor; luego cada uno edita/borra su propia copia local (la
+// agenda no se sincroniza entre usuarios).
 function ensureSeeded() {
     if (seedChecked) return;
     seedChecked = true;
 
-    if (getJSON(SEED_FLAG_KEY, false) === true) return;
+    if (Number(getJSON(SEED_FLAG_KEY, 0)) >= SEED_VERSION) return;
 
     const existing = getJSON(STORAGE_KEY, []);
+    const current = (Array.isArray(existing) ? existing : []).map(normalizeContact);
+    const haveIds = new Set(current.map(contact => contact.id));
+    const additions = AGENDA_SEED
+        .map(([unidad, cargo, name, telefono, email], index) =>
+            normalizeContact({
+                id: `agenda_seed_${index}`,
+                unidad,
+                cargo,
+                name,
+                extension: telefono,
+                email
+            }, index)
+        )
+        .filter(contact => !haveIds.has(contact.id));
 
-    if (!Array.isArray(existing) || existing.length === 0) {
-        setJSON(
-            STORAGE_KEY,
-            AGENDA_SEED.map(([unidad, cargo, name, telefono, email], index) =>
-                normalizeContact({
-                    id: `agenda_seed_${index}`,
-                    unidad,
-                    cargo,
-                    name,
-                    extension: telefono,
-                    email
-                }, index)
-            )
-        );
+    if (additions.length) {
+        setJSON(STORAGE_KEY, [...current, ...additions]);
     }
 
-    setJSON(SEED_FLAG_KEY, true);
+    setJSON(SEED_FLAG_KEY, SEED_VERSION);
 }
 
 function normalizeSearch(value) {
