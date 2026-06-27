@@ -11,6 +11,20 @@
 import { stripAccents } from "./stringUtils.js";
 
 /**
+ * Mes que debe conservarse al pasar desde "Modificar rotativa" al modo de
+ * seleccion de fecha. Recibe la fecha visible del calendario, no la fecha
+ * actual del sistema.
+ * @param {Date} calendarDate
+ * @returns {{year: number, month: number}}
+ */
+export function getRotationSelectionMonth(calendarDate) {
+    return {
+        year: calendarDate.getFullYear(),
+        month: calendarDate.getMonth()
+    };
+}
+
+/**
  * Etiqueta legible del tipo de rotativa.
  * @param {string} type
  * @returns {string}

@@ -27,7 +27,8 @@ import {
     normalizeRotationFirstTurn,
     normalizeRotationFirstTurnForType,
     getRotationFirstTurnLabel,
-    getRotationSequence
+    getRotationSequence,
+    getRotationSelectionMonth
 } from "./rotationUtils.js";
 import {
     cloneReturnDate,
@@ -2324,11 +2325,12 @@ function openCalendarRotationConfigModal() {
             };
 
             close();
-            const today = new Date();
+            const visibleMonth =
+                getRotationSelectionMonth(currentDate);
 
             await goToCalendarMonth(
-                today.getFullYear(),
-                today.getMonth(),
+                visibleMonth.year,
+                visibleMonth.month,
                 { deferHeavy: true }
             );
             activarModo(
