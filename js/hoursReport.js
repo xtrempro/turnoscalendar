@@ -2259,6 +2259,34 @@ export async function buildDiurnoReportPreviewHTML(
         : buildAssignedShiftReportHTML(model);
 }
 
+// Reporte (HTML imprimible) del trabajador segun su tipo de perfil. Es el mismo
+// que el supervisor previsualiza/imprime en turnoplus.cl; se usa para publicarlo
+// a la app del trabajador y que pueda descargarlo en PDF.
+export async function buildWorkerReportPreviewHTML(
+    profile,
+    monthDate = new Date()
+) {
+    if (!profile?.name) return "";
+
+    if (isReplacementReportProfile(profile.name)) {
+        return buildReplacementReportPreviewHTML(profile, monthDate);
+    }
+
+    if (isAssignedShiftReportProfile(profile.name)) {
+        return buildAssignedShiftReportPreviewHTML(profile, monthDate);
+    }
+
+    if (isDiurnoReportProfile(profile.name)) {
+        return buildDiurnoReportPreviewHTML(profile, monthDate);
+    }
+
+    if (isNoAssignmentShiftProfile(profile.name)) {
+        return buildNoAssignmentReportPreviewHTML(profile, monthDate);
+    }
+
+    return "";
+}
+
 // Resumen HHEE autoritativo de un trabajador para un mes, usando el MISMO motor
 // del reporte (turnos extra agregados manualmente, extensiones horarias y el
 // arrastre de horas de noche entre meses). Devuelve totales crudos del mes y

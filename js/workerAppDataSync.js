@@ -29,7 +29,8 @@ import { canSwapProfiles, activeMonthlySwapCount } from "./swaps.js";
 import { getWorkerBlockedDays } from "./workerAvailability.js";
 import {
     buildWorkerHheeMonthSummary,
-    buildWorkerHheeSummaries
+    buildWorkerHheeSummaries,
+    buildWorkerReportPreviewHTML
 } from "./hoursReport.js";
 import { fetchHolidays, getCachedHolidays } from "./holidays.js";
 import { getTurnoColorConfig } from "./turnoColors.js";
@@ -585,6 +586,47 @@ async function buildOvertimeSummaries(profile, schedule) {
     }
 }
 
+// Reporte imprimible (HTML) por mes para la app del trabajador: el mismo que el
+// supervisor previsualiza/imprime. Se construye para los meses que ya tienen
+// resumen HHEE, para que el trabajador pueda descargarlo en PDF desde la PWA.
+async function buildWorkerReports(profile, overtimeSummaries) {
+    const reports = {};
+    // Solo los meses mas recientes, para no inflar el documento de Firestore.
+    const recentSummaries = [...(overtimeSummaries || [])]
+        .filter(item =>
+            Number.isFinite(Number(item?.year)) &&
+            Number.isFinite(Number(item?.month))
+        )
+        .sort((a, b) =>
+            Number(b.year) - Number(a.year) ||
+            Number(b.month) - Number(a.month)
+        )
+        .slice(0, 3);
+
+    for (const summary of recentSummaries) {
+        const year = Number(summary?.year);
+        const month = Number(summary?.month);
+
+        if (!Number.isFinite(year) || !Number.isFinite(month)) continue;
+
+        try {
+            const html = await buildWorkerReportPreviewHTML(
+                profile,
+                new Date(year, month, 1)
+            );
+
+            if (html) reports[`${year}-${month}`] = html;
+        } catch (error) {
+            console.warn(
+                "No se pudo construir el reporte para la app del trabajador.",
+                error
+            );
+        }
+    }
+
+    return reports;
+}
+
 function buildSwapLimit(profileName) {
     const config = getTurnChangeConfig();
     const limit = Number(config.monthlySwapLimit) || 0;
@@ -616,6 +658,10 @@ async function buildWorkerAppPayload(link, profile, workspace) {
         profile,
         schedule
     );
+    const reportsByMonth = await buildWorkerReports(
+        profile,
+        overtimeSummaries
+    );
 
     return {
         uid: link.uid,
@@ -644,6 +690,7 @@ async function buildWorkerAppPayload(link, profile, workspace) {
         days: schedule.days,
         supervisorReminders: buildSupervisorReminders(profile),
         overtimeSummaries,
+        reportsByMonth,
         swapLimit: buildSwapLimit(profile.name),
         updatedAtISO: new Date().toISOString()
     };
