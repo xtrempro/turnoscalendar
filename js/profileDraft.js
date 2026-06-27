@@ -8,8 +8,7 @@
 
 import {
     isReplacementContractType,
-    isHonorariaContractType,
-    getContractsForProfile
+    isHonorariaContractType
 } from "./contracts.js";
 import {
     normalizeStoredStart,
@@ -26,8 +25,7 @@ import {
     getRotativa,
     isProfileActive,
     getShiftAssignmentConfiguredState,
-    normalizeProfession,
-    getCurrentProfile
+    normalizeProfession
 } from "./storage.js";
 
 export const PROFILE_MODE = {
@@ -75,6 +73,7 @@ function clearedDraftValues() {
         contractReplaces: "",
         contractReason: "",
         contractLeaveRef: "",
+        contractRotationMode: "inherit",
         honorariaStart: "",
         honorariaEnd: "",
         honorariaHourlyRate: "",
@@ -300,6 +299,7 @@ export function loadDraftFromProfile(profile){
     profileDraft.contractReplaces = "";
     profileDraft.contractReason = "";
     profileDraft.contractLeaveRef = "";
+    profileDraft.contractRotationMode = "inherit";
     profileDraft.honorariaStart = profile.honorariaStart || "";
     profileDraft.honorariaEnd = profile.honorariaEnd || "";
     profileDraft.honorariaHourlyRate =
@@ -331,18 +331,5 @@ export function requiresReplacementContract() {
         return false;
     }
 
-    if (profileDraft.mode === PROFILE_MODE.CREATE) {
-        return true;
-    }
-
-    if (hasPendingReplacementContract()) {
-        return true;
-    }
-
-    const existingContracts =
-        getContractsForProfile(
-            profileDraft.originalName || getCurrentProfile()
-        );
-
-    return existingContracts.length === 0;
+    return hasPendingReplacementContract();
 }

@@ -340,6 +340,11 @@ import {
     isReplacementContractType
 } from "./contracts.js";
 import {
+    REPLACEMENT_ROTATION_MODE,
+    normalizeReplacementRotationMode,
+    replacementRotationModeLabel
+} from "./replacementRotation.js";
+import {
     canEditTarget,
     canViewTarget,
     firstViewableTarget,
@@ -1343,7 +1348,11 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         contractEnd: profileDraft.contractEnd,
         contractReplaces: profileDraft.contractReplaces || "",
         contractReason: profileDraft.contractReason || "",
-        contractLeaveRef: profileDraft.contractLeaveRef || ""
+        contractLeaveRef: profileDraft.contractLeaveRef || "",
+        contractRotationMode: normalizeReplacementRotationMode(
+            profileDraft.contractRotationMode,
+            REPLACEMENT_ROTATION_MODE.INHERIT
+        )
     };
     const backdrop = document.createElement("div");
     let monthPicker = null;
@@ -1638,6 +1647,11 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 selectedLeave.label;
             profileDraft.contractLeaveRef =
                 selectedLeave.id;
+            profileDraft.contractRotationMode =
+                normalizeReplacementRotationMode(
+                    state.contractRotationMode,
+                    REPLACEMENT_ROTATION_MODE.INHERIT
+                );
             profileDraft.rotationFirstTurn = "larga";
         } else {
             if (!state.rotationStart) {
@@ -1663,6 +1677,8 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             profileDraft.contractReplaces = "";
             profileDraft.contractReason = "";
             profileDraft.contractLeaveRef = "";
+            profileDraft.contractRotationMode =
+                REPLACEMENT_ROTATION_MODE.INHERIT;
         }
 
         close();
@@ -1811,7 +1827,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 ) {
                     cell.classList.add("is-contract-range");
                     cell.title =
-                        `Contrato vigente: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)} | Reemplaza a: ${state.contractReplaces || "sin trabajador"}`;
+                        `Nuevo Contrato: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)} | Reemplaza a: ${state.contractReplaces || "sin trabajador"}`;
                 }
             }
 
@@ -1827,9 +1843,9 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                             iso >= state.contractStart &&
                             iso <= state.contractEnd
                         )
-                            ? "Contrato vigente"
+                            ? '<span class="contract-day-label contract-day-label--new">Nuevo Contrato</span>'
                             : existingContract
-                                ? "Contrato vigente"
+                                ? '<span class="contract-day-label contract-day-label--current">Contrato vigente</span>'
                             : ""
                         : turnoLabel(stateTurn)
                 }</small>
@@ -2003,6 +2019,18 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                             ${leaveOptionsHTML}
                         </select>
                     </label>
+
+                    <label class="rotation-contract-field">
+                        <span>Turnos durante el nuevo contrato</span>
+                        <select data-contract-rotation-mode>
+                            <option value="${REPLACEMENT_ROTATION_MODE.INHERIT}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.INHERIT ? "selected" : ""}>
+                                Heredar turnos del trabajador reemplazado
+                            </option>
+                            <option value="${REPLACEMENT_ROTATION_MODE.FREE}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.FREE ? "selected" : ""}>
+                                Libre, para agregar turnos manualmente
+                            </option>
+                        </select>
+                    </label>
                 ` : ""}
 
                 <div class="profile-mini-head rotation-modal-head">
@@ -2020,7 +2048,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                 <div class="profile-mini-help">
                     ${isReplacement
                         ? state.contractStart && state.contractEnd
-                            ? `Contrato segun permiso seleccionado: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)}${state.contractReason ? ` | ${escapeHTML(state.contractReason)}` : ""}.`
+                            ? `Contrato segun permiso seleccionado: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)}${state.contractReason ? ` | ${escapeHTML(state.contractReason)}` : ""}. ${escapeHTML(replacementRotationModeLabel(state.contractRotationMode))}.`
                             : hasReplacementTarget
                                 ? "Selecciona el permiso/ausencia que origina el reemplazo."
                                 : "Selecciona a quien reemplaza para cargar sus permisos disponibles."
@@ -2063,6 +2091,17 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                     }
                 });
         }
+
+        backdrop
+            .querySelector("[data-contract-rotation-mode]")
+            ?.addEventListener("change", event => {
+                state.contractRotationMode =
+                    normalizeReplacementRotationMode(
+                        event.target.value,
+                        REPLACEMENT_ROTATION_MODE.INHERIT
+                    );
+                render();
+            });
 
         backdrop
             .querySelector("[data-contract-leave-ref]")
@@ -3377,10 +3416,13 @@ function renderDashboardState() {
     DOM.profileRoleSelect.value = data.estamento || "";
     syncProfileProfessionField(data, editing);
     DOM.profileGradeSelect.value = data.grade || "";
+    const isReplacementContract =
+        isReplacementDraft(data);
     syncProfileRotationOptions(data);
     DOM.profileRotationSelect.value = data.rotationType || "";
     if (DOM.profileUnionLeaveInput) {
         DOM.profileUnionLeaveInput.checked =
+            !isReplacementContract &&
             Boolean(data.unionLeaveEnabled);
     }
     DOM.checkbox.checked = Boolean(data.shiftAssigned);
@@ -3404,6 +3446,24 @@ function renderDashboardState() {
     DOM.checkbox.disabled = !editing;
     DOM.profileActiveToggle.disabled = !editing;
 
+    if (DOM.profileRotationRow) {
+        DOM.profileRotationRow.classList.toggle(
+            "hidden",
+            isReplacementContract
+        );
+    }
+
+    if (DOM.profileUnionLeaveRow) {
+        DOM.profileUnionLeaveRow.classList.toggle(
+            "hidden",
+            isReplacementContract
+        );
+    }
+
+    if (isReplacementContract && editing) {
+        profileDraft.unionLeaveEnabled = false;
+    }
+
     const canUseShiftAssignment =
         data.rotationType === "3turno" ||
         data.rotationType === "4turno";
@@ -3422,8 +3482,6 @@ function renderDashboardState() {
         }
     }
 
-    const isReplacementContract =
-        isReplacementDraft(data);
     const isHonorariaContract =
         isHonorariaDraft(data);
 
@@ -3486,7 +3544,7 @@ function renderDashboardState() {
             DOM.replacementContractStatus.innerHTML = contracts.length
                 ? contracts
                     .map(contract =>
-                        `${escapeHTML(formatContractDate(contract.start))} - ${escapeHTML(formatContractDate(contract.end))}${contract.reason ? ` | ${escapeHTML(contract.reason)}` : ""} | ${escapeHTML(contract.replaces)}`
+                        `${escapeHTML(formatContractDate(contract.start))} - ${escapeHTML(formatContractDate(contract.end))}${contract.reason ? ` | ${escapeHTML(contract.reason)}` : ""} | ${escapeHTML(contract.replaces)} | ${escapeHTML(replacementRotationModeLabel(contract.rotationMode))}`
                     )
                     .join("<br>")
                 : "Sin contratos registrados.";
@@ -5811,6 +5869,8 @@ function startReplacementContractEdit(profileName, keyDay) {
     profileDraft.contractReplaces = "";
     profileDraft.contractReason = "";
     profileDraft.contractLeaveRef = "";
+    profileDraft.contractRotationMode =
+        REPLACEMENT_ROTATION_MODE.INHERIT;
     profileRotationMiniDate = parseKey(keyDay);
 
     renderProfiles();
@@ -6350,11 +6410,13 @@ async function guardarPerfil() {
     );
     const replacementContract =
         isReplacementDraft();
-    const nextRotationType =
-        replacementContract &&
-        profileDraft.rotationType !== "libre"
-            ? ""
-            : profileDraft.rotationType;
+    const nextRotationType = replacementContract
+        ? (
+            profileDraft.originalRotationType === "libre"
+                ? "libre"
+                : ""
+        )
+        : profileDraft.rotationType;
     const nextShiftAssigned =
         (
             nextRotationType === "3turno" ||
@@ -6416,7 +6478,9 @@ async function guardarPerfil() {
         honorariaMaxMonthlyHours: isHonorariaDraft()
             ? Number(profileDraft.honorariaMaxMonthlyHours) || 0
             : 0,
-        unionLeaveEnabled: Boolean(profileDraft.unionLeaveEnabled),
+        unionLeaveEnabled:
+            !replacementContract &&
+            Boolean(profileDraft.unionLeaveEnabled),
         estamento: nextEstamento,
         profession: nextProfession,
         grade: profileDraft.grade
@@ -6449,10 +6513,7 @@ async function guardarPerfil() {
             emailChanged
         );
     const shouldApplyRotation =
-        (
-            !replacementContract ||
-            nextRotationType === "libre"
-        ) &&
+        !replacementContract &&
         (
             profileDraft.mode === PROFILE_MODE.CREATE ||
             hasRotationChanged()
@@ -6638,7 +6699,8 @@ async function guardarPerfil() {
                 leaveRef: profileDraft.contractLeaveRef,
                 leaveType: profileDraft.contractReason,
                 leaveStart: profileDraft.contractStart,
-                leaveEnd: profileDraft.contractEnd
+                leaveEnd: profileDraft.contractEnd,
+                rotationMode: profileDraft.contractRotationMode
             });
 
             createReplacementContractMemoTask({
@@ -7772,12 +7834,17 @@ function bindProfileForm() {
             profileDraft.rotationStart = "";
             profileDraft.rotationFirstTurn = "larga";
             profileDraft.shiftAssigned = false;
+            profileDraft.unionLeaveEnabled = false;
+            profileDraft.contractRotationMode =
+                REPLACEMENT_ROTATION_MODE.INHERIT;
         } else {
             profileDraft.contractStart = "";
             profileDraft.contractEnd = "";
             profileDraft.contractReplaces = "";
             profileDraft.contractReason = "";
             profileDraft.contractLeaveRef = "";
+            profileDraft.contractRotationMode =
+                REPLACEMENT_ROTATION_MODE.INHERIT;
         }
 
         if (!isHonorariaDraft()) {

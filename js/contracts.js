@@ -6,6 +6,10 @@ import {
     saveReplacementContracts,
     getRotativa
 } from "./storage.js";
+import {
+    REPLACEMENT_ROTATION_MODE,
+    normalizeReplacementRotationMode
+} from "./replacementRotation.js";
 
 export function keyToISO(keyDay) {
     const { year, month, day } = parseKey(keyDay);
@@ -38,6 +42,9 @@ export function normalizeContract(contract = {}) {
         leaveType: String(contract.leaveType || "").trim(),
         leaveStart: String(contract.leaveStart || "").trim(),
         leaveEnd: String(contract.leaveEnd || "").trim(),
+        rotationMode: normalizeReplacementRotationMode(
+            contract.rotationMode
+        ),
         createdAt:
             contract.createdAt ||
             new Date().toISOString()
@@ -154,6 +161,22 @@ export function getContractForDate(profileName, keyDay) {
             contract.start <= iso &&
             contract.end >= iso
         ) || null;
+}
+
+export function getReplacementRotationModeForDate(
+    profileName,
+    keyDay
+) {
+    const contract = getContractForDate(profileName, keyDay);
+
+    if (!contract) return "";
+
+    return normalizeReplacementRotationMode(
+        contract.rotationMode,
+        getRotativa(profileName).type === "libre"
+            ? REPLACEMENT_ROTATION_MODE.FREE
+            : REPLACEMENT_ROTATION_MODE.INHERIT
+    );
 }
 
 export function hasContractForDate(profileName, keyDay) {

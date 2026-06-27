@@ -86,8 +86,6 @@ export function formatRotationStartSummary(data, prefix = "") {
 
 export function buildRotationStatus(data){
     if (isReplacementDraft(data)) {
-        const freeRotation = data.rotationType === "libre";
-
         if (profileDraft.mode === PROFILE_MODE.VIEW) {
             const profile = getPerfilActual();
             const contracts = profile
@@ -98,9 +96,15 @@ export function buildRotationStatus(data){
                 return "Contrato Reemplazo sin periodos registrados.";
             }
 
-            return freeRotation
-                ? `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s). Rotativa Libre: calendario disponible para carga manual.`
-                : `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s). La rotativa se hereda del trabajador reemplazado.`;
+            const freeContracts = contracts.filter(contract =>
+                contract.rotationMode === "free" ||
+                (
+                    !contract.rotationMode &&
+                    data.rotationType === "libre"
+                )
+            ).length;
+
+            return `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s): ${contracts.length - freeContracts} con turnos heredados y ${freeContracts} con turnos manuales.`;
         }
 
         if (!data.contractStart) {
@@ -111,7 +115,11 @@ export function buildRotationStatus(data){
             return `Inicio de contrato: ${formatDisplayDate(data.contractStart)}. Falta definir termino en el modal.`;
         }
 
-        return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}.${freeRotation ? " Rotativa Libre: calendario disponible para carga manual." : ""}`;
+        const rotationSummary = data.contractRotationMode === "free"
+            ? "Turnos libres para carga manual."
+            : "Heredara los turnos del trabajador reemplazado.";
+
+        return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}. ${rotationSummary}`;
     }
 
     if (isHonorariaDraft(data)) {
@@ -179,7 +187,7 @@ export function buildRotationStatus(data){
 export function buildEditorHint(profile){
     if (profileDraft.mode === PROFILE_MODE.CREATE) {
         if (isReplacementDraft()) {
-            return "Completa nombre, estamento, periodo de contrato y a quien reemplaza antes de guardar.";
+            return "Puedes crear el perfil sin contrato y agregar su primer contrato de reemplazo cuando lo necesites.";
         }
 
         if (isHonorariaDraft()) {

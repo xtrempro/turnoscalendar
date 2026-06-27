@@ -33,9 +33,11 @@ import { showConfirm } from "./dialogs.js";
 import {
     formatContractDate,
     getAllReplacementContracts,
+    getReplacementRotationModeForDate,
     getReplacedProfileForDate,
     isReplacementProfile
 } from "./contracts.js";
+import { REPLACEMENT_ROTATION_MODE } from "./replacementRotation.js";
 import {
     getAbsenceType,
     requiereReemplazoTurnoBase
@@ -229,8 +231,12 @@ function normalizeStaffingConfig(config = {}) {
 }
 
 function getStaffingProfileModality(profile, keyDay = "") {
-    const replacedProfileName =
+    const replacementRotationMode =
         keyDay && isReplacementProfile(profile.name)
+            ? getReplacementRotationModeForDate(profile.name, keyDay)
+            : "";
+    const replacedProfileName =
+        replacementRotationMode === REPLACEMENT_ROTATION_MODE.INHERIT
             ? getReplacedProfileForDate(profile.name, keyDay)
             : "";
     const inheritedRotativa =
@@ -239,7 +245,11 @@ function getStaffingProfileModality(profile, keyDay = "") {
             : "";
 
     return normalizeStaffingRotativa(
-        getRotativa(profile.name)?.type ||
+        (
+            replacementRotationMode === REPLACEMENT_ROTATION_MODE.FREE
+                ? "libre"
+                : getRotativa(profile.name)?.type
+        ) ||
         inheritedRotativa ||
         profile.rotativaActual ||
         profile.rotation

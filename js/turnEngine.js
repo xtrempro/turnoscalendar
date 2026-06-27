@@ -20,11 +20,13 @@ import {
     turnoExtraCubreTurno
 } from "./rulesEngine.js";
 import {
+    getReplacementRotationModeForDate,
     getReplacedProfileForDate,
     hasHonorariaContractForDate,
     isHonorariaProfile,
     isReplacementProfile
 } from "./contracts.js";
+import { REPLACEMENT_ROTATION_MODE } from "./replacementRotation.js";
 
 /* ======================================================
    TURN ENGINE
@@ -294,17 +296,24 @@ function rotativaTurnoBase(nombre, key, visited = new Set()) {
 
     visited.add(nombre);
 
-    if (getRotativa(nombre).type === "libre") {
-        return TURNO.LIBRE;
-    }
-
     if (isReplacementProfile(nombre)) {
+        if (
+            getReplacementRotationModeForDate(nombre, key) ===
+            REPLACEMENT_ROTATION_MODE.FREE
+        ) {
+            return TURNO.LIBRE;
+        }
+
         const replacedProfile =
             getReplacedProfileForDate(nombre, key);
 
         return replacedProfile
             ? rotativaTurnoBase(replacedProfile, key, visited)
             : TURNO.LIBRE;
+    }
+
+    if (getRotativa(nombre).type === "libre") {
+        return TURNO.LIBRE;
     }
 
     if (

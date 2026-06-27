@@ -49,6 +49,7 @@ import {
     hasContractForDate,
     isReplacementProfile
 } from "./contracts.js";
+import { REPLACEMENT_ROTATION_MODE } from "./replacementRotation.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { getJSON } from "./persistence.js";
 import {
@@ -1745,7 +1746,16 @@ function noAssignmentProfileRows(model) {
             )[0]
             : null;
     const rotativa = replacementContract
-        ? getRotativa(replacementContract.replaces)
+        ? (
+            replacementContract.rotationMode ===
+                REPLACEMENT_ROTATION_MODE.FREE ||
+            (
+                !replacementContract.rotationMode &&
+                getRotativa(model.profile.name).type === "libre"
+            )
+        )
+            ? { type: "libre" }
+            : getRotativa(replacementContract.replaces)
         : getRotativa(model.profile.name);
 
     return [
