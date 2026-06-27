@@ -10,7 +10,8 @@ import {
     doc,
     getDoc,
     getDocs,
-    setDoc
+    setDoc,
+    updateDoc
 } from "firebase/firestore";
 import {
     deleteObject,
@@ -173,6 +174,18 @@ test("reglas modulares de Firestore y Storage", async t => {
                 "profile-editor"
             ),
             { role: "member", permissions: permissions(["profile"]) }
+        );
+        await setDoc(
+            doc(db, "workspaces", WORKSPACE_ID, "workerRequests", "swap-canceled"),
+            { status: "canceled", type: "swap", source: "worker_app" }
+        );
+        await setDoc(
+            doc(db, "workspaces", WORKSPACE_ID, "workerSwapRequests", "swap-canceled"),
+            { status: "canceled", createdByUid: "worker-a", targetUid: "worker-b" }
+        );
+        await setDoc(
+            doc(db, "workspaces", WORKSPACE_ID, "workerSwapOpenRequests", "open-canceled"),
+            { status: "canceled", createdByUid: "worker-a" }
         );
         await setDoc(
             doc(
@@ -604,6 +617,32 @@ test("reglas modulares de Firestore y Storage", async t => {
                         workspaceId: WORKSPACE_ID,
                         status: "open"
                     }
+                )
+            );
+        }
+    );
+
+    await t.test(
+        "una solicitud anulada no puede volver a aceptarse",
+        async () => {
+            const ownerDb = owner.firestore();
+
+            await assertFails(
+                updateDoc(
+                    doc(ownerDb, "workspaces", WORKSPACE_ID, "workerRequests", "swap-canceled"),
+                    { status: "accepted" }
+                )
+            );
+            await assertFails(
+                updateDoc(
+                    doc(ownerDb, "workspaces", WORKSPACE_ID, "workerSwapRequests", "swap-canceled"),
+                    { status: "supervisor_accepted" }
+                )
+            );
+            await assertFails(
+                updateDoc(
+                    doc(ownerDb, "workspaces", WORKSPACE_ID, "workerSwapOpenRequests", "open-canceled"),
+                    { status: "supervisor_accepted" }
                 )
             );
         }

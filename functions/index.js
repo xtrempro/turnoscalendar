@@ -6,12 +6,17 @@ const {
   onDocumentCreated,
   onDocumentUpdated
 } = require("firebase-functions/v2/firestore");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const {
   defineSecret,
   defineString
 } = require("firebase-functions/params");
+const {
+  normalizeSwapKind,
+  canCancelSwapStatus,
+  isFinalSwapStatus
+} = require("./swapCancellation");
 
 // API key de Resend. Configurar con: firebase functions:secrets:set RESEND_API_KEY
 const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
@@ -46,6 +51,7 @@ const db = admin.firestore();
 const WORKER_APP_BASE_URL = "https://turnoplusfuncionarios.web.app/";
 const DEFAULT_MAIL_FROM = "TurnoPlus <onboarding@resend.dev>";
 const APP_URL = `${WORKER_APP_BASE_URL}?screen=solicitudes`;
+const SWAPS_APP_URL = `${WORKER_APP_BASE_URL}?screen=cambios`;
 const APP_ICON = `${WORKER_APP_BASE_URL}img/logo-turnoplus.png`;
 const APP_BADGE = `${WORKER_APP_BASE_URL}img/favicon-turnoplus-calendar.png`;
 const INVALID_TOKEN_CODES = new Set([
@@ -83,6 +89,11 @@ const MENU_PERMISSION_KEYS = [
 
 function cleanCallableText(value, maxLength = 160) {
   return String(value || "").trim().slice(0, maxLength);
+}
+
+function cleanManifestParam(value, pattern, maxLength) {
+  const clean = String(value || "").trim().slice(0, maxLength);
+  return pattern.test(clean) ? clean : "";
 }
 
 function normalizeSupervisorPermissions(input = {}) {
@@ -1360,6 +1371,231 @@ exports.cancelInterUnitLoan = onCall(
   }
 );
 
+// Manifiesto PWA dinamico. Conserva exclusivamente los parametros necesarios
+// para abrir una invitacion desde el icono instalado; nunca registra tokens.
+exports.workerInstallManifest = onRequest(
+  { cors: false, maxInstances: 10 },
+  (request, response) => {
+    const workspace = cleanManifestParam(
+      request.query.workspace,
+      /^[A-Za-z0-9_-]{1,160}$/,
+      160
+    );
+    const invite = cleanManifestParam(
+      request.query.invite,
+      /^[A-Za-z0-9_-]{1,220}$/,
+      220
+    );
+    const email = cleanManifestParam(
+      request.query.email,
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+      254
+    );
+    const startParams = new URLSearchParams({ installed: "1" });
+
+    if (workspace && invite) {
+      startParams.set("workspace", workspace);
+      startParams.set("invite", invite);
+    }
+    if (email) startParams.set("email", email);
+
+    response.set({
+      "Cache-Control": "private, no-store, no-cache, max-age=0, must-revalidate",
+      "Content-Type": "application/manifest+json; charset=utf-8",
+      "X-Content-Type-Options": "nosniff"
+    });
+    response.status(200).send(JSON.stringify({
+      id: "/",
+      name: "TurnoPlus Trabajador",
+      short_name: "TurnoPlus",
+      description: "Aplicacion movil para trabajadores TurnoPlus.",
+      start_url: `/?${startParams.toString()}`,
+      scope: "/",
+      display: "standalone",
+      background_color: "#f6f8fb",
+      theme_color: "#1d6cff",
+      orientation: "portrait",
+      icons: [
+        {
+          src: "/img/icon-turnoplus-192.png",
+          sizes: "192x192",
+          type: "image/png",
+          purpose: "any maskable"
+        },
+        {
+          src: "/img/favicon-turnoplus-calendar.png",
+          sizes: "512x512",
+          type: "image/png",
+          purpose: "any maskable"
+        }
+      ]
+    }));
+  }
+);
+
+exports.cancelWorkerSwap = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const requestId = cleanCallableText(request.data?.requestId, 220);
+    const kind = normalizeSwapKind(request.data?.kind);
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para anular el cambio de turno."
+      );
+    }
+    if (!workspaceId || !requestId || !kind) {
+      throw new HttpsError(
+        "invalid-argument",
+        "No fue posible identificar el cambio de turno."
+      );
+    }
+
+    const workspaceRef = db.collection("workspaces").doc(workspaceId);
+    const linkSnap = await workspaceRef.collection("workerLinks").doc(uid).get();
+
+    if (!linkSnap.exists) {
+      throw new HttpsError(
+        "permission-denied",
+        "Tu cuenta ya no esta enlazada con esta unidad."
+      );
+    }
+
+    if (kind === "direct") {
+      const swapRef = workspaceRef.collection("workerSwapRequests").doc(requestId);
+
+      await db.runTransaction(async (transaction) => {
+        const swapSnap = await transaction.get(swapRef);
+        const swap = swapSnap.data() || {};
+
+        if (!swapSnap.exists) {
+          throw new HttpsError("not-found", "El cambio de turno ya no existe.");
+        }
+        if (swap.createdByUid !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "Solo quien creo la solicitud puede anularla."
+          );
+        }
+        if (!canCancelSwapStatus(swap.status)) {
+          throw new HttpsError(
+            "failed-precondition",
+            "El cambio de turno ya fue resuelto y no puede anularse."
+          );
+        }
+
+        let supervisorRef = null;
+        let supervisorSnap = null;
+        if (swap.supervisorRequestId) {
+          supervisorRef = workspaceRef
+            .collection("workerRequests")
+            .doc(swap.supervisorRequestId);
+          supervisorSnap = await transaction.get(supervisorRef);
+          if (
+            supervisorSnap.exists &&
+            isFinalSwapStatus(supervisorSnap.data()?.status)
+          ) {
+            throw new HttpsError(
+              "failed-precondition",
+              "El supervisor ya resolvio esta solicitud."
+            );
+          }
+        }
+
+        const cancellation = {
+          status: "canceled",
+          canceledByUid: uid,
+          canceledAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+        transaction.set(swapRef, cancellation, { merge: true });
+
+        if (supervisorRef && supervisorSnap?.exists) {
+          transaction.set(supervisorRef, cancellation, { merge: true });
+        }
+      });
+    } else {
+      const openRef = workspaceRef
+        .collection("workerSwapOpenRequests")
+        .doc(requestId);
+      const offersQuery = workspaceRef
+        .collection("workerSwapRequests")
+        .where("groupId", "==", requestId);
+
+      await db.runTransaction(async (transaction) => {
+        const openSnap = await transaction.get(openRef);
+        const openSwap = openSnap.data() || {};
+
+        if (!openSnap.exists) {
+          throw new HttpsError("not-found", "El cambio abierto ya no existe.");
+        }
+        if (openSwap.createdByUid !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "Solo quien creo la solicitud puede anularla."
+          );
+        }
+        if (!canCancelSwapStatus(openSwap.status)) {
+          throw new HttpsError(
+            "failed-precondition",
+            "El cambio abierto ya fue resuelto y no puede anularse."
+          );
+        }
+
+        const offersSnap = await transaction.get(offersQuery);
+        const winner = offersSnap.docs.find((offer) =>
+          offer.id === openSwap.winnerRequestId ||
+          offer.data()?.status === "pending_supervisor"
+        );
+        const supervisorRequestId =
+          winner?.data()?.supervisorRequestId || openSwap.supervisorRequestId || "";
+        let supervisorRef = null;
+        let supervisorSnap = null;
+
+        if (supervisorRequestId) {
+          supervisorRef = workspaceRef
+            .collection("workerRequests")
+            .doc(supervisorRequestId);
+          supervisorSnap = await transaction.get(supervisorRef);
+          if (
+            supervisorSnap.exists &&
+            isFinalSwapStatus(supervisorSnap.data()?.status)
+          ) {
+            throw new HttpsError(
+              "failed-precondition",
+              "El supervisor ya resolvio esta solicitud."
+            );
+          }
+        }
+
+        const cancellation = {
+          status: "canceled",
+          canceledByUid: uid,
+          canceledAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+        transaction.set(openRef, cancellation, { merge: true });
+        offersSnap.docs.forEach((offer) => {
+          if (canCancelSwapStatus(offer.data()?.status)) {
+            transaction.set(offer.ref, cancellation, { merge: true });
+          }
+        });
+        if (supervisorRef && supervisorSnap?.exists) {
+          transaction.set(supervisorRef, cancellation, { merge: true });
+        }
+      });
+    }
+
+    return { ok: true, requestId, kind, status: "canceled" };
+  }
+);
+
 exports.notifyReplacementRequestCreated = onDocumentCreated(
   "workspaces/{workspaceId}/replacementRequests/{requestId}",
   async (event) => {
@@ -1453,8 +1689,8 @@ exports.notifyWorkerRequestResolved = onDocumentUpdated(
           requestId,
           workspaceId,
           status: after.status,
-          screen: "solicitudes",
-          url: APP_URL,
+          screen: isSwap ? "cambios" : "solicitudes",
+          url: isSwap ? SWAPS_APP_URL : APP_URL,
           tag: `worker-request-${requestId}`
         }
       })
@@ -1463,16 +1699,27 @@ exports.notifyWorkerRequestResolved = onDocumentUpdated(
     const error = results.find((result) => result.error)?.error || "";
 
     if (isSwap && after.swapRequestId) {
-      await db
-        .collection("workspaces")
-        .doc(workspaceId)
-        .collection("workerSwapRequests")
-        .doc(after.swapRequestId)
-        .set({
-          status: accepted ? "supervisor_accepted" : "supervisor_rejected",
-          supervisorResponseAt: admin.firestore.FieldValue.serverTimestamp(),
-          supervisorRequestId: requestId
-        }, { merge: true });
+      const workspaceRef = db.collection("workspaces").doc(workspaceId);
+      const resolution = {
+        status: accepted ? "supervisor_accepted" : "supervisor_rejected",
+        supervisorResponseAt: admin.firestore.FieldValue.serverTimestamp(),
+        supervisorRequestId: requestId,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+      const batch = db.batch();
+      batch.set(
+        workspaceRef.collection("workerSwapRequests").doc(after.swapRequestId),
+        resolution,
+        { merge: true }
+      );
+      if (after.openRequestId) {
+        batch.set(
+          workspaceRef.collection("workerSwapOpenRequests").doc(after.openRequestId),
+          resolution,
+          { merge: true }
+        );
+      }
+      await batch.commit();
     }
 
     await event.data.after.ref.set({
@@ -1515,8 +1762,8 @@ exports.notifyWorkerSwapRequestCreated = onDocumentCreated(
         category: "swaps",
         requestId,
         workspaceId,
-        screen: "solicitudes",
-        url: APP_URL,
+        screen: "cambios",
+        url: SWAPS_APP_URL,
         tag: `worker-swap-${requestId}`,
         requireInteraction: "true"
       }
@@ -1559,8 +1806,8 @@ exports.processWorkerSwapResponse = onDocumentUpdated(
           category: "swaps",
           requestId,
           workspaceId,
-          screen: "solicitudes",
-          url: APP_URL,
+          screen: "cambios",
+          url: SWAPS_APP_URL,
           tag: `worker-swap-${requestId}`
         }
       });
@@ -1580,38 +1827,51 @@ exports.processWorkerSwapResponse = onDocumentUpdated(
       .doc(workspaceId)
       .collection("workerRequests")
       .doc(supervisorRequestId);
+    let submitted = false;
 
-    await workerRequestRef.set({
-      id: supervisorRequestId,
-      type: "swap",
-      title: "Cambio directo",
-      profile: after.from || after.profile || "",
-      from: after.from || after.profile || "",
-      to: after.to || after.targetProfile || "",
-      targetProfile: after.to || after.targetProfile || "",
-      targetUid: after.targetUid || "",
-      createdByUid: after.createdByUid || "",
-      createdByEmail: after.createdByEmail || "",
-      source: "worker_app",
-      status: "pending",
-      date: after.fecha || after.date || "",
-      fecha: after.fecha || after.date || "",
-      returnDate: after.devolucion || after.returnDate || "",
-      devolucion: after.devolucion || after.returnDate || "",
-      ownTurnLabel: after.ownTurnLabel || "",
-      returnTurnLabel: after.returnTurnLabel || "",
-      detail: after.detail || "",
-      swapRequestId: requestId,
-      colleagueAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    await db.runTransaction(async (transaction) => {
+      const currentSnap = await transaction.get(event.data.after.ref);
+      const current = currentSnap.data() || {};
 
-    await event.data.after.ref.set({
-      status: "pending_supervisor",
-      supervisorRequestId,
-      supervisorSubmittedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+      // Una anulacion puede competir con este trigger. Solo se crea la
+      // solicitud del supervisor si el cambio sigue aceptado por el colega.
+      if (current.status !== "colleague_accepted") return;
+
+      transaction.set(workerRequestRef, {
+        id: supervisorRequestId,
+        type: "swap",
+        title: "Cambio directo",
+        profile: after.from || after.profile || "",
+        from: after.from || after.profile || "",
+        to: after.to || after.targetProfile || "",
+        targetProfile: after.to || after.targetProfile || "",
+        targetUid: after.targetUid || "",
+        createdByUid: after.createdByUid || "",
+        createdByEmail: after.createdByEmail || "",
+        source: "worker_app",
+        status: "pending",
+        date: after.fecha || after.date || "",
+        fecha: after.fecha || after.date || "",
+        returnDate: after.devolucion || after.returnDate || "",
+        devolucion: after.devolucion || after.returnDate || "",
+        ownTurnLabel: after.ownTurnLabel || "",
+        returnTurnLabel: after.returnTurnLabel || "",
+        detail: after.detail || "",
+        swapRequestId: requestId,
+        colleagueAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      transaction.set(event.data.after.ref, {
+        status: "pending_supervisor",
+        supervisorRequestId,
+        supervisorSubmittedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      submitted = true;
+    });
+
+    if (!submitted) return;
 
     await sendWorkerPush({
       workspaceId,
@@ -1625,8 +1885,8 @@ exports.processWorkerSwapResponse = onDocumentUpdated(
         requestId,
         supervisorRequestId,
         workspaceId,
-        screen: "solicitudes",
-        url: APP_URL,
+        screen: "cambios",
+        url: SWAPS_APP_URL,
         tag: `worker-swap-${requestId}`
       }
     });
@@ -1702,37 +1962,52 @@ exports.fanOutOpenSwapRequest = onDocumentCreated(
     }
 
     const now = admin.firestore.FieldValue.serverTimestamp();
-    const batch = db.batch();
+    let distributed = false;
 
-    eligible.forEach((colleague) => {
-      const offerId = `${openId}_${colleague.uid}`;
-      const offerRef = wsRef.collection("workerSwapRequests").doc(offerId);
+    await db.runTransaction(async (transaction) => {
+      const currentSnap = await transaction.get(event.data.ref);
+      const current = currentSnap.data() || {};
 
-      batch.set(offerRef, {
-        id: offerId,
-        workspaceId,
-        type: "open_swap",
-        source: "worker_app",
-        status: "pending_colleague",
-        openRequestId: openId,
-        groupId: openId,
-        createdByUid: requesterUid,
-        createdByEmail: openReq.createdByEmail || "",
-        from: openReq.profileName || "",
-        to: colleague.profileName || "",
-        targetUid: colleague.uid,
-        fecha: ownDate,
-        date: ownDate,
-        ownTurnLabel: openReq.ownTurnLabel || "",
-        ownTurnClassName: openReq.ownTurnClassName || "",
-        returnDate: "",
-        returnTurnLabel: "",
-        createdAt: now,
+      if (current.status !== "open") return;
+
+      eligible.forEach((colleague) => {
+        const offerId = `${openId}_${colleague.uid}`;
+        const offerRef = wsRef.collection("workerSwapRequests").doc(offerId);
+
+        transaction.set(offerRef, {
+          id: offerId,
+          workspaceId,
+          type: "open_swap",
+          source: "worker_app",
+          status: "pending_colleague",
+          openRequestId: openId,
+          groupId: openId,
+          createdByUid: requesterUid,
+          createdByEmail: openReq.createdByEmail || "",
+          from: openReq.profileName || "",
+          to: colleague.profileName || "",
+          targetUid: colleague.uid,
+          fecha: ownDate,
+          date: ownDate,
+          ownTurnLabel: openReq.ownTurnLabel || "",
+          ownTurnClassName: openReq.ownTurnClassName || "",
+          returnDate: "",
+          returnTurnLabel: "",
+          createdAt: now,
+          updatedAt: now
+        }, { merge: true });
+      });
+      transaction.set(event.data.ref, {
+        status: "distributed",
+        recipientUids: eligible.map((colleague) => colleague.uid),
+        recipientCount: eligible.length,
+        distributedAt: now,
         updatedAt: now
       }, { merge: true });
+      distributed = true;
     });
 
-    await batch.commit();
+    if (!distributed) return;
 
     const pushResults = await Promise.all(eligible.map((colleague) =>
       sendWorkerPush({
@@ -1746,8 +2021,8 @@ exports.fanOutOpenSwapRequest = onDocumentCreated(
           category: "swaps",
           openRequestId: openId,
           workspaceId,
-          screen: "solicitudes",
-          url: APP_URL,
+          screen: "cambios",
+          url: SWAPS_APP_URL,
           tag: `open-swap-${openId}`,
           requireInteraction: "true"
         }
@@ -1756,11 +2031,7 @@ exports.fanOutOpenSwapRequest = onDocumentCreated(
     const sent = pushResults.reduce((total, result) => total + result.sent, 0);
 
     await event.data.ref.set({
-      status: "distributed",
-      recipientUids: eligible.map((colleague) => colleague.uid),
-      recipientCount: eligible.length,
       pushSentCount: sent,
-      distributedAt: now,
       updatedAt: now
     }, { merge: true });
   }
@@ -1788,33 +2059,92 @@ exports.processOpenSwapResponse = onDocumentUpdated(
     const wsRef = db.collection("workspaces").doc(workspaceId);
     const requestRef = event.data.after.ref;
     const openRef = wsRef.collection("workerSwapOpenRequests").doc(groupId);
-    let won = false;
+    const supervisorRequestId = `swap_${requestId}`;
+    const supervisorRequestRef = wsRef
+      .collection("workerRequests")
+      .doc(supervisorRequestId);
+    const createdAt = new Date().toISOString();
+    let outcome = "stale";
 
     await db.runTransaction(async (tx) => {
-      const openSnap = await tx.get(openRef);
+      const [currentSnap, openSnap] = await Promise.all([
+        tx.get(requestRef),
+        tx.get(openRef)
+      ]);
+      const current = currentSnap.data() || {};
       const openData = openSnap.data() || {};
 
+      if (current.status !== "colleague_accepted") return;
+
+      if (
+        !openSnap.exists ||
+        openData.status === "canceled" ||
+        isFinalSwapStatus(openData.status)
+      ) {
+        tx.set(requestRef, {
+          status: "canceled",
+          canceledAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        outcome = "canceled";
+        return;
+      }
+
       if (openData.winnerRequestId) {
-        won = false;
+        tx.set(requestRef, {
+          status: "superseded",
+          supersededAt: admin.firestore.FieldValue.serverTimestamp(),
+          supersededByRequestId: openData.winnerRequestId,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        outcome = "superseded";
         return;
       }
 
       tx.set(openRef, {
         winnerRequestId: requestId,
         winnerUid: after.targetUid || "",
+        supervisorRequestId,
         status: "assigned",
         assignedAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       }, { merge: true });
-      won = true;
+      tx.set(supervisorRequestRef, {
+        id: supervisorRequestId,
+        type: "swap",
+        title: "Cambio de turno (abierto)",
+        profile: after.from || "",
+        from: after.from || "",
+        to: after.to || "",
+        targetProfile: after.to || "",
+        targetUid: after.targetUid || "",
+        createdByUid: after.createdByUid || "",
+        createdByEmail: after.createdByEmail || "",
+        source: "worker_app",
+        status: "pending",
+        date: after.fecha || after.date || "",
+        fecha: after.fecha || after.date || "",
+        returnDate: after.returnDate || "",
+        devolucion: after.returnDate || "",
+        ownTurnLabel: after.ownTurnLabel || "",
+        returnTurnLabel: after.returnTurnLabel || "",
+        detail: after.detail || "",
+        swapRequestId: requestId,
+        openRequestId: groupId,
+        colleagueAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      tx.set(requestRef, {
+        status: "pending_supervisor",
+        supervisorRequestId,
+        supervisorSubmittedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      outcome = "won";
     });
 
-    if (!won) {
-      await requestRef.set({
-        status: "superseded",
-        supersededAt: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-
+    if (outcome === "superseded") {
       await sendWorkerPush({
         workspaceId,
         uid: after.targetUid,
@@ -1826,13 +2156,15 @@ exports.processOpenSwapResponse = onDocumentUpdated(
           category: "swaps",
           requestId,
           workspaceId,
-          screen: "solicitudes",
-          url: APP_URL,
+          screen: "cambios",
+          url: SWAPS_APP_URL,
           tag: `open-swap-${groupId}`
         }
       });
       return;
     }
+
+    if (outcome !== "won") return;
 
     const siblingsSnap = await wsRef
       .collection("workerSwapRequests")
@@ -1856,42 +2188,6 @@ exports.processOpenSwapResponse = onDocumentUpdated(
 
     await batch.commit();
 
-    const supervisorRequestId = `swap_${requestId}`;
-    const createdAt = new Date().toISOString();
-
-    await wsRef.collection("workerRequests").doc(supervisorRequestId).set({
-      id: supervisorRequestId,
-      type: "swap",
-      title: "Cambio de turno (abierto)",
-      profile: after.from || "",
-      from: after.from || "",
-      to: after.to || "",
-      targetProfile: after.to || "",
-      targetUid: after.targetUid || "",
-      createdByUid: after.createdByUid || "",
-      createdByEmail: after.createdByEmail || "",
-      source: "worker_app",
-      status: "pending",
-      date: after.fecha || after.date || "",
-      fecha: after.fecha || after.date || "",
-      returnDate: after.returnDate || "",
-      devolucion: after.returnDate || "",
-      ownTurnLabel: after.ownTurnLabel || "",
-      returnTurnLabel: after.returnTurnLabel || "",
-      detail: after.detail || "",
-      swapRequestId: requestId,
-      openRequestId: groupId,
-      colleagueAcceptedAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAt,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-
-    await requestRef.set({
-      status: "pending_supervisor",
-      supervisorRequestId,
-      supervisorSubmittedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-
     await sendWorkerPush({
       workspaceId,
       uid: after.createdByUid,
@@ -1903,8 +2199,8 @@ exports.processOpenSwapResponse = onDocumentUpdated(
         category: "swaps",
         requestId,
         workspaceId,
-        screen: "solicitudes",
-        url: APP_URL,
+        screen: "cambios",
+        url: SWAPS_APP_URL,
         tag: `open-swap-${groupId}`
       }
     });
