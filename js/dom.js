@@ -54,6 +54,7 @@ export const DOM = {
     mobileMenuToggle: document.getElementById("mobileMenuToggle"),
     mobileStaffingToggle: document.getElementById("mobileStaffingToggle"),
     themeToggle: document.getElementById("themeToggle"),
+    plansBtn: document.getElementById("plansBtn"),
     systemSettingsBtn: document.getElementById("systemSettingsBtn"),
     floatingMessagesBtn: document.getElementById("floatingMessagesBtn"),
     floatingMessagesBadge: document.getElementById("floatingMessagesBadge"),

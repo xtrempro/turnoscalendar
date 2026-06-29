@@ -2552,3 +2552,132 @@ function requestTypeLabel(type) {
 
   return labels[type] || "Solicitud";
 }
+
+// ===========================================================================
+// Suscripciones / Planes: uso autoritativo de la cuenta del dueño (ownerUid).
+// La PWA del trabajador es gratis; el cobro y los limites viven en la cuenta
+// del dueño en ProTurnos y cubren TODOS sus entornos.
+// ===========================================================================
+
+// Entornos que no deben contar para el uso (marcados para eliminacion).
+const BILLING_EXCLUDED_WORKSPACE_STATES = new Set([
+  "pending_deletion",
+  "deleted"
+]);
+
+function subscriptionPeriodEndMillis(value) {
+  if (!value) return 0;
+  if (typeof value === "number") return value;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (typeof value.seconds === "number") return value.seconds * 1000;
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+// Reconstruye los perfiles de un entorno desde el snapshot modular sincronizado
+// (modulo "profile") y cuenta los activos. Es autoritativo: lee la misma fuente
+// que usa la app (no un contador escrito aparte), por lo que no se puede evadir
+// el limite manipulando un contador en el cliente.
+async function countActiveWorkersInWorkspace(workspaceId) {
+  const chunksSnap = await db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("stateModules")
+    .doc("profile")
+    .collection("chunks")
+    .get();
+
+  if (chunksSnap.empty) return 0;
+
+  const text = chunksSnap.docs
+    .map((doc) => ({
+      index: Number(doc.data()?.index) || 0,
+      text: String(doc.data()?.text || "")
+    }))
+    .sort((a, b) => a.index - b.index)
+    .map((chunk) => chunk.text)
+    .join("");
+
+  let snapshot;
+  try {
+    snapshot = JSON.parse(text || "{}");
+  } catch (error) {
+    logger.warn("No se pudo parsear el modulo profile.", { workspaceId });
+    return 0;
+  }
+
+  const profiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : [];
+
+  // Activo = no desactivado explicitamente (coincide con isProfileActive del
+  // cliente: profile.active !== false). Un perfil legacy como string cuenta.
+  return profiles.filter((profile) => {
+    if (typeof profile === "string") return true;
+    return profile && profile.active !== false;
+  }).length;
+}
+
+// Devuelve el uso real de la cuenta del dueño: plan vigente, vencimiento,
+// trabajadores activos (sumando todos los entornos) y cantidad de entornos.
+// El cliente compara estos numeros contra los limites de plans.js.
+exports.getAccountUsage = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 60
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para ver tu suscripcion."
+      );
+    }
+
+    // Suscripcion almacenada. Si no hay documento, la cuenta es gratis.
+    const accountSnap = await db.collection("accounts").doc(uid).get();
+    const account = accountSnap.exists ? accountSnap.data() || {} : {};
+    const plan = typeof account.plan === "string" ? account.plan : "free";
+    const period =
+      account.period === "annual" || account.period === "monthly"
+        ? account.period
+        : null;
+    const periodEndMs = subscriptionPeriodEndMillis(account.currentPeriodEnd);
+    const now = Date.now();
+    const expired = plan !== "free" && periodEndMs > 0 && now > periodEndMs;
+    const effectivePlan = expired ? "free" : plan;
+
+    // Entornos del dueño que no estan marcados para eliminacion.
+    const workspacesSnap = await db
+      .collection("workspaces")
+      .where("ownerUid", "==", uid)
+      .get();
+    const ownedWorkspaces = workspacesSnap.docs.filter(
+      (doc) =>
+        !BILLING_EXCLUDED_WORKSPACE_STATES.has(
+          String(doc.data()?.deletionStatus || "")
+        )
+    );
+
+    // Suma autoritativa de trabajadores activos entre TODOS los entornos.
+    let activeWorkers = 0;
+    for (const workspaceDoc of ownedWorkspaces) {
+      activeWorkers += await countActiveWorkersInWorkspace(workspaceDoc.id);
+    }
+
+    return {
+      plan,
+      effectivePlan,
+      period,
+      currentPeriodEnd: periodEndMs || null,
+      source: typeof account.source === "string" ? account.source : null,
+      couponCode:
+        typeof account.couponCode === "string" ? account.couponCode : null,
+      expired,
+      activeWorkers,
+      entornos: ownedWorkspaces.length,
+      generatedAt: now
+    };
+  }
+);

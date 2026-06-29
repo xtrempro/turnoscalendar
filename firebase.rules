@@ -362,6 +362,15 @@ service cloud.firestore {
       }
     }
 
+    // Suscripcion/plan de la cuenta del dueño. Solo el dueño puede leer su
+    // documento; la escritura es exclusiva del backend (Cloud Functions con
+    // privilegios de admin), para que el plan no se pueda alterar desde el
+    // cliente. El conteo de uso lo entrega la function getAccountUsage.
+    match /accounts/{ownerUid} {
+      allow read: if signedIn() && request.auth.uid == ownerUid;
+      allow write: if false;
+    }
+
     match /workspaceLinks/{linkId} {
       allow create: if signedIn() &&
         request.resource.data.fromWorkspaceId is string &&

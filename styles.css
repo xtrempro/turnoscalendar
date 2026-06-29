@@ -4495,6 +4495,235 @@ body.auth-gate-active .app-shell {
     gap: 10px;
 }
 
+/* ===== Planes / suscripcion ===== */
+.plans-button svg {
+    color: #f5b94a;
+}
+
+.plans-dialog {
+    width: min(760px, 100%);
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    padding: 22px;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: var(--shadow);
+    display: grid;
+    gap: 16px;
+}
+
+.plans-dialog-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.plans-dialog-head h3 {
+    margin: 0;
+    font-size: 1.18rem;
+}
+
+.plans-usage {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: 16px;
+    background: var(--field);
+}
+
+.plans-usage--muted {
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.plans-usage-plan {
+    display: grid;
+    gap: 2px;
+}
+
+.plans-usage-plan > span {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.plans-usage-plan strong {
+    font-size: 1.1rem;
+}
+
+.plans-usage-flag {
+    font-size: 0.74rem;
+    color: var(--text-soft);
+}
+
+.plans-usage-flag--expired {
+    color: #e0556a;
+    font-weight: 700;
+}
+
+.plans-usage-metrics {
+    display: flex;
+    gap: 22px;
+}
+
+.plans-usage-metrics div {
+    display: grid;
+    gap: 2px;
+    text-align: right;
+}
+
+.plans-usage-metrics strong {
+    font-size: 1.05rem;
+}
+
+.plans-usage-metrics span {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+}
+
+.plans-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.plan-card {
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--panel-alt);
+}
+
+.plan-card.is-current {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.plan-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.plan-card-head h4 {
+    margin: 0;
+    font-size: 1.02rem;
+}
+
+.plan-card-badge {
+    font-size: 0.68rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 8px;
+    border-radius: 999px;
+}
+
+.plan-card-price {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+}
+
+.plan-card-price strong {
+    font-size: 1.3rem;
+}
+
+.plan-card-price span {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+
+.plan-card-price-annual {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: -4px;
+}
+
+.plan-card-features {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 6px;
+    font-size: 0.84rem;
+    color: var(--text-soft);
+}
+
+.plan-card-features li {
+    padding-left: 16px;
+    position: relative;
+}
+
+.plan-card-features li::before {
+    content: "•";
+    position: absolute;
+    left: 2px;
+    color: var(--accent);
+}
+
+.plan-card-cta {
+    width: 100%;
+    margin-top: 4px;
+}
+
+.plan-card-current {
+    margin-top: 4px;
+    text-align: center;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.plans-quote {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 16px;
+}
+
+.plans-quote strong {
+    display: block;
+}
+
+.plans-quote span {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+
+.plans-footnote {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+@media (max-width: 560px) {
+    .plans-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .plans-usage-metrics {
+        gap: 16px;
+    }
+}
+
 .move-shift-dialog {
     width: min(480px, 100%);
 }

@@ -181,6 +181,7 @@ import { renderKanbanBoard } from "./kanban.js";
 import { renderAgendaPanel } from "./agenda.js";
 import { renderDashboardPanel } from "./dashboard.js";
 import { initSystemSettings } from "./systemSettings.js";
+import { initPlansUI } from "./plansUI.js";
 import { initFirebaseShell } from "./firebaseShell.js";
 import {
     ensureFirebaseTotpEnrollment,
@@ -8980,6 +8981,7 @@ initSystemSettings({
         refreshAll();
     }
 });
+initPlansUI({ button: DOM.plansBtn });
 initSupervisorMessages({
     button: DOM.floatingMessagesBtn,
     badge: DOM.floatingMessagesBadge
