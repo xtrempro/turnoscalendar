@@ -24,7 +24,7 @@ const CACHE_TTL_MS = 60000;
 
 // Admin(s) que pueden crear/gestionar cupones. Solo para mostrar la UI; la
 // seguridad real la imponen las Cloud Functions. Gmail ignora puntos y +alias.
-const ADMIN_EMAILS = ["desarrolladorfs@gmail.com"];
+const ADMIN_EMAILS = ["tm.alanplaza@gmail.com"];
 
 let cachedUsage = null;
 let usageFetchedAt = 0;

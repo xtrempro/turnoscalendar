@@ -2705,7 +2705,7 @@ exports.getAccountUsage = onCall(
 
 // Admin(s) habilitados para gestionar cupones. Gmail ignora los puntos y el
 // sufijo +alias, por eso se normaliza antes de comparar.
-const COUPON_ADMIN_EMAILS = ["desarrolladorfs@gmail.com"];
+const COUPON_ADMIN_EMAILS = ["tm.alanplaza@gmail.com"];
 const COUPON_CODE_PATTERN = /^[A-Z0-9]{4,24}$/;
 const COUPON_PLANS = new Set(["p1", "p2", "p3"]);
 
@@ -2772,7 +2772,9 @@ function serializeCoupon(code, data = {}) {
 
 exports.createCoupon = onCall(
   {
-    enforceAppCheck: ENFORCE_APP_CHECK,
+    // Sin App Check: lo usa el panel admin estatico. La seguridad es auth +
+    // chequeo de admin (isCouponAdmin).
+    enforceAppCheck: false,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -3032,7 +3034,8 @@ exports.redeemCoupon = onCall(
 
 exports.listCoupons = onCall(
   {
-    enforceAppCheck: ENFORCE_APP_CHECK,
+    // Sin App Check: lo usa el panel admin estatico (auth + isCouponAdmin).
+    enforceAppCheck: false,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -3061,7 +3064,8 @@ exports.listCoupons = onCall(
 
 exports.setCouponActive = onCall(
   {
-    enforceAppCheck: ENFORCE_APP_CHECK,
+    // Sin App Check: lo usa el panel admin estatico (auth + isCouponAdmin).
+    enforceAppCheck: false,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -3088,5 +3092,180 @@ exports.setCouponActive = onCall(
     });
 
     return { ok: true };
+  }
+);
+
+// ===========================================================================
+// Panel de control admin: metricas agregadas de toda la plataforma.
+// Solo para el admin. No exige App Check para simplificar la app del panel
+// (la seguridad real es auth + admin); la app del panel solo lee este dato.
+// ===========================================================================
+
+// Cuenta perfiles activos y totales de un entorno desde el modulo "profile".
+async function readWorkspaceProfileCounts(workspaceId) {
+  const chunksSnap = await db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("stateModules")
+    .doc("profile")
+    .collection("chunks")
+    .get();
+
+  if (chunksSnap.empty) return { active: 0, total: 0 };
+
+  const text = chunksSnap.docs
+    .map((doc) => ({
+      index: Number(doc.data()?.index) || 0,
+      text: String(doc.data()?.text || "")
+    }))
+    .sort((a, b) => a.index - b.index)
+    .map((chunk) => chunk.text)
+    .join("");
+
+  let snapshot;
+  try {
+    snapshot = JSON.parse(text || "{}");
+  } catch (error) {
+    return { active: 0, total: 0 };
+  }
+
+  const profiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : [];
+  const active = profiles.filter((profile) => {
+    if (typeof profile === "string") return true;
+    return profile && profile.active !== false;
+  }).length;
+
+  return { active, total: profiles.length };
+}
+
+exports.getAdminDashboard = onCall(
+  {
+    enforceAppCheck: false,
+    timeoutSeconds: 180
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion.");
+    }
+
+    if (!isCouponAdmin(request.auth.token || {})) {
+      throw new HttpsError(
+        "permission-denied",
+        "Solo el administrador puede ver el panel."
+      );
+    }
+
+    const now = Date.now();
+
+    // Entornos + conteo de trabajadores (autoritativo, por entorno activo).
+    const workspacesSnap = await db.collection("workspaces").get();
+    const owners = new Set();
+    let activeWorkspaces = 0;
+    let pendingDeletion = 0;
+    const countPromises = [];
+
+    workspacesSnap.docs.forEach((doc) => {
+      const data = doc.data() || {};
+
+      if (BILLING_EXCLUDED_WORKSPACE_STATES.has(
+        String(data.deletionStatus || "")
+      )) {
+        pendingDeletion += 1;
+        return;
+      }
+
+      activeWorkspaces += 1;
+      if (data.ownerUid) owners.add(data.ownerUid);
+      countPromises.push(readWorkspaceProfileCounts(doc.id));
+    });
+
+    const counts = await Promise.all(countPromises);
+    let totalActiveWorkers = 0;
+    let totalProfiles = 0;
+    counts.forEach((item) => {
+      totalActiveWorkers += item.active;
+      totalProfiles += item.total;
+    });
+
+    // Suscripciones por cuenta (dueno). Plan efectivo considerando vencimiento.
+    const accountsSnap = await db.collection("accounts").get();
+    const accountByOwner = new Map();
+    accountsSnap.docs.forEach((doc) => {
+      accountByOwner.set(doc.id, doc.data() || {});
+    });
+
+    const allOwners = new Set([...owners, ...accountByOwner.keys()]);
+    const byPlan = { free: 0, p1: 0, p2: 0, p3: 0 };
+    let expired = 0;
+    const upcoming = [];
+
+    allOwners.forEach((uid) => {
+      const account = accountByOwner.get(uid) || {};
+      const plan = typeof account.plan === "string" ? account.plan : "free";
+      const endMs = subscriptionPeriodEndMillis(account.currentPeriodEnd);
+      const isExpired = plan !== "free" && endMs > 0 && now > endMs;
+      const effectivePlan = isExpired ? "free" : plan;
+
+      if (byPlan[effectivePlan] !== undefined) {
+        byPlan[effectivePlan] += 1;
+      } else {
+        byPlan.free += 1;
+      }
+
+      if (isExpired) expired += 1;
+
+      if (
+        plan !== "free" &&
+        endMs > 0 &&
+        !isExpired &&
+        endMs - now <= 30 * 86400000
+      ) {
+        upcoming.push({
+          ownerUid: uid,
+          plan,
+          source: typeof account.source === "string" ? account.source : null,
+          currentPeriodEnd: endMs
+        });
+      }
+    });
+
+    upcoming.sort((a, b) => a.currentPeriodEnd - b.currentPeriodEnd);
+
+    // Cupones.
+    const couponsSnap = await db.collection("coupons").get();
+    let activeCoupons = 0;
+    let totalRedemptions = 0;
+    couponsSnap.docs.forEach((doc) => {
+      const coupon = doc.data() || {};
+      if (coupon.active !== false) activeCoupons += 1;
+      totalRedemptions += Number(coupon.redemptionsCount) || 0;
+    });
+
+    return {
+      generatedAt: now,
+      owners: { total: owners.size },
+      workspaces: {
+        active: activeWorkspaces,
+        pendingDeletion,
+        total: workspacesSnap.size
+      },
+      workers: {
+        totalActive: totalActiveWorkers,
+        totalProfiles
+      },
+      subscriptions: {
+        byPlan,
+        expired,
+        withAccountDoc: accountsSnap.size
+      },
+      expirations: {
+        upcoming: upcoming.slice(0, 50)
+      },
+      coupons: {
+        total: couponsSnap.size,
+        active: activeCoupons,
+        totalRedemptions
+      }
+    };
   }
 );
