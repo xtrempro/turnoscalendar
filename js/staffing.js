@@ -3641,6 +3641,66 @@ function renderInlineStaffingReport(
     scrollInlineStaffingReportIfVisible();
 }
 
+function patchInlineStaffingReport(
+    data,
+    changedDays,
+    year,
+    month
+) {
+    const root = document.getElementById("staffingReportInline");
+    const previous = lastInlineStaffingReport?.data || [];
+    const previousHadIssues = previous.some(item => item.detalle.length);
+    const nextHadIssues = data.some(item => item.detalle.length);
+
+    if (
+        !root ||
+        lastInlineStaffingReport?.year !== year ||
+        lastInlineStaffingReport?.month !== month ||
+        previousHadIssues !== nextHadIssues
+    ) {
+        renderInlineStaffingReport(data, year, month);
+        return;
+    }
+
+    lastInlineStaffingReport = { data, year, month };
+
+    changedDays.forEach(day => {
+        const item = data[day - 1];
+        const selector = `[data-staffing-report-day="${day}"]`;
+        const previousDay = root.querySelector(selector);
+
+        if (!item?.detalle?.length) {
+            previousDay?.remove();
+            return;
+        }
+
+        const article = document.createElement("article");
+        const title = document.createElement("strong");
+        const pills = document.createElement("div");
+
+        article.className = "staffing-report-day";
+        article.dataset.staffingReportDay = String(day);
+        title.textContent = `Día ${day}`;
+        pills.className = "staffing-report-pills";
+        pills.innerHTML = item.detalle.map(renderDetailBadge).join("");
+        article.append(title, pills);
+
+        if (previousDay) {
+            previousDay.replaceWith(article);
+        } else {
+            const following = [...root.querySelectorAll(
+                "[data-staffing-report-day]"
+            )].find(element =>
+                Number(element.dataset.staffingReportDay) > day
+            );
+
+            root.insertBefore(article, following || null);
+        }
+
+        bindStaffingReplacementAlerts(article);
+    });
+}
+
 export function renderReplacementContractsLog(){
     const div = document.getElementById("replacementContractsLog");
     if (!div) return;
@@ -3709,7 +3769,7 @@ export async function analizarStaffingMes(
         mostrarResultado(data, year, month);
     }
 
-    renderInlineStaffingReport(data, year, month);
+    patchInlineStaffingReport(data, days, year, month);
     return data;
 }
 
@@ -3723,6 +3783,73 @@ export async function renderInlineStaffingAnalysis(){
             activeView: "turnos"
         }
     );
+}
+
+// Recalcula únicamente los días afectados. Cada día sigue usando las reglas
+// completas de dotación, pero evita repetir el producto trabajadores x mes.
+export async function updateInlineStaffingDays(keyDays = []) {
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    const days = new Set(
+        (Array.isArray(keyDays) ? keyDays : [keyDays])
+            .map(value => {
+                const text = String(value || "");
+                const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+                if (iso) {
+                    if (
+                        Number(iso[1]) !== year ||
+                        Number(iso[2]) - 1 !== month
+                    ) return 0;
+
+                    return Number(iso[3]);
+                }
+
+                const parts = text.split("-").map(Number);
+                if (
+                    parts[0] !== year ||
+                    parts[1] !== month
+                ) return 0;
+
+                return parts[2] || 0;
+            })
+            .filter(day => day > 0)
+    );
+
+    if (!days.size) return [];
+
+    const holidays = await fetchHolidays(year);
+    const context = buildStaffingAnalysisContext(year, month, holidays);
+    const hasPrevious =
+        lastInlineStaffingReport?.year === year &&
+        lastInlineStaffingReport?.month === month &&
+        Array.isArray(lastInlineStaffingReport.data) &&
+        lastInlineStaffingReport.data.length > 0;
+
+    if (!hasPrevious) return renderInlineStaffingAnalysis();
+
+    const previous = lastInlineStaffingReport.data;
+    const byDay = new Map(
+        (Array.isArray(previous) ? previous : [])
+            .map(item => [item.dia, item])
+    );
+
+    days.forEach(day => {
+        byDay.set(day, analizarDiaStaffing(context, day));
+    });
+
+    const data = Array.from(
+        { length: context.diasMes },
+        (_item, index) => byDay.get(index + 1) || {
+            dia: index + 1,
+            detalle: []
+        }
+    );
+    const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
+
+    ANALIZAR_MES_CACHE.set(cacheKey, data);
+    renderInlineStaffingReport(data, year, month);
+    return data;
 }
 
 export async function renderStaffingAnalysis(){
@@ -3745,5 +3872,7 @@ export async function renderStaffingAnalysis(){
 window.renderStaffingAnalysis = renderStaffingAnalysis;
 window.renderInlineStaffingAnalysis =
     renderInlineStaffingAnalysis;
+window.updateInlineStaffingDays =
+    updateInlineStaffingDays;
 window.renderStaffingPanel = renderStaffingPanel;
 window.renderStaffingMedicalChart = renderStaffingMedicalChart;

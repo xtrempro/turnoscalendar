@@ -8,11 +8,13 @@ import {
     siguienteTurnoValido
 } from "./turnEngine.js";
 import {
-    calcularHorasMesPerfil,
-    calcularCarryMes
+    calculateWorkerMonthTotals,
+    calculateCarryOver
 } from "./hoursEngine.js";
 import {
     getProfileData,
+    getBlockedDays,
+    getCarry,
     saveProfileData,
     saveCarry,
     getAdminDays,
@@ -47,7 +49,7 @@ import {
 } from "./rulesEngine.js";
 import { fetchHolidays } from "./holidays.js";
 import {
-    calcHours,
+    calculateDayHours,
     isBusinessDay,
     isWeekend
 } from "./calculations.js";
@@ -118,6 +120,23 @@ import {
 import {
     getJSON
 } from "./persistence.js";
+import {
+    getAppState,
+    getWorkerCalendarState,
+    resolveWorkerId,
+    syncWorkersState,
+    syncWorkerCalendarState,
+    updateWorkerCalendarMaps
+} from "./appState.js";
+import {
+    calendarKeyInMonth,
+    clearCalendarCellRefs,
+    diffCalendarRecordKeys,
+    getCalendarCell,
+    keysForCalendarRange,
+    registerCalendarCell,
+    replaceCalendarCell
+} from "./calendarUpdates.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { listAcceptedLinkedWorkspaces } from "./firebaseLinkedUnits.js";
 import {
@@ -148,6 +167,14 @@ let calendarDirectEditHistoryTimer = 0;
 let calendarDirectEditHistoryOpen = false;
 let calendarPickerYear = currentDate.getFullYear();
 let calendarMonthPicker = null;
+let delegatedCalendar = null;
+let calendarSelectionHandler = null;
+let lastCalendarView = null;
+let pendingCalendarUpdateTimer = 0;
+const pendingCalendarKeys = new Set();
+const pendingStaffingKeys = new Set();
+const calendarCellHandlers = new WeakMap();
+const calendarMapSnapshots = new Map();
 
 const CALENDAR_MONTH_NAMES = [
     "Enero",
@@ -173,6 +200,40 @@ const PENDING_LEAVE_REQUEST_TYPES = new Set([
     "union_leave",
     "unpaid_leave"
 ]);
+
+async function handleCalendarClick(event) {
+    const cell = event.target.closest(".day[data-action='calendar-day']");
+
+    if (!cell || !delegatedCalendar?.contains(cell)) return;
+
+    const selectionWasActive = Boolean(window.selectionMode);
+
+    if (calendarSelectionHandler) {
+        const handled = await calendarSelectionHandler({
+            event,
+            cell,
+            date: dateFromKeyDay(cell.dataset.keyDay)
+        });
+
+        if (selectionWasActive || handled === true) return;
+    }
+
+    const handler = calendarCellHandlers.get(cell);
+    if (handler) await handler(event);
+}
+
+function ensureCalendarDelegation(calendar) {
+    if (!calendar || delegatedCalendar === calendar) return;
+
+    delegatedCalendar?.removeEventListener("click", handleCalendarClick);
+    delegatedCalendar = calendar;
+    delegatedCalendar.addEventListener("click", handleCalendarClick);
+}
+
+export function setCalendarSelectionHandler(handler) {
+    calendarSelectionHandler =
+        typeof handler === "function" ? handler : null;
+}
 
 function closeCalendarMonthPicker() {
     if (!calendarMonthPicker) return;
@@ -385,7 +446,8 @@ function runCalendarHeavyUpdates(options = {}, context = null) {
             context.y === currentDate.getFullYear() &&
             context.m === currentDate.getMonth()
         ) {
-            const carryOut = calcularCarryMes(
+            const carryOut = calculateCarryOver(
+                context.profile,
                 context.y,
                 context.m,
                 context.days,
@@ -474,25 +536,13 @@ async function flushCalendarDirectEditRefresh(options = {}) {
     clearTimeout(calendarDirectEditRefreshTimer);
     calendarDirectEditRefreshTimer = 0;
     calendarDirectEditRefreshRequest++;
-    calendarRenderRequest++;
-    cancelCalendarHeavyUpdates();
     closeCalendarDirectEditHistory();
-    await renderCalendar({ deferHeavy: true });
+    await updateVisibleCalendarDays({ updateSummary: true });
 }
 
-function scheduleCalendarDirectEditRefresh() {
-    clearTimeout(calendarDirectEditRefreshTimer);
+function scheduleCalendarDirectEditRefresh(keyDay) {
     calendarDirectEditRefreshRequest++;
-    calendarRenderRequest++;
-    cancelCalendarHeavyUpdates();
-    const requestId = calendarDirectEditRefreshRequest;
-
-    calendarDirectEditRefreshTimer = window.setTimeout(
-        () => void flushCalendarDirectEditRefresh({
-            requestId
-        }),
-        CALENDAR_DIRECT_EDIT_REFRESH_DELAY_MS
-    );
+    queueCalendarDayUpdates([keyDay]);
 }
 
 window.flushCalendarDirectEditRefresh =
@@ -520,6 +570,452 @@ function isoFromKeyDay(keyDay) {
         String(date.getMonth() + 1).padStart(2, "0"),
         String(date.getDate()).padStart(2, "0")
     ].join("-");
+}
+
+function visibleCalendarKeys() {
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+
+    return Array.from(
+        { length: days },
+        (_item, index) => key(year, month, index + 1)
+    );
+}
+
+function queueCalendarDayUpdates(keys = []) {
+    keys.forEach(keyDay => {
+        if (
+            calendarKeyInMonth(
+                keyDay,
+                currentDate.getFullYear(),
+                currentDate.getMonth()
+            )
+        ) {
+            pendingCalendarKeys.add(keyDay);
+            pendingStaffingKeys.add(keyDay);
+        }
+    });
+
+    if (!pendingCalendarKeys.size || pendingCalendarUpdateTimer) return;
+
+    const schedule = window.requestAnimationFrame ||
+        (callback => window.setTimeout(callback, 16));
+
+    pendingCalendarUpdateTimer = schedule(async () => {
+        pendingCalendarUpdateTimer = 0;
+        const changedKeys = [...pendingCalendarKeys];
+        const staffingKeys = [...pendingStaffingKeys];
+        pendingCalendarKeys.clear();
+        pendingStaffingKeys.clear();
+
+        if (changedKeys.length) {
+            await renderCalendar({
+                changedKeys,
+                allowDuringDirectEdit: true,
+                updateSummary: true
+            });
+        }
+
+        if (
+            staffingKeys.length &&
+            typeof window.updateInlineStaffingDays === "function"
+        ) {
+            void window.updateInlineStaffingDays(staffingKeys);
+        }
+    });
+}
+
+function calendarKeyFromDateInput(workerId, date) {
+    if (date instanceof Date) {
+        return key(date.getFullYear(), date.getMonth(), date.getDate());
+    }
+
+    const storedKey = String(date || "");
+
+    if (getCalendarCell(workerId, storedKey)) return storedKey;
+
+    const isoMatch = storedKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const parsed = isoMatch
+        ? new Date(
+            Number(isoMatch[1]),
+            Number(isoMatch[2]) - 1,
+            Number(isoMatch[3])
+        )
+        : new Date(date);
+
+    return Number.isNaN(parsed.getTime())
+        ? ""
+        : key(
+            parsed.getFullYear(),
+            parsed.getMonth(),
+            parsed.getDate()
+        );
+}
+
+// Actualiza un conjunto de fechas en una sola pasada. Esto evita repetir la
+// lectura del mes y el calculo del resumen cuando un evento cambia varios dias.
+export async function updateDayCells(workerId, dates, options = {}) {
+    const activeWorkerId = resolveWorkerId(getCurrentProfile());
+
+    if (
+        resolveWorkerId(workerId) !== activeWorkerId ||
+        lastCalendarView?.workerId !== activeWorkerId ||
+        lastCalendarView?.year !== currentDate.getFullYear() ||
+        lastCalendarView?.month !== currentDate.getMonth()
+    ) return false;
+
+    const changedKeys = Array.from(new Set(
+        (Array.isArray(dates) ? dates : [dates])
+            .map(date => calendarKeyFromDateInput(activeWorkerId, date))
+            .filter(keyDay => keyDay && calendarKeyInMonth(
+                keyDay,
+                currentDate.getFullYear(),
+                currentDate.getMonth()
+            ))
+    ));
+
+    if (!changedKeys.length) return false;
+
+    changedKeys.forEach(keyDay => pendingCalendarKeys.delete(keyDay));
+
+    await renderCalendar({
+        changedKeys,
+        allowDuringDirectEdit: true,
+        updateSummary: options.updateSummary !== false
+    });
+    return true;
+}
+
+export async function updateDayCell(workerId, date) {
+    return updateDayCells(workerId, [date]);
+}
+
+export async function updateDateRange(workerId, startDate, endDate) {
+    const activeWorkerId = resolveWorkerId(getCurrentProfile());
+
+    if (
+        resolveWorkerId(workerId) !== activeWorkerId ||
+        lastCalendarView?.workerId !== activeWorkerId ||
+        lastCalendarView?.year !== currentDate.getFullYear() ||
+        lastCalendarView?.month !== currentDate.getMonth()
+    ) return false;
+
+    const changedKeys = keysForCalendarRange(startDate, endDate)
+        .filter(keyDay => calendarKeyInMonth(
+            keyDay,
+            currentDate.getFullYear(),
+            currentDate.getMonth()
+        ));
+
+    if (!changedKeys.length) return false;
+
+    changedKeys.forEach(keyDay => pendingCalendarKeys.delete(keyDay));
+
+    await renderCalendar({
+        changedKeys,
+        allowDuringDirectEdit: true,
+        updateSummary: true
+    });
+    return true;
+}
+
+export async function updateVisibleCalendarDays(options = {}) {
+    const workerId = resolveWorkerId(getCurrentProfile());
+
+    if (
+        !workerId ||
+        lastCalendarView?.workerId !== workerId ||
+        lastCalendarView?.year !== currentDate.getFullYear() ||
+        lastCalendarView?.month !== currentDate.getMonth()
+    ) return false;
+
+    visibleCalendarKeys().forEach(keyDay =>
+        pendingCalendarKeys.delete(keyDay)
+    );
+
+    await renderCalendar({
+        changedKeys: visibleCalendarKeys(),
+        allowDuringDirectEdit: true,
+        updateSummary: options.updateSummary === true
+    });
+    return true;
+}
+
+export function updateWorkerSummary(workerId = getCurrentProfile()) {
+    const resolvedWorkerId = resolveWorkerId(workerId);
+    const workerName = getCurrentProfile();
+    const activeWorkerId = resolveWorkerId(workerName);
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+
+    if (
+        !resolvedWorkerId ||
+        resolvedWorkerId !== activeWorkerId ||
+        lastCalendarView?.workerId !== activeWorkerId ||
+        lastCalendarView?.year !== year ||
+        lastCalendarView?.month !== month
+    ) return null;
+
+    const days = new Date(year, month + 1, 0).getDate();
+    const holidays = lastCalendarView?.holidays || {};
+    const data = getProfileData(workerName);
+    const stats = calculateWorkerMonthTotals(
+        workerName,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        getBlockedDays(workerName),
+        getCarry(year, month)
+    );
+    const carryOut = calculateCarryOver(
+        workerName,
+        year,
+        month,
+        days,
+        holidays,
+        data
+    );
+    const next = new Date(year, month + 1, 1);
+
+    saveCarry(next.getFullYear(), next.getMonth(), carryOut);
+
+    window.dispatchEvent(new CustomEvent("proturnos:workerMonthUpdated", {
+        detail: {
+            workerId: resolvedWorkerId,
+            workerName,
+            year,
+            month,
+            stats,
+            carryOut
+        }
+    }));
+
+    return stats;
+}
+
+export function updateVisibleWorkers() {
+    window.dispatchEvent(new CustomEvent("proturnos:visibleWorkersUpdated", {
+        detail: {
+            year: currentDate.getFullYear(),
+            month: currentDate.getMonth()
+        }
+    }));
+}
+
+function calendarStorageMaps(profileName) {
+    return {
+        [`data_${profileName}`]: getJSON(`data_${profileName}`, {}),
+        [`admin_${profileName}`]: getJSON(`admin_${profileName}`, {}),
+        [`legal_${profileName}`]: getJSON(`legal_${profileName}`, {}),
+        [`comp_${profileName}`]: getJSON(`comp_${profileName}`, {}),
+        [`absences_${profileName}`]: getJSON(`absences_${profileName}`, {}),
+        [`blocked_${profileName}`]: getJSON(`blocked_${profileName}`, {}),
+        [`hourReturns_${profileName}`]: getJSON(`hourReturns_${profileName}`, {}),
+        [`clockMarks_${profileName}`]: getJSON(`clockMarks_${profileName}`, {})
+    };
+}
+
+function syncCalendarMapSnapshots(profileName, maps = null) {
+    const nextMaps = maps || calendarStorageMaps(profileName);
+
+    Object.entries(nextMaps).forEach(([storageKey, value]) => {
+        calendarMapSnapshots.set(storageKey, value || {});
+    });
+}
+
+function syncCentralCalendarMaps(profileName) {
+    const workerId = resolveWorkerId(profileName);
+
+    updateWorkerCalendarMaps(workerId, {
+        shifts: getJSON(`data_${profileName}`, {}),
+        absences: {
+            admin: getJSON(`admin_${profileName}`, {}),
+            legal: getJSON(`legal_${profileName}`, {}),
+            comp: getJSON(`comp_${profileName}`, {}),
+            absences: getJSON(`absences_${profileName}`, {})
+        }
+    });
+}
+
+function storedDateToCalendarKey(value) {
+    const text = String(value || "");
+    const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (iso) {
+        return key(
+            Number(iso[1]),
+            Number(iso[2]) - 1,
+            Number(iso[3])
+        );
+    }
+
+    return /^\d{4}-\d{1,2}-\d{1,2}$/.test(text)
+        ? text
+        : "";
+}
+
+function changedCollectionCalendarKeys(
+    storageKey,
+    change,
+    profileName
+) {
+    if (!change || !("previous" in change) || !("next" in change)) {
+        return null;
+    }
+
+    const parse = value => {
+        try {
+            const result = JSON.parse(value || "[]");
+            return Array.isArray(result) ? result : [];
+        } catch {
+            return [];
+        }
+    };
+    const previous = parse(change.previous);
+    const next = parse(change.next);
+    const itemId = (item, index) => String(
+        item?.id || item?.requestId || `${index}:${JSON.stringify(item)}`
+    );
+    const previousById = new Map(
+        previous.map((item, index) => [itemId(item, index), item])
+    );
+    const nextById = new Map(
+        next.map((item, index) => [itemId(item, index), item])
+    );
+    const changed = [];
+
+    new Set([...previousById.keys(), ...nextById.keys()])
+        .forEach(id => {
+            const before = previousById.get(id);
+            const after = nextById.get(id);
+
+            if (JSON.stringify(before) === JSON.stringify(after)) return;
+            changed.push(after || before);
+        });
+
+    const keys = new Set();
+
+    changed.forEach(item => {
+        if (storageKey === "replacements") {
+            if (
+                item?.worker !== profileName &&
+                item?.replaced !== profileName
+            ) return;
+
+            const keyDay = storedDateToCalendarKey(item?.keyDay);
+            if (keyDay) keys.add(keyDay);
+            return;
+        }
+
+        if (storageKey === "swaps") {
+            if (
+                item?.from !== profileName &&
+                item?.to !== profileName
+            ) return;
+
+            [item?.fecha, item?.devolucion]
+                .map(storedDateToCalendarKey)
+                .filter(Boolean)
+                .forEach(keyDay => keys.add(keyDay));
+        }
+    });
+
+    return [...keys];
+}
+
+function handleCalendarPersistenceChange(event) {
+    const profileName = getCurrentProfile();
+    const changedStorageKeys = event?.detail?.keys;
+    const storageChanges = event?.detail?.changes || {};
+
+    if (
+        !profileName ||
+        !lastCalendarView ||
+        !Array.isArray(changedStorageKeys)
+    ) return;
+
+    const profileMaps = calendarStorageMaps(profileName);
+    const mapKeys = new Set(Object.keys(profileMaps));
+    const fullWorkerKeys = new Set([
+        `baseData_${profileName}`,
+        `rotativa_${profileName}`,
+        `shift_${profileName}`,
+        `shiftAssignmentHistory_${profileName}`,
+        `contractHistory_${profileName}`,
+        `gradeHistory_${profileName}`
+    ]);
+    const sharedCalendarKeys = new Set([
+        "profiles",
+        "manualHolidays",
+        "turnoColorConfig",
+        "turnChangeConfig"
+    ]);
+    const changedDayKeys = new Set();
+    let refreshVisibleMonth = false;
+
+    changedStorageKeys.forEach(storageKey => {
+        if (mapKeys.has(storageKey)) {
+            const previous = calendarMapSnapshots.get(storageKey) || {};
+            const next = profileMaps[storageKey] || {};
+
+            diffCalendarRecordKeys(previous, next)
+                .forEach(keyDay => changedDayKeys.add(keyDay));
+            calendarMapSnapshots.set(storageKey, next);
+            return;
+        }
+
+        if (storageKey === "replacements" || storageKey === "swaps") {
+            const collectionKeys = changedCollectionCalendarKeys(
+                storageKey,
+                storageChanges[storageKey],
+                profileName
+            );
+
+            if (collectionKeys === null) {
+                refreshVisibleMonth = true;
+            } else {
+                collectionKeys.forEach(keyDay =>
+                    changedDayKeys.add(keyDay)
+                );
+            }
+            return;
+        }
+
+        if (
+            fullWorkerKeys.has(storageKey) ||
+            sharedCalendarKeys.has(storageKey)
+        ) {
+            refreshVisibleMonth = true;
+        }
+    });
+
+    if (!changedDayKeys.size && !refreshVisibleMonth) return;
+
+    syncCentralCalendarMaps(profileName);
+    queueCalendarDayUpdates(
+        refreshVisibleMonth
+            ? visibleCalendarKeys()
+            : [...changedDayKeys]
+    );
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener(
+        "proturnos:persistenceChanged",
+        handleCalendarPersistenceChange
+    );
+    window.addEventListener("proturnos:firebaseAppState", event => {
+        if (event.detail?.type !== "app-state-entries-applied") return;
+
+        handleCalendarPersistenceChange({
+            detail: {
+                keys: event.detail.keys || []
+            }
+        });
+    });
 }
 
 function addDaysISO(iso, offset) {
@@ -709,7 +1205,11 @@ function openPendingLeaveRequestDialog({
         window.dispatchEvent(
             new CustomEvent("proturnos:workerRequestsChanged")
         );
-        await renderCalendar({ deferHeavy: true });
+        await updateDateRange(
+            profile,
+            request.date || isoFromKeyDay(keyDay),
+            end || request.date || isoFromKeyDay(keyDay)
+        );
     };
 
     backdrop.addEventListener("click", event => {
@@ -942,8 +1442,8 @@ async function handleTurnChangeDayClick(swap) {
     }
 
     deshacerCambioTurno(swap);
-    await renderCalendar();
-    refreshStaffingAnalysisPanel();
+    await updateDayCell(getCurrentProfile(), swap.fecha);
+    await updateDayCell(getCurrentProfile(), swap.devolucion);
 
     return true;
 }
@@ -1291,7 +1791,9 @@ function openLeaveDetailDialog({
                 }
 
                 close();
-                await renderCalendar({ deferHeavy: true });
+                await updateVisibleCalendarDays({
+                    updateSummary: true
+                });
             } catch (error) {
                 console.error(error);
                 button.disabled = false;
@@ -1370,7 +1872,12 @@ function previewDirectTurnChange(
         badge.remove();
     });
 
-    const hours = calcHours(date, nextTurn, holidays);
+    const hours = calculateDayHours(
+        options.profileName || getCurrentProfile(),
+        date,
+        nextTurn,
+        holidays
+    );
     cell.title = `Diurnas: ${hours.d} | Nocturnas: ${hours.n}`;
 
     window.setTimeout(() => {
@@ -1571,26 +2078,6 @@ async function linkedWorkspaceCandidates(
         a.workspaceName.localeCompare(b.workspaceName) ||
         a.profile.name.localeCompare(b.profile.name)
     );
-}
-
-function refreshStaffingAnalysisPanel() {
-    const activeView =
-        document.body.dataset.activeView || "turnos";
-
-    if (
-        activeView === "turnos" &&
-        typeof window.renderInlineStaffingAnalysis === "function"
-    ) {
-        window.renderInlineStaffingAnalysis();
-        return;
-    }
-
-    if (
-        activeView === "staffing" &&
-        typeof window.renderStaffingAnalysis === "function"
-    ) {
-        window.renderStaffingAnalysis();
-    }
 }
 
 function candidateMeta(profile) {
@@ -1936,7 +2423,7 @@ async function getReplacementCandidates(
                         date
                     )
                     : null;
-            const stats = calcularHorasMesPerfil(
+            const stats = calculateWorkerMonthTotals(
                 profile.name,
                 y,
                 m,
@@ -2622,8 +3109,7 @@ async function openReplacementDialog(profileName, keyDay) {
                         }
 
                         close();
-                        await renderCalendar();
-                        refreshStaffingAnalysisPanel();
+                        await updateDayCell(profileName, keyDay);
                     }, {
                         label: requestMode
                             ? "Creando solicitud..."
@@ -3034,8 +3520,7 @@ async function openExtraReasonDialog(
         });
 
         close();
-        await renderCalendar();
-        refreshStaffingAnalysisPanel();
+        await updateDayCell(profileName, keyDay);
     };
 
     backdrop.addEventListener("click", event => {
@@ -3283,7 +3768,7 @@ async function clickDia(
         previousTurn: currentState,
         nextTurn: nuevo
     });
-    scheduleCalendarDirectEditRefresh();
+    scheduleCalendarDirectEditRefresh(keyDay);
 }
 
 export async function renderCalendar(options = {}) {
@@ -3300,17 +3785,45 @@ export async function renderCalendar(options = {}) {
 
     if (!cal) return;
 
+    ensureCalendarDelegation(cal);
+
     const calendarPanel = cal.closest(".calendar-panel");
     const activeProfile = getCurrentProfile();
+    const cachedWorkers = getAppState().workers;
+    const workers =
+        Array.isArray(options.changedKeys) && cachedWorkers.length
+            ? cachedWorkers
+            : getProfiles();
+    const activeWorker = workers.find(worker =>
+        worker.name === activeProfile
+    ) || null;
+    const activeWorkerId = String(
+        activeWorker?.id || resolveWorkerId(activeProfile)
+    );
     const activeProfileEnabled =
-        isProfileActive(activeProfile);
+        isProfileActive(activeWorker || activeProfile);
     const y = currentDate.getFullYear();
     const m = currentDate.getMonth();
+    const requestedKeys = new Set(
+        Array.isArray(options.changedKeys)
+            ? options.changedKeys
+            : []
+    );
+    const partialRender = Boolean(
+        requestedKeys.size &&
+        lastCalendarView?.calendar === cal &&
+        lastCalendarView?.workerId === activeWorkerId &&
+        lastCalendarView?.year === y &&
+        lastCalendarView?.month === m
+    );
 
-    cal.classList.remove("has-multiple-badge-days");
-    calendarPanel?.classList.remove("has-multiple-badge-days");
+    if (!partialRender) {
+        syncWorkersState(workers);
+        cal.classList.remove("has-multiple-badge-days");
+        calendarPanel?.classList.remove("has-multiple-badge-days");
+    }
 
-    if (monthYear) {
+    if (monthYear && !partialRender) {
         monthYear.innerText = currentDate.toLocaleString(
             "es-CL",
             {
@@ -3336,10 +3849,12 @@ export async function renderCalendar(options = {}) {
     const fragment = document.createDocumentFragment();
     let hasMultipleBadgeDays = false;
 
-    for (let i = 0; i < first; i++) {
-        const spacer = document.createElement("div");
-        spacer.className = "calendar-spacer";
-        fragment.appendChild(spacer);
+    if (!partialRender) {
+        for (let i = 0; i < first; i++) {
+            const spacer = document.createElement("div");
+            spacer.className = "calendar-spacer";
+            fragment.appendChild(spacer);
+        }
     }
 
     if (!activeProfile) {
@@ -3359,21 +3874,59 @@ export async function renderCalendar(options = {}) {
                 isDraftSelected: draftKey === keyDay
             });
 
+            div.dataset.keyDay = keyDay;
+            div.dataset.date = isoFromKeyDay(keyDay);
+            div.dataset.workerId = "";
+            div.dataset.action = "calendar-day";
+
             fragment.appendChild(div);
         }
 
+        clearCalendarCellRefs();
         cal.replaceChildren(fragment);
+        lastCalendarView = {
+            calendar: cal,
+            workerId: "",
+            year: y,
+            month: m
+        };
 
         runCalendarHeavyUpdates(options);
 
         return;
     }
 
-    const data = getProfileData();
-    const admin = getAdminDays();
-    const legal = getLegalDays();
-    const comp = getCompDays();
-    const absences = getAbsences();
+    const storedMaps = {
+        shifts: getProfileData(),
+        admin: getAdminDays(),
+        legal: getLegalDays(),
+        comp: getCompDays(),
+        absences: getAbsences()
+    };
+    const centralCalendar = syncWorkerCalendarState({
+        worker: activeWorker || activeProfile,
+        year: y,
+        month: m,
+        shifts: storedMaps.shifts,
+        absences: {
+            admin: storedMaps.admin,
+            legal: storedMaps.legal,
+            comp: storedMaps.comp,
+            absences: storedMaps.absences
+        },
+        configuration: {
+            rotativa: getRotativa(activeProfile),
+            shiftAssigned: getShiftAssigned(activeProfile)
+        }
+    });
+    const workerCalendarState = getWorkerCalendarState(
+        centralCalendar.workerId
+    );
+    const data = workerCalendarState.shifts;
+    const admin = workerCalendarState.absences.admin;
+    const legal = workerCalendarState.absences.legal;
+    const comp = workerCalendarState.absences.comp;
+    const absences = workerCalendarState.absences.absences;
     const hourReturns = getHourReturns(activeProfile);
     const honorariaSummary = getHonorariaMonthlySummary(
         activeProfile,
@@ -3384,6 +3937,11 @@ export async function renderCalendar(options = {}) {
 
     for (let d = 1; d <= days; d++) {
         const keyDay = key(y, m, d);
+
+        if (partialRender && !requestedKeys.has(keyDay)) {
+            continue;
+        }
+
         const baseState = getTurnoBase(activeProfile, keyDay);
         const pendingLeaveRequest =
             getPendingLeaveRequestForDay(activeProfile, keyDay);
@@ -3563,7 +4121,12 @@ export async function renderCalendar(options = {}) {
                 ? calendarBadges
                 : undefined,
             title: (() => {
-                const hrs = calcHours(date, state, holidays);
+                const hrs = calculateDayHours(
+                    activeWorkerId,
+                    date,
+                    state,
+                    holidays
+                );
                 const leaveTitle = leaveApplicationHoverTitle(
                     activeProfile,
                     keyDay,
@@ -3630,6 +4193,11 @@ export async function renderCalendar(options = {}) {
                     window.pendingShiftMoveSourceKey === keyDay
                 )
         });
+
+        div.dataset.keyDay = keyDay;
+        div.dataset.date = isoFromKeyDay(keyDay);
+        div.dataset.workerId = activeWorkerId;
+        div.dataset.action = "calendar-day";
 
         if (turnChangeMarker) {
             div.classList.add("turn-change-day");
@@ -3768,7 +4336,7 @@ export async function renderCalendar(options = {}) {
             );
         }
 
-        div.onclick = async event => {
+        calendarCellHandlers.set(div, async event => {
             if (!activeProfileEnabled) {
                 event.stopPropagation();
                 alert("Este perfil esta desactivado. Reactivalo desde Perfil para modificar su calendario.");
@@ -3855,20 +4423,61 @@ export async function renderCalendar(options = {}) {
                     holidays
                 }
             );
-        };
+        });
 
-        fragment.appendChild(div);
+        if (partialRender) {
+            if (!replaceCalendarCell(activeWorkerId, keyDay, div)) {
+                return renderCalendar({
+                    ...options,
+                    changedKeys: undefined,
+                    allowDuringDirectEdit: true
+                });
+            }
+        } else {
+            fragment.appendChild(div);
+        }
     }
 
-    cal.replaceChildren(fragment);
+    if (!partialRender) {
+        clearCalendarCellRefs();
+        fragment.querySelectorAll?.(".day[data-date]").forEach(cell => {
+            registerCalendarCell(
+                cell.dataset.workerId,
+                cell.dataset.keyDay,
+                cell
+            );
+        });
+        cal.replaceChildren(fragment);
+        lastCalendarView = {
+            calendar: cal,
+            workerId: activeWorkerId,
+            year: y,
+            month: m,
+            holidays,
+            days
+        };
+    }
+    const monthHasMultipleBadges = partialRender
+        ? Boolean(cal.querySelector(".day.has-multiple-badges"))
+        : hasMultipleBadgeDays;
+
     cal.classList.toggle(
         "has-multiple-badge-days",
-        hasMultipleBadgeDays
+        monthHasMultipleBadges
     );
     calendarPanel?.classList.toggle(
         "has-multiple-badge-days",
-        hasMultipleBadgeDays
+        monthHasMultipleBadges
     );
+
+    syncCalendarMapSnapshots(activeProfile);
+
+    if (partialRender) {
+        if (options.updateSummary === true) {
+            updateWorkerSummary(activeWorkerId);
+        }
+        return;
+    }
 
     runCalendarHeavyUpdates(options, {
         profile: activeProfile,

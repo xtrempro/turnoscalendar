@@ -74,6 +74,21 @@ function chunk(moduleId) {
     };
 }
 
+function stateEntry(moduleId, storageKey) {
+    return {
+        moduleId,
+        storageKey,
+        items: {
+            "2026-5-10": "2"
+        },
+        deletedItems: {
+            "2026-5-10": false
+        },
+        clientId: "rules-test",
+        updatedAtISO: new Date().toISOString()
+    };
+}
+
 function attachmentMetadata(
     moduleId,
     ownerId,
@@ -306,6 +321,20 @@ test("reglas modulares de Firestore y Storage", async t => {
                     chunk("turnos")
                 )
             );
+            await assertSucceeds(
+                setDoc(
+                    doc(
+                        db,
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "stateModules",
+                        "turnos",
+                        "entries",
+                        "data_Ana"
+                    ),
+                    stateEntry("turnos", "data_Ana")
+                )
+            );
             await assertFails(
                 setDoc(
                     doc(
@@ -334,6 +363,20 @@ test("reglas modulares de Firestore y Storage", async t => {
                         "turnos"
                     ),
                     manifest("turnos", "turnos")
+                )
+            );
+            await assertFails(
+                setDoc(
+                    doc(
+                        profileEditor.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "stateModules",
+                        "turnos",
+                        "entries",
+                        "data_Ana"
+                    ),
+                    stateEntry("turnos", "data_Ana")
                 )
             );
         }

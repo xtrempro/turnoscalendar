@@ -64,7 +64,11 @@ export function isInternalKey(key) {
     );
 }
 
-function notifyPersistenceChanged(keys = [], action = "change") {
+function notifyPersistenceChanged(
+    keys = [],
+    action = "change",
+    changes = {}
+) {
     if (
         suppressChangeEvents ||
         typeof window === "undefined" ||
@@ -77,7 +81,8 @@ function notifyPersistenceChanged(keys = [], action = "change") {
         new CustomEvent("proturnos:persistenceChanged", {
             detail: {
                 action,
-                keys
+                keys,
+                changes
             }
         })
     );
@@ -101,7 +106,12 @@ export function setRaw(key, value) {
     store.setItem(key, nextValue);
 
     if (previousValue !== nextValue) {
-        notifyPersistenceChanged([key], "set");
+        notifyPersistenceChanged([key], "set", {
+            [key]: {
+                previous: previousValue,
+                next: nextValue
+            }
+        });
     }
 }
 
@@ -109,12 +119,19 @@ export function removeKey(key) {
     const store = storage();
     if (!store) return;
 
-    const hadKey = store.getItem(key) !== null;
+    const previousValue = store.getItem(key);
+    const hadKey = previousValue !== null;
 
     store.removeItem(key);
 
     if (hadKey) {
-        notifyPersistenceChanged([key], "remove");
+        notifyPersistenceChanged([key], "remove", {
+            [key]: {
+                previous: previousValue,
+                next: null,
+                removed: true
+            }
+        });
     }
 }
 
@@ -262,6 +279,45 @@ export function replaceLocalSnapshotSubset(
     if (!silent && changedKeys.size) {
         notifyPersistenceChanged([...changedKeys], "replace-subset");
     }
+}
+
+// Aplica un conjunto pequeño de claves sin reconstruir el snapshot local.
+// `null` representa una eliminación (tombstone remoto).
+export function applyLocalPatch(patch = {}, { silent = true } = {}) {
+    const store = storage();
+    if (!store || !patch || typeof patch !== "object") return [];
+
+    const changedKeys = [];
+
+    if (silent) suppressChangeEvents++;
+
+    try {
+        Object.entries(patch).forEach(([key, value]) => {
+            if (isInternalKey(key)) return;
+
+            if (value === null || value === undefined) {
+                if (store.getItem(key) !== null) {
+                    store.removeItem(key);
+                    changedKeys.push(key);
+                }
+                return;
+            }
+
+            const nextValue = String(value);
+            if (store.getItem(key) === nextValue) return;
+
+            store.setItem(key, nextValue);
+            changedKeys.push(key);
+        });
+    } finally {
+        if (silent) suppressChangeEvents--;
+    }
+
+    if (!silent && changedKeys.length) {
+        notifyPersistenceChanged(changedKeys, "patch");
+    }
+
+    return changedKeys;
 }
 
 export function moveKey(oldKey, newKey) {

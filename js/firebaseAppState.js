@@ -1,13 +1,11 @@
 import { getFirebaseServices } from "./firebaseClient.js";
 import {
+    applyLocalPatch,
     exportLocalSnapshot,
-    getJSON,
     getRaw,
     isInternalKey,
-    removeKey,
     replaceLocalSnapshot,
     replaceLocalSnapshotSubset,
-    setJSON,
     setRaw
 } from "./persistence.js";
 import {
@@ -21,24 +19,31 @@ import {
     stateModuleIds,
     stateModulePermission
 } from "./firebaseStateModules.js";
+import {
+    applyPartialStateEntry,
+    decodePartialStateItemKey,
+    groupPartialStateEntries,
+    mergePartialStateEntries,
+    planPartialStateEntries
+} from "./firebasePartialState.js";
 
 const CLIENT_ID_KEY = "proturnos_firebase_client_id";
-const LEGACY_DIRTY_KEY = "proturnos_appstate_dirty_at";
-const DIRTY_MODULES_KEY = "proturnos_state_modules_dirty";
-const CHUNK_SIZE = 450000;
+const ENTRY_BATCH_SIZE = 400;
+const ENTRY_SYNC_DELAY_MS = 350;
 
 let activeWorkspaceId = "";
 let unsubscribeState = null;
 let stateSyncStarting = false;
-let syncTimer = null;
+let entrySyncTimer = null;
 let applyingRemoteState = false;
 let waitingInitialState = false;
 let servicesCache = null;
 let onStateChanged = () => {};
 let syncGeneration = 0;
-const uploadsInFlight = new Set();
-const lastUploadedHashes = new Map();
 const lastAppliedHashes = new Map();
+const pendingStateEntries = new Map();
+const entryModulesPresent = new Set();
+let unsubscribeStateEntries = null;
 
 function moduleDocRef(db, firestoreModule, workspaceId, moduleId) {
     return firestoreModule.doc(
@@ -66,8 +71,29 @@ function moduleChunksCollection(
     );
 }
 
-function chunkDocId(index) {
-    return `part_${String(index).padStart(4, "0")}`;
+function moduleEntriesCollection(
+    db,
+    firestoreModule,
+    workspaceId,
+    moduleId
+) {
+    return firestoreModule.collection(
+        db,
+        "workspaces",
+        workspaceId,
+        "stateModules",
+        moduleId,
+        "entries"
+    );
+}
+
+function entryDocId(storageKey) {
+    const source = String(storageKey || "");
+    const encoded = encodeURIComponent(source);
+
+    if (encoded.length <= 900) return encoded;
+
+    return `entry_${hashString(source)}`;
 }
 
 function getClientId() {
@@ -81,39 +107,6 @@ function getClientId() {
 
     setRaw(CLIENT_ID_KEY, nextId);
     return nextId;
-}
-
-function dirtyModules() {
-    const value = getJSON(DIRTY_MODULES_KEY, {});
-
-    return value && typeof value === "object" ? value : {};
-}
-
-function markModulesDirty(moduleIds) {
-    const next = dirtyModules();
-    const now = Date.now();
-
-    moduleIds.forEach(moduleId => {
-        next[moduleId] = now;
-    });
-
-    setJSON(DIRTY_MODULES_KEY, next);
-}
-
-function clearModuleDirty(moduleId, uploadedHash) {
-    if (hashString(currentModuleStateString(moduleId)) !== uploadedHash) {
-        return;
-    }
-
-    const next = dirtyModules();
-
-    delete next[moduleId];
-
-    if (Object.keys(next).length) {
-        setJSON(DIRTY_MODULES_KEY, next);
-    } else {
-        removeKey(DIRTY_MODULES_KEY);
-    }
 }
 
 function stableSnapshotString(snapshot = {}) {
@@ -150,16 +143,6 @@ function hashString(value) {
     return `${value.length}-${(hash >>> 0).toString(36)}`;
 }
 
-function splitChunks(value) {
-    const chunks = [];
-
-    for (let index = 0; index < value.length; index += CHUNK_SIZE) {
-        chunks.push(value.slice(index, index + CHUNK_SIZE));
-    }
-
-    return chunks.length ? chunks : [""];
-}
-
 async function services() {
     if (!servicesCache) {
         servicesCache = await getFirebaseServices();
@@ -188,6 +171,129 @@ function canReadModule(moduleId) {
     return canViewMenu(permission);
 }
 
+function queuePartialStateEntries(entries = []) {
+    entries.forEach(entry => {
+        const id = [
+            entry.moduleId,
+            entry.storageKey,
+            entry.itemKey || ""
+        ].join("\u001e");
+
+        pendingStateEntries.set(id, entry);
+    });
+
+    if (
+        !pendingStateEntries.size ||
+        !activeWorkspaceId ||
+        applyingRemoteState ||
+        waitingInitialState
+    ) return;
+
+    clearTimeout(entrySyncTimer);
+    entrySyncTimer = setTimeout(
+        flushPartialStateEntries,
+        ENTRY_SYNC_DELAY_MS
+    );
+}
+
+async function flushPartialStateEntries() {
+    entrySyncTimer = null;
+
+    if (
+        !activeWorkspaceId ||
+        applyingRemoteState ||
+        waitingInitialState ||
+        !pendingStateEntries.size
+    ) return;
+
+    const workspaceId = activeWorkspaceId;
+    const pending = [...pendingStateEntries.values()];
+    pendingStateEntries.clear();
+    const writable = pending.filter(entry =>
+        canWriteModule(entry.moduleId)
+    );
+    const documents = groupPartialStateEntries(writable);
+
+    try {
+        const { db, firestoreModule } = await services();
+
+        for (
+            let offset = 0;
+            offset < documents.length;
+            offset += ENTRY_BATCH_SIZE
+        ) {
+            if (workspaceId !== activeWorkspaceId) return;
+
+            const batch = firestoreModule.writeBatch(db);
+            const slice = documents.slice(
+                offset,
+                offset + ENTRY_BATCH_SIZE
+            );
+
+            slice.forEach(entry => {
+                const payload = {
+                    moduleId: entry.moduleId,
+                    storageKey: entry.storageKey,
+                    clientId: getClientId(),
+                    updatedAtISO: new Date().toISOString(),
+                    updatedAt: firestoreModule.serverTimestamp()
+                };
+
+                if (
+                    Object.keys(entry.items).length ||
+                    Object.keys(entry.deletedItems).length
+                ) {
+                    payload.items = entry.items;
+                    payload.deletedItems = entry.deletedItems;
+                }
+
+                if (Object.prototype.hasOwnProperty.call(entry, "value")) {
+                    payload.value = entry.value;
+                    payload.deleted = entry.deleted;
+                }
+
+                batch.set(
+                    firestoreModule.doc(
+                        moduleEntriesCollection(
+                            db,
+                            firestoreModule,
+                            workspaceId,
+                            entry.moduleId
+                        ),
+                        entryDocId(entry.storageKey)
+                    ),
+                    payload,
+                    { merge: true }
+                );
+            });
+
+            await batch.commit();
+        }
+
+        dispatchStatus({
+            type: "app-state-entries-saved",
+            count: writable.length
+        });
+    } catch (error) {
+        pending.forEach(entry => {
+            const id = [
+                entry.moduleId,
+                entry.storageKey,
+                entry.itemKey || ""
+            ].join("\u001e");
+            pendingStateEntries.set(id, entry);
+        });
+        dispatchStatus({
+            type: "app-state-error",
+            message: error.message || "Error guardando cambios parciales"
+        });
+        console.warn(
+            "No se pudieron guardar los cambios parciales del estado.",
+            error
+        );
+    }
+}
+
 function dispatchStatus(detail) {
     if (typeof window === "undefined") return;
 
@@ -196,147 +302,6 @@ function dispatchStatus(detail) {
             detail
         })
     );
-}
-
-async function uploadModule(moduleId) {
-    if (
-        !activeWorkspaceId ||
-        applyingRemoteState ||
-        waitingInitialState ||
-        uploadsInFlight.has(moduleId) ||
-        !canWriteModule(moduleId)
-    ) {
-        return;
-    }
-
-    uploadsInFlight.add(moduleId);
-
-    try {
-        const workspaceId = activeWorkspaceId;
-        const stateString = currentModuleStateString(moduleId);
-        const stateHash = hashString(stateString);
-
-        if (stateHash === lastUploadedHashes.get(moduleId)) {
-            clearModuleDirty(moduleId, stateHash);
-            return;
-        }
-
-        const chunks = splitChunks(stateString);
-        const nextChunkIds = new Set(
-            chunks.map((_chunk, index) => chunkDocId(index))
-        );
-        const { db, firestoreModule } = await services();
-
-        if (workspaceId !== activeWorkspaceId) return;
-
-        const chunkCollection = moduleChunksCollection(
-            db,
-            firestoreModule,
-            workspaceId,
-            moduleId
-        );
-        const existingChunks =
-            await firestoreModule.getDocs(chunkCollection);
-
-        if (workspaceId !== activeWorkspaceId) return;
-
-        const batch = firestoreModule.writeBatch(db);
-
-        chunks.forEach((chunk, index) => {
-            batch.set(
-                firestoreModule.doc(
-                    chunkCollection,
-                    chunkDocId(index)
-                ),
-                {
-                    moduleId,
-                    index,
-                    text: chunk,
-                    updatedAt: firestoreModule.serverTimestamp()
-                }
-            );
-        });
-
-        existingChunks.docs.forEach(docSnap => {
-            if (!nextChunkIds.has(docSnap.id)) {
-                batch.delete(docSnap.ref);
-            }
-        });
-
-        batch.set(
-            moduleDocRef(
-                db,
-                firestoreModule,
-                workspaceId,
-                moduleId
-            ),
-            {
-                moduleId,
-                permission: stateModulePermission(moduleId),
-                chunkCount: chunks.length,
-                charCount: stateString.length,
-                hash: stateHash,
-                clientId: getClientId(),
-                updatedAtISO: new Date().toISOString(),
-                updatedAt: firestoreModule.serverTimestamp()
-            }
-        );
-
-        await batch.commit();
-
-        if (workspaceId !== activeWorkspaceId) return;
-
-        lastUploadedHashes.set(moduleId, stateHash);
-        clearModuleDirty(moduleId, stateHash);
-        dispatchStatus({
-            type: "app-state-module-uploaded",
-            moduleId,
-            chunkCount: chunks.length,
-            hash: stateHash
-        });
-    } catch (error) {
-        console.warn(
-            `No se pudo sincronizar el modulo ${moduleId}.`,
-            error
-        );
-        dispatchStatus({
-            type: "app-state-error",
-            moduleId,
-            message: error.message || "Error sincronizando estado"
-        });
-    } finally {
-        uploadsInFlight.delete(moduleId);
-    }
-}
-
-async function uploadDirtyModules() {
-    if (
-        !activeWorkspaceId ||
-        applyingRemoteState ||
-        waitingInitialState
-    ) {
-        return;
-    }
-
-    const pending = Object.keys(dirtyModules())
-        .filter(moduleId => stateModuleIds().includes(moduleId));
-
-    for (const moduleId of pending) {
-        await uploadModule(moduleId);
-    }
-}
-
-function scheduleAppStateUpload() {
-    if (
-        !activeWorkspaceId ||
-        applyingRemoteState ||
-        waitingInitialState
-    ) {
-        return;
-    }
-
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(uploadDirtyModules, 900);
 }
 
 async function readRemoteModuleSnapshot(
@@ -381,17 +346,126 @@ async function readRemoteModuleSnapshot(
     };
 }
 
-function remoteIsOlderThanLocal(moduleId, manifest) {
-    const localDirtyAt =
-        Number(dirtyModules()[moduleId]) || 0;
-    const remoteUpdatedAt =
-        Date.parse(manifest?.updatedAtISO || "") || 0;
+function stateEntriesFromDoc(docSnap) {
+    const data = docSnap.data() || {};
+    const base = {
+        moduleId: String(data.moduleId || ""),
+        storageKey: String(data.storageKey || "")
+    };
 
-    return Boolean(
-        localDirtyAt &&
-        remoteUpdatedAt &&
-        localDirtyAt > remoteUpdatedAt
+    if (!base.storageKey) return [];
+
+    if (
+        data.items &&
+        typeof data.items === "object"
+    ) {
+        const deletedItems = data.deletedItems || {};
+        const itemKeys = new Set([
+            ...Object.keys(data.items),
+            ...Object.keys(deletedItems)
+        ]);
+
+        return [...itemKeys].map(itemKey => ({
+            ...base,
+            itemKey: decodePartialStateItemKey(itemKey),
+            value: data.items[itemKey],
+            deleted: deletedItems[itemKey] === true
+        }));
+    }
+
+    return [{
+        ...base,
+        itemKey: String(data.itemKey || ""),
+        value: data.value,
+        deleted: data.deleted === true
+    }];
+}
+
+async function readRemoteModuleEntries(
+    workspaceId,
+    moduleId
+) {
+    const { db, firestoreModule } = await services();
+    const snap = await firestoreModule.getDocs(
+        moduleEntriesCollection(
+            db,
+            firestoreModule,
+            workspaceId,
+            moduleId
+        )
     );
+    const entries = snap.docs
+        .flatMap(stateEntriesFromDoc)
+        .filter(entry => entry.storageKey);
+
+    if (entries.length) entryModulesPresent.add(moduleId);
+    return entries;
+}
+
+function applyRemoteStateEntries(entries = []) {
+    const patch = {};
+
+    entries.forEach(entry => {
+        const storageKey = entry.storageKey;
+        const snapshot = {
+            [storageKey]: Object.prototype.hasOwnProperty.call(patch, storageKey)
+                ? patch[storageKey]
+                : getRaw(storageKey, null)
+        };
+
+        applyPartialStateEntry(snapshot, entry);
+        patch[storageKey] = Object.prototype.hasOwnProperty.call(
+            snapshot,
+            storageKey
+        )
+            ? snapshot[storageKey]
+            : null;
+    });
+
+    applyingRemoteState = true;
+    let changedKeys = [];
+
+    try {
+        changedKeys = applyLocalPatch(patch, { silent: true });
+    } finally {
+        applyingRemoteState = false;
+    }
+
+    if (changedKeys.length) {
+        dispatchStatus({
+            type: "app-state-entries-applied",
+            keys: changedKeys
+        });
+        onStateChanged(patch, {
+            partial: true,
+            keys: changedKeys
+        });
+    }
+}
+
+function handleEntriesSnapshot(
+    snap,
+    moduleId,
+    workspaceId,
+    generation
+) {
+    if (
+        workspaceId !== activeWorkspaceId ||
+        generation !== syncGeneration
+    ) return;
+
+    const changes = typeof snap.docChanges === "function"
+        ? snap.docChanges()
+        : snap.docs.map(doc => ({ type: "added", doc }));
+    const entries = changes
+        .filter(change => change.type !== "removed")
+        .flatMap(change => stateEntriesFromDoc(change.doc))
+        .filter(entry => entry.storageKey);
+
+    if (!entries.length) return;
+
+    entryModulesPresent.add(moduleId);
+    applyRemoteStateEntries(entries);
 }
 
 async function applyRemoteModule(
@@ -414,15 +488,9 @@ async function applyRemoteModule(
         remoteHash &&
         (
             remoteHash === lastAppliedHashes.get(moduleId) ||
-            remoteHash === lastUploadedHashes.get(moduleId) ||
             remoteHash === localHash
         )
     ) {
-        return;
-    }
-
-    if (remoteIsOlderThanLocal(moduleId, manifest)) {
-        scheduleAppStateUpload();
         return;
     }
 
@@ -432,6 +500,14 @@ async function applyRemoteModule(
             moduleId,
             manifest?.chunkCount || 0
         );
+    const entries = await readRemoteModuleEntries(
+        workspaceId,
+        moduleId
+    );
+    const mergedSnapshot = mergePartialStateEntries(
+        { ...snapshot },
+        entries
+    );
 
     if (
         workspaceId !== activeWorkspaceId ||
@@ -444,7 +520,7 @@ async function applyRemoteModule(
 
     try {
         replaceLocalSnapshotSubset(
-            snapshot,
+            mergedSnapshot,
             key => stateModuleForKey(key) === moduleId,
             { silent: true }
         );
@@ -461,7 +537,7 @@ async function applyRemoteModule(
         moduleId,
         hash: lastAppliedHashes.get(moduleId)
     });
-    onStateChanged(snapshot);
+    onStateChanged(mergedSnapshot);
 }
 
 async function applyInitialModules(
@@ -490,6 +566,17 @@ async function applyInitialModules(
         );
     }
 
+    const readableModules = stateModuleIds().filter(canReadModule);
+
+    for (const moduleId of readableModules) {
+        const entries = await readRemoteModuleEntries(
+            workspaceId,
+            moduleId
+        );
+
+        mergePartialStateEntries(mergedSnapshot, entries);
+    }
+
     if (
         workspaceId !== activeWorkspaceId ||
         generation !== syncGeneration
@@ -508,11 +595,19 @@ async function applyInitialModules(
     waitingInitialState = false;
     dispatchStatus({
         type: "app-state-applied",
-        modules: manifests.map(({ moduleId }) => moduleId),
-        empty: manifests.length === 0
+        modules: Array.from(new Set([
+            ...manifests.map(({ moduleId }) => moduleId),
+            ...entryModulesPresent
+        ])),
+        empty:
+            manifests.length === 0 &&
+            entryModulesPresent.size === 0
     });
     onStateChanged(mergedSnapshot);
-    scheduleAppStateUpload();
+
+    if (pendingStateEntries.size) {
+        queuePartialStateEntries([]);
+    }
 }
 
 async function handleModuleSnapshot(
@@ -530,6 +625,8 @@ async function handleModuleSnapshot(
 
     try {
         if (!docSnap.exists()) {
+            if (entryModulesPresent.has(moduleId)) return;
+
             applyingRemoteState = true;
             try {
                 replaceLocalSnapshotSubset(
@@ -651,9 +748,42 @@ export async function startFirebaseAppStateSync(
                 }
             )
         );
+        const entryUnsubscribers = moduleRefs.map(({ moduleId }) =>
+            firestoreModule.onSnapshot(
+                moduleEntriesCollection(
+                    db,
+                    firestoreModule,
+                    workspaceId,
+                    moduleId
+                ),
+                snap => handleEntriesSnapshot(
+                    snap,
+                    moduleId,
+                    workspaceId,
+                    generation
+                ),
+                error => {
+                    if (
+                        workspaceId === activeWorkspaceId &&
+                        generation === syncGeneration
+                    ) {
+                        console.warn(
+                            `No se pudieron leer cambios parciales de ${moduleId}.`,
+                            error
+                        );
+                    }
+                }
+            )
+        );
+
+        unsubscribeStateEntries = () => {
+            entryUnsubscribers.forEach(unsubscribe => unsubscribe());
+        };
 
         unsubscribeState = () => {
             unsubscribers.forEach(unsubscribe => unsubscribe());
+            unsubscribeStateEntries?.();
+            unsubscribeStateEntries = null;
         };
     } catch (error) {
         waitingInitialState = false;
@@ -667,23 +797,26 @@ export async function startFirebaseAppStateSync(
 }
 
 export function stopFirebaseAppStateSync() {
-    clearTimeout(syncTimer);
-    syncTimer = null;
+    clearTimeout(entrySyncTimer);
+    entrySyncTimer = null;
 
     if (unsubscribeState) {
         unsubscribeState();
         unsubscribeState = null;
     }
 
+    if (unsubscribeStateEntries) {
+        unsubscribeStateEntries();
+        unsubscribeStateEntries = null;
+    }
+
     activeWorkspaceId = "";
     stateSyncStarting = false;
     applyingRemoteState = false;
     waitingInitialState = false;
-    uploadsInFlight.clear();
-    lastUploadedHashes.clear();
     lastAppliedHashes.clear();
-    removeKey(LEGACY_DIRTY_KEY);
-    removeKey(DIRTY_MODULES_KEY);
+    pendingStateEntries.clear();
+    entryModulesPresent.clear();
     syncGeneration++;
 }
 
@@ -694,9 +827,13 @@ if (typeof window !== "undefined") {
 
         if (!stateKeys.length) return;
 
-        markModulesDirty(
-            new Set(stateKeys.map(stateModuleForKey))
+        queuePartialStateEntries(
+            planPartialStateEntries({
+                keys: stateKeys,
+                changes: event.detail?.changes || {},
+                readRaw: key => getRaw(key, null),
+                moduleForKey: stateModuleForKey
+            })
         );
-        scheduleAppStateUpload();
     });
 }

@@ -1882,6 +1882,30 @@ export function calcularHorasMesPerfil(
     });
 }
 
+// API nominal usada por las actualizaciones incrementales. Conserva el motor
+// probado de horas y limita el cálculo al trabajador/mes solicitado.
+export function calculateWorkerMonthTotals(
+    workerId,
+    year,
+    month,
+    days,
+    holidays,
+    data,
+    blocked,
+    carryIn
+) {
+    return calcularHorasMesPerfil(
+        workerId,
+        year,
+        month,
+        days,
+        holidays,
+        data,
+        blocked,
+        carryIn
+    );
+}
+
 export function renderSummaryHTML(stats) {
     const valorHora =
         getValorHora();
@@ -1959,6 +1983,26 @@ export function calcularCarryMes(
     data
 ) {
     const nombre = getCurrentProfile();
+
+    return calculateCarryOver(
+        nombre,
+        y,
+        m,
+        days,
+        holidays,
+        data
+    );
+}
+
+export function calculateCarryOver(
+    workerId,
+    y,
+    m,
+    days,
+    holidays,
+    data
+) {
+    const nombre = workerId;
 
     if (!nombre) {
         return { d: 0, n: 0 };

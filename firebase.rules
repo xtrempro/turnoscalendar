@@ -513,6 +513,38 @@ service cloud.firestore {
             request.resource.data.text.size() <= 450000;
           allow delete: if canWriteStateModule(workspaceId, moduleId);
         }
+
+        // Delta fino del estado: una edición de calendario escribe solamente
+        // la clave/día modificado, sin republicar el módulo completo.
+        match /entries/{entryId} {
+          allow read: if canReadStateModule(workspaceId, moduleId);
+          allow create, update: if
+            canWriteStateModule(workspaceId, moduleId) &&
+            request.resource.data.moduleId == moduleId &&
+            request.resource.data.storageKey is string &&
+            request.resource.data.storageKey.size() > 0 &&
+            request.resource.data.storageKey.size() <= 260 &&
+            (
+              (
+                "items" in request.resource.data &&
+                request.resource.data.items is map &&
+                "deletedItems" in request.resource.data &&
+                request.resource.data.deletedItems is map
+              ) ||
+              (
+                "deleted" in request.resource.data &&
+                request.resource.data.deleted is bool &&
+                (
+                  request.resource.data.deleted == true ||
+                  (
+                    request.resource.data.value is string &&
+                    request.resource.data.value.size() <= 900000
+                  )
+                )
+              )
+            );
+          allow delete: if canWriteStateModule(workspaceId, moduleId);
+        }
       }
 
       // Proyeccion operativa minima para prestamos. Una unidad enlazada solo

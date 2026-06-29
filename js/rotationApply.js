@@ -15,7 +15,7 @@ import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { keyFromDate } from "./dateUtils.js";
 import { getRotationSequence } from "./rotationUtils.js";
-import { refreshAll } from "./refresh.js";
+import { updateVisibleCalendarDays } from "./calendar.js";
 
 /**
  * Aplica rotativa Diurno desde `fecha` hasta fin de anio: turno 4 (diurno) en
@@ -53,7 +53,7 @@ export async function aplicarDiurnoDesde(fecha) {
     saveProfileData(data);
     saveBaseProfileData(baseData);
     saveBlockedDays(blocked);
-    refreshAll();
+    void updateVisibleCalendarDays({ updateSummary: true });
 }
 
 /**
@@ -93,7 +93,7 @@ export function aplicarRotativaSecuencialDesde(fecha, secuencia) {
     saveProfileData(data);
     saveBaseProfileData(baseData);
     saveBlockedDays(blocked);
-    refreshAll();
+    void updateVisibleCalendarDays({ updateSummary: true });
 }
 
 /**

@@ -1,0 +1,30 @@
+{
+  "hosting": {
+    "site": "turnoplus-test-7c4d9",
+    "public": "dist",
+    "ignore": [
+      "firebase.test.json",
+      ".git/**",
+      "node_modules/**",
+      "functions/**",
+      "tests/**"
+    ],
+    "headers": [
+      {
+        "source": "/**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}

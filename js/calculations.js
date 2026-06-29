@@ -117,6 +117,13 @@ export function calcHours(date,state,h){
     return {d:0,n:0};
 }
 
+// Cálculo puro de una celda. workerId forma parte de la API para que los
+// consumidores mantengan explícito qué trabajador están actualizando.
+export function calculateDayHours(workerId, date, state, holidays = {}) {
+    void workerId;
+    return calcHours(date, state, holidays);
+}
+
 export function calcCarry(lastDate,state,h){
     if(![2,3,5,8].includes(state)) return {d:0,n:0};
 

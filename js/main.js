@@ -159,8 +159,17 @@ import {
     nextMonth,
     currentDate,
     renderCalendar,
-    goToCalendarMonth
+    goToCalendarMonth,
+    setCalendarSelectionHandler,
+    updateDayCell,
+    updateDayCells,
+    updateVisibleCalendarDays
 } from "./calendar.js";
+import {
+    getAppFilters,
+    setAppFilters,
+    syncWorkersState
+} from "./appState.js";
 import {
     pushHistory,
     undo,
@@ -2709,7 +2718,8 @@ async function handleHheeReturnTransferToggle() {
         );
     }
 
-    refreshAll();
+    void renderProfileHoursSummary(profile);
+    renderDisponibilidadVacaciones();
 }
 
 // Activa el traspaso de las HH.EE de un mes a devolucion para un colaborador.
@@ -2823,7 +2833,10 @@ setHheeReturnRequestHandler(async request => {
     );
 
     scheduleWorkerAppDataPublish(300, profileName);
-    refreshAll();
+    if (profileName === getCurrentProfile()) {
+        void renderProfileHoursSummary(getPerfilActual());
+        renderDisponibilidadVacaciones();
+    }
 
     return { ok: true };
 });
@@ -4084,9 +4097,9 @@ let profileListLimit = PROFILE_LIST_PAGE_SIZE;
 let profileListSignature = "";
 
 function renderProfiles(options = {}) {
-    const profiles = getProfiles();
-    const showInactive =
-        DOM.showInactiveProfiles?.checked ?? false;
+    const profiles = syncWorkersState(getProfiles());
+    const filters = getAppFilters("profiles");
+    const showInactive = Boolean(filters.showInactive);
     const selectableProfiles = profiles.filter(profile =>
         showInactive || isProfileActive(profile)
     );
@@ -4112,10 +4125,10 @@ function renderProfiles(options = {}) {
     }
 
     const current = getCurrentProfile();
-    const filtro = DOM.filterRole.value;
-    const query = normalizeProfileSearch(DOM.profileSearch.value);
+    const filtro = filters.role || "Todos";
+    const query = normalizeProfileSearch(filters.query || "");
 
-    DOM.profiles.innerHTML = "";
+    DOM.profiles.replaceChildren();
 
     const visibles = profiles.filter(profile => {
         const matchActive =
@@ -4162,6 +4175,8 @@ function renderProfiles(options = {}) {
     pagedProfiles.forEach(profile => {
         const item = document.createElement("div");
         item.className = "profile-item";
+        item.dataset.action = "select-profile";
+        item.dataset.profileName = profile.name;
 
         if (!isProfileActive(profile)) {
             item.classList.add("is-inactive");
@@ -4193,8 +4208,6 @@ function renderProfiles(options = {}) {
         content.append(name, meta);
         item.append(avatar, content);
 
-        item.onclick = () => selectProfileByName(profile.name);
-
         profilesFragment.appendChild(item);
     });
 
@@ -4202,12 +4215,9 @@ function renderProfiles(options = {}) {
         const loadMore = document.createElement("button");
         loadMore.type = "button";
         loadMore.className = "profile-list-more";
+        loadMore.dataset.action = "load-more-profiles";
         loadMore.textContent =
             `Mostrar ${Math.min(PROFILE_LIST_PAGE_SIZE, visibles.length - pagedProfiles.length)} m\u00e1s`;
-        loadMore.onclick = () => {
-            profileListLimit += PROFILE_LIST_PAGE_SIZE;
-            renderProfiles(options);
-        };
         profilesFragment.appendChild(loadMore);
     }
 
@@ -5205,7 +5215,10 @@ async function renderClockMarksPanel() {
                     `${card.dataset.profile} | ${formatClockMarkDate(card.dataset.keyDay)}: ${input.dataset.clockReview} ${input.checked ? "activado" : "desactivado"}.`,
                     { profile: card.dataset.profile }
                 );
-                refreshAll();
+                void updateDayCell(
+                    card.dataset.profile,
+                    card.dataset.keyDay
+                );
             };
         });
 
@@ -5507,7 +5520,7 @@ function clearSelectionMode(shouldRefresh = true) {
     DOM.adminInfo.classList.add("hidden");
 
     if (shouldRefresh) {
-        refreshAll();
+        void updateVisibleCalendarDays({ updateSummary: true });
     }
 }
 
@@ -5536,7 +5549,7 @@ function activarModo(modo, texto) {
         .getElementById("cancelModeBtn")
         .onclick = () => clearSelectionMode();
 
-    refreshAll();
+    void updateVisibleCalendarDays();
 }
 
 function isStandaloneApp() {
@@ -7118,7 +7131,12 @@ function handleAvailabilityEdit() {
     );
 
     availabilityEditMode = false;
-    refreshAll();
+    renderDisponibilidadVacaciones();
+
+    if (document.body.dataset.activeView === "hours") {
+        void renderProfileHoursSummary(profile);
+    }
+
     scheduleWorkerAppDataPublish(300, profile.name);
 }
 
@@ -8250,7 +8268,8 @@ function bindProfileForm() {
             }
         );
         renderBotones();
-        refreshAll();
+        renderDisponibilidadVacaciones();
+        void updateVisibleCalendarDays({ updateSummary: true });
     };
 
     DOM.profileActiveToggle.onchange = () => {
@@ -8657,11 +8676,42 @@ function bindMobileShellInteractions() {
 }
 
 function bindShellInteractions() {
-    DOM.filterRole.onchange = renderProfiles;
-    DOM.profileSearch.oninput = renderProfiles;
+    const syncProfileFilters = () => {
+        setAppFilters("profiles", {
+            role: DOM.filterRole?.value || "Todos",
+            query: DOM.profileSearch?.value || "",
+            showInactive:
+                DOM.showInactiveProfiles?.checked ?? false
+        });
+        renderProfiles();
+    };
+
+    setAppFilters("profiles", {
+        role: DOM.filterRole?.value || "Todos",
+        query: DOM.profileSearch?.value || "",
+        showInactive: DOM.showInactiveProfiles?.checked ?? false
+    });
+
+    DOM.filterRole.onchange = syncProfileFilters;
+    DOM.profileSearch.oninput = syncProfileFilters;
     if (DOM.showInactiveProfiles) {
-        DOM.showInactiveProfiles.onchange = renderProfiles;
+        DOM.showInactiveProfiles.onchange = syncProfileFilters;
     }
+
+    DOM.profiles.onclick = event => {
+        const action = event.target.closest("[data-action]");
+        if (!action || !DOM.profiles.contains(action)) return;
+
+        if (action.dataset.action === "select-profile") {
+            selectProfileByName(action.dataset.profileName);
+            return;
+        }
+
+        if (action.dataset.action === "load-more-profiles") {
+            profileListLimit += PROFILE_LIST_PAGE_SIZE;
+            renderProfiles();
+        }
+    };
 
     if (DOM.hheeFilterRole) {
         DOM.hheeFilterRole.onchange = renderHheeProfiles;
@@ -8830,10 +8880,7 @@ DOM.redoBtn.onclick = () => {
     }
 };
 
-document.addEventListener("click", async event => {
-    const celda = event.target.closest(".day");
-    if (!celda) return;
-
+setCalendarSelectionHandler(async ({ cell: celda, date: fecha }) => {
     if (selectionMode && !canModifyCurrentProfile()) {
         clearSelectionMode(false);
         return;
@@ -8845,12 +8892,6 @@ document.addEventListener("click", async event => {
     ) {
         return;
     }
-
-    const fecha = new Date(
-        Number(celda.dataset.year),
-        Number(celda.dataset.month),
-        Number(celda.dataset.day)
-    );
 
     if (selectionMode === "rotation") {
         await applyCalendarRotationChange(fecha);
@@ -8907,7 +8948,7 @@ document.addEventListener("click", async event => {
             return;
         }
 
-        refreshAll();
+        await updateDayCell(getCurrentProfile(), fecha);
         return;
     }
 
@@ -8997,7 +9038,7 @@ window.addEventListener("proturnos:workerRequestsChanged", () => {
         refreshWorkerRequestsNavBadge();
     }
 
-    refreshAll();
+    void updateVisibleCalendarDays({ updateSummary: true });
 });
 
 window.addEventListener("proturnos:replacementRequestsChanged", () => {
@@ -9007,7 +9048,7 @@ window.addEventListener("proturnos:replacementRequestsChanged", () => {
         refreshWorkerRequestsNavBadge();
     }
 
-    refreshAll();
+    void updateVisibleCalendarDays({ updateSummary: true });
 });
 
 window.addEventListener("proturnos:memosChanged", () => {
@@ -9036,12 +9077,14 @@ window.addEventListener("proturnos:auditUndoApplied", event => {
         });
     });
 
-    refreshAll();
+    if (!event.detail?.profile || event.detail.profile === getCurrentProfile()) {
+        void updateVisibleCalendarDays({ updateSummary: true });
+    }
     notifyWorkersOfAuditUndo(event.detail || {});
 });
 
 window.addEventListener("proturnos:interUnitLoansChanged", () => {
-    refreshAll();
+    void updateVisibleCalendarDays({ updateSummary: true });
     scheduleInterUnitStaffingPublish(300);
 });
 
@@ -9193,7 +9236,10 @@ function scheduleWorkspaceUiRefresh(options = {}) {
         if (syncState) {
             syncWorkspaceStateViews();
         } else {
-            refreshAll();
+            // Los enlaces de la PWA solo cambian controles del perfil activo;
+            // no alteran las celdas ni justifican reconstruir el calendario.
+            renderDashboardState();
+            renderBotones();
         }
     }, 60);
 }
@@ -9332,44 +9378,55 @@ initFirebaseShell({
             let workerAvailabilitySnapshot = new Map();
             startWorkerAvailabilitySync(workspace, {
                 onChange: blockedDays => {
-                    scheduleWorkspaceUiRefresh();
-
                     const nextSnapshot = new Map(
                         (Array.isArray(blockedDays) ? blockedDays : []).map(item => [
                             String(item.id || `${item.profileName}|${item.date}`),
                             {
                                 profileName: String(item.profileName || ""),
+                                date: String(item.date || ""),
                                 signature: JSON.stringify(item)
                             }
                         ])
                     );
+                    const changedProfiles = new Set();
+                    const changedDatesForActiveWorker = new Set();
+                    const activeProfileName = getCurrentProfile();
+                    const allKeys = new Set([
+                        ...workerAvailabilitySnapshot.keys(),
+                        ...nextSnapshot.keys()
+                    ]);
+
+                    allKeys.forEach(key => {
+                        const previous = workerAvailabilitySnapshot.get(key);
+                        const next = nextSnapshot.get(key);
+
+                        if (previous?.signature === next?.signature) return;
+
+                        const profileName =
+                            next?.profileName || previous?.profileName;
+                        const date = next?.date || previous?.date;
+
+                        if (profileName) changedProfiles.add(profileName);
+                        if (profileName === activeProfileName && date) {
+                            changedDatesForActiveWorker.add(date);
+                        }
+                    });
 
                     // El primer snapshot solo hidrata la interfaz. Publicar
                     // aqui regeneraba los datos de todos los trabajadores al
                     // abrir el entorno.
                     if (workerAvailabilityInitialized) {
-                        const changedProfiles = new Set();
-                        const allKeys = new Set([
-                            ...workerAvailabilitySnapshot.keys(),
-                            ...nextSnapshot.keys()
-                        ]);
-
-                        allKeys.forEach(key => {
-                            if (
-                                workerAvailabilitySnapshot.get(key)?.signature ===
-                                nextSnapshot.get(key)?.signature
-                            ) return;
-
-                            const profileName =
-                                nextSnapshot.get(key)?.profileName ||
-                                workerAvailabilitySnapshot.get(key)?.profileName;
-
-                            if (profileName) changedProfiles.add(profileName);
-                        });
-
                         scheduleWorkerAppDataPublish(
                             300,
                             [...changedProfiles]
+                        );
+                    }
+
+                    if (changedDatesForActiveWorker.size) {
+                        void updateDayCells(
+                            activeProfileName,
+                            [...changedDatesForActiveWorker],
+                            { updateSummary: false }
                         );
                     }
 
@@ -9393,8 +9450,15 @@ initFirebaseShell({
                 }
             });
             startFirebaseAppStateSync(workspace, {
-                onChange: () => {
-                    scheduleWorkspaceUiRefresh({ syncState: true });
+                onChange: (_snapshot, detail = {}) => {
+                    if (detail.partial === true) {
+                        if (detail.keys?.includes("profiles")) {
+                            renderProfiles({ dashboard: false });
+                        }
+                        renderBotones();
+                    } else {
+                        scheduleWorkspaceUiRefresh({ syncState: true });
+                    }
                     scheduleInterUnitStaffingPublish(400);
                 }
             });
