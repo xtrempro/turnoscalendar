@@ -1134,6 +1134,29 @@ body[data-active-view="profile"] #profileSection .profile-records-grid {
     border-color: var(--border);
 }
 
+.profile-list-more,
+.timeline-load-more {
+    width: 100%;
+    border: 1px dashed var(--border);
+    border-radius: 14px;
+    padding: 11px 14px;
+    color: var(--accent-strong);
+    background: var(--panel-soft);
+    font: inherit;
+    font-weight: 750;
+    cursor: pointer;
+}
+
+.profile-list-more:hover,
+.timeline-load-more:hover {
+    border-color: var(--accent);
+    background: var(--panel-hover);
+}
+
+.timeline-load-more {
+    margin-top: 12px;
+}
+
 .profile-item.active {
     background: linear-gradient(135deg, rgba(29, 108, 255, 0.24), rgba(29, 108, 255, 0.1));
     border-color: rgba(29, 108, 255, 0.34);

@@ -924,6 +924,14 @@ service cloud.firestore {
         allow delete: if
           isMember(workspaceId) &&
           canMemberWriteWorkspaceState(workspaceId);
+
+        match /months/{monthId} {
+          allow read: if isMember(workspaceId) ||
+            isLinkedWorker(workspaceId, userId);
+          allow write: if
+            isMember(workspaceId) &&
+            canMemberWriteWorkspaceState(workspaceId);
+        }
       }
 
       match /{document=**} {

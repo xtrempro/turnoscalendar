@@ -2822,7 +2822,7 @@ setHheeReturnRequestHandler(async request => {
         `Dispones de ${formatSaldo(result.transferHours)} hrs. desde ${effectiveLabel}.`
     );
 
-    scheduleWorkerAppDataPublish(300);
+    scheduleWorkerAppDataPublish(300, profileName);
     refreshAll();
 
     return { ok: true };
@@ -4079,6 +4079,10 @@ function setActiveShortcut(targetId, options = {}) {
     );
 }
 
+const PROFILE_LIST_PAGE_SIZE = 30;
+let profileListLimit = PROFILE_LIST_PAGE_SIZE;
+let profileListSignature = "";
+
 function renderProfiles(options = {}) {
     const profiles = getProfiles();
     const showInactive =
@@ -4130,6 +4134,19 @@ function renderProfiles(options = {}) {
 
         return matchActive && matchRole && matchSearch;
     });
+    const nextSignature = [
+        showInactive,
+        filtro,
+        query,
+        visibles.map(profile => profile.name).join("\u001f")
+    ].join("\u001e");
+
+    if (nextSignature !== profileListSignature) {
+        profileListSignature = nextSignature;
+        profileListLimit = PROFILE_LIST_PAGE_SIZE;
+    }
+
+    const pagedProfiles = visibles.slice(0, profileListLimit);
 
     if (!visibles.length) {
         DOM.emptyProfiles.classList.remove("hidden");
@@ -4142,7 +4159,7 @@ function renderProfiles(options = {}) {
 
     const profilesFragment = document.createDocumentFragment();
 
-    visibles.forEach(profile => {
+    pagedProfiles.forEach(profile => {
         const item = document.createElement("div");
         item.className = "profile-item";
 
@@ -4180,6 +4197,19 @@ function renderProfiles(options = {}) {
 
         profilesFragment.appendChild(item);
     });
+
+    if (pagedProfiles.length < visibles.length) {
+        const loadMore = document.createElement("button");
+        loadMore.type = "button";
+        loadMore.className = "profile-list-more";
+        loadMore.textContent =
+            `Mostrar ${Math.min(PROFILE_LIST_PAGE_SIZE, visibles.length - pagedProfiles.length)} m\u00e1s`;
+        loadMore.onclick = () => {
+            profileListLimit += PROFILE_LIST_PAGE_SIZE;
+            renderProfiles(options);
+        };
+        profilesFragment.appendChild(loadMore);
+    }
 
     DOM.profiles.appendChild(profilesFragment);
 
@@ -7024,7 +7054,7 @@ async function guardarPerfil() {
             );
         }
         refreshAll();
-        scheduleWorkerAppDataPublish(300);
+        scheduleWorkerAppDataPublish(300, nextName);
 
         if (automaticInviteResult?.status === "error") {
             alert(
@@ -7089,7 +7119,7 @@ function handleAvailabilityEdit() {
 
     availabilityEditMode = false;
     refreshAll();
-    scheduleWorkerAppDataPublish(300);
+    scheduleWorkerAppDataPublish(300, profile.name);
 }
 
 function saveAvailabilityBalancesFromInputs(profileName) {
@@ -9299,17 +9329,51 @@ initFirebaseShell({
             startWorkerAppDataSync(workspace);
             startInterUnitLoanSync(workspace);
             let workerAvailabilityInitialized = false;
+            let workerAvailabilitySnapshot = new Map();
             startWorkerAvailabilitySync(workspace, {
-                onChange: () => {
+                onChange: blockedDays => {
                     scheduleWorkspaceUiRefresh();
+
+                    const nextSnapshot = new Map(
+                        (Array.isArray(blockedDays) ? blockedDays : []).map(item => [
+                            String(item.id || `${item.profileName}|${item.date}`),
+                            {
+                                profileName: String(item.profileName || ""),
+                                signature: JSON.stringify(item)
+                            }
+                        ])
+                    );
 
                     // El primer snapshot solo hidrata la interfaz. Publicar
                     // aqui regeneraba los datos de todos los trabajadores al
                     // abrir el entorno.
                     if (workerAvailabilityInitialized) {
-                        scheduleWorkerAppDataPublish(300);
+                        const changedProfiles = new Set();
+                        const allKeys = new Set([
+                            ...workerAvailabilitySnapshot.keys(),
+                            ...nextSnapshot.keys()
+                        ]);
+
+                        allKeys.forEach(key => {
+                            if (
+                                workerAvailabilitySnapshot.get(key)?.signature ===
+                                nextSnapshot.get(key)?.signature
+                            ) return;
+
+                            const profileName =
+                                nextSnapshot.get(key)?.profileName ||
+                                workerAvailabilitySnapshot.get(key)?.profileName;
+
+                            if (profileName) changedProfiles.add(profileName);
+                        });
+
+                        scheduleWorkerAppDataPublish(
+                            300,
+                            [...changedProfiles]
+                        );
                     }
 
+                    workerAvailabilitySnapshot = nextSnapshot;
                     workerAvailabilityInitialized = true;
                 }
             });

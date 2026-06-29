@@ -43,16 +43,15 @@ import {
     planWorkerLinkSnapshot,
     runCooperativeQueue
 } from "./workerAppPublishQueue.js";
+import {
+    monthScheduleBounds,
+    normalizeProfileTargets,
+    splitDaysByMonth
+} from "./workerAppMonths.js";
 
 // Publicacion "caliente" (mes en curso + siguiente): frecuente y barata.
 const HOT_PUBLISH_DELAY_MS = 1200;
-// Publicacion "fria" (ventana completa de 24 meses + reportes + saldos): diferida.
-const COLD_PUBLISH_DELAY_MS = 5 * 60 * 1000;
 const INITIAL_PUBLISH_DELAY_MS = 2500;
-// Ventana del calendario que ve el trabajador en la PWA: 12 meses atras + el
-// mes actual + 12 meses adelante (>= 24 meses, segun lo pedido).
-const SCHEDULE_MONTHS_BACK = 12;
-const SCHEDULE_MONTHS_FORWARD = 13;
 // Los resumenes HH.EE son caros: se mantienen acotados (no crecen con la
 // ventana del calendario).
 const OVERTIME_SUMMARY_MONTHS_BACK = 2;
@@ -80,7 +79,8 @@ const PROFILE_KEY_PREFIXES = [
     "carry_"
 ];
 
-// Claves globales que afectan a TODOS los trabajadores enlazados.
+// Las claves globales se reconocen, pero no disparan una republicacion masiva:
+// la accion que las origina debe indicar los perfiles realmente afectados.
 const GLOBAL_RELEVANT_KEYS = new Set([
     "replacements",
     "swaps",
@@ -92,35 +92,18 @@ const GLOBAL_RELEVANT_KEYS = new Set([
     "profiles"
 ]);
 
-const PWA_RELEVANT_STATE_MODULES = new Set([
-    "profile",
-    "turnos",
-    "clockmarks",
-    "swap",
-    "hours",
-    "weekly"
-]);
-
 let activeWorkspace = null;
 let unsubscribeWorkerLinks = null;
 let hotPublishTimer = null;
-let coldPublishTimer = null;
-let coldPublishInFlight = false;
-let coldPublishRequested = false;
+let hotPublishInFlight = false;
+let hotPublishRequested = false;
 let workerLinks = [];
 let workerLinksInitialized = false;
 let syncGeneration = 0;
 
-// Perfiles cuyos datos cambiaron desde la ultima publicacion fria. Si
-// `dirtyAll` esta activo, se republican todos los enlazados.
+// Solo se publican perfiles/UID marcados de forma explicita.
 let dirtyProfileNames = new Set();
 let dirtyWorkerUids = new Set();
-let dirtyAll = false;
-
-// Cache en memoria del calendario calculado por perfil, para no recomputar 24
-// meses en cada cambio. Clave: nombre de perfil.
-//   scheduleCache.get(name) = { start, end, days, signatures: { global, months } }
-const scheduleCache = new Map();
 
 function normalizeRut(value) {
     return String(value || "")
@@ -134,39 +117,16 @@ function addDays(date, amount) {
     return next;
 }
 
-function scheduleRange(today = new Date()) {
+function hotScheduleRange(today = new Date()) {
     return {
-        start: new Date(
-            today.getFullYear(),
-            today.getMonth() - SCHEDULE_MONTHS_BACK,
-            1
-        ),
-        end: new Date(
-            today.getFullYear(),
-            today.getMonth() + SCHEDULE_MONTHS_FORWARD,
-            0
-        )
+        start: new Date(today.getFullYear(), today.getMonth(), 1),
+        end: new Date(today.getFullYear(), today.getMonth() + 2, 0)
     };
 }
 
 // ───────── Helpers de meses ─────────
 // Un mes se representa como { year, monthIndex } (monthIndex 0-based) y tiene un
 // id estable `YYYY-MM` (1-based con padding) para cache y firmas.
-
-function monthId({ year, monthIndex }) {
-    return `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
-}
-
-// Prefijo ISO `YYYY-MM-` (1-based padded) para agrupar `days` por mes.
-function isoMonthPrefix({ year, monthIndex }) {
-    return `${year}-${String(monthIndex + 1).padStart(2, "0")}-`;
-}
-
-// Prefijo de clave de calendario `YYYY-M-` (0-based sin padding) para cortar los
-// mapas de turnos/permisos por mes.
-function calendarMonthPrefix({ year, monthIndex }) {
-    return `${year}-${monthIndex}-`;
-}
 
 function listMonthsInRange(start, end) {
     const months = [];
@@ -182,14 +142,6 @@ function listMonthsInRange(start, end) {
     }
 
     return months;
-}
-
-function hotMonthIds(today = new Date()) {
-    const current = { year: today.getFullYear(), monthIndex: today.getMonth() };
-    const nextDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-    const next = { year: nextDate.getFullYear(), monthIndex: nextDate.getMonth() };
-
-    return new Set([monthId(current), monthId(next)]);
 }
 
 function normalizeWorkerLink(docSnap) {
@@ -463,159 +415,27 @@ function computeMonthDays(profile, month, ctx) {
     return result;
 }
 
-// Firma barata del "slice" mensual de los mapas por-perfil. Si no cambia entre
-// publicaciones, ese mes se reutiliza de cache sin recomputar.
-function monthSliceSignature(month, maps, profileData) {
-    const prefix = calendarMonthPrefix(month);
-    const pick = (map) =>
-        Object.keys(map || {})
-            .filter(key => key.startsWith(prefix))
-            .sort()
-            .map(key => `${key}=${map[key]}`)
-            .join(",");
-
-    return [
-        pick(profileData),
-        pick(maps.admin),
-        pick(maps.legal),
-        pick(maps.comp),
-        pick(maps.absences)
-    ].join("|");
-}
-
-// Firma "global" del perfil: estructura que afecta a TODOS sus meses (rotativa,
-// asignacion, base, bloqueos, reemplazos, cambios, feriados, colores). Si
-// cambia, se recomputan todos los meses del perfil.
-function globalProfileSignature(profileName) {
-    const replacements = getJSON("replacements", []);
-    const ownReplacements = Array.isArray(replacements)
-        ? replacements.filter(item =>
-            item?.worker === profileName || item?.replaced === profileName
-        )
-        : replacements;
-
-    return JSON.stringify({
-        rotativa: getRotativa(profileName),
-        shift: getShiftAssigned(profileName),
-        base: getJSON("baseData_" + profileName, {}),
-        shiftHistory: getJSON("shiftAssignmentHistory_" + profileName, {}),
-        blocked: getJSON("blocked_" + profileName, {}),
-        hourReturns: getJSON("hourReturns_" + profileName, {}),
-        replacements: ownReplacements,
-        swaps: getJSON("swaps", []),
-        turnChange: getTurnChangeConfig(),
-        holidays: getJSON("manualHolidays", {}),
-        colors: getTurnoColorConfig()
-    });
-}
-
-/**
- * Calcula el calendario del perfil reutilizando cache por mes.
- * @param {object} options
- * @param {"hot"|"full"} options.mode  "hot" devuelve solo mes actual + siguiente
- *   (para escritura parcial); "full" devuelve los 24 meses.
- * @returns {{ start, end, days, partial }}
- */
-function computeProfileSchedule(profile, { mode = "full" } = {}) {
+// El navegador supervisor solo calcula el mes actual y el siguiente. Los meses
+// historicos se materializan bajo demanda en la Cloud Function.
+function computeProfileSchedule(profile) {
     const today = new Date();
-    const { start, end } = scheduleRange(today);
+    const { start, end } = hotScheduleRange(today);
     const months = listMonthsInRange(start, end);
-    const hotIds = hotMonthIds(today);
     const maps = profileLeaveMaps(profile.name);
     const profileData = getJSON("data_" + profile.name, {});
     const colorResolver = buildHexColorResolver(getTurnoColorConfig());
     const ctx = { maps, profileData, colorResolver, holidaysByYear: {} };
 
-    const globalSig = globalProfileSignature(profile.name);
-    const monthSigs = {};
-    months.forEach(month => {
-        monthSigs[monthId(month)] = monthSliceSignature(month, maps, profileData);
-    });
-
-    const cached = scheduleCache.get(profile.name);
-    const globalChanged = !cached || cached.signatures.global !== globalSig;
-
-    const monthsToCompute = months.filter(month => {
-        const id = monthId(month);
-
-        if (mode === "hot") return hotIds.has(id);
-        if (globalChanged) return true;
-        if (!cached.days) return true;
-
-        return hotIds.has(id) ||
-            cached.signatures.months[id] !== monthSigs[id];
-    });
-
     const computedDays = {};
-    monthsToCompute.forEach(month => {
+    months.forEach(month => {
         Object.assign(computedDays, computeMonthDays(profile, month, ctx));
     });
 
-    if (mode === "hot") {
-        // Actualiza solo los meses calientes en la cache (si ya existe una base
-        // completa y la firma global no cambio; de lo contrario lo hara la
-        // publicacion fria).
-        if (cached?.days && !globalChanged) {
-            const mergedMonths = { ...cached.signatures.months };
-            monthsToCompute.forEach(month => {
-                mergedMonths[monthId(month)] = monthSigs[monthId(month)];
-            });
-            scheduleCache.set(profile.name, {
-                start: toISODate(start),
-                end: toISODate(end),
-                days: { ...cached.days, ...computedDays },
-                signatures: { global: globalSig, months: mergedMonths }
-            });
-        }
-
-        return {
-            start: toISODate(start),
-            end: toISODate(end),
-            days: computedDays,
-            partial: true
-        };
-    }
-
-    // mode === "full": reutiliza de cache los meses no recomputados.
-    const days = {};
-    const recomputedIds = new Set(monthsToCompute.map(monthId));
-
-    months.forEach(month => {
-        const id = monthId(month);
-
-        if (recomputedIds.has(id)) return;
-        if (!cached?.days) return;
-
-        const prefix = isoMonthPrefix(month);
-        Object.entries(cached.days).forEach(([iso, value]) => {
-            if (iso.startsWith(prefix)) days[iso] = value;
-        });
-    });
-
-    Object.assign(days, computedDays);
-
-    scheduleCache.set(profile.name, {
-        start: toISODate(start),
-        end: toISODate(end),
-        days,
-        signatures: { global: globalSig, months: monthSigs }
-    });
-
     return {
         start: toISODate(start),
         end: toISODate(end),
-        days,
-        partial: false
-    };
-}
-
-function buildScheduleDays(profile) {
-    const schedule = computeProfileSchedule(profile, { mode: "full" });
-
-    return {
-        start: schedule.start,
-        end: schedule.end,
-        days: schedule.days
+        days: computedDays,
+        partial: true
     };
 }
 
@@ -897,8 +717,12 @@ function buildSwapLimit(profileName) {
     };
 }
 
-async function buildWorkerAppPayload(link, profile, workspace) {
-    const schedule = buildScheduleDays(profile);
+async function buildWorkerAppPayload(
+    link,
+    profile,
+    workspace
+) {
+    const schedule = computeProfileSchedule(profile);
     const leaveBalancesByYear = await leaveBalancesByScheduleYear(
         profile.name,
         schedule
@@ -986,8 +810,14 @@ function blockedDatesForProfile(profileName) {
         .sort();
 }
 
-function buildSwapCandidatePayload(link, profile, workspace, linkedProfiles) {
-    const schedule = buildScheduleDays(profile);
+function buildSwapCandidatePayload(
+    link,
+    profile,
+    workspace,
+    linkedProfiles,
+    schedule = null
+) {
+    const resolvedSchedule = schedule || computeProfileSchedule(profile);
     const compatibleWorkerUids = linkedProfiles
         .filter(item =>
             item.link.uid !== link.uid &&
@@ -1017,9 +847,9 @@ function buildSwapCandidatePayload(link, profile, workspace, linkedProfiles) {
         shiftAssigned: Boolean(getShiftAssigned(profile.name)),
         compatibleWorkerUids,
         blockedDayDates: blockedDatesForProfile(profile.name),
-        scheduleStart: schedule.start,
-        scheduleEnd: schedule.end,
-        days: schedule.days,
+        scheduleStart: resolvedSchedule.start,
+        scheduleEnd: resolvedSchedule.end,
+        days: resolvedSchedule.days,
         updatedAtISO: new Date().toISOString()
     };
 }
@@ -1067,9 +897,61 @@ async function writeWorkerAppData(payload, workspaceId, uid) {
     );
 }
 
-// Escritura "caliente": solo los dias del mes en curso + siguiente. Firestore
-// hace deep-merge del mapa `days`, por lo que los meses frios NO se reescriben.
-async function writeWorkerAppHotDays(workspaceId, uid, partialDays) {
+async function writeWorkerAppMonths(payload, workspaceId, uid) {
+    const { db, firestoreModule } = await getFirebaseServices();
+    const months = splitDaysByMonth(payload.days);
+    const batch = firestoreModule.writeBatch(db);
+
+    Object.entries(months).forEach(([month, days]) => {
+        const bounds = monthScheduleBounds(days);
+
+        batch.set(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspaceId,
+                "workerAppData",
+                uid,
+                "months",
+                month
+            ),
+            {
+                uid,
+                workspaceId,
+                month,
+                profileName: payload.profileName || "",
+                profileRut: payload.profileRut || "",
+                scheduleStart: bounds.start,
+                scheduleEnd: bounds.end,
+                days,
+                updatedAtISO: payload.updatedAtISO,
+                updatedAt: firestoreModule.serverTimestamp()
+            },
+            { merge: true }
+        );
+    });
+
+    if (Object.keys(months).length) await batch.commit();
+}
+
+async function writeWorkerAppProjection(payload, workspaceId, uid) {
+    const availableMonths = Object.keys(splitDaysByMonth(payload.days)).sort();
+
+    await Promise.all([
+        writeWorkerAppData(
+            {
+                ...payload,
+                calendarStorageVersion: 2,
+                availableMonths
+            },
+            workspaceId,
+            uid
+        ),
+        writeWorkerAppMonths(payload, workspaceId, uid)
+    ]);
+}
+
+async function writeWorkerSwapCandidate(payload, workspaceId) {
     const { db, firestoreModule } = await getFirebaseServices();
 
     await firestoreModule.setDoc(
@@ -1077,92 +959,34 @@ async function writeWorkerAppHotDays(workspaceId, uid, partialDays) {
             db,
             "workspaces",
             workspaceId,
-            "workerAppData",
-            uid
+            "workerSwapCandidates",
+            payload.uid
         ),
         {
-            days: partialDays,
-            updatedAtISO: new Date().toISOString(),
+            ...payload,
             updatedAt: firestoreModule.serverTimestamp()
         },
         { merge: true }
     );
 }
 
-async function writeWorkerSwapCandidates(payloads, workspaceId) {
+async function writeWorkerMessageDirectoryEntry(payload, workspaceId) {
     const { db, firestoreModule } = await getFirebaseServices();
-    const collectionRef = firestoreModule.collection(
-        db,
-        "workspaces",
-        workspaceId,
-        "workerSwapCandidates"
+
+    await firestoreModule.setDoc(
+        firestoreModule.doc(
+            db,
+            "workspaces",
+            workspaceId,
+            "workerMessageDirectory",
+            payload.uid
+        ),
+        {
+            ...payload,
+            updatedAt: firestoreModule.serverTimestamp()
+        },
+        { merge: true }
     );
-    const snap = await firestoreModule.getDocs(collectionRef);
-    const batch = firestoreModule.writeBatch(db);
-    const nextIds = new Set(payloads.map(payload => payload.uid));
-
-    snap.docs.forEach(docSnap => {
-        if (!nextIds.has(docSnap.id)) {
-            batch.delete(docSnap.ref);
-        }
-    });
-
-    payloads.forEach(payload => {
-        batch.set(
-            firestoreModule.doc(
-                db,
-                "workspaces",
-                workspaceId,
-                "workerSwapCandidates",
-                payload.uid
-            ),
-            {
-                ...payload,
-                updatedAt: firestoreModule.serverTimestamp()
-            },
-            { merge: true }
-        );
-    });
-
-    await batch.commit();
-}
-
-async function writeWorkerMessageDirectory(payloads, workspaceId) {
-    const { db, firestoreModule } = await getFirebaseServices();
-    const collectionRef = firestoreModule.collection(
-        db,
-        "workspaces",
-        workspaceId,
-        "workerMessageDirectory"
-    );
-    const snap = await firestoreModule.getDocs(collectionRef);
-    const batch = firestoreModule.writeBatch(db);
-    const nextIds = new Set(payloads.map(payload => payload.uid));
-
-    snap.docs.forEach(docSnap => {
-        if (!nextIds.has(docSnap.id)) {
-            batch.delete(docSnap.ref);
-        }
-    });
-
-    payloads.forEach(payload => {
-        batch.set(
-            firestoreModule.doc(
-                db,
-                "workspaces",
-                workspaceId,
-                "workerMessageDirectory",
-                payload.uid
-            ),
-            {
-                ...payload,
-                updatedAt: firestoreModule.serverTimestamp()
-            },
-            { merge: true }
-        );
-    });
-
-    await batch.commit();
 }
 
 // ───────── Deteccion de "sucios" desde detail.keys ─────────
@@ -1217,9 +1041,13 @@ function applyDirtyFromKeys(keys) {
         if (result.ignore) continue;
 
         if (result.all) {
-            dirtyAll = true;
-            relevant = true;
-        } else if (result.profileName && linkedNames.has(result.profileName)) {
+            // Un cambio global no puede identificar con seguridad a los
+            // afectados. El cliente que origina la accion debe marcar los
+            // perfiles concretos; nunca se republican los 70 por este evento.
+            continue;
+        }
+
+        if (result.profileName && linkedNames.has(result.profileName)) {
             // Solo se reacciona a cambios de trabajadores ENLAZADOS: si el
             // perfil no usa la PWA, no se gasta ningun recurso en publicarlo.
             dirtyProfileNames.add(result.profileName);
@@ -1230,7 +1058,6 @@ function applyDirtyFromKeys(keys) {
     if (!relevant) return;
 
     scheduleHotPublish();
-    scheduleColdPublish();
 }
 
 function currentWorkspace() {
@@ -1251,8 +1078,6 @@ function linkedProfilePairs(profiles) {
 // recursos en quienes no usan la PWA.
 function dirtyLinkTargets(profiles) {
     const linked = linkedProfilePairs(profiles);
-
-    if (dirtyAll) return linked;
 
     return linked.filter(item =>
         dirtyWorkerUids.has(item.link.uid) ||
@@ -1277,181 +1102,110 @@ export function scheduleHotPublish(delay = HOT_PUBLISH_DELAY_MS) {
 async function publishHotNow() {
     if (!activeWorkspace?.id || !workerLinks.length) return;
 
-    const generation = syncGeneration;
-    const workspace = currentWorkspace();
-    const profiles = getProfiles();
-    const targets = dirtyLinkTargets(profiles);
-    const shouldContinue = () =>
-        publishStillCurrent(generation, workspace.id);
-
-    try {
-        await runCooperativeQueue(targets, async item => {
-            if (!item.profile) return;
-
-            // Solo escritura parcial si ya existe una base completa publicada
-            // (cache poblada por una publicacion fria). Si no, deja que la fria
-            // cree el documento completo para no dejarlo a medias.
-            if (!scheduleCache.has(item.profile.name)) return;
-
-            const partial = computeProfileSchedule(item.profile, { mode: "hot" });
-
-            if (partial?.days && Object.keys(partial.days).length) {
-                await writeWorkerAppHotDays(
-                    workspace.id,
-                    item.link.uid,
-                    partial.days
-                );
-            }
-        }, { shouldContinue });
-    } catch (error) {
-        console.warn(
-            "No se pudo publicar la actualizacion caliente del trabajador.",
-            error
-        );
-    }
-}
-
-// ───────── Publicacion fria / completa (24 meses + reportes) ─────────
-
-export function scheduleColdPublish(delay = COLD_PUBLISH_DELAY_MS) {
-    if (!activeWorkspace?.id || !workerLinks.length) return;
-
-    clearTimeout(coldPublishTimer);
-    coldPublishTimer = setTimeout(() => publishColdNow(), delay);
-}
-
-async function publishColdNow() {
-    if (!activeWorkspace?.id || !workerLinks.length) return;
-
-    if (coldPublishInFlight) {
-        coldPublishRequested = true;
+    if (hotPublishInFlight) {
+        hotPublishRequested = true;
         return;
     }
 
-    coldPublishInFlight = true;
-    coldPublishRequested = false;
-
+    hotPublishInFlight = true;
+    hotPublishRequested = false;
     const generation = syncGeneration;
     const workspace = currentWorkspace();
     const profiles = getProfiles();
     const targets = dirtyLinkTargets(profiles);
     const linkedProfiles = linkedProfilePairs(profiles);
-    const publishingAll = dirtyAll;
     const shouldContinue = () =>
         publishStillCurrent(generation, workspace.id);
 
-    // Se limpian los "sucios" ahora: cualquier cambio durante la publicacion
-    // vuelve a marcar y reprograma.
-    dirtyAll = false;
     dirtyProfileNames = new Set();
     dirtyWorkerUids = new Set();
 
     try {
-        const dataResult = await runCooperativeQueue(
-            targets,
-            async item => {
-                const payload = item.profile
-                    ? await buildWorkerAppPayload(
-                        item.link,
-                        item.profile,
-                        workspace
-                    )
-                    : buildMissingProfilePayload(item.link, workspace);
-
-                await writeWorkerAppData(
-                    payload,
-                    workspace.id,
-                    item.link.uid
-                );
-            },
-            { shouldContinue }
-        );
-
-        if (!dataResult.completed) return;
-
-        const swapCandidatePayloads = [];
-        const candidateResult = await runCooperativeQueue(
-            linkedProfiles.filter(item => item.profile),
-            item => {
-                swapCandidatePayloads.push(buildSwapCandidatePayload(
-                    item.link,
-                    item.profile,
-                    workspace,
-                    linkedProfiles
-                ));
-            },
-            { shouldContinue }
-        );
-
-        if (!candidateResult.completed) return;
-
-        await writeWorkerSwapCandidates(swapCandidatePayloads, workspace.id);
-
-        if (!shouldContinue()) return;
-
-        const messageDirectoryPayloads = [];
-        const directoryResult = await runCooperativeQueue(
-            linkedProfiles,
-            item => {
-                messageDirectoryPayloads.push(buildWorkerMessageDirectoryPayload(
+        await runCooperativeQueue(targets, async item => {
+            const payload = item.profile
+                ? await buildWorkerAppPayload(
                     item.link,
                     item.profile,
                     workspace
+                )
+                : buildMissingProfilePayload(item.link, workspace);
+            const writes = [
+                writeWorkerAppProjection(
+                    payload,
+                    workspace.id,
+                    item.link.uid
+                ),
+                writeWorkerMessageDirectoryEntry(
+                    buildWorkerMessageDirectoryPayload(
+                        item.link,
+                        item.profile,
+                        workspace
+                    ),
+                    workspace.id
+                )
+            ];
+
+            if (item.profile) {
+                writes.push(writeWorkerSwapCandidate(
+                    buildSwapCandidatePayload(
+                        item.link,
+                        item.profile,
+                        workspace,
+                        linkedProfiles,
+                        {
+                            start: payload.scheduleStart,
+                            end: payload.scheduleEnd,
+                            days: payload.days
+                        }
+                    ),
+                    workspace.id
                 ));
-            },
-            { shouldContinue }
-        );
-
-        if (!directoryResult.completed) return;
-
-        await writeWorkerMessageDirectory(
-            messageDirectoryPayloads,
-            workspace.id
-        );
-    } catch (error) {
-        if (shouldContinue()) {
-            if (publishingAll) {
-                dirtyAll = true;
-            } else {
-                targets.forEach(item => dirtyWorkerUids.add(item.link.uid));
             }
 
-            coldPublishRequested = true;
+            await Promise.all(writes);
+        }, { shouldContinue });
+    } catch (error) {
+        if (shouldContinue()) {
+            targets.forEach(item => dirtyWorkerUids.add(item.link.uid));
+            hotPublishRequested = true;
         }
 
         console.warn(
-            "No se pudo publicar datos para la app del trabajador.",
+            "No se pudo publicar la actualizacion caliente del trabajador.",
             error
         );
     } finally {
-        // Una cola antigua puede terminar despues de cambiar de entorno. En
-        // ese caso no debe alterar el estado de la cola del entorno nuevo.
         if (generation === syncGeneration) {
-            coldPublishInFlight = false;
+            hotPublishInFlight = false;
 
-            if (coldPublishRequested && activeWorkspace?.id) {
-                scheduleColdPublish();
+            if (hotPublishRequested && activeWorkspace?.id) {
+                scheduleHotPublish();
             }
         }
     }
 }
 
-// API publica historica. Si persistenceChanged ya identifico perfiles concretos,
-// conserva ese conjunto en vez de ampliarlo a todos los enlaces.
-export function scheduleWorkerAppDataPublish(delay = HOT_PUBLISH_DELAY_MS) {
+// API publica: siempre exige perfiles concretos.
+
+export function scheduleWorkerAppDataPublish(
+    delay = HOT_PUBLISH_DELAY_MS,
+    profileTargets = []
+) {
     if (!activeWorkspace?.id || !workerLinks.length) return;
 
-    if (!dirtyProfileNames.size && !dirtyWorkerUids.size) {
-        dirtyAll = true;
-    }
+    normalizeProfileTargets(profileTargets)
+        .forEach(name => dirtyProfileNames.add(name));
+
+    if (!dirtyProfileNames.size && !dirtyWorkerUids.size) return;
 
     scheduleHotPublish(Math.min(delay, HOT_PUBLISH_DELAY_MS));
-    scheduleColdPublish(delay);
 }
 
-export async function publishWorkerAppDataNow() {
-    dirtyAll = true;
-    await publishColdNow();
+export async function publishWorkerAppDataNow(profileTargets = []) {
+    normalizeProfileTargets(profileTargets)
+        .forEach(name => dirtyProfileNames.add(name));
+
+    await publishHotNow();
 }
 
 export async function startWorkerAppDataSync(workspace) {
@@ -1531,11 +1285,10 @@ export async function startWorkerAppDataSync(workspace) {
 
                 changedUids.forEach(uid => dirtyWorkerUids.add(uid));
 
-                // Altas/cambios publican solo sus documentos. Las bajas no
-                // tienen documento destino, pero requieren limpiar directorios
-                // y candidatos de intercambio.
+                // Las altas y cambios publican solo sus propios documentos.
+                // Una baja ya no es legible al desaparecer workerLinks/{uid}.
                 if (shouldPublish) {
-                    scheduleColdPublish(INITIAL_PUBLISH_DELAY_MS);
+                    scheduleHotPublish(INITIAL_PUBLISH_DELAY_MS);
                 }
             },
             error => {
@@ -1555,9 +1308,7 @@ export async function startWorkerAppDataSync(workspace) {
 
 export function stopWorkerAppDataSync() {
     clearTimeout(hotPublishTimer);
-    clearTimeout(coldPublishTimer);
     hotPublishTimer = null;
-    coldPublishTimer = null;
 
     if (unsubscribeWorkerLinks) {
         unsubscribeWorkerLinks();
@@ -1567,33 +1318,15 @@ export function stopWorkerAppDataSync() {
     activeWorkspace = null;
     workerLinks = [];
     workerLinksInitialized = false;
-    coldPublishInFlight = false;
-    coldPublishRequested = false;
-    dirtyAll = false;
+    hotPublishInFlight = false;
+    hotPublishRequested = false;
     dirtyProfileNames = new Set();
     dirtyWorkerUids = new Set();
-    scheduleCache.clear();
     syncGeneration++;
 }
 
 if (typeof window !== "undefined") {
     window.addEventListener("proturnos:persistenceChanged", event => {
         applyDirtyFromKeys(event?.detail?.keys);
-    });
-
-    window.addEventListener("proturnos:firebaseAppState", event => {
-        const detail = event.detail || {};
-
-        // `app-state-applied` es el snapshot inicial y no representa una
-        // modificacion nueva. Solo se publica ante modulos posteriores que sí
-        // afectan lo que ve el trabajador.
-        if (
-            detail.type !== "app-state-module-applied" ||
-            !PWA_RELEVANT_STATE_MODULES.has(detail.moduleId)
-        ) return;
-
-        dirtyAll = true;
-        scheduleHotPublish(300);
-        scheduleColdPublish();
     });
 }

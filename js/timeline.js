@@ -61,6 +61,9 @@ const timelineFilterState = {
 };
 let timelineOutsideClickController = null;
 let timelineRenderRequest = 0;
+const TIMELINE_PAGE_SIZE = 20;
+let timelineRowLimit = TIMELINE_PAGE_SIZE;
+let timelinePageSignature = "";
 
 function yieldTimelineRender() {
     return new Promise(resolve => {
@@ -701,6 +704,26 @@ export async function renderTimeline(){
     const month = calendar.currentDate.getMonth();
     const diasMes =
         new Date(year, month + 1, 0).getDate();
+    const orderedGroup = [
+        ...grupo.filter(profile => profile.name === actual),
+        ...grupo
+            .filter(profile => profile.name !== actual)
+            .sort((a, b) => a.name.localeCompare(b.name))
+    ];
+    const nextPageSignature = [
+        actual,
+        year,
+        month,
+        [...selectedKeys].sort().join("|"),
+        orderedGroup.map(profile => profile.name).join("\u001f")
+    ].join("\u001e");
+
+    if (nextPageSignature !== timelinePageSignature) {
+        timelinePageSignature = nextPageSignature;
+        timelineRowLimit = TIMELINE_PAGE_SIZE;
+    }
+
+    const visibleGroup = orderedGroup.slice(0, timelineRowLimit);
     const holidays = await fetchHolidays(year);
 
     if (
@@ -713,7 +736,7 @@ export async function renderTimeline(){
     }
 
     const timelineRows = await buildTimelineRows(
-        grupo,
+        visibleGroup,
         actual,
         year,
         month,
@@ -995,6 +1018,17 @@ export async function renderTimeline(){
         </div>
     `;
 
+    if (visibleGroup.length < orderedGroup.length) {
+        html += `
+            <button class="timeline-load-more" type="button" data-timeline-load-more>
+                Mostrar ${Math.min(
+                    TIMELINE_PAGE_SIZE,
+                    orderedGroup.length - visibleGroup.length
+                )} trabajadores m&aacute;s
+            </button>
+        `;
+    }
+
     if (!timelineRenderIsCurrent(requestId, year, month)) {
         return;
     }
@@ -1024,6 +1058,11 @@ export async function renderTimeline(){
                 timelineFilterState.open = true;
                 renderTimeline();
             };
+        });
+    div.querySelector("[data-timeline-load-more]")
+        ?.addEventListener("click", () => {
+            timelineRowLimit += TIMELINE_PAGE_SIZE;
+            renderTimeline();
         });
     div.querySelectorAll("[data-profile-name]")
         .forEach(button => {

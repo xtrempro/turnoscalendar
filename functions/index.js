@@ -1263,6 +1263,109 @@ exports.getLinkedStaffingMonth = onCall(
   }
 );
 
+// Entrega un mes historico de la PWA bajo demanda. Los documentos nuevos se
+// guardan por mes; durante la migracion, si falta el mes se extrae una sola vez
+// desde el documento legacy sin recalcular 24 meses en el navegador supervisor.
+exports.getWorkerAppMonth = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const authUid = request.auth?.uid;
+
+    if (!authUid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para consultar el calendario."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const requestedUid = cleanCallableText(request.data?.uid, 160) || authUid;
+    const month = cleanCallableText(request.data?.month, 7);
+
+    if (!workspaceId || !/^\d{4}-\d{2}$/.test(month)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "El mes solicitado no es valido."
+      );
+    }
+
+    const workspaceRef = db.collection("workspaces").doc(workspaceId);
+    const [memberSnap, workerLinkSnap] = await Promise.all([
+      workspaceRef.collection("members").doc(authUid).get(),
+      workspaceRef.collection("workerLinks").doc(authUid).get()
+    ]);
+    const member = memberSnap.data() || {};
+    const canRead = memberSnap.exists ||
+      (authUid === requestedUid && workerLinkSnap.exists);
+
+    if (!canRead) {
+      throw new HttpsError(
+        "permission-denied",
+        "No tienes acceso a este calendario."
+      );
+    }
+
+    if (memberSnap.exists) {
+      requireMemberMfa(member, request.auth.token);
+    }
+
+    const appRef = workspaceRef.collection("workerAppData").doc(requestedUid);
+    const monthRef = appRef.collection("months").doc(month);
+    const monthSnap = await monthRef.get();
+
+    if (monthSnap.exists) {
+      const stored = monthSnap.data() || {};
+
+      return {
+        exists: true,
+        month,
+        scheduleStart: cleanCallableText(stored.scheduleStart, 10),
+        scheduleEnd: cleanCallableText(stored.scheduleEnd, 10),
+        days: stored.days || {},
+        source: "monthly"
+      };
+    }
+
+    const legacySnap = await appRef.get();
+    const legacy = legacySnap.data() || {};
+    const days = Object.fromEntries(
+      Object.entries(legacy.days || {})
+        .filter(([iso]) => String(iso).startsWith(`${month}-`))
+    );
+    const dates = Object.keys(days).sort();
+
+    if (!dates.length) return { exists: false, month, days: {} };
+
+    const payload = {
+      uid: requestedUid,
+      workspaceId,
+      month,
+      profileName: cleanCallableText(legacy.profileName, 160),
+      profileRut: cleanCallableText(legacy.profileRut, 32),
+      scheduleStart: dates[0],
+      scheduleEnd: dates[dates.length - 1],
+      days,
+      materializedFromLegacy: true,
+      updatedAtISO: new Date().toISOString(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    await monthRef.set(payload, { merge: true });
+
+    return {
+      exists: true,
+      month,
+      scheduleStart: payload.scheduleStart,
+      scheduleEnd: payload.scheduleEnd,
+      days,
+      source: "legacy"
+    };
+  }
+);
+
 exports.cancelInterUnitLoan = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,
