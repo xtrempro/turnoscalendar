@@ -75,6 +75,8 @@ function normalizeUsage(data = {}) {
         expired: Boolean(data.expired),
         activeWorkers: Number(data.activeWorkers) || 0,
         entornos: Number(data.entornos) || 0,
+        // Flag global: si esta apagado, el gating no aplica (activacion segura).
+        gatingEnabled: Boolean(data.gatingEnabled),
         generatedAt: Number(data.generatedAt) || Date.now()
     };
 }
@@ -147,18 +149,27 @@ export function planIsExpired() {
     return Boolean(cachedUsage?.expired);
 }
 
+// Flag global de activacion del gating. Si esta apagado (o aun no hay datos),
+// ningun limite se aplica: el codigo de gating se puede desplegar sin afectar a
+// nadie hasta encenderlo.
+export function isGatingEnabled() {
+    return Boolean(cachedUsage?.gatingEnabled);
+}
+
 export function canUseAttachments() {
+    if (!isGatingEnabled()) return true;
     return planAllowsAttachments(getEffectivePlanId());
 }
 
 export function canDownloadReports() {
+    if (!isGatingEnabled()) return true;
     return planAllowsReportDownload(getEffectivePlanId());
 }
 
 // true si todavia se puede tener un trabajador activo mas (conteo autoritativo
-// + 1). Sin datos cargados aun, no bloquea (se revalida al refrescar el uso).
+// + 1). Sin gating activo o sin datos cargados, no bloquea.
 export function canAddActiveWorker() {
-    if (!cachedUsage) return true;
+    if (!isGatingEnabled() || !cachedUsage) return true;
     return isWithinWorkerLimit(
         getEffectivePlanId(),
         cachedUsage.activeWorkers + 1
@@ -166,7 +177,7 @@ export function canAddActiveWorker() {
 }
 
 export function canAddUnit() {
-    if (!cachedUsage) return true;
+    if (!isGatingEnabled() || !cachedUsage) return true;
     return isWithinUnitLimit(getEffectivePlanId(), cachedUsage.entornos + 1);
 }
 

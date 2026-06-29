@@ -2679,6 +2679,8 @@ exports.getAccountUsage = onCall(
           }
         : null;
 
+    const gatingEnabled = await readGatingEnabled();
+
     return {
       plan,
       effectivePlan,
@@ -2688,6 +2690,7 @@ exports.getAccountUsage = onCall(
       couponCode:
         typeof account.couponCode === "string" ? account.couponCode : null,
       pendingDiscount,
+      gatingEnabled,
       expired,
       activeWorkers,
       entornos: ownedWorkspaces.length,
@@ -2736,6 +2739,14 @@ function isCouponAdmin(token = {}) {
   return COUPON_ADMIN_EMAILS.some(
     (adminEmail) => normalizeEmailForAdmin(adminEmail) === email
   );
+}
+
+// Flag global de activacion del gating (config/billing.gatingEnabled). Si no
+// existe el documento, se considera APAGADO (gating inactivo): permite desplegar
+// el codigo de gating sin afectar a nadie hasta encenderlo.
+async function readGatingEnabled() {
+  const snap = await db.collection("config").doc("billing").get();
+  return snap.exists ? snap.data()?.gatingEnabled === true : false;
 }
 
 function generateCouponCode() {
@@ -3241,8 +3252,11 @@ exports.getAdminDashboard = onCall(
       totalRedemptions += Number(coupon.redemptionsCount) || 0;
     });
 
+    const gatingEnabled = await readGatingEnabled();
+
     return {
       generatedAt: now,
+      gatingEnabled,
       owners: { total: owners.size },
       workspaces: {
         active: activeWorkspaces,
@@ -3266,6 +3280,123 @@ exports.getAdminDashboard = onCall(
         active: activeCoupons,
         totalRedemptions
       }
+    };
+  }
+);
+
+// ===========================================================================
+// Activacion segura del gating: flag global + grandfathering de cuentas.
+// ===========================================================================
+
+// Enciende/apaga el gating de planes (config/billing.gatingEnabled). Solo admin.
+exports.setGatingEnabled = onCall(
+  {
+    enforceAppCheck: false,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion.");
+    }
+
+    if (!isCouponAdmin(request.auth.token || {})) {
+      throw new HttpsError(
+        "permission-denied",
+        "Solo el administrador puede cambiar el gating."
+      );
+    }
+
+    const enabled = request.data?.enabled === true;
+
+    await db.collection("config").doc("billing").set(
+      {
+        gatingEnabled: enabled,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedByEmail: cleanCallableText(request.auth.token?.email, 254)
+      },
+      { merge: true }
+    );
+
+    return { ok: true, gatingEnabled: enabled };
+  }
+);
+
+// Siembra cuentas "heredadas" (plan sin limites) para los duenos existentes que
+// aun no tienen documento en accounts, para que al encender el gating no queden
+// capados. graceDays = 0 => sin vencimiento (indefinido); >0 => vence en N dias
+// y luego vuelven a "free". No sobrescribe cuentas existentes (pagadas/cupon).
+exports.grandfatherAccounts = onCall(
+  {
+    enforceAppCheck: false,
+    timeoutSeconds: 300
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion.");
+    }
+
+    if (!isCouponAdmin(request.auth.token || {})) {
+      throw new HttpsError(
+        "permission-denied",
+        "Solo el administrador puede heredar cuentas."
+      );
+    }
+
+    const graceDays = Math.max(
+      0,
+      Math.min(3650, Math.round(Number(request.data?.graceDays) || 0))
+    );
+    const currentPeriodEnd =
+      graceDays > 0
+        ? admin.firestore.Timestamp.fromMillis(Date.now() + graceDays * 86400000)
+        : null;
+
+    // Duenos con entorno activo.
+    const workspacesSnap = await db.collection("workspaces").get();
+    const owners = new Set();
+    workspacesSnap.docs.forEach((doc) => {
+      const data = doc.data() || {};
+      if (BILLING_EXCLUDED_WORKSPACE_STATES.has(
+        String(data.deletionStatus || "")
+      )) {
+        return;
+      }
+      if (data.ownerUid) owners.add(data.ownerUid);
+    });
+
+    // Cuentas existentes: no se tocan.
+    const accountsSnap = await db.collection("accounts").get();
+    const existing = new Set(accountsSnap.docs.map((doc) => doc.id));
+
+    const toSeed = [...owners].filter((uid) => !existing.has(uid));
+    const nowTs = admin.firestore.Timestamp.now();
+
+    // Escribe en lotes (limite 500 por batch).
+    for (let i = 0; i < toSeed.length; i += 400) {
+      const batch = db.batch();
+      toSeed.slice(i, i + 400).forEach((uid) => {
+        batch.set(
+          db.collection("accounts").doc(uid),
+          {
+            plan: "grandfathered",
+            period: null,
+            source: "grandfathered",
+            currentPeriodEnd,
+            grandfatheredAt: nowTs,
+            updatedAt: nowTs
+          },
+          { merge: true }
+        );
+      });
+      await batch.commit();
+    }
+
+    return {
+      ok: true,
+      seeded: toSeed.length,
+      totalOwners: owners.size,
+      alreadyHadAccount: existing.size,
+      graceDays
     };
   }
 );

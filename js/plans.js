@@ -75,7 +75,28 @@ export const FREE_PLAN_ID = "free";
 export const DEFAULT_PLAN_ID = FREE_PLAN_ID;
 export const PERIODS = ["monthly", "annual"];
 
-const PLAN_BY_ID = new Map(PLAN_CATALOG.map(plan => [plan.id, plan]));
+// Plan interno (NO se muestra como tier comprable) para cuentas heredadas al
+// activar el gating: sin limites y con todas las funciones. Se asigna a las
+// cuentas existentes (grandfathering) para no caparlas; al vencer la gracia
+// vuelven a "free".
+export const GRANDFATHERED_PLAN_ID = "grandfathered";
+export const GRANDFATHERED_PLAN = {
+    id: GRANDFATHERED_PLAN_ID,
+    name: "Heredado",
+    rank: 99,
+    maxActiveWorkers: UNLIMITED,
+    maxUnits: UNLIMITED,
+    priceAnnual: 0,
+    priceMonthly: 0,
+    allowAttachments: true,
+    allowReportDownload: true
+};
+
+// PLAN_CATALOG se mantiene como la lista mostrable; el plan heredado se incluye
+// solo para resolver limites/gating, no para la UI de tiers.
+const PLAN_BY_ID = new Map(
+    [...PLAN_CATALOG, GRANDFATHERED_PLAN].map(plan => [plan.id, plan])
+);
 
 // Devuelve el plan por id; cae al plan gratis si el id es desconocido.
 export function getPlan(planId) {

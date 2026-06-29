@@ -378,6 +378,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Config global (flag de gating, etc.): solo via Cloud Functions.
+    match /config/{doc} {
+      allow read, write: if false;
+    }
+
     match /workspaceLinks/{linkId} {
       allow create: if signedIn() &&
         request.resource.data.fromWorkspaceId is string &&
