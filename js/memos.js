@@ -655,7 +655,9 @@ export function renderMemosPanel() {
                 );
                 attachMemoDocument(input.dataset.memoFile, document);
             } catch (error) {
-                alert("No se pudo adjuntar el documento.");
+                alert(error?.planBlocked
+                    ? error.message
+                    : "No se pudo adjuntar el documento.");
                 console.error(error);
             } finally {
                 input.value = "";

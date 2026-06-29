@@ -182,6 +182,13 @@ import { renderAgendaPanel } from "./agenda.js";
 import { renderDashboardPanel } from "./dashboard.js";
 import { initSystemSettings } from "./systemSettings.js";
 import { initPlansUI } from "./plansUI.js";
+import {
+    canAddActiveWorker,
+    canDownloadReports,
+    getCachedAccountUsage,
+    getEffectivePlan,
+    refreshAccountUsage
+} from "./subscription.js";
 import { initFirebaseShell } from "./firebaseShell.js";
 import {
     ensureFirebaseTotpEnrollment,
@@ -3033,7 +3040,14 @@ function addProfileRecord(profileName, config) {
     const file = card.querySelector("[data-record-file]")?.files?.[0];
 
     if (file) {
-        entry.file = normalizeAttachmentFiles([file])[0];
+        try {
+            entry.file = normalizeAttachmentFiles([file])[0];
+        } catch (error) {
+            alert(error?.planBlocked
+                ? error.message
+                : "No se pudo adjuntar el documento.");
+            return;
+        }
     }
 
     const hasData =
@@ -4555,11 +4569,33 @@ function buildSpecificReportPreviewHTML(profile, date) {
     return Promise.resolve("");
 }
 
+// Gate de plan para descargar/imprimir reportes (PDF y Excel). Si aun no hay
+// datos de uso, no bloquea (evita castigar a cuentas pagas por cache frio) y
+// refresca en segundo plano para la proxima vez.
+function ensureCanDownloadReports() {
+    if (!getCachedAccountUsage()) {
+        void refreshAccountUsage();
+        return true;
+    }
+
+    if (canDownloadReports()) return true;
+
+    const plan = getEffectivePlan();
+
+    alert(
+        `La descarga de reportes (PDF y Excel) no esta disponible en el plan ${plan.name}. ` +
+        "Mejora tu plan desde el boton de Planes en la barra superior para habilitarla."
+    );
+    return false;
+}
+
 async function printSpecificReportPdf(profile, date) {
     if (!profile?.name) {
         alert("Selecciona un trabajador para imprimir el reporte.");
         return;
     }
+
+    if (!ensureCanDownloadReports()) return;
 
     try {
         const html = await buildSpecificReportPreviewHTML(profile, date);
@@ -4645,14 +4681,17 @@ async function renderReportsDetail() {
     }
 
     if (DOM.downloadNoAssignmentReportBtn) {
-        DOM.downloadNoAssignmentReportBtn.onclick = () =>
-            canShowReplacementReport
+        DOM.downloadNoAssignmentReportBtn.onclick = () => {
+            if (!ensureCanDownloadReports()) return;
+
+            return canShowReplacementReport
                 ? exportReplacementShiftReport(profile, reportDate)
                 : canShowDiurnoReport
                 ? exportDiurnoShiftReport(profile, reportDate)
                 : canShowAssignedShiftReport
                 ? exportAssignedShiftReport(profile, reportDate)
                 : exportNoAssignmentShiftReport(profile, reportDate);
+        };
     }
 
     if (DOM.printReportPdfBtn) {
@@ -5143,15 +5182,24 @@ async function renderClockMarksPanel() {
                     marks[card.dataset.keyDay]
                         ?.segments?.[card.dataset.segmentKey]
                         ?.documents || [];
-                const attachments =
-                    await readAttachmentFiles(input.files, {
-                        moduleId: "clockmarks",
-                        ownerId: card.dataset.profile,
-                        recordId: [
-                            card.dataset.keyDay,
-                            card.dataset.segmentKey
-                        ].join("_")
-                    });
+                let attachments;
+                try {
+                    attachments =
+                        await readAttachmentFiles(input.files, {
+                            moduleId: "clockmarks",
+                            ownerId: card.dataset.profile,
+                            recordId: [
+                                card.dataset.keyDay,
+                                card.dataset.segmentKey
+                            ].join("_")
+                        });
+                } catch (error) {
+                    alert(error?.planBlocked
+                        ? error.message
+                        : "No se pudo adjuntar el documento al marcaje.");
+                    console.error(error);
+                    return;
+                }
 
                 updateClockMarkReview(
                     card.dataset.profile,
@@ -6402,6 +6450,31 @@ async function guardarPerfil() {
         profileDraft.mode === PROFILE_MODE.CREATE;
     const isEditing =
         profileDraft.mode === PROFILE_MODE.EDIT;
+
+    // Gate de plan: impide AGREGAR un trabajador activo mas alla del limite del
+    // plan (conteo autoritativo de activos entre todos los entornos del dueno).
+    // No bloquea desactivar ni editar trabajadores que ya estaban activos.
+    const willBeActive = profileDraft.active !== false;
+    const wasActive = isEditing
+        ? isProfileActive(profileDraft.originalName)
+        : false;
+
+    if (willBeActive && !wasActive) {
+        await refreshAccountUsage({ force: true });
+
+        if (!canAddActiveWorker()) {
+            const plan = getEffectivePlan();
+
+            alert(
+                `Alcanzaste el limite de tu plan ${plan.name} ` +
+                `(${plan.maxActiveWorkers} trabajadores activos en total entre tus entornos). ` +
+                "Para activar mas, mejora tu plan desde el boton de Planes en la barra superior, " +
+                "o desactiva a otro trabajador."
+            );
+            return;
+        }
+    }
+
     const previousSnapshot = isEditing
         ? auditProfileSnapshot(profileDraft.originalName)
         : null;
@@ -7816,8 +7889,10 @@ function bindProfileForm() {
             ];
             DOM.profileDocsInput.value = "";
             renderDashboardState();
-        } catch {
-            alert("No se pudo leer el archivo adjunto. Intenta nuevamente con otro documento.");
+        } catch (error) {
+            alert(error?.planBlocked
+                ? error.message
+                : "No se pudo leer el archivo adjunto. Intenta nuevamente con otro documento.");
         }
     };
 
@@ -8071,11 +8146,14 @@ function bindProfileForm() {
     }
 
     if (DOM.printHoursReportBtn) {
-        DOM.printHoursReportBtn.onclick = () =>
+        DOM.printHoursReportBtn.onclick = () => {
+            if (!ensureCanDownloadReports()) return;
+
             exportHoursReport(
                 getPerfilActual(),
                 profileRotationMiniDate
             );
+        };
     }
 
     if (DOM.hheePrevMonthBtn) {
@@ -9029,6 +9107,9 @@ initFirebaseShell({
     },
     onWorkspaceChange: async workspace => {
         if (workspace?.id) {
+            // Refresca el uso/plan autoritativo para tener listo el gating.
+            void refreshAccountUsage({ force: true });
+
             await startWorkspacePermissionListener(workspace, () => {
                 syncWorkspacePermissionUI();
                 syncCalendarDirectEditToggle();

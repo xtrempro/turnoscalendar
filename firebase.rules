@@ -371,6 +371,13 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Cupones: toda lectura/escritura pasa por Cloud Functions (admin SDK).
+    // Crear/listar/desactivar es solo del admin; canjear escribe accounts via
+    // la function redeemCoupon. El cliente nunca accede directo.
+    match /coupons/{code} {
+      allow read, write: if false;
+    }
+
     match /workspaceLinks/{linkId} {
       allow create: if signedIn() &&
         request.resource.data.fromWorkspaceId is string &&

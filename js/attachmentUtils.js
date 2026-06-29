@@ -4,6 +4,11 @@ import {
     isFirebaseConfigured
 } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
+import {
+    canUseAttachments,
+    getCachedAccountUsage,
+    refreshAccountUsage
+} from "./subscription.js";
 
 export const ATTACHMENT_ACCEPT =
     ".png,.jpg,.jpeg,.gif,.webp,.bmp,.heic,.heif,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx";
@@ -114,6 +119,20 @@ function attachmentId(prefix = "attachment") {
 }
 
 export function validateAttachmentFile(file) {
+    // Gate de plan: adjuntar archivos requiere plan de pago. Si aun no hay datos
+    // de uso, no bloquea (evita castigar a cuentas pagas por cache frio) y
+    // refresca en segundo plano para la proxima vez.
+    if (!getCachedAccountUsage()) {
+        void refreshAccountUsage();
+    } else if (!canUseAttachments()) {
+        const planError = new Error(
+            "Adjuntar archivos no esta disponible en tu plan. " +
+            "Mejora tu plan desde el boton de Planes en la barra superior."
+        );
+        planError.planBlocked = true;
+        throw planError;
+    }
+
     if (!(file instanceof File)) {
         throw new Error("El archivo adjunto no es valido.");
     }

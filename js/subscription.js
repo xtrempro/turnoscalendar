@@ -22,9 +22,38 @@ import {
 
 const CACHE_TTL_MS = 60000;
 
+// Admin(s) que pueden crear/gestionar cupones. Solo para mostrar la UI; la
+// seguridad real la imponen las Cloud Functions. Gmail ignora puntos y +alias.
+const ADMIN_EMAILS = ["desarrolladorfs@gmail.com"];
+
 let cachedUsage = null;
 let usageFetchedAt = 0;
 let inFlight = null;
+
+function normalizeEmailForAdmin(email) {
+    const clean = String(email || "").trim().toLowerCase();
+    const at = clean.indexOf("@");
+
+    if (at < 0) return clean;
+
+    let local = clean.slice(0, at);
+    const domain = clean.slice(at + 1);
+
+    if (domain === "gmail.com" || domain === "googlemail.com") {
+        local = local.replace(/\./g, "").split("+")[0];
+        return `${local}@gmail.com`;
+    }
+
+    return clean;
+}
+
+async function callFunction(name, payload = {}) {
+    const { functions, functionsModule } = await getFirebaseServices();
+    const callable = functionsModule.httpsCallable(functions, name);
+    const result = await callable(payload);
+
+    return result?.data || {};
+}
 
 function normalizeUsage(data = {}) {
     return {
@@ -39,6 +68,10 @@ function normalizeUsage(data = {}) {
         currentPeriodEnd: Number(data.currentPeriodEnd) || null,
         source: typeof data.source === "string" ? data.source : null,
         couponCode: typeof data.couponCode === "string" ? data.couponCode : null,
+        pendingDiscount:
+            data.pendingDiscount && typeof data.pendingDiscount === "object"
+                ? data.pendingDiscount
+                : null,
         expired: Boolean(data.expired),
         activeWorkers: Number(data.activeWorkers) || 0,
         entornos: Number(data.entornos) || 0,
@@ -135,4 +168,53 @@ export function canAddActiveWorker() {
 export function canAddUnit() {
     if (!cachedUsage) return true;
     return isWithinUnitLimit(getEffectivePlanId(), cachedUsage.entornos + 1);
+}
+
+export function getPendingDiscount() {
+    return cachedUsage?.pendingDiscount || null;
+}
+
+// ----- Cupones -----
+
+// Solo para visibilidad de UI; la seguridad la imponen las Cloud Functions.
+export function isAdminUser() {
+    const email = getCurrentFirebaseUser()?.email;
+
+    if (!email) return false;
+
+    const normalized = normalizeEmailForAdmin(email);
+
+    return ADMIN_EMAILS.some(
+        (adminEmail) => normalizeEmailForAdmin(adminEmail) === normalized
+    );
+}
+
+// Canjea un cupon (cualquier dueno). Lanza con el mensaje del servidor si falla;
+// al exito refresca el uso para reflejar el nuevo plan/descuento.
+export async function redeemCoupon(code) {
+    const data = await callFunction("redeemCoupon", {
+        code: String(code || "").trim().toUpperCase()
+    });
+
+    clearAccountUsageCache();
+    await refreshAccountUsage({ force: true });
+
+    return data;
+}
+
+// Admin: crear / listar / activar-desactivar cupones.
+export async function createCoupon(input = {}) {
+    return callFunction("createCoupon", input);
+}
+
+export async function listCoupons() {
+    const data = await callFunction("listCoupons");
+    return Array.isArray(data.coupons) ? data.coupons : [];
+}
+
+export async function setCouponActive(code, active) {
+    return callFunction("setCouponActive", {
+        code: String(code || "").trim().toUpperCase(),
+        active: Boolean(active)
+    });
 }

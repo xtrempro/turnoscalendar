@@ -422,8 +422,10 @@ function bindAgendaEvents(root) {
                     recordId: "contact-attachment"
                 });
             }
-        } catch {
-            alert("No se pudo leer el archivo adjunto. Intenta nuevamente con otro documento.");
+        } catch (error) {
+            alert(error?.planBlocked
+                ? error.message
+                : "No se pudo leer el archivo adjunto. Intenta nuevamente con otro documento.");
             return;
         }
 

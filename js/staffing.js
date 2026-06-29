@@ -1585,7 +1585,9 @@ function bindApplicantsPanel(target) {
                 renderApplicantsPanel();
             } catch (error) {
                 console.error(error);
-                alert("No se pudieron guardar los documentos del postulante.");
+                alert(error?.planBlocked
+                    ? error.message
+                    : "No se pudieron guardar los documentos del postulante.");
             }
         };
     }

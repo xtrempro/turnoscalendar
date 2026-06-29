@@ -2666,6 +2666,19 @@ exports.getAccountUsage = onCall(
       activeWorkers += await countActiveWorkersInWorkspace(workspaceDoc.id);
     }
 
+    const pendingDiscount =
+      account.pendingDiscount && typeof account.pendingDiscount === "object"
+        ? {
+            code: String(account.pendingDiscount.code || ""),
+            percentOff: Number(account.pendingDiscount.percentOff) || 0,
+            amountOff: Number(account.pendingDiscount.amountOff) || 0,
+            plan:
+              typeof account.pendingDiscount.plan === "string"
+                ? account.pendingDiscount.plan
+                : null
+          }
+        : null;
+
     return {
       plan,
       effectivePlan,
@@ -2674,10 +2687,406 @@ exports.getAccountUsage = onCall(
       source: typeof account.source === "string" ? account.source : null,
       couponCode:
         typeof account.couponCode === "string" ? account.couponCode : null,
+      pendingDiscount,
       expired,
       activeWorkers,
       entornos: ownedWorkspaces.length,
       generatedAt: now
     };
+  }
+);
+
+// ===========================================================================
+// Cupones de suscripcion: acceso temporal a un plan, o descuento al pagar.
+// Crear/listar/desactivar es solo para el admin; canjear lo hace cualquier
+// dueno autenticado. Toda la coleccion "coupons" se accede solo via estas
+// funciones (las reglas la cierran al cliente).
+// ===========================================================================
+
+// Admin(s) habilitados para gestionar cupones. Gmail ignora los puntos y el
+// sufijo +alias, por eso se normaliza antes de comparar.
+const COUPON_ADMIN_EMAILS = ["desarrolladorfs@gmail.com"];
+const COUPON_CODE_PATTERN = /^[A-Z0-9]{4,24}$/;
+const COUPON_PLANS = new Set(["p1", "p2", "p3"]);
+
+function normalizeEmailForAdmin(email) {
+  const clean = String(email || "").trim().toLowerCase();
+  const at = clean.indexOf("@");
+
+  if (at < 0) return clean;
+
+  let local = clean.slice(0, at);
+  const domain = clean.slice(at + 1);
+
+  if (domain === "gmail.com" || domain === "googlemail.com") {
+    local = local.replace(/\./g, "").split("+")[0];
+    return `${local}@gmail.com`;
+  }
+
+  return clean;
+}
+
+function isCouponAdmin(token = {}) {
+  if (token.email_verified === false) return false;
+
+  const email = normalizeEmailForAdmin(token.email);
+
+  if (!email) return false;
+
+  return COUPON_ADMIN_EMAILS.some(
+    (adminEmail) => normalizeEmailForAdmin(adminEmail) === email
+  );
+}
+
+function generateCouponCode() {
+  // 8 caracteres legibles (sin 0/O/1/I) desde bytes aleatorios.
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = randomBytes(8);
+  let code = "";
+
+  for (let index = 0; index < 8; index += 1) {
+    code += alphabet[bytes[index] % alphabet.length];
+  }
+
+  return code;
+}
+
+function serializeCoupon(code, data = {}) {
+  return {
+    code,
+    type: data.type === "discount" ? "discount" : "access",
+    plan: typeof data.plan === "string" ? data.plan : null,
+    durationDays: Number(data.durationDays) || 0,
+    percentOff: Number(data.percentOff) || 0,
+    amountOff: Number(data.amountOff) || 0,
+    maxRedemptions: Number(data.maxRedemptions) || 0,
+    redemptionsCount: Number(data.redemptionsCount) || 0,
+    active: data.active !== false,
+    expiresAt: subscriptionPeriodEndMillis(data.expiresAt) || null,
+    note: typeof data.note === "string" ? data.note : "",
+    createdByEmail:
+      typeof data.createdByEmail === "string" ? data.createdByEmail : "",
+    createdAt: subscriptionPeriodEndMillis(data.createdAt) || null
+  };
+}
+
+exports.createCoupon = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion.");
+    }
+
+    if (!isCouponAdmin(request.auth.token || {})) {
+      throw new HttpsError(
+        "permission-denied",
+        "Solo el administrador puede crear cupones."
+      );
+    }
+
+    const data = request.data || {};
+    const type = data.type === "discount" ? "discount" : "access";
+    const plan = COUPON_PLANS.has(data.plan) ? data.plan : "";
+    const durationDays = Math.max(
+      0,
+      Math.min(3650, Math.round(Number(data.durationDays) || 0))
+    );
+    const percentOff = Math.max(
+      0,
+      Math.min(100, Math.round(Number(data.percentOff) || 0))
+    );
+    const amountOff = Math.max(0, Math.round(Number(data.amountOff) || 0));
+    const maxRedemptions = Math.max(
+      0,
+      Math.min(100000, Math.round(Number(data.maxRedemptions) || 0))
+    );
+    const expiresInDays = Math.max(
+      0,
+      Math.min(3650, Math.round(Number(data.expiresInDays) || 0))
+    );
+    const note = cleanCallableText(data.note, 200);
+
+    if (type === "access") {
+      if (!plan) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Elige el plan que otorga el cupon de acceso."
+        );
+      }
+      if (durationDays <= 0) {
+        throw new HttpsError(
+          "invalid-argument",
+          "Indica cuantos dias de acceso otorga el cupon."
+        );
+      }
+    } else if (percentOff <= 0 && amountOff <= 0) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Indica un descuento en porcentaje o en monto."
+      );
+    }
+
+    let requestedCode = String(data.code || "").trim().toUpperCase();
+
+    if (requestedCode && !COUPON_CODE_PATTERN.test(requestedCode)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "El codigo debe tener entre 4 y 24 letras o numeros."
+      );
+    }
+
+    const now = admin.firestore.Timestamp.now();
+    const expiresAt =
+      expiresInDays > 0
+        ? admin.firestore.Timestamp.fromMillis(
+            Date.now() + expiresInDays * 86400000
+          )
+        : null;
+    const payload = {
+      type,
+      plan: plan || null,
+      durationDays,
+      percentOff,
+      amountOff,
+      maxRedemptions,
+      redemptionsCount: 0,
+      redeemedBy: [],
+      active: true,
+      expiresAt,
+      note,
+      createdByUid: request.auth.uid,
+      createdByEmail: cleanCallableText(request.auth.token?.email, 254),
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // create() falla si el documento ya existe -> garantiza unicidad del codigo.
+    if (requestedCode) {
+      try {
+        await db
+          .collection("coupons")
+          .doc(requestedCode)
+          .create({ code: requestedCode, ...payload });
+      } catch (error) {
+        if (error.code === 6 || error.code === "already-exists") {
+          throw new HttpsError(
+            "already-exists",
+            "Ese codigo de cupon ya existe."
+          );
+        }
+        throw error;
+      }
+
+      return { code: requestedCode };
+    }
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const candidate = generateCouponCode();
+
+      try {
+        await db
+          .collection("coupons")
+          .doc(candidate)
+          .create({ code: candidate, ...payload });
+
+        return { code: candidate };
+      } catch (error) {
+        if (error.code !== 6 && error.code !== "already-exists") throw error;
+      }
+    }
+
+    throw new HttpsError(
+      "internal",
+      "No se pudo generar un codigo unico. Reintenta."
+    );
+  }
+);
+
+exports.redeemCoupon = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion para canjear el cupon.");
+    }
+
+    const code = String(request.data?.code || "").trim().toUpperCase();
+
+    if (!COUPON_CODE_PATTERN.test(code)) {
+      throw new HttpsError("invalid-argument", "Ingresa un codigo de cupon valido.");
+    }
+
+    const applied = await db.runTransaction(async (transaction) => {
+      const couponRef = db.collection("coupons").doc(code);
+      const accountRef = db.collection("accounts").doc(uid);
+      const couponSnap = await transaction.get(couponRef);
+      const accountSnap = await transaction.get(accountRef);
+
+      if (!couponSnap.exists) {
+        throw new HttpsError("not-found", "El cupon no existe.");
+      }
+
+      const coupon = couponSnap.data() || {};
+      const now = Date.now();
+
+      if (coupon.active === false) {
+        throw new HttpsError("failed-precondition", "El cupon esta desactivado.");
+      }
+
+      const expiresMs = subscriptionPeriodEndMillis(coupon.expiresAt);
+      if (expiresMs && now > expiresMs) {
+        throw new HttpsError("failed-precondition", "El cupon esta vencido.");
+      }
+
+      const max = Number(coupon.maxRedemptions) || 0;
+      const count = Number(coupon.redemptionsCount) || 0;
+      if (max > 0 && count >= max) {
+        throw new HttpsError(
+          "resource-exhausted",
+          "El cupon ya alcanzo su limite de usos."
+        );
+      }
+
+      const redeemedBy = Array.isArray(coupon.redeemedBy)
+        ? coupon.redeemedBy
+        : [];
+      if (redeemedBy.includes(uid)) {
+        throw new HttpsError("already-exists", "Ya canjeaste este cupon.");
+      }
+
+      const nowTs = admin.firestore.Timestamp.now();
+      let result;
+
+      if (coupon.type === "discount") {
+        const pendingDiscount = {
+          code,
+          percentOff: Number(coupon.percentOff) || 0,
+          amountOff: Number(coupon.amountOff) || 0,
+          plan: typeof coupon.plan === "string" ? coupon.plan : null,
+          addedAt: nowTs
+        };
+
+        transaction.set(
+          accountRef,
+          { pendingDiscount, updatedAt: nowTs },
+          { merge: true }
+        );
+
+        result = {
+          type: "discount",
+          percentOff: pendingDiscount.percentOff,
+          amountOff: pendingDiscount.amountOff,
+          plan: pendingDiscount.plan
+        };
+      } else {
+        const durationDays = Math.max(1, Number(coupon.durationDays) || 0);
+        const account = accountSnap.exists ? accountSnap.data() || {} : {};
+        const currentEndMs = subscriptionPeriodEndMillis(account.currentPeriodEnd);
+        // Si ya tiene vigente el mismo plan, extiende desde el fin; si no, desde hoy.
+        const samePlanActive =
+          account.plan === coupon.plan && currentEndMs > now;
+        const baseMs = samePlanActive ? currentEndMs : now;
+        const newEnd = admin.firestore.Timestamp.fromMillis(
+          baseMs + durationDays * 86400000
+        );
+
+        transaction.set(
+          accountRef,
+          {
+            plan: coupon.plan,
+            period: null,
+            source: "coupon",
+            couponCode: code,
+            currentPeriodEnd: newEnd,
+            updatedAt: nowTs
+          },
+          { merge: true }
+        );
+
+        result = {
+          type: "access",
+          plan: coupon.plan,
+          currentPeriodEnd: newEnd.toMillis()
+        };
+      }
+
+      transaction.update(couponRef, {
+        redemptionsCount: count + 1,
+        redeemedBy: admin.firestore.FieldValue.arrayUnion(uid),
+        updatedAt: nowTs
+      });
+
+      return result;
+    });
+
+    return { ok: true, ...applied };
+  }
+);
+
+exports.listCoupons = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion.");
+    }
+
+    if (!isCouponAdmin(request.auth.token || {})) {
+      throw new HttpsError(
+        "permission-denied",
+        "Solo el administrador puede ver los cupones."
+      );
+    }
+
+    const snap = await db
+      .collection("coupons")
+      .orderBy("createdAt", "desc")
+      .limit(100)
+      .get();
+
+    return {
+      coupons: snap.docs.map((doc) => serializeCoupon(doc.id, doc.data()))
+    };
+  }
+);
+
+exports.setCouponActive = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion.");
+    }
+
+    if (!isCouponAdmin(request.auth.token || {})) {
+      throw new HttpsError(
+        "permission-denied",
+        "Solo el administrador puede modificar cupones."
+      );
+    }
+
+    const code = String(request.data?.code || "").trim().toUpperCase();
+
+    if (!COUPON_CODE_PATTERN.test(code)) {
+      throw new HttpsError("invalid-argument", "Codigo de cupon invalido.");
+    }
+
+    await db.collection("coupons").doc(code).update({
+      active: Boolean(request.data?.active),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { ok: true };
   }
 );
