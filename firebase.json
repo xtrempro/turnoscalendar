@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "site": "turnoplus-admin",
+    "site": "calendarioturnos-7c4d9",
     "public": "dist",
     "ignore": [
       "firebase.json",
