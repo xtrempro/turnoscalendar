@@ -1,4 +1,12 @@
 {
+  "auth": {
+    "providers": {
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "TurnoPlus Test",
+        "supportEmail": "tm.alanplaza@gmail.com"
+      }
+    }
+  },
   "hosting": {
     "site": "turnoplus-test-7c4d9",
     "public": "dist",
