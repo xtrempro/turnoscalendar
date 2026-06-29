@@ -3698,3 +3698,157 @@ exports.webpayReturn = onRequest(
     return res.redirect(webpayRedirect(returnTo, "ok"));
   }
 );
+
+// ===========================================================================
+// Recordatorios de vencimiento de suscripcion (correo via Resend).
+// ===========================================================================
+
+const SUBSCRIPTION_REMINDER_DAYS = 7;
+const SUBSCRIPTION_PLAN_NAMES = {
+  free: "Gratis",
+  p1: "Plan 1",
+  p2: "Plan 2",
+  p3: "Plan 3",
+  grandfathered: "Heredado"
+};
+
+function escapeEmailText(value) {
+  return String(value || "").replace(
+    /[<>&]/g,
+    (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[char])
+  );
+}
+
+async function sendResendEmail({ to, subject, html, text }) {
+  const apiKey = RESEND_API_KEY.value();
+
+  if (!apiKey) {
+    logger.warn("RESEND_API_KEY no configurada; no se envia el correo.");
+    return { ok: false, skipped: true };
+  }
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    signal: AbortSignal.timeout(15000),
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ from: safeMailFrom(), to: [to], subject, html, text })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Resend ${response.status}: ${detail}`);
+  }
+
+  const result = await response.json().catch(() => ({}));
+  return { ok: true, id: result?.id || "" };
+}
+
+// Una vez al dia: avisa a los duenos cuando su suscripcion esta por vencer
+// (<= 7 dias) o ya vencio. Idempotente por periodo (no repite el mismo aviso).
+exports.sendSubscriptionReminders = onSchedule(
+  {
+    schedule: "every day 09:00",
+    timeZone: "America/Santiago",
+    region: "us-central1",
+    secrets: [RESEND_API_KEY],
+    timeoutSeconds: 300
+  },
+  async () => {
+    const now = Date.now();
+    const snap = await db.collection("accounts").get();
+
+    for (const docSnap of snap.docs) {
+      const uid = docSnap.id;
+      const account = docSnap.data() || {};
+      const plan = typeof account.plan === "string" ? account.plan : "free";
+
+      if (plan === "free") continue;
+
+      const periodEndMs = subscriptionPeriodEndMillis(account.currentPeriodEnd);
+      if (!periodEndMs) continue;
+
+      const daysLeft = Math.ceil((periodEndMs - now) / 86400000);
+      let stage = null;
+
+      if (
+        daysLeft > 0 &&
+        daysLeft <= SUBSCRIPTION_REMINDER_DAYS &&
+        account.upcomingReminderFor !== periodEndMs
+      ) {
+        stage = "upcoming";
+      } else if (daysLeft <= 0 && account.expiredReminderFor !== periodEndMs) {
+        stage = "expired";
+      }
+
+      if (!stage) continue;
+
+      let email = "";
+      let name = "";
+      try {
+        const user = await admin.auth().getUser(uid);
+        email = user.email || "";
+        name = user.displayName || "";
+      } catch (error) {
+        logger.warn("No se pudo obtener el dueno para el recordatorio.", { uid });
+      }
+
+      if (!email) continue;
+
+      const planName = SUBSCRIPTION_PLAN_NAMES[plan] || plan;
+      const endDate = new Date(periodEndMs).toLocaleDateString("es-CL", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric"
+      });
+      const subject =
+        stage === "upcoming"
+          ? `Tu suscripcion TurnoPlus (${planName}) vence en ${daysLeft} dia(s)`
+          : `Tu suscripcion TurnoPlus (${planName}) vencio`;
+      const body =
+        stage === "upcoming"
+          ? `Tu plan <strong>${planName}</strong> vence el <strong>${endDate}</strong> (en ${daysLeft} dia(s)).`
+          : `Tu plan <strong>${planName}</strong> vencio el <strong>${endDate}</strong>. Tu cuenta volvio al plan Gratis.`;
+      const greeting = name ? ` ${escapeEmailText(name)}` : "";
+      const html =
+        `<div style="font-family:Arial,sans-serif;font-size:15px;color:#1a2740">` +
+        `<p>Hola${greeting},</p>` +
+        `<p>${body}</p>` +
+        `<p>Para renovar tu suscripcion, abre TurnoPlus y entra a <strong>Planes</strong> en la barra superior.</p>` +
+        `<p style="color:#6b7a90;font-size:13px">TurnoPlus</p></div>`;
+      const text =
+        `Hola${name ? ` ${name}` : ""},\n\n` +
+        (stage === "upcoming"
+          ? `Tu plan ${planName} vence el ${endDate} (en ${daysLeft} dia(s)).`
+          : `Tu plan ${planName} vencio el ${endDate}. Tu cuenta volvio al plan Gratis.`) +
+        `\n\nPara renovar, abre TurnoPlus y entra a Planes.\n\nTurnoPlus`;
+
+      try {
+        const sent = await sendResendEmail({ to: email, subject, html, text });
+        if (sent.skipped) continue;
+
+        await docSnap.ref.set(
+          stage === "upcoming"
+            ? {
+                upcomingReminderFor: periodEndMs,
+                upcomingReminderAt: admin.firestore.FieldValue.serverTimestamp()
+              }
+            : {
+                expiredReminderFor: periodEndMs,
+                expiredReminderAt: admin.firestore.FieldValue.serverTimestamp()
+              },
+          { merge: true }
+        );
+
+        logger.info("Recordatorio de suscripcion enviado.", { uid, stage, daysLeft });
+      } catch (error) {
+        logger.warn("No se pudo enviar el recordatorio.", {
+          uid,
+          message: error.message
+        });
+      }
+    }
+  }
+);
