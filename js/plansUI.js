@@ -16,12 +16,14 @@ import {
 } from "./plans.js";
 import {
     createCoupon,
+    createWebpayTransaction,
     getCachedAccountUsage,
     getEffectivePlanId,
     getPendingDiscount,
     isAdminUser,
     listCoupons,
     redeemCoupon,
+    redirectToWebpay,
     refreshAccountUsage,
     setCouponActive
 } from "./subscription.js";
@@ -119,7 +121,12 @@ function planCardHTML(plan, effectivePlanId) {
         ? `<div class="plan-card-current">Tu plan actual</div>`
         : isFree
             ? ""
-            : `<button class="primary-button plan-card-cta" type="button" disabled title="Disponible al habilitar el pago en linea">Suscribirse (pronto)</button>`;
+            : `
+                <div class="plan-card-cta-row">
+                    <button class="primary-button" type="button" data-action="subscribe" data-plan="${plan.id}" data-period="monthly">Pagar mensual</button>
+                    <button class="secondary-button" type="button" data-action="subscribe" data-plan="${plan.id}" data-period="annual">Pagar anual</button>
+                </div>
+                <p class="plan-card-status" data-subscribe-status="${plan.id}"></p>`;
 
     return `
         <article class="plan-card ${isCurrent ? "is-current" : ""}">
@@ -380,6 +387,36 @@ async function handleToggleCoupon(button) {
     }
 }
 
+async function handleSubscribe(button) {
+    const plan = button.dataset.plan;
+    const period = button.dataset.period;
+    const statusSel = `[data-subscribe-status="${plan}"]`;
+
+    activeBackdrop
+        ?.querySelectorAll(`[data-action="subscribe"][data-plan="${plan}"]`)
+        .forEach(btn => {
+            btn.disabled = true;
+        });
+    setStatus(statusSel, "Redirigiendo a Webpay...", false);
+
+    try {
+        const { token, url } = await createWebpayTransaction(plan, period);
+
+        if (!token || !url) {
+            throw new Error("Respuesta de pago invalida.");
+        }
+
+        redirectToWebpay(url, token);
+    } catch (error) {
+        setStatus(statusSel, error?.message || "No se pudo iniciar el pago.", true);
+        activeBackdrop
+            ?.querySelectorAll(`[data-action="subscribe"][data-plan="${plan}"]`)
+            .forEach(btn => {
+                btn.disabled = false;
+            });
+    }
+}
+
 function onBackdropClick(event) {
     if (event.target === activeBackdrop) {
         closeModal();
@@ -397,6 +434,8 @@ function onBackdropClick(event) {
         handleCreateCoupon(actionEl);
     } else if (action === "toggle-coupon") {
         handleToggleCoupon(actionEl);
+    } else if (action === "subscribe") {
+        handleSubscribe(actionEl);
     }
 }
 

@@ -16,6 +16,13 @@ const {
   isFinalSwapStatus
 } = require("./swapCancellation");
 const { cancelWorkerSwapHandler } = require("./workerSwapCancellation");
+const {
+  WebpayPlus,
+  Options: TbkOptions,
+  IntegrationApiKeys,
+  IntegrationCommerceCodes,
+  Environment: TbkEnvironment
+} = require("transbank-sdk");
 
 // API key de Resend. Configurar con: firebase functions:secrets:set RESEND_API_KEY
 const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
@@ -3423,5 +3430,271 @@ exports.grandfatherAccounts = onCall(
       alreadyHadAccount: existing.size,
       graceDays
     };
+  }
+);
+
+// ===========================================================================
+// Pagos: Webpay Plus (Transbank) en INTEGRACION (sandbox).
+// Webpay Plus es pago unico con redireccion -> la suscripcion se modela como
+// periodo prepago (mensual/anual) que vence; la renovacion es manual.
+// Para PRODUCCION: usar el commerce code + API key reales y Environment.Production.
+// ===========================================================================
+
+// Precios server-side (CLP). Mensual = anual / 10. Espejo de plans.js.
+const PLAN_PRICES = {
+  p1: { monthly: 36000, annual: 360000 },
+  p2: { monthly: 89000, annual: 890000 },
+  p3: { monthly: 150000, annual: 1500000 }
+};
+const PERIOD_DAYS = { monthly: 30, annual: 365 };
+
+// URL publica del retorno (esta misma function). Transbank redirige aqui tras el
+// pago. Se confirma con la URL real que entrega el deploy.
+const WEBPAY_RETURN_URL =
+  "https://southamerica-west1-calendarioturnos-7c4d9.cloudfunctions.net/webpayReturn";
+const WEBPAY_DEFAULT_RETURN_TO = "https://app.turnoplus.cl/";
+
+function webpayTransaction() {
+  return new WebpayPlus.Transaction(
+    new TbkOptions(
+      IntegrationCommerceCodes.WEBPAY_PLUS,
+      IntegrationApiKeys.WEBPAY,
+      TbkEnvironment.Integration
+    )
+  );
+}
+
+function webpayBuyOrder() {
+  // <= 26 chars alfanumericos. "to" + timestamp(13) + 6 hex.
+  return `to${Date.now()}${randomBytes(3).toString("hex")}`;
+}
+
+function webpayRedirect(returnTo, status) {
+  const base = returnTo || WEBPAY_DEFAULT_RETURN_TO;
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}webpay=${status}`;
+}
+
+function computeSubscriptionAmount(plan, period, pendingDiscount) {
+  const base = PLAN_PRICES[plan]?.[period] || 0;
+
+  if (base <= 0) return { base: 0, amount: 0, discount: 0 };
+
+  let discount = 0;
+
+  if (pendingDiscount && typeof pendingDiscount === "object") {
+    const percent = Math.max(
+      0,
+      Math.min(100, Number(pendingDiscount.percentOff) || 0)
+    );
+    const flat = Math.max(0, Number(pendingDiscount.amountOff) || 0);
+
+    if (percent > 0) discount += Math.round((base * percent) / 100);
+    if (flat > 0) discount += flat;
+  }
+
+  return { base, amount: Math.max(1, base - discount), discount };
+}
+
+// Inicia un pago: calcula el monto server-side (con descuento de cupon si hay),
+// crea la transaccion Webpay y devuelve {token, url} para redirigir al usuario.
+exports.createWebpayTransaction = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "Inicia sesion para pagar.");
+    }
+
+    const plan = COUPON_PLANS.has(request.data?.plan) ? request.data.plan : "";
+    const period =
+      request.data?.period === "annual"
+        ? "annual"
+        : request.data?.period === "monthly"
+          ? "monthly"
+          : "";
+
+    if (!plan || !period) {
+      throw new HttpsError("invalid-argument", "Plan o periodo invalido.");
+    }
+
+    const returnTo =
+      cleanCallableText(request.data?.returnTo, 300) || WEBPAY_DEFAULT_RETURN_TO;
+
+    // Descuento pendiente (cupon canjeado) si existe.
+    const accountSnap = await db.collection("accounts").doc(uid).get();
+    const pendingDiscount = accountSnap.exists
+      ? accountSnap.data()?.pendingDiscount
+      : null;
+
+    const { base, amount, discount } = computeSubscriptionAmount(
+      plan,
+      period,
+      pendingDiscount
+    );
+
+    if (amount <= 0) {
+      throw new HttpsError("failed-precondition", "No se pudo calcular el monto.");
+    }
+
+    const buyOrder = webpayBuyOrder();
+    const sessionId = uid.slice(0, 60);
+
+    let response;
+    try {
+      response = await webpayTransaction().create(
+        buyOrder,
+        sessionId,
+        amount,
+        WEBPAY_RETURN_URL
+      );
+    } catch (error) {
+      logger.error("Webpay create fallo", error);
+      throw new HttpsError(
+        "internal",
+        "No se pudo iniciar el pago. Intenta nuevamente."
+      );
+    }
+
+    await db.collection("payments").doc(buyOrder).set({
+      buyOrder,
+      ownerUid: uid,
+      plan,
+      period,
+      baseAmount: base,
+      amount,
+      discount,
+      couponCode:
+        pendingDiscount && typeof pendingDiscount.code === "string"
+          ? pendingDiscount.code
+          : null,
+      status: "pending",
+      provider: "webpay",
+      returnTo,
+      createdByEmail: cleanCallableText(request.auth.token?.email, 254),
+      createdAt: admin.firestore.Timestamp.now(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    return { token: response.token, url: response.url, amount, buyOrder };
+  }
+);
+
+// Retorno de Webpay: confirma el pago (commit), verifica monto y estado, activa
+// la suscripcion y redirige al usuario de vuelta a la app con ?webpay=ok|error|abort.
+exports.webpayReturn = onRequest(
+  {
+    region: "southamerica-west1",
+    timeoutSeconds: 60
+  },
+  async (req, res) => {
+    const token = req.body?.token_ws || req.query?.token_ws;
+    const tbkToken = req.body?.TBK_TOKEN || req.query?.TBK_TOKEN;
+
+    // Aborto del usuario: Transbank envia TBK_TOKEN (sin token_ws). No se commitea.
+    if (!token && tbkToken) {
+      const order =
+        req.body?.TBK_ORDEN_COMPRA || req.query?.TBK_ORDEN_COMPRA || "";
+      let returnTo = WEBPAY_DEFAULT_RETURN_TO;
+
+      if (order) {
+        const snap = await db.collection("payments").doc(String(order)).get();
+        if (snap.exists) {
+          returnTo = snap.data()?.returnTo || returnTo;
+          await snap.ref.set(
+            {
+              status: "aborted",
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            },
+            { merge: true }
+          );
+        }
+      }
+
+      return res.redirect(webpayRedirect(returnTo, "abort"));
+    }
+
+    if (!token) {
+      return res.status(400).send("Falta token_ws.");
+    }
+
+    let result;
+    try {
+      result = await webpayTransaction().commit(token);
+    } catch (error) {
+      logger.error("Webpay commit fallo", error);
+      return res.redirect(webpayRedirect(WEBPAY_DEFAULT_RETURN_TO, "error"));
+    }
+
+    const buyOrder = String(result.buy_order || "");
+    const paymentRef = db.collection("payments").doc(buyOrder);
+    const paymentSnap = await paymentRef.get();
+    const payment = paymentSnap.exists ? paymentSnap.data() : null;
+    const returnTo = payment?.returnTo || WEBPAY_DEFAULT_RETURN_TO;
+
+    // Aprobado solo si el codigo es 0 y el monto coincide con lo guardado.
+    const approved =
+      result.response_code === 0 &&
+      payment &&
+      Number(result.amount) === Number(payment.amount);
+
+    if (!approved) {
+      if (payment) {
+        await paymentRef.set(
+          {
+            status: "failed",
+            result,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          },
+          { merge: true }
+        );
+      }
+      return res.redirect(webpayRedirect(returnTo, "error"));
+    }
+
+    // Activa la suscripcion (extiende desde el fin vigente si es el mismo plan).
+    const nowTs = admin.firestore.Timestamp.now();
+    const now = Date.now();
+    const accountRef = db.collection("accounts").doc(payment.ownerUid);
+    const accountSnap = await accountRef.get();
+    const account = accountSnap.exists ? accountSnap.data() || {} : {};
+    const currentEndMs = subscriptionPeriodEndMillis(account.currentPeriodEnd);
+    const samePlanActive = account.plan === payment.plan && currentEndMs > now;
+    const baseMs = samePlanActive ? currentEndMs : now;
+    const periodEnd = admin.firestore.Timestamp.fromMillis(
+      baseMs + (PERIOD_DAYS[payment.period] || 30) * 86400000
+    );
+
+    await accountRef.set(
+      {
+        plan: payment.plan,
+        period: payment.period,
+        source: "paid",
+        couponCode: null,
+        currentPeriodEnd: periodEnd,
+        pendingDiscount: admin.firestore.FieldValue.delete(),
+        lastPaymentAt: nowTs,
+        updatedAt: nowTs
+      },
+      { merge: true }
+    );
+
+    await paymentRef.set(
+      {
+        status: "paid",
+        result,
+        authorizationCode: result.authorization_code || null,
+        paidAt: nowTs,
+        currentPeriodEnd: periodEnd,
+        updatedAt: nowTs
+      },
+      { merge: true }
+    );
+
+    return res.redirect(webpayRedirect(returnTo, "ok"));
   }
 );

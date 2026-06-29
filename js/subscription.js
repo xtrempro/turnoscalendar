@@ -229,3 +229,31 @@ export async function setCouponActive(code, active) {
         active: Boolean(active)
     });
 }
+
+// ----- Pago (Webpay) -----
+
+// Inicia un pago Webpay para un plan/periodo. Devuelve { token, url, amount }.
+// `returnTo` es la URL limpia a la que Webpay devuelve tras pagar.
+export async function createWebpayTransaction(plan, period) {
+    return callFunction("createWebpayTransaction", {
+        plan,
+        period,
+        returnTo: location.origin + location.pathname
+    });
+}
+
+// Redirige a Webpay con un POST de token_ws (lo exige Transbank).
+export function redirectToWebpay(url, token) {
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = url;
+
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "token_ws";
+    input.value = token;
+
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+}

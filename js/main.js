@@ -9061,6 +9061,28 @@ function notifyWorkersOfAuditUndo(detail) {
     });
 }
 
+// Maneja el retorno de Webpay (?webpay=ok|error|abort): avisa, refresca el
+// plan/uso y limpia el parametro de la URL.
+function handleWebpayReturn() {
+    const params = new URLSearchParams(location.search);
+    const status = params.get("webpay");
+
+    if (!status) return;
+
+    params.delete("webpay");
+    const clean = location.pathname + (params.toString() ? `?${params}` : "");
+    history.replaceState(null, "", clean);
+
+    if (status === "ok") {
+        void refreshAccountUsage({ force: true });
+        alert("¡Pago aprobado! Tu suscripcion quedo activa.");
+    } else if (status === "abort") {
+        alert("Pago cancelado.");
+    } else {
+        alert("El pago no se completo. Si el problema persiste, intenta nuevamente.");
+    }
+}
+
 window.addEventListener("proturnos:workerLinksChanged", () => {
     scheduleWorkspaceUiRefresh();
 });
@@ -9199,6 +9221,7 @@ initSystemSettings({
     }
 });
 initPlansUI({ button: DOM.plansBtn });
+handleWebpayReturn();
 initSupervisorMessages({
     button: DOM.floatingMessagesBtn,
     badge: DOM.floatingMessagesBadge

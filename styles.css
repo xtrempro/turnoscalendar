@@ -4690,6 +4690,28 @@ body.auth-gate-active .app-shell {
     margin-top: 4px;
 }
 
+.plan-card-cta-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.plan-card-cta-row button {
+    width: 100%;
+}
+
+.plan-card-status {
+    margin: 6px 0 0;
+    font-size: 0.78rem;
+    min-height: 1em;
+    color: var(--text-muted);
+}
+
+.plan-card-status.is-error {
+    color: #e0556a;
+}
+
 .plan-card-current {
     margin-top: 4px;
     text-align: center;

@@ -383,6 +383,13 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Pagos (Webpay/MercadoPago): solo via Cloud Functions (admin SDK). El
+    // cliente nunca lee/escribe; recibe token/url por la function y vuelve por
+    // el retorno publico.
+    match /payments/{buyOrder} {
+      allow read, write: if false;
+    }
+
     match /workspaceLinks/{linkId} {
       allow create: if signedIn() &&
         request.resource.data.fromWorkspaceId is string &&
