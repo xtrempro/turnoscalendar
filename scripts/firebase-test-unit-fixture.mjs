@@ -12,6 +12,8 @@ const WORKSPACE = {
     name: "[TEST] Unidad 60 Trabajadores"
 };
 const PROFILE_COUNT = 60;
+const PWA_COUNT = 50;
+const WRITE_BATCH_SIZE = 150;
 const MANIFEST_PATH = `qaFixtures/${FIXTURE_ID}`;
 const DB_ROOT =
     `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}` +
@@ -217,10 +219,18 @@ function deleteDocument(documentPath) {
 }
 
 async function commitWrites(writes) {
-    await api(`${DB_ROOT}/documents:commit`, {
-        method: "POST",
-        body: JSON.stringify({ writes })
-    });
+    for (
+        let index = 0;
+        index < writes.length;
+        index += WRITE_BATCH_SIZE
+    ) {
+        await api(`${DB_ROOT}/documents:commit`, {
+            method: "POST",
+            body: JSON.stringify({
+                writes: writes.slice(index, index + WRITE_BATCH_SIZE)
+            })
+        });
+    }
 }
 
 async function getDocument(documentPath) {
@@ -238,8 +248,29 @@ async function getDocument(documentPath) {
     };
 }
 
+async function listDocuments(collectionPath) {
+    const body = await api(
+        `${DOCUMENTS_ROOT}/${encodedPath(collectionPath)}?pageSize=1000`
+    );
+
+    return (body.documents || []).map(doc => ({
+        id: doc.name.split("/").at(-1),
+        data: decodeFields(doc.fields || {})
+    }));
+}
+
 function pad(value, size = 2) {
     return String(value).padStart(size, "0");
+}
+
+function isoDate(date) {
+    return date.toISOString().slice(0, 10);
+}
+
+function addUtcDays(date, days) {
+    const next = new Date(date);
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
 }
 
 function rutCheckDigit(number) {
@@ -290,6 +321,121 @@ function rotationFor(index) {
         start: `2026-01-${pad((index % 28) + 1)}`,
         firstTurn: firstTurns[index % firstTurns.length]
     };
+}
+
+function rotationSequence(rotation) {
+    if (rotation.type === "3turno") {
+        const sequence = [1, 1, 2, 2, 0, 0];
+        const starts = {
+            larga: 0,
+            larga2: 1,
+            noche: 2,
+            noche2: 3,
+            libre1: 4,
+            libre2: 5
+        };
+        const start = starts[rotation.firstTurn] || 0;
+        return [...sequence.slice(start), ...sequence.slice(0, start)];
+    }
+
+    if (rotation.type === "4turno") {
+        const sequence = [1, 2, 0, 0];
+        const starts = {
+            larga: 0,
+            noche: 1,
+            libre1: 2,
+            libre2: 3
+        };
+        const start = starts[rotation.firstTurn] || 0;
+        return [...sequence.slice(start), ...sequence.slice(0, start)];
+    }
+
+    return [];
+}
+
+function scheduleFor(rotation) {
+    const now = new Date();
+    const start = new Date(Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        1
+    ));
+    const end = new Date(Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth() + 2,
+        0
+    ));
+    const rotationStart = new Date(`${rotation.start}T00:00:00.000Z`);
+    const sequence = rotationSequence(rotation);
+    const labels = {
+        0: "Libre",
+        1: "Larga",
+        2: "Noche",
+        4: "Diurno"
+    };
+    const classes = {
+        0: "libre",
+        1: "larga",
+        2: "noche",
+        4: "diurno"
+    };
+    const days = {};
+
+    for (
+        let cursor = new Date(start);
+        cursor <= end;
+        cursor = addUtcDays(cursor, 1)
+    ) {
+        const iso = isoDate(cursor);
+        let turn = 0;
+
+        if (rotation.type === "diurno") {
+            turn = cursor.getUTCDay() === 0 || cursor.getUTCDay() === 6
+                ? 0
+                : 4;
+        } else {
+            const offset = Math.floor(
+                (cursor - rotationStart) / 86400000
+            );
+            turn = sequence[
+                ((offset % sequence.length) + sequence.length) %
+                    sequence.length
+            ];
+        }
+
+        days[iso] = {
+            iso,
+            keyDay:
+                `${cursor.getUTCFullYear()}-${cursor.getUTCMonth()}-${cursor.getUTCDate()}`,
+            turno: turn,
+            programmedTurn: turn,
+            baseTurn: turn,
+            label: labels[turn],
+            displayLabel: labels[turn],
+            className: classes[turn],
+            colorGradient: "",
+            isManualExtra: false,
+            hasLeave: false
+        };
+    }
+
+    return {
+        start: isoDate(start),
+        end: isoDate(end),
+        days
+    };
+}
+
+// Deja uno de cada seis perfiles sin enlace: 50 PWA y 10 controles.
+function pwaProfileIndexes() {
+    return Array.from(
+        { length: PROFILE_COUNT },
+        (_, index) => index
+    ).filter(index => index % 6 !== 5);
+}
+
+function pwaUid(index) {
+    return `test_pwa_unit60_${pad(index + 1, 3)}`;
 }
 
 function makeProfile(index) {
@@ -397,7 +543,10 @@ async function findOwner() {
 }
 
 async function seed() {
-    const existing = await getDocument(`workspaces/${WORKSPACE.id}`);
+    const [existing, existingManifest] = await Promise.all([
+        getDocument(`workspaces/${WORKSPACE.id}`),
+        getDocument(MANIFEST_PATH)
+    ]);
 
     if (existing && existing.data.qaFixtureId !== FIXTURE_ID) {
         throw new Error(
@@ -408,13 +557,16 @@ async function seed() {
     const owner = await findOwner();
     const module = profileModule();
     const now = new Date();
+    const createdAt = existing?.data?.createdAt
+        ? new Date(existing.data.createdAt)
+        : now;
     const writes = [
         writeDocument(`workspaces/${WORKSPACE.id}`, {
             id: WORKSPACE.id,
             name: WORKSPACE.name,
             ownerUid: owner.uid,
             createdByEmail: owner.email,
-            createdAt: now,
+            createdAt,
             updatedAt: now,
             qaFixtureId: FIXTURE_ID,
             synthetic: true,
@@ -473,25 +625,135 @@ async function seed() {
             ownerUid: owner.uid,
             ownerEmail: owner.email,
             profiles: PROFILE_COUNT,
-            pwaLinks: 0,
-            createdAt: now,
+            pwaLinks: PWA_COUNT,
+            pwaAdoptionPercent: Math.round(PWA_COUNT * 100 / PROFILE_COUNT),
+            createdAt: existingManifest?.data?.createdAt
+                ? new Date(existingManifest.data.createdAt)
+                : now,
+            updatedAt: now,
             cleanupCommand:
                 "node scripts/firebase-test-unit-fixture.mjs cleanup --confirm-test-cleanup"
         })
     ];
+    const pwaWrites = [];
+
+    for (const index of pwaProfileIndexes()) {
+        const uid = pwaUid(index);
+        const { profile, rotation } = module.entries[index];
+        const schedule = scheduleFor(rotation);
+        const link = {
+            uid,
+            workspaceId: WORKSPACE.id,
+            workspaceName: WORKSPACE.name,
+            inviteId: `test_invite_unit60_${pad(index + 1, 3)}`,
+            profileName: profile.name,
+            profileRut: profile.rut,
+            workerEmail: profile.email,
+            workerDisplayName: profile.name,
+            status: "active",
+            linkedAt: now,
+            updatedAt: now,
+            lastActiveAt: now,
+            qaFixtureId: FIXTURE_ID,
+            synthetic: true
+        };
+
+        pwaWrites.push(
+            writeDocument(
+                `workspaces/${WORKSPACE.id}/workerLinks/${uid}`,
+                link
+            ),
+            writeDocument(
+                `users/${uid}/workerLinks/${WORKSPACE.id}`,
+                link
+            ),
+            writeDocument(
+                `workspaces/${WORKSPACE.id}/workerAppData/${uid}`,
+                {
+                    uid,
+                    workspaceId: WORKSPACE.id,
+                    workspaceName: WORKSPACE.name,
+                    profileName: profile.name,
+                    profileRut: profile.rut,
+                    status: "active",
+                    worker: {
+                        name: profile.name,
+                        email: profile.email,
+                        phone: profile.phone,
+                        rut: profile.rut,
+                        role: profile.estamento,
+                        profession: profile.profession,
+                        unit: WORKSPACE.name,
+                        unitEntryDate: profile.unitEntryDate,
+                        active: true
+                    },
+                    rotativa: rotation,
+                    shiftAssigned: rotation.type !== "diurno",
+                    leaveBalances: {
+                        legal: 15,
+                        admin: 6,
+                        comp: 10
+                    },
+                    leaveBalancesByYear: {
+                        [String(now.getUTCFullYear())]: {
+                            legal: 15,
+                            admin: 6,
+                            comp: 10
+                        }
+                    },
+                    scheduleStart: schedule.start,
+                    scheduleEnd: schedule.end,
+                    days: schedule.days,
+                    supervisorReminders: [],
+                    overtimeSummaries: [],
+                    reportsByMonth: {},
+                    swapLimit: {
+                        enabled: false,
+                        limit: 0,
+                        used: 0,
+                        year: now.getUTCFullYear(),
+                        month: now.getUTCMonth()
+                    },
+                    simulatedUsage: {
+                        active: true,
+                        sessionsLast30Days: 4 + (index % 17),
+                        lastSeenAt: now.toISOString(),
+                        adoptionCohort: "50_of_60"
+                    },
+                    updatedAtISO: now.toISOString(),
+                    updatedAt: now,
+                    qaFixtureId: FIXTURE_ID,
+                    synthetic: true
+                }
+            )
+        );
+    }
 
     await commitWrites(writes);
-    await status();
+    await commitWrites(pwaWrites);
+    const result = await status();
+
+    if (
+        result.profiles !== PROFILE_COUNT ||
+        result.pwaLinks !== PWA_COUNT ||
+        result.pwaData !== PWA_COUNT ||
+        result.pwaMirrors !== PWA_COUNT
+    ) {
+        throw new Error("La verificación PWA no coincide con 50 enlaces.");
+    }
 }
 
 async function status() {
-    const [root, chunk, manifest] = await Promise.all([
-        getDocument(`workspaces/${WORKSPACE.id}`),
-        getDocument(
-            `workspaces/${WORKSPACE.id}/stateModules/profile/chunks/part_0000`
-        ),
-        getDocument(MANIFEST_PATH)
-    ]);
+    const [root, chunk, manifest, workerLinks, workerAppData] =
+        await Promise.all([
+            getDocument(`workspaces/${WORKSPACE.id}`),
+            getDocument(
+                `workspaces/${WORKSPACE.id}/stateModules/profile/chunks/part_0000`
+            ),
+            getDocument(MANIFEST_PATH),
+            listDocuments(`workspaces/${WORKSPACE.id}/workerLinks`),
+            listDocuments(`workspaces/${WORKSPACE.id}/workerAppData`)
+        ]);
     const ownerUid = manifest?.data?.ownerUid || "";
     const [member, userIndex] = ownerUid
         ? await Promise.all([
@@ -509,6 +771,22 @@ async function status() {
 
     const estamentos = {};
     const rotativas = {};
+    const fixtureWorkerLinks = workerLinks.filter(item =>
+        item.data.qaFixtureId === FIXTURE_ID
+    );
+    const fixtureWorkerAppData = workerAppData.filter(item =>
+        item.data.qaFixtureId === FIXTURE_ID
+    );
+    const mirrorDocs = await Promise.all(
+        pwaProfileIndexes().map(index =>
+            getDocument(
+                `users/${pwaUid(index)}/workerLinks/${WORKSPACE.id}`
+            )
+        )
+    );
+    const pwaMirrors = mirrorDocs.filter(item =>
+        item?.data?.qaFixtureId === FIXTURE_ID
+    ).length;
 
     profiles.forEach(profile => {
         estamentos[profile.estamento] =
@@ -533,7 +811,12 @@ async function status() {
         profiles: profiles.length,
         estamentos,
         rotativas,
-        pwaLinks: 0
+        pwaLinks: fixtureWorkerLinks.length,
+        pwaData: fixtureWorkerAppData.length,
+        pwaMirrors,
+        pwaAdoptionPercent: profiles.length
+            ? Math.round(fixtureWorkerLinks.length * 100 / profiles.length)
+            : 0
     };
 
     console.log(JSON.stringify(result, null, 2));
@@ -558,7 +841,24 @@ async function cleanup() {
     }
 
     const ownerUid = manifest.data.ownerUid;
+    const pwaDeletes = pwaProfileIndexes().flatMap(index => {
+        const uid = pwaUid(index);
+
+        return [
+            deleteDocument(
+                `workspaces/${WORKSPACE.id}/workerLinks/${uid}`
+            ),
+            deleteDocument(
+                `workspaces/${WORKSPACE.id}/workerAppData/${uid}`
+            ),
+            deleteDocument(
+                `users/${uid}/workerLinks/${WORKSPACE.id}`
+            )
+        ];
+    });
+
     await commitWrites([
+        ...pwaDeletes,
         deleteDocument(
             `workspaces/${WORKSPACE.id}/stateModules/profile/chunks/part_0000`
         ),
