@@ -3752,7 +3752,11 @@ export async function renderCalendar(options = {}) {
                 hourReturns,
                 actualState: state,
                 moveShiftSourceKey:
-                    window.pendingShiftMoveSourceKey || ""
+                    window.pendingShiftMoveSourceKey || "",
+                moveShiftDestinationTurn:
+                    window.pendingShiftMoveDestinationTurn || 0,
+                moveShiftProgrammedTurn:
+                    getTurnoProgramado(activeProfile, keyDay)
             }
         );
 

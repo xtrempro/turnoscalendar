@@ -781,6 +781,44 @@ export function aplicarClasesEspeciales(
    VALIDACION MODO SELECCION
 ====================================================== */
 
+/*
+   Determina si, al mover un turno base Larga o Noche hacia un dia destino que
+   ya tiene el turno complementario, ambos se juntan formando un 24.
+   - destino Larga + complemento Noche => 24
+   - destino Noche + complemento Larga => 24
+   El complemento puede ser base (dos turnos base => 24 sin HHEE) o extra
+   (turno base movido + turno extra => 24 con HHEE). Se exige que el destino no
+   tenga cambios de turno (swaps) que alteren el turno (programado === real).
+*/
+export function moveShiftTargetCombina24(
+    destinationTurn,
+    baseTurn,
+    programmedTurn,
+    actualTurn
+) {
+    const dest = Number(destinationTurn) || TURNO.LIBRE;
+
+    if (dest !== TURNO.LARGA && dest !== TURNO.NOCHE) {
+        return false;
+    }
+
+    const complemento =
+        dest === TURNO.LARGA ? TURNO.NOCHE : TURNO.LARGA;
+    const base = Number(baseTurn) || TURNO.LIBRE;
+    const programmed = Number(programmedTurn) || TURNO.LIBRE;
+    const actual = Number(actualTurn) || TURNO.LIBRE;
+
+    if (programmed !== complemento || actual !== complemento) {
+        return false;
+    }
+
+    if (base !== TURNO.LIBRE && base !== complemento) {
+        return false;
+    }
+
+    return true;
+}
+
 export function estaBloqueadoModo(
     selectionMode,
     keyDay,
@@ -828,9 +866,7 @@ export function estaBloqueadoModo(
             return false;
         }
 
-        return (
-            Number(state) !== TURNO.LIBRE ||
-            actualState !== TURNO.LIBRE ||
+        if (
             hasHourReturn ||
             tieneAusencia(
                 keyDay,
@@ -839,7 +875,37 @@ export function estaBloqueadoModo(
                 comp,
                 absences
             )
-        );
+        ) {
+            return true;
+        }
+
+        const baseTurn = Number(state) || TURNO.LIBRE;
+        const programmedTurn =
+            Number(options.moveShiftProgrammedTurn) || TURNO.LIBRE;
+
+        // Destino libre: comportamiento original.
+        if (
+            baseTurn === TURNO.LIBRE &&
+            programmedTurn === TURNO.LIBRE &&
+            actualState === TURNO.LIBRE
+        ) {
+            return false;
+        }
+
+        // Destino con turno complementario que, al juntarse con el turno que se
+        // esta moviendo, forma un 24 (Larga + Noche).
+        if (
+            moveShiftTargetCombina24(
+                options.moveShiftDestinationTurn,
+                baseTurn,
+                programmedTurn,
+                actualState
+            )
+        ) {
+            return false;
+        }
+
+        return true;
     }
 
     if (selectionMode === "halfadmin") {

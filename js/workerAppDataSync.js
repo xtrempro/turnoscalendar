@@ -39,20 +39,88 @@ import {
     getDayColorGradient,
     buildHexColorResolver
 } from "./dayColorBands.js";
+import {
+    planWorkerLinkSnapshot,
+    runCooperativeQueue
+} from "./workerAppPublishQueue.js";
 
-const PUBLISH_DELAY_MS = 1200;
+// Publicacion "caliente" (mes en curso + siguiente): frecuente y barata.
+const HOT_PUBLISH_DELAY_MS = 1200;
+// Publicacion "fria" (ventana completa de 24 meses + reportes + saldos): diferida.
+const COLD_PUBLISH_DELAY_MS = 5 * 60 * 1000;
 const INITIAL_PUBLISH_DELAY_MS = 2500;
-const SCHEDULE_MONTHS_BACK = 2;
+// Ventana del calendario que ve el trabajador en la PWA: 12 meses atras + el
+// mes actual + 12 meses adelante (>= 24 meses, segun lo pedido).
+const SCHEDULE_MONTHS_BACK = 12;
 const SCHEDULE_MONTHS_FORWARD = 13;
+// Los resumenes HH.EE son caros: se mantienen acotados (no crecen con la
+// ventana del calendario).
+const OVERTIME_SUMMARY_MONTHS_BACK = 2;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
+
+// Claves de localStorage por-perfil que afectan lo que ve el trabajador. El
+// sufijo tras el prefijo es el nombre del perfil (salvo `carry_<nombre>_<a>_<m>`).
+const PROFILE_KEY_PREFIXES = [
+    "data_",
+    "baseData_",
+    "blocked_",
+    "admin_",
+    "legal_",
+    "comp_",
+    "absences_",
+    "rotativa_",
+    "shift_",
+    "shiftAssignmentHistory_",
+    "leaveBalances_",
+    "hourReturns_",
+    "hheeReturnTransfers_",
+    "clockMarks_",
+    "gradeHistory_",
+    "contractHistory_",
+    "carry_"
+];
+
+// Claves globales que afectan a TODOS los trabajadores enlazados.
+const GLOBAL_RELEVANT_KEYS = new Set([
+    "replacements",
+    "swaps",
+    "manualHolidays",
+    "turnoColorConfig",
+    "turnChangeConfig",
+    "staffing_custom_reminders",
+    "gradeHourConfig",
+    "profiles"
+]);
+
+const PWA_RELEVANT_STATE_MODULES = new Set([
+    "profile",
+    "turnos",
+    "clockmarks",
+    "swap",
+    "hours",
+    "weekly"
+]);
 
 let activeWorkspace = null;
 let unsubscribeWorkerLinks = null;
-let publishTimer = null;
-let publishInFlight = false;
-let publishRequested = false;
+let hotPublishTimer = null;
+let coldPublishTimer = null;
+let coldPublishInFlight = false;
+let coldPublishRequested = false;
 let workerLinks = [];
+let workerLinksInitialized = false;
 let syncGeneration = 0;
+
+// Perfiles cuyos datos cambiaron desde la ultima publicacion fria. Si
+// `dirtyAll` esta activo, se republican todos los enlazados.
+let dirtyProfileNames = new Set();
+let dirtyWorkerUids = new Set();
+let dirtyAll = false;
+
+// Cache en memoria del calendario calculado por perfil, para no recomputar 24
+// meses en cada cambio. Clave: nombre de perfil.
+//   scheduleCache.get(name) = { start, end, days, signatures: { global, months } }
+const scheduleCache = new Map();
 
 function normalizeRut(value) {
     return String(value || "")
@@ -79,6 +147,49 @@ function scheduleRange(today = new Date()) {
             0
         )
     };
+}
+
+// ───────── Helpers de meses ─────────
+// Un mes se representa como { year, monthIndex } (monthIndex 0-based) y tiene un
+// id estable `YYYY-MM` (1-based con padding) para cache y firmas.
+
+function monthId({ year, monthIndex }) {
+    return `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
+}
+
+// Prefijo ISO `YYYY-MM-` (1-based padded) para agrupar `days` por mes.
+function isoMonthPrefix({ year, monthIndex }) {
+    return `${year}-${String(monthIndex + 1).padStart(2, "0")}-`;
+}
+
+// Prefijo de clave de calendario `YYYY-M-` (0-based sin padding) para cortar los
+// mapas de turnos/permisos por mes.
+function calendarMonthPrefix({ year, monthIndex }) {
+    return `${year}-${monthIndex}-`;
+}
+
+function listMonthsInRange(start, end) {
+    const months = [];
+    let cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+    const last = new Date(end.getFullYear(), end.getMonth(), 1);
+
+    while (cursor <= last) {
+        months.push({
+            year: cursor.getFullYear(),
+            monthIndex: cursor.getMonth()
+        });
+        cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    }
+
+    return months;
+}
+
+function hotMonthIds(today = new Date()) {
+    const current = { year: today.getFullYear(), monthIndex: today.getMonth() };
+    const nextDate = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const next = { year: nextDate.getFullYear(), monthIndex: nextDate.getMonth() };
+
+    return new Set([monthId(current), monthId(next)]);
 }
 
 function normalizeWorkerLink(docSnap) {
@@ -259,27 +370,22 @@ function profileLeaveMaps(profileName) {
     };
 }
 
-function buildScheduleDays(profile) {
-    const { start, end } = scheduleRange();
-    const maps = profileLeaveMaps(profile.name);
-    const profileData = getJSON("data_" + profile.name, {});
-    const days = {};
-    // Resolver de color en HEX (snapshot de los colores configurados) para que
-    // la PWA pinte las mismas bandas que el calendario.
-    const colorResolver = buildHexColorResolver(getTurnoColorConfig());
-    const holidaysByYear = {};
+// Calcula los dias de UN mes (objeto keyed por ISO). Reproduce la logica
+// dia-a-dia original, acotada al mes pedido.
+function computeMonthDays(profile, month, ctx) {
+    const { maps, profileData, colorResolver, holidaysByYear } = ctx;
+    const { year, monthIndex } = month;
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    const result = {};
 
-    for (
-        let cursor = new Date(start);
-        cursor <= end;
-        cursor = addDays(cursor, 1)
-    ) {
+    if (!holidaysByYear[year]) {
+        holidaysByYear[year] = getCachedHolidays(year);
+    }
+
+    for (let day = 1; day <= daysInMonth; day++) {
+        const cursor = new Date(year, monthIndex, day);
         const iso = toISODate(cursor);
         const keyDay = keyFromDate(cursor);
-        const cursorYear = cursor.getFullYear();
-        if (!holidaysByYear[cursorYear]) {
-            holidaysByYear[cursorYear] = getCachedHolidays(cursorYear);
-        }
         const programmedTurn = getTurnoProgramado(profile.name, keyDay);
         const actualTurn = aplicarCambiosTurno(
             profile.name,
@@ -329,7 +435,7 @@ function buildScheduleDays(profile) {
             keyDay,
             actualTurn,
             cursor,
-            holidaysByYear[cursorYear],
+            holidaysByYear[year],
             maps.admin[keyDay],
             baseWithSwaps,
             {
@@ -339,7 +445,7 @@ function buildScheduleDays(profile) {
             }
         );
 
-        days[iso] = {
+        result[iso] = {
             iso,
             keyDay,
             turno: Number(actualTurn) || TURNO.LIBRE,
@@ -354,10 +460,162 @@ function buildScheduleDays(profile) {
         };
     }
 
+    return result;
+}
+
+// Firma barata del "slice" mensual de los mapas por-perfil. Si no cambia entre
+// publicaciones, ese mes se reutiliza de cache sin recomputar.
+function monthSliceSignature(month, maps, profileData) {
+    const prefix = calendarMonthPrefix(month);
+    const pick = (map) =>
+        Object.keys(map || {})
+            .filter(key => key.startsWith(prefix))
+            .sort()
+            .map(key => `${key}=${map[key]}`)
+            .join(",");
+
+    return [
+        pick(profileData),
+        pick(maps.admin),
+        pick(maps.legal),
+        pick(maps.comp),
+        pick(maps.absences)
+    ].join("|");
+}
+
+// Firma "global" del perfil: estructura que afecta a TODOS sus meses (rotativa,
+// asignacion, base, bloqueos, reemplazos, cambios, feriados, colores). Si
+// cambia, se recomputan todos los meses del perfil.
+function globalProfileSignature(profileName) {
+    const replacements = getJSON("replacements", []);
+    const ownReplacements = Array.isArray(replacements)
+        ? replacements.filter(item =>
+            item?.worker === profileName || item?.replaced === profileName
+        )
+        : replacements;
+
+    return JSON.stringify({
+        rotativa: getRotativa(profileName),
+        shift: getShiftAssigned(profileName),
+        base: getJSON("baseData_" + profileName, {}),
+        shiftHistory: getJSON("shiftAssignmentHistory_" + profileName, {}),
+        blocked: getJSON("blocked_" + profileName, {}),
+        hourReturns: getJSON("hourReturns_" + profileName, {}),
+        replacements: ownReplacements,
+        swaps: getJSON("swaps", []),
+        turnChange: getTurnChangeConfig(),
+        holidays: getJSON("manualHolidays", {}),
+        colors: getTurnoColorConfig()
+    });
+}
+
+/**
+ * Calcula el calendario del perfil reutilizando cache por mes.
+ * @param {object} options
+ * @param {"hot"|"full"} options.mode  "hot" devuelve solo mes actual + siguiente
+ *   (para escritura parcial); "full" devuelve los 24 meses.
+ * @returns {{ start, end, days, partial }}
+ */
+function computeProfileSchedule(profile, { mode = "full" } = {}) {
+    const today = new Date();
+    const { start, end } = scheduleRange(today);
+    const months = listMonthsInRange(start, end);
+    const hotIds = hotMonthIds(today);
+    const maps = profileLeaveMaps(profile.name);
+    const profileData = getJSON("data_" + profile.name, {});
+    const colorResolver = buildHexColorResolver(getTurnoColorConfig());
+    const ctx = { maps, profileData, colorResolver, holidaysByYear: {} };
+
+    const globalSig = globalProfileSignature(profile.name);
+    const monthSigs = {};
+    months.forEach(month => {
+        monthSigs[monthId(month)] = monthSliceSignature(month, maps, profileData);
+    });
+
+    const cached = scheduleCache.get(profile.name);
+    const globalChanged = !cached || cached.signatures.global !== globalSig;
+
+    const monthsToCompute = months.filter(month => {
+        const id = monthId(month);
+
+        if (mode === "hot") return hotIds.has(id);
+        if (globalChanged) return true;
+        if (!cached.days) return true;
+
+        return hotIds.has(id) ||
+            cached.signatures.months[id] !== monthSigs[id];
+    });
+
+    const computedDays = {};
+    monthsToCompute.forEach(month => {
+        Object.assign(computedDays, computeMonthDays(profile, month, ctx));
+    });
+
+    if (mode === "hot") {
+        // Actualiza solo los meses calientes en la cache (si ya existe una base
+        // completa y la firma global no cambio; de lo contrario lo hara la
+        // publicacion fria).
+        if (cached?.days && !globalChanged) {
+            const mergedMonths = { ...cached.signatures.months };
+            monthsToCompute.forEach(month => {
+                mergedMonths[monthId(month)] = monthSigs[monthId(month)];
+            });
+            scheduleCache.set(profile.name, {
+                start: toISODate(start),
+                end: toISODate(end),
+                days: { ...cached.days, ...computedDays },
+                signatures: { global: globalSig, months: mergedMonths }
+            });
+        }
+
+        return {
+            start: toISODate(start),
+            end: toISODate(end),
+            days: computedDays,
+            partial: true
+        };
+    }
+
+    // mode === "full": reutiliza de cache los meses no recomputados.
+    const days = {};
+    const recomputedIds = new Set(monthsToCompute.map(monthId));
+
+    months.forEach(month => {
+        const id = monthId(month);
+
+        if (recomputedIds.has(id)) return;
+        if (!cached?.days) return;
+
+        const prefix = isoMonthPrefix(month);
+        Object.entries(cached.days).forEach(([iso, value]) => {
+            if (iso.startsWith(prefix)) days[iso] = value;
+        });
+    });
+
+    Object.assign(days, computedDays);
+
+    scheduleCache.set(profile.name, {
+        start: toISODate(start),
+        end: toISODate(end),
+        days,
+        signatures: { global: globalSig, months: monthSigs }
+    });
+
     return {
         start: toISODate(start),
         end: toISODate(end),
-        days
+        days,
+        partial: false
+    };
+}
+
+function buildScheduleDays(profile) {
+    const schedule = computeProfileSchedule(profile, { mode: "full" });
+
+    return {
+        start: schedule.start,
+        end: schedule.end,
+        days: schedule.days
     };
 }
 
@@ -544,7 +802,7 @@ async function buildOvertimeSummaries(profile, schedule) {
     try {
         const baseSummaries = await buildWorkerHheeSummaries(
             profile,
-            SCHEDULE_MONTHS_BACK
+            OVERTIME_SUMMARY_MONTHS_BACK
         );
         const includedMonths = new Set(
             baseSummaries.map(item =>
@@ -586,28 +844,21 @@ async function buildOvertimeSummaries(profile, schedule) {
     }
 }
 
-// Reporte imprimible (HTML) por mes para la app del trabajador: el mismo que el
-// supervisor previsualiza/imprime. Se construye para los meses que ya tienen
-// resumen HHEE, para que el trabajador pueda descargarlo en PDF desde la PWA.
-async function buildWorkerReports(profile, overtimeSummaries) {
+// Reporte imprimible (HTML) por mes para la app del trabajador. Para no inflar
+// el documento de Firestore ni gastar CPU, se generan AUTOMATICAMENTE solo el
+// mes actual y el anterior. Los demas meses se entregan a pedido del trabajador
+// (boton "Solicitar informe" en la PWA -> workerRequests type "report_request").
+async function buildWorkerReports(profile) {
     const reports = {};
-    // Solo los meses mas recientes, para no inflar el documento de Firestore.
-    const recentSummaries = [...(overtimeSummaries || [])]
-        .filter(item =>
-            Number.isFinite(Number(item?.year)) &&
-            Number.isFinite(Number(item?.month))
-        )
-        .sort((a, b) =>
-            Number(b.year) - Number(a.year) ||
-            Number(b.month) - Number(a.month)
-        )
-        .slice(0, 3);
+    const today = new Date();
+    const months = [
+        new Date(today.getFullYear(), today.getMonth(), 1),
+        new Date(today.getFullYear(), today.getMonth() - 1, 1)
+    ];
 
-    for (const summary of recentSummaries) {
-        const year = Number(summary?.year);
-        const month = Number(summary?.month);
-
-        if (!Number.isFinite(year) || !Number.isFinite(month)) continue;
+    for (const date of months) {
+        const year = date.getFullYear();
+        const month = date.getMonth();
 
         try {
             const html = await buildWorkerReportPreviewHTML(
@@ -658,10 +909,7 @@ async function buildWorkerAppPayload(link, profile, workspace) {
         profile,
         schedule
     );
-    const reportsByMonth = await buildWorkerReports(
-        profile,
-        overtimeSummaries
-    );
+    const reportsByMonth = await buildWorkerReports(profile);
 
     return {
         uid: link.uid,
@@ -819,6 +1067,28 @@ async function writeWorkerAppData(payload, workspaceId, uid) {
     );
 }
 
+// Escritura "caliente": solo los dias del mes en curso + siguiente. Firestore
+// hace deep-merge del mapa `days`, por lo que los meses frios NO se reescriben.
+async function writeWorkerAppHotDays(workspaceId, uid, partialDays) {
+    const { db, firestoreModule } = await getFirebaseServices();
+
+    await firestoreModule.setDoc(
+        firestoreModule.doc(
+            db,
+            "workspaces",
+            workspaceId,
+            "workerAppData",
+            uid
+        ),
+        {
+            days: partialDays,
+            updatedAtISO: new Date().toISOString(),
+            updatedAt: firestoreModule.serverTimestamp()
+        },
+        { merge: true }
+    );
+}
+
 async function writeWorkerSwapCandidates(payloads, workspaceId) {
     const { db, firestoreModule } = await getFirebaseServices();
     const collectionRef = firestoreModule.collection(
@@ -895,90 +1165,293 @@ async function writeWorkerMessageDirectory(payloads, workspaceId) {
     await batch.commit();
 }
 
-export function scheduleWorkerAppDataPublish(delay = PUBLISH_DELAY_MS) {
-    if (!activeWorkspace?.id || !workerLinks.length) return;
+// ───────── Deteccion de "sucios" desde detail.keys ─────────
 
-    clearTimeout(publishTimer);
-    publishTimer = setTimeout(
-        () => publishWorkerAppDataNow(),
-        delay
-    );
-}
+function resolveProfileName(remainder, profiles) {
+    let best = null;
 
-export async function publishWorkerAppDataNow() {
-    if (!activeWorkspace?.id || !workerLinks.length) return;
+    for (const profile of profiles) {
+        const name = profile?.name;
 
-    if (publishInFlight) {
-        publishRequested = true;
-        return;
+        if (!name) continue;
+
+        if (remainder === name || remainder.startsWith(name + "_")) {
+            if (!best || name.length > best.length) best = name;
+        }
     }
 
-    publishInFlight = true;
-    publishRequested = false;
+    return best;
+}
 
-    const generation = syncGeneration;
-    const storedWorkspace = getActiveWorkspace() || {};
-    const workspace = {
-        ...storedWorkspace,
-        ...activeWorkspace
-    };
+// Clasifica una clave cambiada: { all } global relevante, { profileName } por
+// perfil, o { ignore } si no afecta lo que ve el trabajador.
+function classifyChangedKey(key, profiles) {
+    if (GLOBAL_RELEVANT_KEYS.has(key)) return { all: true };
+
+    for (const prefix of PROFILE_KEY_PREFIXES) {
+        if (!key.startsWith(prefix)) continue;
+
+        const name = resolveProfileName(key.slice(prefix.length), profiles);
+
+        return name ? { profileName: name } : { ignore: true };
+    }
+
+    return { ignore: true };
+}
+
+function applyDirtyFromKeys(keys) {
+    if (!activeWorkspace?.id || !workerLinks.length) return;
+    if (!Array.isArray(keys) || !keys.length) return;
+
     const profiles = getProfiles();
-    const linkedProfiles = workerLinks.map(link => ({
+    const linkedNames = new Set(
+        linkedProfilePairs(profiles)
+            .map(item => item.profile?.name)
+            .filter(Boolean)
+    );
+    let relevant = false;
+
+    for (const key of keys) {
+        const result = classifyChangedKey(key, profiles);
+
+        if (result.ignore) continue;
+
+        if (result.all) {
+            dirtyAll = true;
+            relevant = true;
+        } else if (result.profileName && linkedNames.has(result.profileName)) {
+            // Solo se reacciona a cambios de trabajadores ENLAZADOS: si el
+            // perfil no usa la PWA, no se gasta ningun recurso en publicarlo.
+            dirtyProfileNames.add(result.profileName);
+            relevant = true;
+        }
+    }
+
+    if (!relevant) return;
+
+    scheduleHotPublish();
+    scheduleColdPublish();
+}
+
+function currentWorkspace() {
+    const stored = getActiveWorkspace() || {};
+
+    return { ...stored, ...activeWorkspace };
+}
+
+function linkedProfilePairs(profiles) {
+    return workerLinks.map(link => ({
         link,
         profile: findProfileForLink(link, profiles)
     }));
+}
+
+// Trabajadores enlazados afectados por los cambios pendientes. Los NO enlazados
+// nunca entran aqui (se itera solo workerLinks), por lo que no se gastan
+// recursos en quienes no usan la PWA.
+function dirtyLinkTargets(profiles) {
+    const linked = linkedProfilePairs(profiles);
+
+    if (dirtyAll) return linked;
+
+    return linked.filter(item =>
+        dirtyWorkerUids.has(item.link.uid) ||
+        (item.profile && dirtyProfileNames.has(item.profile.name))
+    );
+}
+
+function publishStillCurrent(generation, workspaceId) {
+    return generation === syncGeneration &&
+        activeWorkspace?.id === workspaceId;
+}
+
+// ───────── Publicacion caliente (mes actual + siguiente) ─────────
+
+export function scheduleHotPublish(delay = HOT_PUBLISH_DELAY_MS) {
+    if (!activeWorkspace?.id || !workerLinks.length) return;
+
+    clearTimeout(hotPublishTimer);
+    hotPublishTimer = setTimeout(() => publishHotNow(), delay);
+}
+
+async function publishHotNow() {
+    if (!activeWorkspace?.id || !workerLinks.length) return;
+
+    const generation = syncGeneration;
+    const workspace = currentWorkspace();
+    const profiles = getProfiles();
+    const targets = dirtyLinkTargets(profiles);
+    const shouldContinue = () =>
+        publishStillCurrent(generation, workspace.id);
 
     try {
-        await Promise.all(
-            linkedProfiles.map(async item => {
+        await runCooperativeQueue(targets, async item => {
+            if (!item.profile) return;
+
+            // Solo escritura parcial si ya existe una base completa publicada
+            // (cache poblada por una publicacion fria). Si no, deja que la fria
+            // cree el documento completo para no dejarlo a medias.
+            if (!scheduleCache.has(item.profile.name)) return;
+
+            const partial = computeProfileSchedule(item.profile, { mode: "hot" });
+
+            if (partial?.days && Object.keys(partial.days).length) {
+                await writeWorkerAppHotDays(
+                    workspace.id,
+                    item.link.uid,
+                    partial.days
+                );
+            }
+        }, { shouldContinue });
+    } catch (error) {
+        console.warn(
+            "No se pudo publicar la actualizacion caliente del trabajador.",
+            error
+        );
+    }
+}
+
+// ───────── Publicacion fria / completa (24 meses + reportes) ─────────
+
+export function scheduleColdPublish(delay = COLD_PUBLISH_DELAY_MS) {
+    if (!activeWorkspace?.id || !workerLinks.length) return;
+
+    clearTimeout(coldPublishTimer);
+    coldPublishTimer = setTimeout(() => publishColdNow(), delay);
+}
+
+async function publishColdNow() {
+    if (!activeWorkspace?.id || !workerLinks.length) return;
+
+    if (coldPublishInFlight) {
+        coldPublishRequested = true;
+        return;
+    }
+
+    coldPublishInFlight = true;
+    coldPublishRequested = false;
+
+    const generation = syncGeneration;
+    const workspace = currentWorkspace();
+    const profiles = getProfiles();
+    const targets = dirtyLinkTargets(profiles);
+    const linkedProfiles = linkedProfilePairs(profiles);
+    const publishingAll = dirtyAll;
+    const shouldContinue = () =>
+        publishStillCurrent(generation, workspace.id);
+
+    // Se limpian los "sucios" ahora: cualquier cambio durante la publicacion
+    // vuelve a marcar y reprograma.
+    dirtyAll = false;
+    dirtyProfileNames = new Set();
+    dirtyWorkerUids = new Set();
+
+    try {
+        const dataResult = await runCooperativeQueue(
+            targets,
+            async item => {
                 const payload = item.profile
-                    ? await buildWorkerAppPayload(item.link, item.profile, workspace)
+                    ? await buildWorkerAppPayload(
+                        item.link,
+                        item.profile,
+                        workspace
+                    )
                     : buildMissingProfilePayload(item.link, workspace);
 
-                return writeWorkerAppData(
+                await writeWorkerAppData(
                     payload,
                     workspace.id,
                     item.link.uid
                 );
-            })
+            },
+            { shouldContinue }
         );
 
-        await writeWorkerSwapCandidates(
-            linkedProfiles
-                .filter(item => item.profile)
-                .map(item => buildSwapCandidatePayload(
+        if (!dataResult.completed) return;
+
+        const swapCandidatePayloads = [];
+        const candidateResult = await runCooperativeQueue(
+            linkedProfiles.filter(item => item.profile),
+            item => {
+                swapCandidatePayloads.push(buildSwapCandidatePayload(
                     item.link,
                     item.profile,
                     workspace,
                     linkedProfiles
-                )),
-            workspace.id
+                ));
+            },
+            { shouldContinue }
         );
 
+        if (!candidateResult.completed) return;
+
+        await writeWorkerSwapCandidates(swapCandidatePayloads, workspace.id);
+
+        if (!shouldContinue()) return;
+
+        const messageDirectoryPayloads = [];
+        const directoryResult = await runCooperativeQueue(
+            linkedProfiles,
+            item => {
+                messageDirectoryPayloads.push(buildWorkerMessageDirectoryPayload(
+                    item.link,
+                    item.profile,
+                    workspace
+                ));
+            },
+            { shouldContinue }
+        );
+
+        if (!directoryResult.completed) return;
+
         await writeWorkerMessageDirectory(
-            linkedProfiles.map(item => buildWorkerMessageDirectoryPayload(
-                item.link,
-                item.profile,
-                workspace
-            )),
+            messageDirectoryPayloads,
             workspace.id
         );
     } catch (error) {
+        if (shouldContinue()) {
+            if (publishingAll) {
+                dirtyAll = true;
+            } else {
+                targets.forEach(item => dirtyWorkerUids.add(item.link.uid));
+            }
+
+            coldPublishRequested = true;
+        }
+
         console.warn(
             "No se pudo publicar datos para la app del trabajador.",
             error
         );
     } finally {
-        publishInFlight = false;
+        // Una cola antigua puede terminar despues de cambiar de entorno. En
+        // ese caso no debe alterar el estado de la cola del entorno nuevo.
+        if (generation === syncGeneration) {
+            coldPublishInFlight = false;
 
-        if (
-            publishRequested &&
-            generation === syncGeneration &&
-            activeWorkspace?.id
-        ) {
-            scheduleWorkerAppDataPublish();
+            if (coldPublishRequested && activeWorkspace?.id) {
+                scheduleColdPublish();
+            }
         }
     }
+}
+
+// API publica historica. Si persistenceChanged ya identifico perfiles concretos,
+// conserva ese conjunto en vez de ampliarlo a todos los enlaces.
+export function scheduleWorkerAppDataPublish(delay = HOT_PUBLISH_DELAY_MS) {
+    if (!activeWorkspace?.id || !workerLinks.length) return;
+
+    if (!dirtyProfileNames.size && !dirtyWorkerUids.size) {
+        dirtyAll = true;
+    }
+
+    scheduleHotPublish(Math.min(delay, HOT_PUBLISH_DELAY_MS));
+    scheduleColdPublish(delay);
+}
+
+export async function publishWorkerAppDataNow() {
+    dirtyAll = true;
+    await publishColdNow();
 }
 
 export async function startWorkerAppDataSync(workspace) {
@@ -1018,17 +1491,52 @@ export async function startWorkerAppDataSync(workspace) {
             snap => {
                 if (generation !== syncGeneration) return;
 
-                workerLinks = snap.docs
+                const previousLinks = workerLinks;
+                const nextLinks = snap.docs
                     .map(normalizeWorkerLink)
                     .filter(Boolean);
+                const {
+                    initial,
+                    changedUids,
+                    removedUids,
+                    shouldPublish
+                } = planWorkerLinkSnapshot(
+                    previousLinks,
+                    nextLinks,
+                    workerLinksInitialized
+                );
 
-                if (typeof window !== "undefined") {
+                workerLinks = nextLinks;
+                workerLinksInitialized = true;
+
+                if (
+                    typeof window !== "undefined" &&
+                    (initial || changedUids.length || removedUids.length)
+                ) {
                     window.dispatchEvent(
-                        new CustomEvent("proturnos:workerLinksChanged")
+                        new CustomEvent("proturnos:workerLinksChanged", {
+                            detail: {
+                                initial,
+                                changedUids,
+                                removedUids,
+                                count: workerLinks.length
+                            }
+                        })
                     );
                 }
 
-                scheduleWorkerAppDataPublish(INITIAL_PUBLISH_DELAY_MS);
+                // El primer snapshot es solo lectura: abrir un entorno no debe
+                // regenerar los datos PWA de todos sus trabajadores.
+                if (initial) return;
+
+                changedUids.forEach(uid => dirtyWorkerUids.add(uid));
+
+                // Altas/cambios publican solo sus documentos. Las bajas no
+                // tienen documento destino, pero requieren limpiar directorios
+                // y candidatos de intercambio.
+                if (shouldPublish) {
+                    scheduleColdPublish(INITIAL_PUBLISH_DELAY_MS);
+                }
             },
             error => {
                 console.warn(
@@ -1046,8 +1554,10 @@ export async function startWorkerAppDataSync(workspace) {
 }
 
 export function stopWorkerAppDataSync() {
-    clearTimeout(publishTimer);
-    publishTimer = null;
+    clearTimeout(hotPublishTimer);
+    clearTimeout(coldPublishTimer);
+    hotPublishTimer = null;
+    coldPublishTimer = null;
 
     if (unsubscribeWorkerLinks) {
         unsubscribeWorkerLinks();
@@ -1056,19 +1566,34 @@ export function stopWorkerAppDataSync() {
 
     activeWorkspace = null;
     workerLinks = [];
-    publishInFlight = false;
-    publishRequested = false;
+    workerLinksInitialized = false;
+    coldPublishInFlight = false;
+    coldPublishRequested = false;
+    dirtyAll = false;
+    dirtyProfileNames = new Set();
+    dirtyWorkerUids = new Set();
+    scheduleCache.clear();
     syncGeneration++;
 }
 
 if (typeof window !== "undefined") {
-    window.addEventListener("proturnos:persistenceChanged", () => {
-        scheduleWorkerAppDataPublish();
+    window.addEventListener("proturnos:persistenceChanged", event => {
+        applyDirtyFromKeys(event?.detail?.keys);
     });
 
     window.addEventListener("proturnos:firebaseAppState", event => {
-        if (event.detail?.type === "app-state-applied") {
-            scheduleWorkerAppDataPublish(300);
-        }
+        const detail = event.detail || {};
+
+        // `app-state-applied` es el snapshot inicial y no representa una
+        // modificacion nueva. Solo se publica ante modulos posteriores que sí
+        // afectan lo que ve el trabajador.
+        if (
+            detail.type !== "app-state-module-applied" ||
+            !PWA_RELEVANT_STATE_MODULES.has(detail.moduleId)
+        ) return;
+
+        dirtyAll = true;
+        scheduleHotPublish(300);
+        scheduleColdPublish();
     });
 }

@@ -12,7 +12,10 @@ import { AGENDA_SEED } from "./agendaSeed.js";
 
 const STORAGE_KEY = "agenda_contacts";
 const SEED_FLAG_KEY = "agenda_seeded_v1";
-const SEED_VERSION = 1;
+// v2: re-fusiona el directorio 473 para supervisores que ya tenian el flag en 1
+// (deploys previos solo sembraban si la agenda estaba vacia). La fusion es
+// idempotente por id, asi que no duplica los que ya existan.
+const SEED_VERSION = 2;
 const NEW_CONTACT_ID = "__new_contact__";
 
 let selectedContactId = NEW_CONTACT_ID;

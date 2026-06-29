@@ -169,6 +169,7 @@ import {
     canRedo
 } from "./history.js";
 import { refreshAll } from "./refresh.js";
+import { scheduleIdleTask } from "./mainThreadScheduler.js";
 import { DOM } from "./dom.js";
 import { renderSwapPanel } from "./swapUI.js";
 import {
@@ -273,6 +274,7 @@ import {
     getTurnoBase,
     getTurnoProgramado
 } from "./turnEngine.js";
+import { moveShiftTargetCombina24 } from "./rulesEngine.js";
 import {
     calcularHorasMesPerfil,
     renderSummaryHTML
@@ -528,6 +530,7 @@ function getProfileMetaLabel(profile) {
 
 window.selectionMode = null;
 window.pendingShiftMoveSourceKey = "";
+window.pendingShiftMoveDestinationTurn = 0;
 window.compCantidad = 0;
 window.legalCantidad = 0;
 window.licenseCantidad = 0;
@@ -627,6 +630,8 @@ const HR_LOG_CONFIG = [
 ];
 
 const recordYearFilters = {};
+let cancelProfileSecondaryRender = null;
+let profileSecondaryRenderRequest = 0;
 
 function contarHabiles(
     obj,
@@ -3377,6 +3382,50 @@ function syncEditRestrictedControls() {
     });
 }
 
+function scheduleProfileSecondarySections(profile, data, editing) {
+    cancelProfileSecondaryRender?.();
+
+    const requestId = ++profileSecondaryRenderRequest;
+    const expectedProfile = profile?.name || "";
+    const expectedMode = profileDraft.mode;
+    const dataSnapshot = { ...data };
+    const containers = [
+        DOM.profileContractHistory,
+        DOM.profileRecordsPanel,
+        DOM.availabilitySummary
+    ].filter(Boolean);
+
+    containers.forEach(container => {
+        container.setAttribute("aria-busy", "true");
+    });
+
+    cancelProfileSecondaryRender = scheduleIdleTask(() => {
+        cancelProfileSecondaryRender = null;
+
+        if (
+            requestId !== profileSecondaryRenderRequest ||
+            document.body.dataset.activeView !== "profile" ||
+            (getCurrentProfile() || "") !== expectedProfile ||
+            profileDraft.mode !== expectedMode
+        ) {
+            return;
+        }
+
+        renderProfileRotationStatus(
+            dataSnapshot,
+            editing,
+            openRotationConfigModal
+        );
+        renderContractHistory(profile);
+        renderProfileRecords(profile, editing);
+        renderDisponibilidadVacaciones();
+
+        containers.forEach(container => {
+            container.removeAttribute("aria-busy");
+        });
+    }, { timeout: 500 });
+}
+
 function renderDashboardState() {
     const profile = getPerfilActual();
     const data = getDisplayedProfileData();
@@ -3384,6 +3433,12 @@ function renderDashboardState() {
     const editing = isProfileEditing() && profileCanEdit;
     const activeView =
         document.body.dataset.activeView || "turnos";
+
+    if (activeView !== "profile") {
+        cancelProfileSecondaryRender?.();
+        cancelProfileSecondaryRender = null;
+        profileSecondaryRenderRequest++;
+    }
 
     syncTopProfileSearch();
 
@@ -3613,10 +3668,8 @@ function renderDashboardState() {
     }
 
     if (activeView === "profile") {
-        renderProfileRotationStatus(data, editing, openRotationConfigModal);
-        renderContractHistory(profile);
         renderProfileDocs(data, editing);
-        renderProfileRecords(profile, editing);
+        scheduleProfileSecondarySections(profile, data, editing);
     }
 
     if (activeView === "hours") {
@@ -3679,10 +3732,6 @@ function renderDashboardState() {
 
     renderLeaveActionLabels();
     syncEditRestrictedControls();
-
-    if (activeView === "profile") {
-        renderDisponibilidadVacaciones();
-    }
 
     syncTurnosSidePanelHeight();
     if (activeView === "hours") {
@@ -4091,6 +4140,8 @@ function renderProfiles(options = {}) {
         DOM.emptyProfiles.classList.add("hidden");
     }
 
+    const profilesFragment = document.createDocumentFragment();
+
     visibles.forEach(profile => {
         const item = document.createElement("div");
         item.className = "profile-item";
@@ -4127,8 +4178,10 @@ function renderProfiles(options = {}) {
 
         item.onclick = () => selectProfileByName(profile.name);
 
-        DOM.profiles.appendChild(item);
+        profilesFragment.appendChild(item);
     });
+
+    DOM.profiles.appendChild(profilesFragment);
 
     if (options.dashboard !== false) {
         renderDashboardState();
@@ -5406,6 +5459,7 @@ function clearSelectionMode(shouldRefresh = true) {
     pendingRotationChange = null;
     pendingShiftMove = null;
     window.pendingShiftMoveSourceKey = "";
+    window.pendingShiftMoveDestinationTurn = 0;
     compCantidad = 0;
     window.compCantidad = 0;
     legalCantidad = 0;
@@ -5506,7 +5560,8 @@ function shiftMoveDayBlockReason(
     keyDay,
     {
         source = false,
-        sourceKey = ""
+        sourceKey = "",
+        destinationTurn = 0
     } = {}
 ) {
     if (!profile || !keyDay) {
@@ -5570,10 +5625,22 @@ function shiftMoveDayBlockReason(
         return "";
     }
 
+    // El destino puede tener el turno complementario (Larga<->Noche): al juntarse
+    // con el turno que se mueve forma un 24, asi que se permite.
+    const combina24 = moveShiftTargetCombina24(
+        destinationTurn,
+        baseTurn,
+        programmedTurn,
+        actualTurn
+    );
+
     if (
-        baseTurn !== TURNO.LIBRE ||
-        programmedTurn !== TURNO.LIBRE ||
-        actualTurn !== TURNO.LIBRE
+        !combina24 &&
+        (
+            baseTurn !== TURNO.LIBRE ||
+            programmedTurn !== TURNO.LIBRE ||
+            actualTurn !== TURNO.LIBRE
+        )
     ) {
         return "El dia de destino ya tiene un turno o una modificacion de calendario.";
     }
@@ -5698,6 +5765,7 @@ async function activarSelectorMoverTurno() {
 
     pendingShiftMove = null;
     window.pendingShiftMoveSourceKey = "";
+    window.pendingShiftMoveDestinationTurn = 0;
 
     activarModo(
         "moveshiftsource",
@@ -5741,14 +5809,19 @@ async function handleMoveShiftSourceSelection(fecha) {
         destinationTurn
     };
     window.pendingShiftMoveSourceKey = sourceKey;
+    window.pendingShiftMoveDestinationTurn = destinationTurn;
+
+    const complementoLabel = Number(destinationTurn) === TURNO.LARGA
+        ? "Noche"
+        : "Larga";
 
     activarModo(
         "moveshifttarget",
-        `Selecciona el dia donde reubicaras el turno ${shiftMoveTurnLabel(destinationTurn)}. Tambien puedes volver a elegir el mismo dia para cambiar solo el horario.`
+        `Selecciona el dia donde reubicaras el turno ${shiftMoveTurnLabel(destinationTurn)}. Puedes elegir un dia libre, un dia con turno ${complementoLabel} (se juntaran en un 24) o el mismo dia para cambiar solo el horario.`
     );
 
     DOM.adminInfo.textContent =
-        "El destino debe estar libre y no puede tener permisos, marcajes ni otras modificaciones.";
+        `El destino debe estar libre o tener un turno ${complementoLabel} (base o extra) para formar un 24, sin permisos, marcajes ni otras modificaciones.`;
 }
 
 function handleMoveShiftTargetSelection(fecha) {
@@ -5778,7 +5851,8 @@ function handleMoveShiftTargetSelection(fecha) {
         profile,
         targetKey,
         {
-            sourceKey: move.sourceKey
+            sourceKey: move.sourceKey,
+            destinationTurn: move.destinationTurn
         }
     );
 
@@ -5801,14 +5875,44 @@ function handleMoveShiftTargetSelection(fecha) {
     const baseData = getBaseProfileData(profile);
     const blocked = getBlockedDays(profile);
 
+    // Estado del destino ANTES de mover, para detectar si el turno se junta con
+    // un turno complementario existente formando un 24.
+    const targetBase = Number(
+        getTurnoBase(profile, targetKey)
+    ) || TURNO.LIBRE;
+    const targetProgrammed = Number(
+        getTurnoProgramado(profile, targetKey)
+    ) || TURNO.LIBRE;
+    const targetActual = Number(
+        aplicarCambiosTurno(profile, targetKey, targetProgrammed)
+    ) || TURNO.LIBRE;
+    const combina24 =
+        targetKey !== move.sourceKey &&
+        moveShiftTargetCombina24(
+            move.destinationTurn,
+            targetBase,
+            targetProgrammed,
+            targetActual
+        );
+    // Complemento base => dos turnos base => 24 base (sin HHEE).
+    // Complemento extra (base libre) => turno base movido + extra => 24 con HHEE.
+    const complementoEsBase = combina24 && targetBase !== TURNO.LIBRE;
+
     if (targetKey !== move.sourceKey) {
         data[move.sourceKey] = TURNO.LIBRE;
         baseData[move.sourceKey] = TURNO.LIBRE;
         blocked[move.sourceKey] = true;
     }
 
-    data[targetKey] = move.destinationTurn;
-    baseData[targetKey] = move.destinationTurn;
+    if (combina24) {
+        data[targetKey] = TURNO.TURNO24;
+        baseData[targetKey] = complementoEsBase
+            ? TURNO.TURNO24
+            : move.destinationTurn;
+    } else {
+        data[targetKey] = move.destinationTurn;
+        baseData[targetKey] = move.destinationTurn;
+    }
     blocked[targetKey] = true;
 
     saveProfileData(data, profile);
@@ -5831,18 +5935,32 @@ function handleMoveShiftTargetSelection(fecha) {
         ? targetKey
         : formatDisplayDate(toISODate(targetDate));
 
+    const auditDescription = (() => {
+        if (targetKey === move.sourceKey) {
+            return `${profile}: cambio el turno base del ${sourceLabel} de ${shiftMoveTurnLabel(move.sourceTurn)} a ${shiftMoveTurnLabel(move.destinationTurn)}.`;
+        }
+
+        const base = `${profile}: movio el turno base ${shiftMoveTurnLabel(move.sourceTurn)} del ${sourceLabel} al ${targetLabel} como ${shiftMoveTurnLabel(move.destinationTurn)}`;
+
+        if (combina24) {
+            return `${base}, juntandose con el turno ${shiftMoveTurnLabel(targetProgrammed)} existente y formando un 24 (${complementoEsBase ? "dos turnos base" : "turno base + extra"}).`;
+        }
+
+        return `${base}.`;
+    })();
+
     addAuditLog(
         AUDIT_CATEGORY.CALENDAR,
         "Movio turno base",
-        targetKey === move.sourceKey
-            ? `${profile}: cambio el turno base del ${sourceLabel} de ${shiftMoveTurnLabel(move.sourceTurn)} a ${shiftMoveTurnLabel(move.destinationTurn)}.`
-            : `${profile}: movio el turno base ${shiftMoveTurnLabel(move.sourceTurn)} del ${sourceLabel} al ${targetLabel} como ${shiftMoveTurnLabel(move.destinationTurn)}.`,
+        auditDescription,
         {
             profile,
             sourceKey: move.sourceKey,
             targetKey,
             sourceTurn: move.sourceTurn,
-            destinationTurn: move.destinationTurn
+            destinationTurn: move.destinationTurn,
+            combinedInto24: combina24,
+            combinedBaseComplement: complementoEsBase
         }
     );
 
@@ -8944,8 +9062,7 @@ function notifyWorkersOfAuditUndo(detail) {
 }
 
 window.addEventListener("proturnos:workerLinksChanged", () => {
-    refreshAll();
-    scheduleWorkerAppDataPublish(300);
+    scheduleWorkspaceUiRefresh();
 });
 
 // Atajos de teclado globales para modales: Escape cierra/cancela y Enter
@@ -9006,6 +9123,28 @@ document.addEventListener("keydown", event => {
     event.preventDefault();
     primaryButton.click();
 });
+
+let workspaceUiRefreshTimer = 0;
+let workspaceStateSyncRequested = false;
+
+function scheduleWorkspaceUiRefresh(options = {}) {
+    workspaceStateSyncRequested =
+        workspaceStateSyncRequested || options.syncState === true;
+
+    clearTimeout(workspaceUiRefreshTimer);
+    workspaceUiRefreshTimer = window.setTimeout(() => {
+        workspaceUiRefreshTimer = 0;
+
+        const syncState = workspaceStateSyncRequested;
+        workspaceStateSyncRequested = false;
+
+        if (syncState) {
+            syncWorkspaceStateViews();
+        } else {
+            refreshAll();
+        }
+    }, 60);
+}
 
 function syncWorkspaceStateViews() {
     const profiles = getProfiles();
@@ -9136,10 +9275,19 @@ initFirebaseShell({
             startWorkerRequestsRealtimeSync(workspace);
             startWorkerAppDataSync(workspace);
             startInterUnitLoanSync(workspace);
+            let workerAvailabilityInitialized = false;
             startWorkerAvailabilitySync(workspace, {
                 onChange: () => {
-                    refreshAll();
-                    scheduleWorkerAppDataPublish(300);
+                    scheduleWorkspaceUiRefresh();
+
+                    // El primer snapshot solo hidrata la interfaz. Publicar
+                    // aqui regeneraba los datos de todos los trabajadores al
+                    // abrir el entorno.
+                    if (workerAvailabilityInitialized) {
+                        scheduleWorkerAppDataPublish(300);
+                    }
+
+                    workerAvailabilityInitialized = true;
                 }
             });
             startSupervisorMessages(workspace);
@@ -9159,8 +9307,7 @@ initFirebaseShell({
             });
             startFirebaseAppStateSync(workspace, {
                 onChange: () => {
-                    syncWorkspaceStateViews();
-                    scheduleWorkerAppDataPublish(300);
+                    scheduleWorkspaceUiRefresh({ syncState: true });
                     scheduleInterUnitStaffingPublish(400);
                 }
             });

@@ -50,6 +50,7 @@ import {
     AUDIT_CATEGORY
 } from "./auditLog.js";
 import { getHourReturn } from "./hourReturns.js";
+import { runCooperativeRange } from "./mainThreadScheduler.js";
 
 const KEY = "staffing_config";
 const APPLICANTS_KEY = "staffing_applicants";
@@ -3033,6 +3034,7 @@ function sugerirReemplazo(profiles, row, y, m, d, absenceCache, shiftKind){
 // perfiles) es pesado. Se memoiza por mes + firma de feriados y se invalida
 // ante cualquier cambio de datos local o aplicacion de estado remoto.
 const ANALIZAR_MES_CACHE = new Map();
+let analizarMesCacheVersion = 0;
 
 function holidaysSignature(holidays) {
     return Object.keys(holidays || {}).sort().join(",");
@@ -3040,6 +3042,7 @@ function holidaysSignature(holidays) {
 
 function clearAnalizarMesCache() {
     ANALIZAR_MES_CACHE.clear();
+    analizarMesCacheVersion++;
 }
 
 if (typeof window !== "undefined") {
@@ -3054,14 +3057,7 @@ if (typeof window !== "undefined") {
     });
 }
 
-export function analizarMes(year, month, holidays = {}){
-    const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
-    const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
-
-    if (cachedResult) {
-        return cachedResult;
-    }
-
+function buildStaffingAnalysisContext(year, month, holidays) {
     const profiles = getProfiles().filter(isProfileActive);
     const requirements = buildStaffingRequirementRows()
         .filter(row => row.required > 0);
@@ -3069,95 +3065,154 @@ export function analizarMes(year, month, holidays = {}){
         new Date(year, month + 1, 0).getDate();
     const absenceCache = new Map();
 
-    const salida = [];
+    return {
+        profiles,
+        requirements,
+        diasMes,
+        absenceCache,
+        year,
+        month,
+        holidays
+    };
+}
 
-    for (let d = 1; d <= diasMes; d++) {
-        const detalle = [];
-        const date = new Date(year, month, d);
-        const isHab = isBusinessDay(date, holidays);
+function analizarDiaStaffing(context, d) {
+    const {
+        profiles,
+        requirements,
+        absenceCache,
+        year,
+        month,
+        holidays
+    } = context;
+    const detalle = [];
+    const date = new Date(year, month, d);
+    const isHab = isBusinessDay(date, holidays);
 
-        requirements.forEach(row => {
-            if (row.modality === "diurno" && !isHab) {
-                return;
+    requirements.forEach(row => {
+        if (row.modality === "diurno" && !isHab) {
+            return;
+        }
+
+        const checks = row.modality === "diurno"
+            ? [{
+                kind: "diurno",
+                label: "Diurno",
+                badgeType: "faltante"
+            }]
+            : [
+                {
+                    kind: "day",
+                    label: "Larga",
+                    badgeType: "faltante"
+                },
+                {
+                    kind: "night",
+                    label: "Noche",
+                    badgeType: "noche"
+                }
+        ];
+
+        checks.forEach(check => {
+            const coverage = contarRequerimiento(
+                profiles,
+                row,
+                year,
+                month,
+                d,
+                check.kind,
+                absenceCache
+            );
+            const real = coverage.real;
+
+            if (real < row.required) {
+                detalle.push({
+                    tipo: check.badgeType,
+                    estamento: row.estamento,
+                    groupLabel: row.groupLabel,
+                    shiftLabel: check.label,
+                    segmentLabel: segmentLabel(
+                        coverage.missingSegments
+                    ),
+                    absences: coverage.absences,
+                    replacementTargets: coverage.absences
+                        .map(item => item.replacementTarget)
+                        .filter(Boolean),
+                    cantidad: row.required - real,
+                    sugerencia: sugerirReemplazo(
+                        profiles,
+                        row,
+                        year,
+                        month,
+                        d,
+                        absenceCache,
+                        check.kind
+                    )
+                });
             }
 
-            const checks = row.modality === "diurno"
-                ? [{
-                    kind: "diurno",
-                    label: "Diurno",
-                    badgeType: "faltante"
-                }]
-                : [
-                    {
-                        kind: "day",
-                        label: "Larga",
-                        badgeType: "faltante"
-                    },
-                    {
-                        kind: "night",
-                        label: "Noche",
-                        badgeType: "noche"
-                    }
-            ];
-
-            checks.forEach(check => {
-                const coverage = contarRequerimiento(
-                    profiles,
-                    row,
-                    year,
-                    month,
-                    d,
-                    check.kind,
-                    absenceCache
-                );
-                const real = coverage.real;
-
-                if (real < row.required) {
-                    detalle.push({
-                        tipo: check.badgeType,
-                        estamento: row.estamento,
-                        groupLabel: row.groupLabel,
-                        shiftLabel: check.label,
-                        segmentLabel: segmentLabel(
-                            coverage.missingSegments
-                        ),
-                        absences: coverage.absences,
-                        replacementTargets: coverage.absences
-                            .map(item => item.replacementTarget)
-                            .filter(Boolean),
-                        cantidad: row.required - real,
-                        sugerencia: sugerirReemplazo(
-                            profiles,
-                            row,
-                            year,
-                            month,
-                            d,
-                            absenceCache,
-                            check.kind
-                        )
-                    });
-                }
-
-                if (real > row.required) {
-                    detalle.push({
-                        tipo: "exceso",
-                        estamento: row.estamento,
-                        groupLabel: row.groupLabel,
-                        shiftLabel: check.label,
-                        cantidad: real - row.required
-                    });
-                }
-            });
+            if (real > row.required) {
+                detalle.push({
+                    tipo: "exceso",
+                    estamento: row.estamento,
+                    groupLabel: row.groupLabel,
+                    shiftLabel: check.label,
+                    cantidad: real - row.required
+                });
+            }
         });
+    });
 
-        salida.push({
-            dia: d,
-            detalle
-        });
+    return { dia: d, detalle };
+}
+
+export function analizarMes(year, month, holidays = {}){
+    const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
+    const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
+
+    if (cachedResult) return cachedResult;
+
+    const context = buildStaffingAnalysisContext(year, month, holidays);
+    const salida = [];
+
+    for (let d = 1; d <= context.diasMes; d++) {
+        salida.push(analizarDiaStaffing(context, d));
     }
 
     ANALIZAR_MES_CACHE.set(cacheKey, salida);
 
+    return salida;
+}
+
+async function analizarMesCooperative(
+    year,
+    month,
+    holidays = {},
+    shouldContinue = () => true
+) {
+    const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
+    const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
+
+    if (cachedResult) return cachedResult;
+
+    const cacheVersion = analizarMesCacheVersion;
+    const context = buildStaffingAnalysisContext(year, month, holidays);
+    const salida = [];
+    const isCurrent = () =>
+        cacheVersion === analizarMesCacheVersion && shouldContinue();
+
+    const result = await runCooperativeRange(
+        1,
+        context.diasMes,
+        d => {
+            salida.push(analizarDiaStaffing(context, d));
+        },
+        { shouldContinue: isCurrent }
+    );
+
+    if (!result.completed) return null;
+
+    ANALIZAR_MES_CACHE.set(cacheKey, salida);
     return salida;
 }
 
@@ -3627,22 +3682,28 @@ export async function analizarStaffingMes(
         ? ++staffingAnalysisRequest
         : 0;
     const holidays = await fetchHolidays(year);
+    const shouldContinue = () => {
+        if (
+            options.latestOnly &&
+            requestId !== staffingAnalysisRequest
+        ) {
+            return false;
+        }
 
-    if (
-        options.latestOnly &&
-        requestId !== staffingAnalysisRequest
-    ) {
-        return [];
-    }
+        return !options.activeView ||
+            document.body.dataset.activeView === options.activeView;
+    };
 
-    if (
-        options.activeView &&
-        document.body.dataset.activeView !== options.activeView
-    ) {
-        return [];
-    }
+    if (!shouldContinue()) return [];
 
-    const data = analizarMes(year, month, holidays);
+    const data = await analizarMesCooperative(
+        year,
+        month,
+        holidays,
+        shouldContinue
+    );
+
+    if (!data || !shouldContinue()) return [];
 
     if (options.renderPanel !== false) {
         mostrarResultado(data, year, month);

@@ -3114,15 +3114,21 @@ exports.setCouponActive = onCall(
 
 // Cuenta perfiles activos y totales de un entorno desde el modulo "profile".
 async function readWorkspaceProfileCounts(workspaceId) {
-  const chunksSnap = await db
-    .collection("workspaces")
-    .doc(workspaceId)
-    .collection("stateModules")
-    .doc("profile")
-    .collection("chunks")
-    .get();
+  const workspaceRef = db.collection("workspaces").doc(workspaceId);
+  const [chunksSnap, workerLinksSnap] = await Promise.all([
+    workspaceRef
+      .collection("stateModules")
+      .doc("profile")
+      .collection("chunks")
+      .get(),
+    workspaceRef.collection("workerLinks").get()
+  ]);
+  const pwaLinked = workerLinksSnap.docs.filter((doc) => {
+    const status = String(doc.data()?.status || "active");
+    return status === "active";
+  }).length;
 
-  if (chunksSnap.empty) return { active: 0, total: 0 };
+  if (chunksSnap.empty) return { active: 0, total: 0, pwaLinked };
 
   const text = chunksSnap.docs
     .map((doc) => ({
@@ -3137,16 +3143,29 @@ async function readWorkspaceProfileCounts(workspaceId) {
   try {
     snapshot = JSON.parse(text || "{}");
   } catch (error) {
-    return { active: 0, total: 0 };
+    return { active: 0, total: 0, pwaLinked };
   }
 
-  const profiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : [];
+  let profiles = snapshot.profiles;
+
+  // Los modulos sincronizados conservan el valor crudo de localStorage, por
+  // lo que `profiles` normalmente llega como un string JSON. Se mantiene
+  // compatibilidad con snapshots antiguos que ya contenian un arreglo.
+  if (typeof profiles === "string") {
+    try {
+      profiles = JSON.parse(profiles);
+    } catch (error) {
+      profiles = [];
+    }
+  }
+
+  if (!Array.isArray(profiles)) profiles = [];
   const active = profiles.filter((profile) => {
     if (typeof profile === "string") return true;
     return profile && profile.active !== false;
   }).length;
 
-  return { active, total: profiles.length };
+  return { active, total: profiles.length, pwaLinked };
 }
 
 exports.getAdminDashboard = onCall(
@@ -3193,9 +3212,11 @@ exports.getAdminDashboard = onCall(
     const counts = await Promise.all(countPromises);
     let totalActiveWorkers = 0;
     let totalProfiles = 0;
+    let totalPwaLinkedWorkers = 0;
     counts.forEach((item) => {
       totalActiveWorkers += item.active;
       totalProfiles += item.total;
+      totalPwaLinkedWorkers += Number(item.pwaLinked) || 0;
     });
 
     // Suscripciones por cuenta (dueno). Plan efectivo considerando vencimiento.
@@ -3265,7 +3286,11 @@ exports.getAdminDashboard = onCall(
       },
       workers: {
         totalActive: totalActiveWorkers,
-        totalProfiles
+        totalProfiles,
+        pwaLinked: totalPwaLinkedWorkers,
+        pwaAdoptionPercent: totalActiveWorkers > 0
+          ? Math.round(totalPwaLinkedWorkers * 100 / totalActiveWorkers)
+          : 0
       },
       subscriptions: {
         byPlan,

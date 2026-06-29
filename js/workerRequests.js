@@ -48,7 +48,11 @@ import {
     registrarCambio
 } from "./swaps.js";
 import { getActiveWorkspace } from "./workspaces.js";
-import { notifyWorkerApp } from "./workerAppDataSync.js";
+import {
+    getWorkerAppLinkForProfile,
+    notifyWorkerApp
+} from "./workerAppDataSync.js";
+import { buildWorkerReportPreviewHTML } from "./hoursReport.js";
 
 const REQUEST_TYPE_LABELS = {
     admin: "P. Administrativo",
@@ -63,6 +67,7 @@ const REQUEST_TYPE_LABELS = {
     swap: "Cambio de Turno",
     replacement_request: "Turno Extra",
     hhee_return: "Devolución de Horas",
+    report_request: "Informe mensual",
     workspace_link: "Enlace de Unidad",
     unknown: "Solicitud"
 };
@@ -322,7 +327,7 @@ function resolveProfileName(request) {
 }
 
 function requestNeedsDate(request) {
-    return !["swap", "hhee_return"].includes(request.type);
+    return !["swap", "hhee_return", "report_request"].includes(request.type);
 }
 
 function invalidDateResult(request) {
@@ -702,6 +707,10 @@ async function applyWorkerRequest(request) {
         };
     }
 
+    if (request.type === "report_request") {
+        return applyReportRequest(request, profile);
+    }
+
     const invalidDate = invalidDateResult(request);
 
     if (invalidDate) return invalidDate;
@@ -750,6 +759,177 @@ async function applyWorkerRequest(request) {
         ok: false,
         message: "Tipo de solicitud no reconocido."
     };
+}
+
+// Genera el informe mensual pedido por el trabajador y lo publica en su
+// documento workerAppData.reportsByMonth (merge: conserva los meses ya
+// presentes). El motor de informes corre en el navegador de la unidad, por eso
+// la entrega es diferida: ocurre cuando esta app procesa la solicitud.
+async function applyReportRequest(request, profileName) {
+    const profile = getProfiles().find(item => item.name === profileName);
+
+    if (!profile) {
+        return {
+            ok: false,
+            message: "No se encontro el perfil para generar el informe."
+        };
+    }
+
+    const year = Number(request.reportYear);
+    const month = Number(request.reportMonth);
+
+    if (
+        !Number.isFinite(year) ||
+        !Number.isFinite(month) ||
+        month < 0 ||
+        month > 11
+    ) {
+        return {
+            ok: false,
+            message: "La solicitud de informe no indica un mes valido."
+        };
+    }
+
+    const link = getWorkerAppLinkForProfile(profileName);
+    const workspace = getActiveWorkspace();
+
+    if (!link?.uid || !workspace?.id) {
+        return {
+            ok: false,
+            message: "El trabajador no tiene la app enlazada."
+        };
+    }
+
+    let html = "";
+
+    try {
+        html = await buildWorkerReportPreviewHTML(
+            profile,
+            new Date(year, month, 1)
+        );
+    } catch (error) {
+        console.warn("No se pudo generar el informe solicitado.", error);
+
+        return {
+            ok: false,
+            message: "No se pudo generar el informe del mes solicitado."
+        };
+    }
+
+    if (!html) {
+        return {
+            ok: false,
+            message: "No hay datos para generar el informe de ese mes."
+        };
+    }
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+
+        await firestoreModule.setDoc(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspace.id,
+                "workerAppData",
+                link.uid
+            ),
+            {
+                reportsByMonth: { [`${year}-${month}`]: html },
+                updatedAt: firestoreModule.serverTimestamp()
+            },
+            { merge: true }
+        );
+    } catch (error) {
+        console.warn("No se pudo publicar el informe solicitado.", error);
+
+        return {
+            ok: false,
+            message: "No se pudo publicar el informe generado."
+        };
+    }
+
+    const monthLabel = monthLabelFromYearMonth(year, month);
+
+    void notifyWorkerApp(
+        profileName,
+        `Tu informe${monthLabel ? ` de ${monthLabel}` : ""} ya está disponible para descargar en la app.`
+    );
+
+    return { ok: true, monthLabel };
+}
+
+// Procesa automaticamente las solicitudes de informe pendientes en cuanto
+// llegan (mientras la app de la unidad este abierta). Idempotente: marca cada
+// solicitud como aceptada/rechazada para no reprocesarla.
+const reportRequestsInFlight = new Set();
+
+export async function processPendingReportRequests() {
+    const pending = getWorkerRequests().filter(request =>
+        request?.type === "report_request" &&
+        request.status === "pending"
+    );
+
+    for (const request of pending) {
+        if (reportRequestsInFlight.has(request.id)) continue;
+
+        reportRequestsInFlight.add(request.id);
+
+        try {
+            const profileName = resolveProfileName(request);
+
+            if (!profileName) {
+                saveUpdatedRequest(request.id, {
+                    status: "rejected",
+                    rejectedAt: new Date().toISOString(),
+                    rejectReason: "No se pudo identificar el perfil del informe."
+                });
+                continue;
+            }
+
+            const result = await applyReportRequest(request, profileName);
+
+            if (result.ok) {
+                saveUpdatedRequest(request.id, {
+                    status: "accepted",
+                    acceptedAt: new Date().toISOString(),
+                    appliedAt: new Date().toISOString()
+                });
+
+                addAuditLog(
+                    AUDIT_CATEGORY.WORKER_REQUESTS,
+                    "Genero informe solicitado",
+                    `${profileName}: informe de ${result.monthLabel || "mes solicitado"}.`,
+                    {
+                        profile: profileName,
+                        requestId: request.id,
+                        requestType: request.type
+                    }
+                );
+            } else {
+                saveUpdatedRequest(request.id, {
+                    status: "rejected",
+                    rejectedAt: new Date().toISOString(),
+                    rejectReason: result.message
+                });
+
+                void notifyWorkerApp(
+                    profileName,
+                    `No se pudo preparar tu informe solicitado: ${result.message}`
+                );
+            }
+        } catch (error) {
+            console.warn("No se pudo procesar la solicitud de informe.", error);
+        } finally {
+            reportRequestsInFlight.delete(request.id);
+        }
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener("proturnos:workerRequestsChanged", () => {
+        void processPendingReportRequests();
+    });
 }
 
 function saveUpdatedRequest(requestId, patch) {
@@ -826,6 +1006,17 @@ function requestDetailsHTML(request) {
         if (nextLabel) {
             pieces.push(`Disponibles desde ${nextLabel}`);
         }
+
+        return pieces.join(" | ");
+    }
+
+    if (request.type === "report_request") {
+        const monthLabel = monthLabelFromYearMonth(
+            request.reportYear,
+            request.reportMonth
+        );
+
+        pieces.push(`Informe de ${monthLabel || "mes solicitado"}`);
 
         return pieces.join(" | ");
     }

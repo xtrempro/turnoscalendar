@@ -1115,6 +1115,17 @@ body.theme-dark .theme-switch__thumb {
     background: transparent;
     cursor: pointer;
     transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 58px;
+}
+
+/* Las secciones inferiores de Perfil se materializan al acercarse al viewport.
+   Esto evita calcular pintura y layout de todo el formulario durante la carga. */
+body[data-active-view="profile"] #profileSection .profile-area,
+body[data-active-view="profile"] #profileSection .contract-history-panel,
+body[data-active-view="profile"] #profileSection .profile-records-grid {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 260px;
 }
 
 .profile-item:hover {
