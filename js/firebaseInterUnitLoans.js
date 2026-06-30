@@ -17,15 +17,17 @@ import {
 import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { fetchHolidays } from "./holidays.js";
 import { getJSON } from "./persistence.js";
+import { listAcceptedLinkedWorkspaces } from "./firebaseLinkedUnits.js";
 import {
     restarTurnoCubierto,
     tieneAusencia
 } from "./rulesEngine.js";
-import { getBlockedDayForProfile } from "./workerAvailability.js";
+import { getWorkerBlockedDays } from "./workerAvailability.js";
 import { canEditAnyMenu } from "./workspacePermissions.js";
+import { runCooperativeRange } from "./mainThreadScheduler.js";
+import { buildInterUnitMonthsInWorker } from "./workerService.js";
 
-const MONTHS_BACK = 2;
-const MONTHS_FORWARD = 13;
+const HOT_MONTHS_FORWARD = 1;
 const PUBLISH_DELAY_MS = 1400;
 const INITIAL_PUBLISH_DELAY_MS = 3200;
 const MAX_STAFFING_DOCUMENT_BYTES = 850000;
@@ -62,8 +64,8 @@ function monthDates(reference = new Date()) {
     const dates = [];
 
     for (
-        let offset = -MONTHS_BACK;
-        offset <= MONTHS_FORWARD;
+        let offset = 0;
+        offset <= HOT_MONTHS_FORWARD;
         offset++
     ) {
         dates.push(new Date(
@@ -95,18 +97,6 @@ function profileHasAbsence(profileName, dayKey, maps) {
     );
 }
 
-function stableHash(value) {
-    const text = JSON.stringify(value);
-    let hash = 2166136261;
-
-    for (let index = 0; index < text.length; index++) {
-        hash ^= text.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-    }
-
-    return `${text.length}-${(hash >>> 0).toString(36)}`;
-}
-
 function cleanProfile(profile) {
     return {
         id: String(profile.id || "").slice(0, 100),
@@ -129,105 +119,117 @@ function turnCodeToState(code) {
     }[code] || 0;
 }
 
-function interUnitTurnForWorker(profileName, iso) {
-    return getReplacements()
+function interUnitTurnMap() {
+    const turns = new Map();
+
+    getReplacements()
         .filter(replacement =>
             replacement &&
             !replacement.canceled &&
             replacement.source === INTER_UNIT_SOURCE &&
-            replacement.worker === profileName &&
-            replacement.date === iso &&
             replacement.addsShift !== false
         )
-        .reduce(
-            (turn, replacement) =>
+        .forEach(replacement => {
+            const key = `${replacement.worker}\u001f${replacement.date}`;
+            turns.set(
+                key,
                 fusionarTurnos(
-                    turn,
+                    turns.get(key) || 0,
                     turnCodeToState(replacement.turno)
-                ),
-            0
-        );
+                )
+            );
+        });
+
+    return turns;
 }
 
-async function buildStaffingMonth(workspace, date) {
+function workerBlockedDaySet() {
+    return new Set(
+        getWorkerBlockedDays().map(item =>
+            `${item.profileName}\u001f${item.date}`
+        )
+    );
+}
+
+async function buildStaffingMonth(date, generation) {
     const year = date.getFullYear();
     const month = date.getMonth();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const holidays = await fetchHolidays(year);
     const profiles = getProfiles().filter(isProfileActive);
-    const workers = profiles.map(profile => {
-        const maps = profileLeaveMaps(profile.name);
-        const stats = calcularHorasMesPerfil(
-            profile.name,
-            year,
-            month,
-            daysInMonth,
-            holidays,
-            getProfileData(profile.name),
-            {},
-            { d: 0, n: 0 }
-        );
-        const days = {};
-
-        for (let day = 1; day <= daysInMonth; day++) {
-            const dayKey = keyDay(year, month, day);
-            const iso = dateISO(year, month, day);
-            const hasAbsence = profileHasAbsence(
+    const replacementTurns = interUnitTurnMap();
+    const blockedDays = workerBlockedDaySet();
+    const workers = [];
+    const progress = await runCooperativeRange(
+        0,
+        profiles.length - 1,
+        index => {
+            const profile = profiles[index];
+            const maps = profileLeaveMaps(profile.name);
+            const stats = calcularHorasMesPerfil(
                 profile.name,
-                dayKey,
-                maps
+                year,
+                month,
+                daysInMonth,
+                holidays,
+                getProfileData(profile.name),
+                {},
+                { d: 0, n: 0 }
             );
-            const actualTurn = aplicarCambiosTurno(
-                profile.name,
-                dayKey,
-                getTurnoProgramado(profile.name, dayKey)
-            );
-            // Los prestamos activos se validan aparte en Cloud Functions.
-            // Se excluyen de esta proyeccion para que una cancelacion no deje
-            // disponibilidad obsoleta si la unidad origen esta desconectada.
-            const turn = restarTurnoCubierto(
-                actualTurn,
-                interUnitTurnForWorker(profile.name, iso)
-            );
+            const days = {};
 
-            days[iso] = {
-                turn: Number(turn) || 0,
-                available: !hasAbsence,
-                blocked: Boolean(
-                    getBlockedDayForProfile(profile.name, dayKey)
-                )
-            };
-        }
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dayKey = keyDay(year, month, day);
+                const iso = dateISO(year, month, day);
+                const hasAbsence = profileHasAbsence(
+                    profile.name,
+                    dayKey,
+                    maps
+                );
+                const actualTurn = aplicarCambiosTurno(
+                    profile.name,
+                    dayKey,
+                    getTurnoProgramado(profile.name, dayKey)
+                );
+                // Los prestamos activos se validan aparte en Cloud Functions.
+                // Se excluyen de esta proyeccion para que una cancelacion no
+                // deje disponibilidad obsoleta si la unidad esta desconectada.
+                const turn = restarTurnoCubierto(
+                    actualTurn,
+                    replacementTurns.get(
+                        `${profile.name}\u001f${iso}`
+                    ) || 0
+                );
 
-        return {
-            ...cleanProfile(profile),
-            rotationType: String(getRotativa(profile.name).type || ""),
-            hheeDiurnas: Number(stats.hheeDiurnas) || 0,
-            hheeNocturnas: Number(stats.hheeNocturnas) || 0,
-            days
-        };
+                days[iso] = {
+                    turn: Number(turn) || 0,
+                    available: !hasAbsence,
+                    blocked: blockedDays.has(
+                        `${profile.name}\u001f${iso}`
+                    )
+                };
+            }
+
+            workers.push({
+                ...cleanProfile(profile),
+                rotationType: String(
+                    getRotativa(profile.name).type || ""
+                ),
+                hheeDiurnas: Number(stats.hheeDiurnas) || 0,
+                hheeNocturnas: Number(stats.hheeNocturnas) || 0,
+                days
+            });
+        }, {
+        shouldContinue: () =>
+            generation === syncGeneration && Boolean(activeWorkspace?.id)
     });
-    const payload = {
-        workspaceId: workspace.id,
-        workspaceName: String(workspace.name || "").slice(0, 160),
+
+    if (!progress.completed) return null;
+
+    return {
         month: monthId(date),
-        workerCount: workers.length,
-        allowTwentyFourHourShifts:
-            getTurnChangeConfig().allowTwentyFourHourShifts !== false,
-        workers,
-        updatedAtISO: new Date().toISOString()
+        workers
     };
-    const payloadBytes = new TextEncoder()
-        .encode(JSON.stringify(payload))
-        .byteLength;
-
-    if (payloadBytes > MAX_STAFFING_DOCUMENT_BYTES) {
-        throw new Error(
-            `La publicacion operativa ${payload.month} supera el limite seguro.`
-        );
-    }
-
-    return payload;
 }
 
 async function publishInterUnitStaffingNow() {
@@ -247,22 +249,42 @@ async function publishInterUnitStaffingNow() {
     };
 
     try {
-        const payloads = await Promise.all(
-            monthDates().map(date =>
-                buildStaffingMonth(workspace, date)
-            )
-        );
+        // Sin unidades enlazadas no existe consumidor para esta proyeccion.
+        // Evita por completo el recorrido trabajadores x dias al abrir.
+        const linkedWorkspaces = await listAcceptedLinkedWorkspaces(workspace);
+        if (!linkedWorkspaces.length) return;
+
+        const rawMonths = [];
+        for (const date of monthDates()) {
+            const month = await buildStaffingMonth(date, generation);
+            if (!month) return;
+            rawMonths.push(month);
+        }
 
         if (generation !== syncGeneration) return;
 
-        const changedPayloads = payloads
-            .map(payload => ({
-                payload,
-                hash: stableHash({
-                    ...payload,
-                    updatedAtISO: ""
-                })
-            }))
+        const result = await buildInterUnitMonthsInWorker({
+            workspace,
+            months: rawMonths,
+            allowTwentyFourHourShifts:
+                getTurnChangeConfig().allowTwentyFourHourShifts !== false,
+            updatedAtISO: new Date().toISOString()
+        }, {
+            channel: `inter-unit:${workspace.id}`,
+            timeoutMs: 30000
+        });
+
+        if (generation !== syncGeneration) return;
+
+        result.payloads.forEach(item => {
+            if (item.byteLength > MAX_STAFFING_DOCUMENT_BYTES) {
+                throw new Error(
+                    `La publicacion operativa ${item.payload.month} supera el limite seguro.`
+                );
+            }
+        });
+
+        const changedPayloads = result.payloads
             .filter(item =>
                 publishedHashes.get(item.payload.month) !== item.hash
             );
@@ -295,6 +317,7 @@ async function publishInterUnitStaffingNow() {
             publishedHashes.set(payload.month, hash);
         });
     } catch (error) {
+        if (error?.name === "AbortError") return;
         console.warn(
             "No se pudo publicar disponibilidad para unidades enlazadas.",
             error
@@ -310,6 +333,26 @@ async function publishInterUnitStaffingNow() {
             scheduleInterUnitStaffingPublish();
         }
     }
+}
+
+function keysAffectInterUnitStaffing(keys = []) {
+    return keys.some(key =>
+        key === "profiles" ||
+        key === "replacements" ||
+        key === "swaps" ||
+        key === "turnChangeConfig" ||
+        [
+            "data_",
+            "baseData_",
+            "rotativa_",
+            "admin_",
+            "legal_",
+            "comp_",
+            "absences_",
+            "clockMarks_",
+            "shiftAssignmentHistory_"
+        ].some(prefix => String(key).startsWith(prefix))
+    );
 }
 
 export function scheduleInterUnitStaffingPublish(
@@ -526,12 +569,19 @@ export function stopInterUnitLoanSync() {
 }
 
 if (typeof window !== "undefined") {
-    window.addEventListener("proturnos:persistenceChanged", () => {
+    window.addEventListener("proturnos:persistenceChanged", event => {
+        if (!keysAffectInterUnitStaffing(event.detail?.keys || [])) return;
         scheduleInterUnitStaffingPublish();
     });
 
     window.addEventListener("proturnos:firebaseAppState", event => {
-        if (event.detail?.type === "app-state-applied") {
+        if (
+            event.detail?.type === "app-state-applied" ||
+            (
+                event.detail?.type === "app-state-entries-applied" &&
+                keysAffectInterUnitStaffing(event.detail?.keys || [])
+            )
+        ) {
             scheduleInterUnitStaffingPublish(400);
         }
     });

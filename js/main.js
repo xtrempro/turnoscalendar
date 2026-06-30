@@ -6561,11 +6561,11 @@ async function applyDraftRotation(
     }
 
     if (rotationType === "3turno") {
-        aplicarTercerTurnoDesde(startDate, firstTurn);
+        await aplicarTercerTurnoDesde(startDate, firstTurn);
         return;
     }
 
-    aplicarCuartoTurnoDesde(startDate, firstTurn);
+    await aplicarCuartoTurnoDesde(startDate, firstTurn);
 }
 
 async function requestShiftAssignmentEffectiveMonth(assigned) {
@@ -9459,7 +9459,6 @@ initFirebaseShell({
                     } else {
                         scheduleWorkspaceUiRefresh({ syncState: true });
                     }
-                    scheduleInterUnitStaffingPublish(400);
                 }
             });
         } else {

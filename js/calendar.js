@@ -148,6 +148,8 @@ import {
     acceptWorkerRequestById,
     rejectWorkerRequestById
 } from "./workerRequests.js";
+import { runCooperativeRange } from "./mainThreadScheduler.js";
+import { searchReplacementsInWorker } from "./workerService.js";
 
 export let currentDate = new Date();
 
@@ -165,6 +167,7 @@ let calendarDirectEditRefreshTimer = 0;
 let calendarDirectEditRefreshRequest = 0;
 let calendarDirectEditHistoryTimer = 0;
 let calendarDirectEditHistoryOpen = false;
+let replacementCandidateRequest = 0;
 let calendarPickerYear = currentDate.getFullYear();
 let calendarMonthPicker = null;
 let delegatedCalendar = null;
@@ -2366,6 +2369,7 @@ async function getReplacementCandidates(
     keyDay,
     options = {}
 ) {
+    const requestId = ++replacementCandidateRequest;
     const date = new Date(
         Number(keyDay.split("-")[0]),
         Number(keyDay.split("-")[1]),
@@ -2390,7 +2394,7 @@ async function getReplacementCandidates(
     const scope = options.scope || "compatible";
 
     if (scope === "linked") {
-        return linkedWorkspaceCandidates(
+        const linked = await linkedWorkspaceCandidates(
             profileName,
             keyDay,
             neededTurn,
@@ -2401,10 +2405,19 @@ async function getReplacementCandidates(
                 holidays
             }
         );
+
+        return requestId === replacementCandidateRequest
+            ? linked
+            : null;
     }
 
-    return replacementScopeProfiles(profileName, scope)
-        .map(profile => {
+    const scopeProfiles = replacementScopeProfiles(profileName, scope);
+    const candidates = [];
+    const progress = await runCooperativeRange(
+        0,
+        scopeProfiles.length - 1,
+        index => {
+            const profile = scopeProfiles[index];
             const currentState =
                 getActualState(profile.name, keyDay);
             const isDiurnoLongCoverage =
@@ -2438,7 +2451,7 @@ async function getReplacementCandidates(
             const blockedDay =
                 getBlockedDayForProfile(profile.name, keyDay);
 
-            return {
+            candidates.push({
                 profile,
                 currentState,
                 isFree: currentState === 0,
@@ -2450,9 +2463,17 @@ async function getReplacementCandidates(
                 hheeDiurnas,
                 hheeNocturnas,
                 hhee: hheeDiurnas + hheeNocturnas
-            };
-        })
-        .filter(candidate =>
+            });
+        }, {
+            shouldContinue: () =>
+                requestId === replacementCandidateRequest &&
+                getCurrentProfile() === profileName
+        }
+    );
+
+    if (!progress.completed) return null;
+
+    const eligible = candidates.filter(candidate =>
             !workerHasAbsence(candidate.profile.name, keyDay) &&
             !cededSwapTurnBlocks(
                 candidate.profile.name,
@@ -2468,26 +2489,23 @@ async function getReplacementCandidates(
                         candidate.isDiurnoLongCoverage
                 }
             )
-        )
-        .sort((a, b) => {
-            if (a.isDiurnoLongCoverage !== b.isDiurnoLongCoverage) {
-                return a.isDiurnoLongCoverage ? 1 : -1;
-            }
-
-            if (Boolean(a.blockedDay) !== Boolean(b.blockedDay)) {
-                return a.blockedDay ? 1 : -1;
-            }
-
-            if (a.isFree !== b.isFree) {
-                return a.isFree ? -1 : 1;
-            }
-
-            if (a.hhee !== b.hhee) {
-                return a.hhee - b.hhee;
-            }
-
-            return a.profile.name.localeCompare(b.profile.name);
+        );
+    try {
+        const result = await searchReplacementsInWorker({
+            mode: "turnoplus-prepared",
+            candidates: eligible
+        }, {
+            channel: `replacement:${profileName}:${keyDay}`,
+            timeoutMs: 15000
         });
+
+        return requestId === replacementCandidateRequest
+            ? result.candidates
+            : null;
+    } catch (error) {
+        if (error?.name === "AbortError") return null;
+        throw error;
+    }
 }
 
 function replacementDialogHTML({
@@ -3129,6 +3147,7 @@ async function openReplacementDialog(profileName, keyDay) {
                 keyDay,
                 { scope }
             );
+        if (!candidates) return;
         const pendingRequests =
             getPendingReplacementRequestsForShift(
                 profileName,
