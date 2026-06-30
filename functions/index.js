@@ -36,9 +36,15 @@ const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 const MAIL_FROM = defineString("MAIL_FROM", {
   default: "TurnoPlus <onboarding@resend.dev>"
 });
-// TurnoPlus y la PWA están registrados con reCAPTCHA Enterprise.
-// Las funciones de préstamos entre unidades siempre exigen App Check.
-const ENFORCE_APP_CHECK = true;
+// TurnoPlus y la PWA están registrados con reCAPTCHA Enterprise en producción,
+// por eso allí los callables siempre exigen App Check. El proyecto de pruebas no
+// tiene App Check configurado (el cliente de test no envía token), así que la
+// exigencia se desactiva solo en ese proyecto. Ante un proyecto desconocido se
+// mantiene la exigencia por defecto.
+const TEST_PROJECT_ID = "turnoplus-test-7c4d9";
+const ENFORCE_APP_CHECK =
+  (process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT) !==
+  TEST_PROJECT_ID;
 // TOTP queda preparado para una etapa futura, pero no se exige por ahora.
 // Cambiar a true cuando se quiera reactivar MFA obligatorio para propietarios
 // y supervisores con permisos de edicion.
