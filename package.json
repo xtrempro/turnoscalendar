@@ -19,6 +19,7 @@
     "test:incremental-render": "node --test tests/frontend-incremental-render.test.mjs",
     "test:worker": "node --test tests/schedule-worker.test.mjs",
     "test:linked-units": "node --test tests/linked-units-on-demand.test.mjs",
+    "test:leave-application": "node --test tests/leave-application.test.mjs",
     "test:main-thread": "node --test tests/main-thread-scheduler.test.mjs",
     "test:rules": "firebase emulators:exec --project demo-proturnos --only firestore,storage \"node --test tests/security-rules.test.mjs\""
   },
