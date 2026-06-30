@@ -5562,6 +5562,13 @@ function isStandaloneApp() {
     return standaloneMode || window.navigator.standalone === true;
 }
 
+const MOVE_SHIFT_WEB_HOSTS = new Set([
+    "calendarioturnos-7c4d9.web.app",
+    "calendarioturnos-7c4d9.firebaseapp.com",
+    "turnoplus-test-7c4d9.web.app",
+    "turnoplus-test-7c4d9.firebaseapp.com"
+]);
+
 function isMoveShiftAvailable() {
     const hostname =
         String(window.location.hostname || "").toLowerCase();
@@ -5576,7 +5583,11 @@ function isMoveShiftAvailable() {
 
     return (
         !isStandaloneApp() &&
-        (isTurnoPlusWebsite || isLocalDevelopment)
+        (
+            isTurnoPlusWebsite ||
+            MOVE_SHIFT_WEB_HOSTS.has(hostname) ||
+            isLocalDevelopment
+        )
     );
 }
 
