@@ -1,3 +1,4 @@
+import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import {
@@ -7,105 +8,56 @@ import {
     readAttachmentFile
 } from "./attachmentUtils.js";
 import { showConfirm } from "./dialogs.js";
-import {
-    AGENDA_SEED,
-    AGENDA_SEED_VERSION
-} from "./agendaSeed.js";
-import {
-    CLAVE_AZUL_CONTACT_ID,
-    agendaFavoriteValue,
-    agendaFilterValues,
-    compareAgendaContacts,
-    filterAgendaContacts,
-    isClaveAzulContact,
-    normalizeAgendaDialNumber
-} from "./agendaModel.js";
+import { AGENDA_SEED } from "./agendaSeed.js";
 
 const STORAGE_KEY = "agenda_contacts";
 const SEED_FLAG_KEY = "agenda_seeded_v1";
-// v3 reemplaza por completo el directorio anterior con el CSV institucional.
-// Es una migracion deliberada: los contactos previos eran solo datos de prueba.
-const SEED_VERSION = AGENDA_SEED_VERSION;
+// v3: reemplaza el directorio institucional por la lista actualizada,
+// descartando cualquier seed anterior (incluida la version de prueba con
+// llamada movil) y conservando solo los contactos creados por el usuario.
+const SEED_VERSION = 3;
 const NEW_CONTACT_ID = "__new_contact__";
-const CONTACT_PAGE_SIZE = 80;
-const CLAVE_AZUL_CONTACT = {
-    id: CLAVE_AZUL_CONTACT_ID,
-    name: "CLAVE AZUL",
-    establishment: "HCV",
-    unidad: "Emergencia Adulto",
-    cargo: "Emergencia",
-    extension: "356427",
-    dialNumber: "352206427",
-    favorite: false,
-    priority: true
-};
 
 let selectedContactId = NEW_CONTACT_ID;
 let agendaSearch = "";
-let agendaEstablishmentFilter = "";
-let agendaUnitFilter = "";
-let agendaFiltersOpen = false;
-let visibleContactLimit = CONTACT_PAGE_SIZE;
 let seedChecked = false;
 
-// Carga inicial (una sola vez por version) del directorio institucional. La
-// version 3 sustituye el listado de prueba completo; despues cada supervisor
-// conserva sus favoritos y ediciones en su copia local.
-export function ensureAgendaSeeded() {
+// Carga inicial (una sola vez por version) del directorio institucional. Agrega
+// los contactos del seed que falten (por id estable, sin duplicar) a lo que ya
+// tenga el supervisor; luego cada uno edita/borra su propia copia local (la
+// agenda no se sincroniza entre usuarios).
+function ensureSeeded() {
     if (seedChecked) return;
     seedChecked = true;
 
-    const seededVersion = Number(getJSON(SEED_FLAG_KEY, 0));
+    if (Number(getJSON(SEED_FLAG_KEY, 0)) >= SEED_VERSION) return;
+
     const existing = getJSON(STORAGE_KEY, []);
     const current = (Array.isArray(existing) ? existing : []).map(normalizeContact);
-    let nextContacts = current;
-
-    if (seededVersion < SEED_VERSION) {
-        nextContacts = AGENDA_SEED.map((row, index) => {
-            if (!Array.isArray(row)) return normalizeContact(row, index);
-
-            const [
-                id,
-                establishment,
+    // Conserva solo los contactos creados por el usuario; el directorio sembrado
+    // (de cualquier version anterior) se reemplaza por el nuevo.
+    const userContacts = current.filter(contact =>
+        !contact.id.startsWith("agenda_seed") &&
+        contact.id !== "agenda_clave_azul"
+    );
+    const seeded = AGENDA_SEED.map(
+        ([unidad, cargo, name, telefono, email], index) =>
+            normalizeContact({
+                id: `agenda_seed_${index}`,
                 unidad,
-                favorite,
                 cargo,
                 name,
-                extension,
-                dialNumber,
-                email,
-                priority
-            ] = row;
+                extension: telefono,
+                email
+            }, index)
+    );
 
-            return normalizeContact({
-                id,
-                establishment,
-                unidad,
-                favorite,
-                cargo,
-                name,
-                extension,
-                dialNumber,
-                email,
-                priority
-            }, index);
-        });
-    }
+    setJSON(STORAGE_KEY, [...seeded, ...userContacts]);
+    setJSON(SEED_FLAG_KEY, SEED_VERSION);
+}
 
-    const claveIndex = nextContacts.findIndex(isClaveAzulContact);
-    const claveAzul = normalizeContact({
-        ...(claveIndex >= 0 ? nextContacts[claveIndex] : {}),
-        ...CLAVE_AZUL_CONTACT
-    });
-
-    nextContacts = claveIndex >= 0
-        ? nextContacts.map((contact, index) =>
-            index === claveIndex ? claveAzul : contact
-        )
-        : [claveAzul, ...nextContacts];
-
-    setJSON(STORAGE_KEY, nextContacts);
-    setJSON(SEED_FLAG_KEY, Math.max(seededVersion, SEED_VERSION));
+function normalizeSearch(value) {
+    return normalizeText(value);
 }
 
 function normalizeAttachment(attachment) {
@@ -132,15 +84,11 @@ function normalizeContact(contact = {}, index = 0) {
                     .slice(2, 8)}`
         ),
         name: String(contact.name || "").trim(),
-        establishment: String(contact.establishment || "").trim(),
         unidad: String(contact.unidad || "").trim(),
         cargo: String(contact.cargo || "").trim(),
         email: String(contact.email || "").trim(),
         extension: String(contact.extension || "").trim(),
         mobile: String(contact.mobile || "").trim(),
-        dialNumber: normalizeAgendaDialNumber(contact.dialNumber),
-        favorite: agendaFavoriteValue(contact.favorite),
-        priority: Boolean(contact.priority),
         notes: String(contact.notes || "").trim(),
         attachment: normalizeAttachment(contact.attachment),
         createdAt: contact.createdAt || new Date().toISOString(),
@@ -152,16 +100,11 @@ function normalizeContact(contact = {}, index = 0) {
 }
 
 function hasContactData(contact) {
-    return Boolean(
-        contact.name ||
-        contact.cargo ||
-        contact.unidad ||
-        contact.establishment
-    );
+    return Boolean(contact.name || contact.cargo || contact.unidad);
 }
 
 function getContacts() {
-    ensureAgendaSeeded();
+    ensureSeeded();
 
     const raw = getJSON(STORAGE_KEY, []);
     const contacts = Array.isArray(raw) ? raw : [];
@@ -169,7 +112,11 @@ function getContacts() {
     return contacts
         .map(normalizeContact)
         .filter(hasContactData)
-        .sort(compareAgendaContacts);
+        .sort((a, b) =>
+            a.unidad.localeCompare(b.unidad) ||
+            a.name.localeCompare(b.name) ||
+            a.cargo.localeCompare(b.cargo)
+        );
 }
 
 function saveContacts(contacts) {
@@ -191,11 +138,15 @@ function getInitials(name) {
 }
 
 function filterContacts(contacts) {
-    return filterAgendaContacts(contacts, {
-        search: agendaSearch,
-        establishment: agendaEstablishmentFilter,
-        unit: agendaUnitFilter
-    });
+    const query = normalizeSearch(agendaSearch);
+
+    if (!query) return contacts;
+
+    return contacts.filter(contact =>
+        [contact.name, contact.cargo, contact.unidad].some(value =>
+            normalizeSearch(value).includes(query)
+        )
+    );
 }
 
 function getSelectedContact(contacts) {
@@ -217,60 +168,27 @@ async function openAttachment(attachment) {
 
 function renderContactItem(contact) {
     const active = contact.id === selectedContactId;
-    const claveAzul = isClaveAzulContact(contact);
     const displayName = contact.name || contact.cargo || contact.unidad || "Contacto";
     const subtitleParts = [];
 
     if (contact.name && contact.cargo) subtitleParts.push(contact.cargo);
-    if (contact.establishment) subtitleParts.push(contact.establishment);
     if (contact.unidad) subtitleParts.push(contact.unidad);
-    if (contact.extension) subtitleParts.push(contact.extension);
 
     const subtitle = subtitleParts.join(" · ") || contact.email || "Sin datos";
-    const favoriteLabel = contact.favorite
-        ? "Quitar de favoritos"
-        : "Agregar a favoritos";
 
     return `
-        <article class="profile-item agenda-contact-item${active ? " active" : ""}${claveAzul ? " is-priority" : ""}" data-agenda-contact-row="${escapeHTML(contact.id)}">
-            <button class="agenda-contact-select" type="button" data-agenda-contact="${escapeHTML(contact.id)}">
-                <span class="profile-item__avatar">${claveAzul ? "🚨" : escapeHTML(getInitials(displayName).toUpperCase())}</span>
-                <span class="profile-item__content">
-                    <strong>${escapeHTML(displayName)}</strong>
-                    <span>${escapeHTML(subtitle)}</span>
-                </span>
-            </button>
-            <span class="agenda-contact-item__actions">
-                ${
-                    claveAzul
-                        ? ""
-                        : `
-                            <button class="agenda-favorite-button${contact.favorite ? " is-favorite" : ""}" type="button" data-agenda-favorite="${escapeHTML(contact.id)}" aria-label="${favoriteLabel}" title="${favoriteLabel}" aria-pressed="${contact.favorite ? "true" : "false"}">
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3Z"></path>
-                                </svg>
-                            </button>
-                        `
-                }
-                ${
-                    contact.dialNumber
-                        ? `
-                            <a class="agenda-call-button" href="tel:${contact.dialNumber}" data-agenda-call aria-label="Llamar desde el móvil" title="Llamar desde el móvil">
-                                <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M6.7 3.5 9.4 3a1.5 1.5 0 0 1 1.7.9l1.2 3a1.5 1.5 0 0 1-.4 1.7l-1.5 1.3a14.7 14.7 0 0 0 3.7 3.7l1.3-1.5a1.5 1.5 0 0 1 1.7-.4l3 1.2a1.5 1.5 0 0 1 .9 1.7l-.5 2.7a3 3 0 0 1-3 2.5C10.1 19.2 4.8 13.9 4.2 6.5a3 3 0 0 1 2.5-3Z"></path>
-                                </svg>
-                            </a>
-                        `
-                        : ""
-                }
+        <button class="profile-item agenda-contact-item${active ? " active" : ""}" type="button" data-agenda-contact="${escapeHTML(contact.id)}">
+            <span class="profile-item__avatar">${escapeHTML(getInitials(displayName).toUpperCase())}</span>
+            <span class="profile-item__content">
+                <strong>${escapeHTML(displayName)}</strong>
+                <span>${escapeHTML(subtitle)}</span>
             </span>
-        </article>
+        </button>
     `;
 }
 
 function renderContactListMarkup(contacts) {
     const visible = filterContacts(contacts);
-    const rendered = visible.slice(0, visibleContactLimit);
 
     if (!contacts.length) {
         return `
@@ -288,18 +206,7 @@ function renderContactListMarkup(contacts) {
         `;
     }
 
-    return `
-        ${rendered.map(renderContactItem).join("")}
-        ${
-            rendered.length < visible.length
-                ? `
-                    <button class="secondary-button agenda-load-more" type="button" data-agenda-load-more>
-                        Mostrar más (${visible.length - rendered.length})
-                    </button>
-                `
-                : ""
-        }
-    `;
+    return visible.map(renderContactItem).join("");
 }
 
 function renderAttachment(attachment) {
@@ -331,7 +238,6 @@ function renderAttachment(attachment) {
 
 function renderForm(contact) {
     const isEditing = Boolean(contact);
-    const protectedContact = isClaveAzulContact(contact);
 
     return `
         <form class="agenda-form" data-agenda-form autocomplete="off">
@@ -349,11 +255,6 @@ function renderForm(contact) {
             </div>
 
             <div class="agenda-form-grid">
-                <label class="metric-row metric-row--field">
-                    <span class="metric-label">Establecimiento:</span>
-                    <input name="establishment" type="text" maxlength="160" placeholder="Establecimiento" value="${escapeHTML(contact?.establishment || "")}">
-                </label>
-
                 <label class="metric-row metric-row--field">
                     <span class="metric-label">Unidad:</span>
                     <input name="unidad" type="text" maxlength="160" placeholder="Unidad" value="${escapeHTML(contact?.unidad || "")}">
@@ -385,14 +286,6 @@ function renderForm(contact) {
                 </label>
 
                 <label class="metric-row metric-row--field">
-                    <span class="metric-label">Número para llamar desde móvil:</span>
-                    <span>
-                        <input name="dialNumber" type="tel" inputmode="numeric" maxlength="11" placeholder="9 dígitos" value="${escapeHTML(contact?.dialNumber || "")}">
-                        <small class="field-help">Solo se muestra como botón de llamada y debe contener 9 dígitos.</small>
-                    </span>
-                </label>
-
-                <label class="metric-row metric-row--field">
                     <span class="metric-label">Archivo Adjunto:</span>
                     <span>
                         <input name="attachment" type="file" accept="${ATTACHMENT_ACCEPT}">
@@ -418,7 +311,7 @@ function renderForm(contact) {
                     Nuevo
                 </button>
                 ${
-                    isEditing && !protectedContact
+                    isEditing
                         ? `
                             <button class="ghost-button agenda-delete-button" type="button" data-agenda-delete>
                                 Eliminar
@@ -431,62 +324,6 @@ function renderForm(contact) {
     `;
 }
 
-function renderFilterOptions(values, selected, emptyLabel) {
-    return [
-        `<option value="">${emptyLabel}</option>`,
-        ...values.map(value => `
-            <option value="${escapeHTML(value)}" ${value === selected ? "selected" : ""}>
-                ${escapeHTML(value)}
-            </option>
-        `)
-    ].join("");
-}
-
-function renderAgendaFilters(contacts) {
-    const establishments = agendaFilterValues(
-        contacts,
-        "establishment"
-    );
-    const contactsForUnits = agendaEstablishmentFilter
-        ? filterAgendaContacts(contacts, {
-            establishment: agendaEstablishmentFilter
-        })
-        : contacts;
-    const units = agendaFilterValues(contactsForUnits, "unidad");
-    const filtersApplied = Boolean(
-        agendaEstablishmentFilter || agendaUnitFilter
-    );
-
-    return `
-        <div class="agenda-list-toolbar">
-            <span data-agenda-count>${filterContacts(contacts).length} contacto(s)</span>
-            <button class="agenda-filter-toggle${filtersApplied ? " is-active" : ""}" type="button" data-agenda-filter-toggle aria-expanded="${agendaFiltersOpen ? "true" : "false"}">
-                Filtros
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="m7 10 5 5 5-5"></path>
-                </svg>
-            </button>
-        </div>
-        <div class="agenda-filter-menu${agendaFiltersOpen ? "" : " hidden"}" data-agenda-filter-menu>
-            <label>
-                <span>Establecimiento</span>
-                <select data-agenda-establishment-filter>
-                    ${renderFilterOptions(establishments, agendaEstablishmentFilter, "Todos los establecimientos")}
-                </select>
-            </label>
-            <label>
-                <span>Unidad</span>
-                <select data-agenda-unit-filter>
-                    ${renderFilterOptions(units, agendaUnitFilter, "Todas las unidades")}
-                </select>
-            </label>
-            <button class="ghost-button" type="button" data-agenda-clear-filters ${filtersApplied ? "" : "disabled"}>
-                Limpiar filtros
-            </button>
-        </div>
-    `;
-}
-
 function renderShell() {
     const contacts = getContacts();
     const selectedContact = getSelectedContact(contacts);
@@ -495,22 +332,13 @@ function renderShell() {
         <aside class="panel sidebar agenda-sidebar">
             <h2 class="panel-title">Contactos</h2>
 
-            <div class="agenda-sidebar-actions">
-                <button class="primary-button" type="button" data-agenda-new aria-label="Nuevo contacto">
-                    <span aria-hidden="true">+</span>
-                    <span>Nuevo contacto</span>
-                </button>
-            </div>
-
             <label class="field-shell field-shell--icon">
                 <svg class="field-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="11" cy="11" r="7"></circle>
                     <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
                 </svg>
-                <input data-agenda-search type="search" placeholder="Buscar por nombre, cargo, establecimiento o unidad" value="${escapeHTML(agendaSearch)}">
+                <input data-agenda-search type="search" placeholder="Buscar por nombre, cargo o unidad" value="${escapeHTML(agendaSearch)}">
             </label>
-
-            ${renderAgendaFilters(contacts)}
 
             <div class="profile-list agenda-contact-list" data-agenda-list>
                 ${renderContactListMarkup(contacts)}
@@ -530,33 +358,6 @@ function bindContactListEvents(root) {
             renderAgendaPanel();
         };
     });
-
-    root.querySelectorAll("[data-agenda-favorite]").forEach(button => {
-        button.onclick = () => {
-            const contactId = button.dataset.agendaFavorite;
-
-            saveContacts(
-                getContacts().map(contact =>
-                    contact.id === contactId
-                        ? {
-                            ...contact,
-                            favorite: !contact.favorite,
-                            updatedAt: new Date().toISOString()
-                        }
-                        : contact
-                )
-            );
-            refreshContactList(root);
-        };
-    });
-
-    root.querySelector("[data-agenda-load-more]")?.addEventListener(
-        "click",
-        () => {
-            visibleContactLimit += CONTACT_PAGE_SIZE;
-            refreshContactList(root);
-        }
-    );
 }
 
 function refreshContactList(root) {
@@ -566,11 +367,6 @@ function refreshContactList(root) {
     if (!list) return;
 
     list.innerHTML = renderContactListMarkup(contacts);
-    const count = root.querySelector("[data-agenda-count]");
-
-    if (count) {
-        count.textContent = `${filterContacts(contacts).length} contacto(s)`;
-    }
     bindContactListEvents(root);
 }
 
@@ -581,54 +377,9 @@ function bindAgendaEvents(root) {
     if (searchInput) {
         searchInput.oninput = () => {
             agendaSearch = searchInput.value;
-            visibleContactLimit = CONTACT_PAGE_SIZE;
             refreshContactList(root);
         };
     }
-
-    root.querySelector("[data-agenda-filter-toggle]")?.addEventListener(
-        "click",
-        event => {
-            agendaFiltersOpen = !agendaFiltersOpen;
-            event.currentTarget.setAttribute(
-                "aria-expanded",
-                agendaFiltersOpen ? "true" : "false"
-            );
-            root
-                .querySelector("[data-agenda-filter-menu]")
-                ?.classList.toggle("hidden", !agendaFiltersOpen);
-        }
-    );
-
-    root
-        .querySelector("[data-agenda-establishment-filter]")
-        ?.addEventListener("change", event => {
-            agendaEstablishmentFilter = event.currentTarget.value;
-            agendaUnitFilter = "";
-            visibleContactLimit = CONTACT_PAGE_SIZE;
-            agendaFiltersOpen = true;
-            renderAgendaPanel();
-        });
-
-    root
-        .querySelector("[data-agenda-unit-filter]")
-        ?.addEventListener("change", event => {
-            agendaUnitFilter = event.currentTarget.value;
-            visibleContactLimit = CONTACT_PAGE_SIZE;
-            agendaFiltersOpen = true;
-            renderAgendaPanel();
-        });
-
-    root.querySelector("[data-agenda-clear-filters]")?.addEventListener(
-        "click",
-        () => {
-            agendaEstablishmentFilter = "";
-            agendaUnitFilter = "";
-            visibleContactLimit = CONTACT_PAGE_SIZE;
-            agendaFiltersOpen = true;
-            renderAgendaPanel();
-        }
-    );
 
     root.querySelectorAll("[data-agenda-new]").forEach(button => {
         button.onclick = () => {
@@ -644,16 +395,6 @@ function bindAgendaEvents(root) {
 
     if (!form) return;
 
-    const dialNumberInput = form.elements.dialNumber;
-
-    if (dialNumberInput) {
-        dialNumberInput.oninput = () => {
-            dialNumberInput.value = dialNumberInput.value
-                .replace(/\D/g, "")
-                .slice(0, 11);
-        };
-    }
-
     form.onsubmit = async event => {
         event.preventDefault();
 
@@ -661,21 +402,9 @@ function bindAgendaEvents(root) {
         const name = String(data.get("name") || "").trim();
         const cargo = String(data.get("cargo") || "").trim();
         const unidad = String(data.get("unidad") || "").trim();
-        const establishment = String(
-            data.get("establishment") || ""
-        ).trim();
-        const rawDialNumber = String(data.get("dialNumber") || "").trim();
-        const dialNumber = normalizeAgendaDialNumber(rawDialNumber);
 
-        if (!name && !cargo && !unidad && !establishment) {
-            alert("Ingresa al menos nombre, cargo, establecimiento o unidad.");
-            return;
-        }
-
-        if (rawDialNumber && !dialNumber) {
-            alert(
-                "El número para llamar desde móvil debe contener exactamente 9 dígitos."
-            );
+        if (!name && !cargo && !unidad) {
+            alert("Ingresa al menos nombre, cargo o unidad.");
             return;
         }
 
@@ -712,13 +441,11 @@ function bindAgendaEvents(root) {
                     .toString(36)
                     .slice(2, 8)}`,
             name,
-            establishment,
             unidad,
             cargo,
             email: data.get("email"),
             extension: data.get("extension"),
             mobile: data.get("mobile"),
-            dialNumber,
             notes: data.get("notes"),
             attachment,
             createdAt: current?.createdAt || now,
