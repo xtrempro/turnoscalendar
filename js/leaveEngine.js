@@ -278,7 +278,7 @@ export async function aplicarAusenciaInjustificada(fecha){
     }
 
     if (
-        !await confirmCancelTurnChanges(
+        !await confirmAndCancelScheduleConflicts(
             currentProfile,
             [key],
             "Ausencia Injustificada"
@@ -397,7 +397,7 @@ export async function aplicarAdministrativo(fecha, cantidad = 1){
     }
 
     if (
-        !await confirmCancelTurnChanges(
+        !await confirmAndCancelScheduleConflicts(
             currentProfile,
             keys,
             "P. Administrativo"
@@ -461,7 +461,7 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
     if(admin[key]) return false;
 
     if (
-        !await confirmCancelTurnChanges(
+        !await confirmAndCancelScheduleConflicts(
             currentProfile,
             [key],
             tipo === "M"
@@ -650,7 +650,7 @@ export async function aplicarLegal(fecha, cantidad){
     if(!validarRangoAusencias(nuevos)) return false;
 
     if (
-        !await confirmCancelTurnChanges(
+        !await confirmAndCancelScheduleConflicts(
             getCurrentProfile(),
             nuevos,
             "F. Legal"
@@ -814,7 +814,7 @@ export async function aplicarComp(fecha, cantidad = 10){
     }
 
     if (
-        !await confirmCancelTurnChanges(
+        !await confirmAndCancelScheduleConflicts(
             getCurrentProfile(),
             nuevos,
             "F. Compensatorio"
