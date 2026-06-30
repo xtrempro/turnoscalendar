@@ -232,7 +232,6 @@ import {
 } from "./workerAvailability.js";
 import {
     cancelInterUnitLoan,
-    scheduleInterUnitStaffingPublish,
     startInterUnitLoanSync,
     stopInterUnitLoanSync
 } from "./firebaseInterUnitLoans.js";
@@ -338,9 +337,7 @@ import { renderReplacementLogHTML } from "./replacements.js";
 import {
     refreshWorkerRequestsNavBadge,
     renderWorkerRequestsPanel,
-    setHheeReturnRequestHandler,
-    startWorkerRequestsRealtimeSync,
-    stopWorkerRequestsRealtimeSync
+    setHheeReturnRequestHandler
 } from "./workerRequests.js";
 import {
     openWorkerAppInviteDialog,
@@ -9139,7 +9136,6 @@ window.addEventListener(
 
 window.addEventListener("proturnos:interUnitLoansChanged", () => {
     void updateVisibleCalendarDays({ updateSummary: true });
-    scheduleInterUnitStaffingPublish(300);
 });
 
 const LEAVE_CANCELLATION_LABELS = {
@@ -9425,7 +9421,6 @@ initFirebaseShell({
                 throw error;
             }
 
-            startWorkerRequestsRealtimeSync(workspace);
             startWorkerAppDataSync(workspace);
             startInterUnitLoanSync(workspace);
             let workerAvailabilityInitialized = false;
@@ -9516,7 +9511,6 @@ initFirebaseShell({
                 }
             });
         } else {
-            stopWorkerRequestsRealtimeSync();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();

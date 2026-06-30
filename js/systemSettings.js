@@ -219,7 +219,7 @@ function renderRequestsPanel() {
                     id: "settingsEnableLinkedUnitSuggestions",
                     checked: config.enableLinkedUnitSuggestions !== false,
                     title: "Buscar sugerencias en unidades enlazadas",
-                    description: "En las sugerencias de reemplazo se cargan trabajadores de otras unidades que se encuentren enlazadas."
+                    description: "Habilita la busqueda bajo demanda. No se carga informacion externa hasta que el supervisor pulsa Buscar reemplazo compatible en unidades enlazadas."
                 })}
                 ${checkboxHTML({
                     id: "settingsEnableCrossRoleSuggestions",

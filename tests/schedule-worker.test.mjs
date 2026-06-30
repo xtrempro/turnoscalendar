@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import {
-    buildInterUnitMonths,
     calculateMonth,
     generateSchedule,
     searchReplacements,
@@ -64,32 +63,6 @@ test("calcula en lote horas y arrastre de varios trabajadores", () => {
     assert.equal(result.workerTotals[1].totalD, 8.8);
 });
 
-test("procesa 60 trabajadores por dos meses como datos planos", () => {
-    const workers = Array.from({ length: 60 }, (_item, workerIndex) => ({
-        id: `worker-${workerIndex}`,
-        name: `Trabajador ${workerIndex}`,
-        days: Object.fromEntries(
-            Array.from({ length: 30 }, (_day, dayIndex) => [
-                `2026-06-${String(dayIndex + 1).padStart(2, "0")}`,
-                { turn: dayIndex % 5, available: true, blocked: false }
-            ])
-        )
-    }));
-    const result = buildInterUnitMonths({
-        workspace: { id: "workspace-test", name: "Unidad Test" },
-        months: [
-            { month: "2026-06", workers },
-            { month: "2026-07", workers }
-        ],
-        updatedAtISO: "2026-06-29T12:00:00.000Z"
-    });
-
-    assert.equal(result.payloads.length, 2);
-    assert.equal(result.payloads[0].payload.workerCount, 60);
-    assert.ok(result.payloads[0].byteLength > 0);
-    assert.notEqual(result.payloads[0].hash, result.payloads[1].hash);
-});
-
 test("valida ausencias y ordena candidatos fuera del hilo principal", () => {
     const validation = validateAbsences({
         records: [
@@ -136,9 +109,8 @@ test("el worker permanece puro y las rutas pesadas lo consumen", async () => {
     assert.match(serviceSource, /pendingTasks = new Map\(\)/);
     assert.match(serviceSource, /CANCEL_TASK/);
     assert.match(serviceSource, /timeoutMs/);
-    assert.match(interUnitSource, /listAcceptedLinkedWorkspaces/);
-    assert.match(interUnitSource, /runCooperativeRange/);
-    assert.match(interUnitSource, /buildInterUnitMonthsInWorker/);
-    assert.match(interUnitSource, /HOT_MONTHS_FORWARD = 1/);
+    assert.doesNotMatch(interUnitSource, /listAcceptedLinkedWorkspaces/);
+    assert.doesNotMatch(interUnitSource, /buildInterUnitMonthsInWorker/);
+    assert.doesNotMatch(workerSource, /BUILD_INTER_UNIT_MONTHS/);
     assert.match(rotationSource, /generateScheduleInWorker/);
 });

@@ -17,6 +17,9 @@ const {
 } = require("./swapCancellation");
 const { cancelWorkerSwapHandler } = require("./workerSwapCancellation");
 const {
+  findCompatibleReplacementCandidates
+} = require("./linkedReplacementSearch");
+const {
   WebpayPlus,
   Options: TbkOptions,
   IntegrationApiKeys,
@@ -138,33 +141,6 @@ function validISODate(value) {
   const date = new Date(`${text}T12:00:00Z`);
   return !Number.isNaN(date.getTime()) &&
     date.toISOString().slice(0, 10) === text;
-}
-
-function turnCodeToState(code) {
-  return {
-    L: 1,
-    N: 2,
-    "24": 3,
-    D: 4,
-    "D+N": 5,
-    HM: 6,
-    HT: 7,
-    "18": 8
-  }[code] || 0;
-}
-
-function canCoverInterUnitShift(currentState, turnCode, allow24) {
-  const neededState = turnCodeToState(turnCode);
-  const current = Number(currentState) || 0;
-
-  if (!neededState) return false;
-  if (current === 0) return true;
-
-  return allow24 !== false &&
-    (
-      (current === 1 && neededState === 2) ||
-      (current === 2 && neededState === 1)
-    );
 }
 
 function memberCanManageRequests(member = {}) {
@@ -1044,47 +1020,42 @@ exports.createInterUnitLoan = onCall(
       )
     ]);
 
-    const month = date.slice(0, 7);
-    const staffingRef = db
-      .collection("workspaces")
-      .doc(sourceWorkspaceId)
-      .collection("linkedStaffingMonths")
-      .doc(month);
-    const [staffingSnap, sourceWorkspaceSnap, hostWorkspaceSnap] =
+    // La disponibilidad remota se valida en vivo y solo como parte de esta
+    // accion explicita. No depende de meses precalculados por el navegador.
+    const targetProfile = {
+      estamento: cleanCallableText(data.targetEstamento, 100),
+      profession: cleanCallableText(data.targetProfession, 160)
+    };
+    const [availability, sourceWorkspaceSnap, hostWorkspaceSnap] =
       await Promise.all([
-        staffingRef.get(),
+        findCompatibleReplacementCandidates({
+          db,
+          requesterWorkspaceId: hostWorkspaceId,
+          targetProfile,
+          dateISO: date,
+          turnCode,
+          sourceWorkspaceId,
+          linkId
+        }),
         db.collection("workspaces").doc(sourceWorkspaceId).get(),
         db.collection("workspaces").doc(hostWorkspaceId).get()
       ]);
 
     if (
-      !staffingSnap.exists ||
       !sourceWorkspaceSnap.exists ||
       !hostWorkspaceSnap.exists
     ) {
       throw new HttpsError(
         "failed-precondition",
-        "Una de las unidades aun no tiene disponibilidad publicada."
+        "Una de las unidades ya no se encuentra disponible."
       );
     }
 
-    const staffing = staffingSnap.data() || {};
-    const worker = Array.isArray(staffing.workers)
-      ? staffing.workers.find(item =>
-        cleanCallableText(item?.id, 120) === workerProfileId
-      )
-      : null;
-    const day = worker?.days?.[date] || null;
+    const worker = availability.candidates.find(item =>
+      cleanCallableText(item?.workerId, 120) === workerProfileId
+    ) || null;
 
-    if (
-      !worker ||
-      day?.available !== true ||
-      !canCoverInterUnitShift(
-        day.turn,
-        turnCode,
-        staffing.allowTwentyFourHourShifts
-      )
-    ) {
+    if (!worker || worker.availability?.available !== true) {
       throw new HttpsError(
         "failed-precondition",
         "El trabajador ya no esta disponible para ese turno."
@@ -1180,7 +1151,7 @@ exports.createInterUnitLoan = onCall(
   }
 );
 
-exports.getLinkedStaffingMonth = onCall(
+exports.findCompatibleReplacementInLinkedUnits = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 30
@@ -1196,19 +1167,20 @@ exports.getLinkedStaffingMonth = onCall(
     }
 
     const data = request.data || {};
-    const linkId = cleanCallableText(data.linkId, 220);
-    const sourceWorkspaceId =
-      cleanCallableText(data.sourceWorkspaceId, 160);
     const requesterWorkspaceId =
       cleanCallableText(data.requesterWorkspaceId, 160);
-    const month = cleanCallableText(data.month, 7);
+    const date = cleanCallableText(data.date, 10);
+    const turnCode = cleanCallableText(data.turnCode, 8);
+    const targetProfile = {
+      estamento: cleanCallableText(data.targetProfile?.estamento, 100),
+      profession: cleanCallableText(data.targetProfile?.profession, 160)
+    };
 
     if (
-      !linkId ||
-      !sourceWorkspaceId ||
       !requesterWorkspaceId ||
-      sourceWorkspaceId === requesterWorkspaceId ||
-      !/^\d{4}-\d{2}$/.test(month)
+      !validISODate(date) ||
+      !VALID_INTER_UNIT_TURNS.has(turnCode) ||
+      !targetProfile.estamento
     ) {
       throw new HttpsError(
         "invalid-argument",
@@ -1216,49 +1188,38 @@ exports.getLinkedStaffingMonth = onCall(
       );
     }
 
-    await Promise.all([
-      requireWorkspaceMember(
-        requesterWorkspaceId,
-        uid,
-        request.auth.token
-      ),
-      requireAcceptedWorkspaceLink(
-        linkId,
-        sourceWorkspaceId,
-        requesterWorkspaceId
-      )
-    ]);
+    await requireWorkspaceMember(
+      requesterWorkspaceId,
+      uid,
+      request.auth.token
+    );
+    const result = await findCompatibleReplacementCandidates({
+      db,
+      requesterWorkspaceId,
+      targetProfile,
+      dateISO: date,
+      turnCode
+    });
+    let message = "";
 
-    const staffingSnap = await db
-      .collection("workspaces")
-      .doc(sourceWorkspaceId)
-      .collection("linkedStaffingMonths")
-      .doc(month)
-      .get();
-
-    if (!staffingSnap.exists) {
-      return { exists: false, month };
+    if (!result.units.length && !result.failedUnits.length) {
+      message = "No hay unidades enlazadas aceptadas para este entorno.";
+    } else if (!result.candidates.length && result.failedUnits.length) {
+      message = `No se pudo consultar: ${result.failedUnits.join(", ")}.`;
+    } else if (!result.candidates.length) {
+      message = "No hay trabajadores compatibles y disponibles en las unidades enlazadas para esa fecha.";
     }
 
-    const staffing = staffingSnap.data() || {};
-
     return {
-      exists: true,
-      month,
-      workspaceId: sourceWorkspaceId,
-      workspaceName: cleanCallableText(
-        staffing.workspaceName,
-        160
-      ),
-      allowTwentyFourHourShifts:
-        staffing.allowTwentyFourHourShifts !== false,
-      workers: Array.isArray(staffing.workers)
-        ? staffing.workers
-        : [],
-      updatedAtISO: cleanCallableText(
-        staffing.updatedAtISO,
-        40
-      )
+      date,
+      candidates: result.candidates,
+      units: result.units.map(unit => ({
+        workspaceId: unit.workspaceId,
+        workspaceName: unit.workspaceName,
+        candidateCount: unit.candidates.length
+      })),
+      failedUnits: result.failedUnits,
+      message
     };
   }
 );

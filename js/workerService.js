@@ -174,7 +174,3 @@ export function validateAbsencesInWorker(payload, options = {}) {
 export function searchReplacementsInWorker(payload, options = {}) {
     return runWorkerTask("SEARCH_REPLACEMENTS", payload, options);
 }
-
-export function buildInterUnitMonthsInWorker(payload, options = {}) {
-    return runWorkerTask("BUILD_INTER_UNIT_MONTHS", payload, options);
-}

@@ -1072,7 +1072,6 @@ async function handleAction(action, backdrop, sourceButton = null) {
             if (currentUser) {
                 await ensureFirebaseUser(currentUser);
                 await refreshWorkspaces();
-                await refreshLinkedUnits();
                 // El gate y el bloqueo del modal los resuelve refreshShellGate /
                 // renderSignedInModal segun haya o no un entorno valido.
                 refreshShellGate();
@@ -1470,12 +1469,6 @@ function bindModalActions(backdrop) {
             replaceLocalSnapshot({}, { silent: true });
             await options.onWorkspaceChange?.(currentWorkspace);
 
-            try {
-                await refreshLinkedUnits();
-            } catch (error) {
-                console.warn("No se pudieron cargar unidades enlazadas.", error);
-            }
-
             await refreshSupervisorInvites();
 
             closeModal(backdrop, { force: true });
@@ -1572,7 +1565,6 @@ export async function initFirebaseShell(initOptions = {}) {
             if (user) {
                 await ensureFirebaseUser(user);
                 await refreshWorkspaces();
-                await refreshLinkedUnits();
 
                 if (hasValidActiveWorkspace()) {
                     setLoginGateActive(false);

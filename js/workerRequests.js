@@ -107,9 +107,6 @@ const STATUS_LABELS = {
 
 let selectedStatus = "pending";
 let selectedMonth = monthValue();
-let activeWorkspaceLinkWatchId = "";
-let unsubscribeWorkspaceLinks = null;
-let linkRenderTimer = null;
 
 // El traspaso de HH.EE a devolucion vive en main.js (depende de helpers de
 // saldo y estadisticas que estan alli). main.js registra aqui el manejador para
@@ -1143,87 +1140,12 @@ export async function refreshWorkerRequestsNavBadge() {
     const workerRequests = getWorkerRequests();
     const replacementRequests = getReplacementRequests()
         .map(replacementRequestToPanelRequest);
-    const linkRequests = await getWorkspaceLinkRequests();
     const pending = [
-        ...linkRequests,
         ...workerRequests,
         ...replacementRequests
     ].filter(request => request.status === "pending");
 
     updateRequestsNavBadge(pending.length);
-}
-
-function scheduleWorkerRequestsRender() {
-    clearTimeout(linkRenderTimer);
-    linkRenderTimer = setTimeout(() => {
-        if (document.body.dataset.activeView === "requests") {
-            renderWorkerRequestsPanel();
-        } else {
-            refreshWorkerRequestsNavBadge();
-        }
-    }, 80);
-}
-
-export async function startWorkerRequestsRealtimeSync(
-    workspace = getActiveWorkspace()
-) {
-    const workspaceId = workspace?.id || "";
-
-    if (
-        activeWorkspaceLinkWatchId === workspaceId &&
-        unsubscribeWorkspaceLinks
-    ) {
-        return;
-    }
-
-    stopWorkerRequestsRealtimeSync();
-    activeWorkspaceLinkWatchId = workspaceId;
-
-    if (
-        !workspaceId ||
-        !isFirebaseConfigured() ||
-        !getCurrentFirebaseUser()
-    ) {
-        return;
-    }
-
-    try {
-        const { db, firestoreModule } = await getFirebaseServices();
-        const linksRef =
-            firestoreModule.collection(db, "workspaceLinks");
-        const incomingLinksQuery = firestoreModule.query(
-            linksRef,
-            firestoreModule.where("toWorkspaceId", "==", workspaceId)
-        );
-
-        unsubscribeWorkspaceLinks = firestoreModule.onSnapshot(
-            incomingLinksQuery,
-            () => scheduleWorkerRequestsRender(),
-            error => {
-                console.warn(
-                    "No se pudo escuchar solicitudes de enlace entre entornos.",
-                    error
-                );
-            }
-        );
-    } catch (error) {
-        console.warn(
-            "No se pudo iniciar escucha de solicitudes de enlace entre entornos.",
-            error
-        );
-    }
-}
-
-export function stopWorkerRequestsRealtimeSync() {
-    clearTimeout(linkRenderTimer);
-    linkRenderTimer = null;
-
-    if (unsubscribeWorkspaceLinks) {
-        unsubscribeWorkspaceLinks();
-        unsubscribeWorkspaceLinks = null;
-    }
-
-    activeWorkspaceLinkWatchId = "";
 }
 
 async function getWorkspaceLinkRequests() {

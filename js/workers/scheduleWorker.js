@@ -322,55 +322,11 @@ export function searchReplacements(payload = {}) {
     };
 }
 
-function stableHash(value) {
-    const text = JSON.stringify(value);
-    let hash = 2166136261;
-
-    for (let index = 0; index < text.length; index++) {
-        hash ^= text.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-    }
-
-    return `${text.length}-${(hash >>> 0).toString(36)}`;
-}
-
-export function buildInterUnitMonths(payload = {}) {
-    const workspace = payload.workspace || {};
-    const months = Array.isArray(payload.months) ? payload.months : [];
-
-    return {
-        payloads: months.map(month => {
-            const result = {
-                workspaceId: String(workspace.id || ""),
-                workspaceName: String(workspace.name || "").slice(0, 160),
-                month: String(month.month || ""),
-                workerCount: Array.isArray(month.workers)
-                    ? month.workers.length
-                    : 0,
-                allowTwentyFourHourShifts:
-                    payload.allowTwentyFourHourShifts !== false,
-                workers: Array.isArray(month.workers) ? month.workers : [],
-                updatedAtISO: String(payload.updatedAtISO || "")
-            };
-            const hash = stableHash({ ...result, updatedAtISO: "" });
-            const byteLength = new TextEncoder()
-                .encode(JSON.stringify(result))
-                .byteLength;
-
-            return { payload: result, hash, byteLength };
-        })
-    };
-}
-
 export function runScheduleTask(type, payload) {
     if (type === "CALCULATE_MONTH") return calculateMonth(payload);
     if (type === "GENERATE_SCHEDULE") return generateSchedule(payload);
     if (type === "VALIDATE_ABSENCES") return validateAbsences(payload);
     if (type === "SEARCH_REPLACEMENTS") return searchReplacements(payload);
-    if (type === "BUILD_INTER_UNIT_MONTHS") {
-        return buildInterUnitMonths(payload);
-    }
-
     throw new Error(`Tarea de worker no soportada: ${type}`);
 }
 

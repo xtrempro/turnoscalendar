@@ -126,40 +126,6 @@ export async function listWorkspaceLinks(workspace = getActiveWorkspace()) {
     return uniqueLinks([fromSnap, toSnap]);
 }
 
-export async function listAcceptedLinkedWorkspaces(
-    workspace = getActiveWorkspace()
-) {
-    const links = await listWorkspaceLinks(workspace);
-    const acceptedLinks = links.filter(link =>
-        link.status === "accepted" &&
-        (
-            link.fromWorkspaceId === workspace?.id ||
-            link.toWorkspaceId === workspace?.id
-        )
-    );
-
-    return acceptedLinks
-        .map(link => {
-            const isSource =
-                link.fromWorkspaceId === workspace?.id;
-            const linkedWorkspaceId = isSource
-                ? link.toWorkspaceId
-                : link.fromWorkspaceId;
-            const linkedWorkspaceName = isSource
-                ? link.toWorkspaceName
-                : link.fromWorkspaceName;
-
-            return {
-                id: linkedWorkspaceId,
-                name: linkedWorkspaceName || linkedWorkspaceId,
-                linkId: link.id,
-                requestedByUid: link.requestedByUid || "",
-                direction: isSource ? "outgoing" : "incoming"
-            };
-        })
-        .filter(workspaceItem => workspaceItem.id);
-}
-
 export async function acceptWorkspaceLink(linkId) {
     const activeWorkspace = getActiveWorkspace();
     const user = getCurrentFirebaseUser();

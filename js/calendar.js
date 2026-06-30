@@ -138,11 +138,10 @@ import {
     replaceCalendarCell
 } from "./calendarUpdates.js";
 import { getActiveWorkspace } from "./workspaces.js";
-import { listAcceptedLinkedWorkspaces } from "./firebaseLinkedUnits.js";
+import { createInterUnitLoan } from "./firebaseInterUnitLoans.js";
 import {
-    createInterUnitLoan,
-    readLinkedStaffingMonth
-} from "./firebaseInterUnitLoans.js";
+    findCompatibleReplacementInLinkedUnits
+} from "./linkedReplacementService.js";
 import { getBlockedDayForProfile } from "./workerAvailability.js";
 import {
     acceptWorkerRequestById,
@@ -1888,45 +1887,10 @@ function previewDirectTurnChange(
     }, 160);
 }
 
-function combinedTurnChangeConfig(remoteConfig) {
-    const localConfig = getTurnChangeConfig();
-
-    return {
-        allowTwentyFourHourShifts:
-            localConfig.allowTwentyFourHourShifts !== false &&
-            remoteConfig.allowTwentyFourHourShifts !== false
-    };
-}
-
-function isLongNightCombination(currentState, neededTurn) {
-    return (
-        (
-            currentState === TURNO.LARGA &&
-            neededTurn === TURNO.NOCHE
-        ) ||
-        (
-            currentState === TURNO.NOCHE &&
-            neededTurn === TURNO.LARGA
-        )
-    );
-}
-
-function canCoverLinkedShift(currentState, neededTurn, config) {
-    if (!neededTurn) return false;
-
-    if (currentState === TURNO.LIBRE) return true;
-
-    return (
-        isLongNightCombination(currentState, neededTurn) &&
-        config.allowTwentyFourHourShifts !== false
-    );
-}
-
 async function linkedWorkspaceCandidates(
     profileName,
     keyDay,
-    neededTurn,
-    monthContext = {}
+    neededTurn
 ) {
     linkedReplacementStatus = "";
 
@@ -1948,134 +1912,51 @@ async function linkedWorkspaceCandidates(
         return [];
     }
 
-    const linkedWorkspaces =
-        await listAcceptedLinkedWorkspaces(activeWorkspace);
-    const candidates = [];
-    const diagnostics = {
-        readErrors: [],
-        emptyMonths: [],
-        totalProfiles: 0,
-        compatibleProfiles: 0,
-        availableProfiles: 0
-    };
+    const result = await findCompatibleReplacementInLinkedUnits({
+        requesterWorkspaceId: activeWorkspace.id,
+        date: keyToISODate(keyDay),
+        turnCode: turnoToCode(neededTurn),
+        targetProfile: {
+            estamento: baseProfile.estamento,
+            profession: baseProfile.profession
+        }
+    });
+    const candidates = result.candidates.map(candidate => {
+        const currentState =
+            Number(candidate.availability.currentTurn) || TURNO.LIBRE;
 
-    if (!linkedWorkspaces.length) {
-        linkedReplacementStatus =
-            "No hay unidades enlazadas aceptadas para este entorno.";
-        return [];
-    }
-
-    for (const workspace of linkedWorkspaces) {
-        let staffingMonth = null;
-
-        try {
-            staffingMonth = await readLinkedStaffingMonth(
-                workspace.id,
-                keyDay,
-                {
-                    linkId: workspace.linkId,
-                    requesterWorkspaceId: activeWorkspace.id
+        return {
+            profile: {
+                id: candidate.workerId,
+                name: candidate.name,
+                estamento: candidate.estamento,
+                profession: candidate.profession,
+                role: candidate.role
+            },
+            currentState,
+            isFree: currentState === TURNO.LIBRE,
+            isForced: false,
+            isLinked: true,
+            workspaceId: candidate.workspaceId,
+            workspaceName: candidate.workspaceName || candidate.workspaceId,
+            linkId: candidate.linkId,
+            blockedDay: candidate.availability.blocked
+                ? {
+                    message:
+                        "El trabajador marco esta fecha como no disponible para reemplazos."
                 }
-            );
-        } catch (error) {
-            console.warn(
-                "No se pudo leer disponibilidad de unidad enlazada.",
-                workspace.id,
-                error
-            );
-            diagnostics.readErrors.push(
-                workspace.name || workspace.id
-            );
-            continue;
-        }
+                : null,
+            hheeDiurnas: 0,
+            hheeNocturnas: 0,
+            hhee: 0
+        };
+    });
 
-        if (!staffingMonth) {
-            diagnostics.emptyMonths.push(
-                workspace.name || workspace.id
-            );
-            continue;
-        }
-
-        const allProfiles = Array.isArray(staffingMonth.workers)
-            ? staffingMonth.workers
-            : [];
-        const profiles = allProfiles
-            .filter(profile =>
-                profile &&
-                profileCanCoverProfile(profile, baseProfile)
-            );
-
-        diagnostics.totalProfiles += allProfiles.length;
-        diagnostics.compatibleProfiles += profiles.length;
-
-        const coverConfig = combinedTurnChangeConfig({
-            allowTwentyFourHourShifts:
-                staffingMonth.allowTwentyFourHourShifts !== false
-        });
-        const iso = keyToISODate(keyDay);
-
-        profiles.forEach(profile => {
-            const day = profile.days?.[iso] || null;
-            const currentState = Number(day?.turn) || TURNO.LIBRE;
-
-            if (
-                !day?.available ||
-                !canCoverLinkedShift(
-                    currentState,
-                    neededTurn,
-                    coverConfig
-                )
-            ) {
-                return;
-            }
-
-            const hheeDiurnas =
-                Number(profile.hheeDiurnas) || 0;
-            const hheeNocturnas =
-                Number(profile.hheeNocturnas) || 0;
-
-            diagnostics.availableProfiles++;
-
-            candidates.push({
-                profile,
-                currentState,
-                isFree: currentState === TURNO.LIBRE,
-                isForced: false,
-                isLinked: true,
-                workspaceId: workspace.id,
-                workspaceName: workspace.name || workspace.id,
-                linkId: workspace.linkId || "",
-                blockedDay: day.blocked
-                    ? {
-                        message:
-                            "El trabajador marco esta fecha como no disponible para reemplazos."
-                    }
-                    : null,
-                hheeDiurnas,
-                hheeNocturnas,
-                hhee: hheeDiurnas + hheeNocturnas
-            });
-        });
-    }
-
-    if (!candidates.length) {
-        if (diagnostics.readErrors.length) {
-            linkedReplacementStatus =
-                `No se pudo leer la disponibilidad de ${diagnostics.readErrors.join(", ")}. Revisa que el enlace siga activo.`;
-        } else if (diagnostics.emptyMonths.length) {
-            linkedReplacementStatus =
-                `La unidad enlazada ${diagnostics.emptyMonths.join(", ")} aun no publico disponibilidad para este mes. Abre esa unidad y espera unos segundos.`;
-        } else if (!diagnostics.totalProfiles) {
-            linkedReplacementStatus =
-                "La unidad enlazada no tiene colaboradores activos sincronizados.";
-        } else if (!diagnostics.compatibleProfiles) {
-            linkedReplacementStatus =
-                "Hay unidades enlazadas, pero no se encontraron trabajadores activos con la misma profesion/estamento requerido.";
-        } else {
-            linkedReplacementStatus =
-                "Hay trabajadores compatibles en unidades enlazadas, pero todos tienen ausencia, permiso o turno incompatible ese dia.";
-        }
-    }
+    linkedReplacementStatus = result.message || (
+        !candidates.length
+            ? "No hay trabajadores compatibles y disponibles en las unidades enlazadas para esa fecha."
+            : ""
+    );
 
     return candidates.sort((a, b) =>
         a.workspaceName.localeCompare(b.workspaceName) ||
@@ -2550,12 +2431,20 @@ function replacementDialogHTML({
         Boolean(availableWorkers.length) &&
         selectedCount === availableWorkers.length;
     const items = candidates.length
-        ? candidates.map(candidate => {
+        ? candidates.map((candidate, index) => {
             const pendingRequest =
                 pendingByWorker.get(candidate.profile.name);
             const checked =
                 selectedWorkers.has(candidate.profile.name);
             const warning = replacementCandidateWarning(candidate);
+            const candidateHours = candidate.isLinked
+                ? "<b>Disponible</b>"
+                : `
+                    <b>${formatCandidateHours(candidate.hhee)} HHEE</b>
+                    <small class="replacement-candidate-hours">
+                        D: ${formatCandidateHours(candidate.hheeDiurnas)}h · N: ${formatCandidateHours(candidate.hheeNocturnas)}h
+                    </small>
+                `;
 
             if (isRequestMode) {
                 return `
@@ -2580,16 +2469,26 @@ function replacementDialogHTML({
                         ${candidate.isLinked ? "<em>Unidad enlazada</em>" : ""}
                         ${candidate.isForced ? "<em>Forzado</em>" : ""}
                         ${candidate.blockedDay ? "<em>Dia bloqueado</em>" : ""}
-                        <b>${formatCandidateHours(candidate.hhee)} HHEE</b>
-                        <small class="replacement-candidate-hours">
-                            D: ${formatCandidateHours(candidate.hheeDiurnas)}h · N: ${formatCandidateHours(candidate.hheeNocturnas)}h
-                        </small>
+                        ${candidateHours}
                     </span>
                 </label>
                 `;
             }
 
+            const previousCandidate = candidates[index - 1];
+            const unitHeading = candidate.isLinked && (
+                !previousCandidate?.isLinked ||
+                previousCandidate.workspaceId !== candidate.workspaceId
+            )
+                ? `
+                    <div class="replacement-candidate-group-title">
+                        ${escapeHTML(candidate.workspaceName || "Unidad enlazada")}
+                    </div>
+                `
+                : "";
+
             return `
+            ${unitHeading}
             <button
                 class="replacement-candidate ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.isLinked ? "replacement-candidate--linked" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${pendingRequest ? "is-disabled" : ""}"
                 type="button"
@@ -2613,10 +2512,7 @@ function replacementDialogHTML({
                     ${candidate.isLinked ? "<em>Unidad enlazada</em>" : ""}
                     ${candidate.isForced ? "<em>Forzado</em>" : ""}
                     ${candidate.blockedDay ? "<em>Dia bloqueado</em>" : ""}
-                    <b>${formatCandidateHours(candidate.hhee)} HHEE</b>
-                    <small class="replacement-candidate-hours">
-                        D: ${formatCandidateHours(candidate.hheeDiurnas)}h · N: ${formatCandidateHours(candidate.hheeNocturnas)}h
-                    </small>
+                    ${candidateHours}
                 </span>
             </button>
             `;
@@ -2676,7 +2572,7 @@ function replacementDialogHTML({
                 <button class="ghost-button" type="button" data-action="linked-units">
                     ${linkedMode
                         ? "Volver a personal de esta unidad"
-                        : "Buscar sugerencias en unidades enlazadas"
+                        : "Buscar reemplazo compatible en unidades enlazadas"
                     }
                 </button>
             `
@@ -2810,6 +2706,8 @@ async function openReplacementDialog(profileName, keyDay) {
             workerProfileId,
             replacedProfileId: replacedProfile?.id || "",
             replacedProfileName: profileName,
+            targetEstamento: replacedProfile?.estamento || "",
+            targetProfession: replacedProfile?.profession || "",
             date: keyToISODate(keyDay),
             turnCode: turnoToCode(neededTurn),
             absenceType,

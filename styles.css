@@ -5574,6 +5574,16 @@ body.auth-gate-active .app-shell {
     padding-right: 4px;
 }
 
+.replacement-candidate-group-title {
+    grid-column: 1 / -1;
+    padding: 4px 4px 0;
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
 /* Escritorio: 2 columnas de candidatos en el modal de reemplazo para que quepan
    mas en pantalla. Solo el modal (no la subseccion de respaldo de turnos extra). */
 @media (min-width: 860px) {
