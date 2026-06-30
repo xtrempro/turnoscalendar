@@ -139,6 +139,117 @@ export function getReplacementsForWorkerShift(profile, keyDay) {
     );
 }
 
+export function getActiveReplacementsForWorkerKeys(
+    profile,
+    keys = []
+) {
+    const dates = new Set(keys.map(isoFromKey));
+
+    if (!profile || !dates.size) return [];
+
+    return getReplacements().filter(replacement =>
+        replacementActive(replacement) &&
+        replacement.worker === profile &&
+        dates.has(replacement.date)
+    );
+}
+
+function cancelLinkedRequestsForReplacements(
+    replacements,
+    {
+        canceledAt,
+        reason,
+        details
+    }
+) {
+    const requestIds = new Set();
+    const groupIds = new Set();
+
+    replacements.forEach(replacement => {
+        if (replacement.requestId) {
+            requestIds.add(String(replacement.requestId));
+        }
+
+        if (replacement.requestGroupId) {
+            groupIds.add(String(replacement.requestGroupId));
+        }
+    });
+
+    if (!requestIds.size && !groupIds.size) return;
+
+    let changed = false;
+    const requests = getReplacementRequests().map(request => {
+        const belongsToCanceledReplacement =
+            requestIds.has(String(request.id)) ||
+            groupIds.has(String(request.groupId || request.id));
+
+        if (!belongsToCanceledReplacement || request.status === "canceled") {
+            return request;
+        }
+
+        changed = true;
+
+        return {
+            ...request,
+            status: "canceled",
+            canceledAt,
+            cancelReason: reason,
+            cancellationReason: details
+        };
+    });
+
+    if (changed) {
+        saveReplacementRequests(requests);
+    }
+}
+
+export function cancelReplacementsForWorkerKeys(
+    profile,
+    keys = [],
+    {
+        reason = "medical_leave_applied",
+        details = "Turno extra anulado al aplicar una licencia medica."
+    } = {}
+) {
+    const dates = new Set(keys.map(isoFromKey));
+
+    if (!profile || !dates.size) return [];
+
+    const canceledAt = new Date().toISOString();
+    const canceled = [];
+    const replacements = getReplacements().map(replacement => {
+        if (
+            !replacementActive(replacement) ||
+            replacement.worker !== profile ||
+            !dates.has(replacement.date)
+        ) {
+            return replacement;
+        }
+
+        const nextReplacement = {
+            ...replacement,
+            canceled: true,
+            canceledAt,
+            cancelReason: reason,
+            cancellationDetails: details
+        };
+
+        canceled.push(nextReplacement);
+        return nextReplacement;
+    });
+
+    if (!canceled.length) return [];
+
+    saveReplacements(replacements);
+    cancelLinkedRequestsForReplacements(canceled, {
+        canceledAt,
+        reason,
+        details
+    });
+
+    return canceled;
+}
+
 export function getReplacementTurnForWorker(profile, keyDay) {
     return getReplacementsForWorkerShift(profile, keyDay)
         .filter(replacementAddsShift)

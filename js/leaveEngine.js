@@ -1,4 +1,9 @@
-import { keyFromDate, isoFromKey, keyToDate as parseKey } from "./dateUtils.js";
+import {
+    keyFromDate,
+    keyFromISO,
+    isoFromKey,
+    keyToDate as parseKey
+} from "./dateUtils.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 
@@ -38,6 +43,10 @@ import {
     getActiveSwapsForProfileKeys
 } from "./swaps.js";
 import {
+    cancelReplacementsForWorkerKeys,
+    getActiveReplacementsForWorkerKeys
+} from "./replacements.js";
+import {
     esAusenciaInjustificada,
     getAbsenceType,
     puedeAplicarAdministrativo,
@@ -60,37 +69,128 @@ function formatKey(key) {
     return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
-async function confirmCancelTurnChanges(profile, keys, label) {
-    const swaps = getActiveSwapsForProfileKeys(profile, keys);
+function replacementConflictLine(replacement) {
+    const target = replacement.replaced
+        ? `, cubriendo a ${replacement.replaced}`
+        : "";
+    const turn = replacement.turno || replacement.clockLabel || "turno";
 
-    if (!swaps.length) return true;
+    return `- ${formatKey(keyFromISO(replacement.date))}: ${turn}${target}`;
+}
 
-    const detail = swaps
-        .map(swap =>
-            `- ${swap.from} -> ${swap.to}: cambio ${swap.fecha}, devoluci\u00f3n ${swap.devolucion}`
-        )
-        .join("\n");
-    const message = [
-        `La aplicaci\u00f3n de ${label} pasa por sobre ${swaps.length} cambio(s) de turno registrado(s).`,
-        "Si contin\u00faas, se anular\u00e1n esos cambios y ambos trabajadores volver\u00e1n a sus turnos base.",
+function swapConflictLine(swap) {
+    return `- ${swap.from} -> ${swap.to}: cambio ${swap.fecha}, devoluci\u00f3n ${swap.devolucion}`;
+}
+
+function scheduleConflictMessage({
+    label,
+    replacements,
+    swaps
+}) {
+    const sections = [
+        `La aplicaci\u00f3n de ${label} se cruza con asignaciones vigentes que deben anularse antes de continuar.`
+    ];
+
+    if (replacements.length) {
+        sections.push(
+            "",
+            `Turnos extra/reemplazos (${replacements.length}):`,
+            replacements.map(replacementConflictLine).join("\n")
+        );
+    }
+
+    if (swaps.length) {
+        sections.push(
+            "",
+            `Cambios de turno (${swaps.length}):`,
+            swaps.map(swapConflictLine).join("\n")
+        );
+    }
+
+    sections.push(
         "",
-        detail,
-        "",
+        `Si contin\u00faas, estas asignaciones se marcar\u00e1n como anuladas y luego se aplicar\u00e1 ${label}.`,
         "\u00bfDeseas continuar?"
-    ].join("\n");
+    );
+
+    return sections.join("\n");
+}
+
+async function confirmAndCancelScheduleConflicts(
+    profile,
+    keys,
+    label,
+    {
+        cancelReplacements = false,
+        confirmDialog = showConfirm,
+        beforeCancellation = null
+    } = {}
+) {
+    const swaps = getActiveSwapsForProfileKeys(profile, keys);
+    const replacements = cancelReplacements
+        ? getActiveReplacementsForWorkerKeys(profile, keys)
+        : [];
+
+    if (!swaps.length && !replacements.length) {
+        return {
+            canceledReplacements: [],
+            canceledSwaps: []
+        };
+    }
+
     const accepted =
         typeof window === "undefined" ||
-        await showConfirm(message, {
-            title: "Cambios de turno asociados",
+        await confirmDialog(scheduleConflictMessage({
+            label,
+            replacements,
+            swaps
+        }), {
+            title: "Asignaciones que ser\u00e1n anuladas",
             tone: "warning",
-            confirmText: "Aplicar y anular cambios"
+            confirmText: "Aplicar y anular asignaciones"
         });
 
-    if (!accepted) return false;
+    if (!accepted) return null;
 
-    cancelSwapsForProfileKeys(profile, keys);
+    if (typeof beforeCancellation === "function") {
+        await beforeCancellation();
+    }
 
-    return true;
+    const canceledReplacements = cancelReplacements
+        ? cancelReplacementsForWorkerKeys(
+            profile,
+            keys,
+            {
+                reason: "medical_leave_applied",
+                details: `${label} aplicada a ${profile}.`
+            }
+        )
+        : [];
+    const canceledSwaps = cancelSwapsForProfileKeys(profile, keys);
+
+    if (
+        canceledReplacements.length &&
+        typeof window !== "undefined"
+    ) {
+        window.dispatchEvent(
+            new CustomEvent(
+                "proturnos:leaveScheduleConflictsCanceled",
+                {
+                    detail: {
+                        profile,
+                        label,
+                        canceledReplacements,
+                        canceledSwaps
+                    }
+                }
+            )
+        );
+    }
+
+    return {
+        canceledReplacements,
+        canceledSwaps
+    };
 }
 
 function absenceLabel(type) {
@@ -898,7 +998,8 @@ function pushKeyByYear(target, key) {
 export async function aplicarLicencia(
     fecha,
     cantidad,
-    type = "license"
+    type = "license",
+    options = {}
 ){
     const total = Number(cantidad);
 
@@ -930,15 +1031,37 @@ export async function aplicarLicencia(
         d.setDate(d.getDate()+1);
     }
 
-    if (
-        !await confirmCancelTurnChanges(
-            getCurrentProfile(),
+    const profile = getCurrentProfile();
+    const label = absenceLabel(type);
+    let mutationPrepared = false;
+    const prepareMutation = async () => {
+        if (mutationPrepared) return;
+
+        mutationPrepared = true;
+
+        if (typeof options.beforeMutation === "function") {
+            await options.beforeMutation();
+        }
+    };
+    const conflictCancellation =
+        await confirmAndCancelScheduleConflicts(
+            profile,
             keys,
-            absenceLabel(type)
-        )
-    ) {
-        return false;
+            label,
+            {
+                cancelReplacements:
+                    type === "license" ||
+                    type === "professional_license",
+                confirmDialog: options.confirmConflicts || showConfirm,
+                beforeCancellation: prepareMutation
+            }
+        );
+
+    if (!conflictCancellation) {
+        return null;
     }
+
+    await prepareMutation();
 
     const returnedLegal = {};
     const returnedComp = {};
@@ -1025,14 +1148,20 @@ export async function aplicarLicencia(
 
     addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
-        `Aplic\u00f3 ${absenceLabel(type)}`,
-        `${getCurrentProfile()}: ${total} d\u00eda(s) corridos desde ${formatKey(startKey)}.`,
+        `Aplic\u00f3 ${label}`,
+        `${profile}: ${total} d\u00eda(s) corridos desde ${formatKey(startKey)}.`,
         {
-            profile: getCurrentProfile(),
+            profile,
             date: isoFromKey(startKey),
             keys,
             amount: total,
-            type
+            type,
+            canceledReplacementIds:
+                conflictCancellation.canceledReplacements.map(
+                    replacement => replacement.id
+                ),
+            canceledSwapIds:
+                conflictCancellation.canceledSwaps.map(swap => swap.id)
         }
     );
 

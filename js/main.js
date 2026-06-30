@@ -8930,14 +8930,16 @@ setCalendarSelectionHandler(async ({ cell: celda, date: fecha }) => {
     }
 
     if (selectionMode === "license") {
-        pushHistory();
         const aplicado = await aplicarLicencia(
             fecha,
             licenseCantidad,
-            licenseType
+            licenseType,
+            {
+                beforeMutation: () => pushHistory()
+            }
         );
 
-        if (!aplicado) {
+        if (aplicado === false) {
             alert(
                 "No se pudo aplicar esta ausencia. Licencia M\u00e9dica, LM Profesional y Permiso Gremial solo pueden reemplazarse entre s\u00ed; el Permiso sin Goce no puede superponerse sobre licencias existentes."
             );
@@ -9070,10 +9072,7 @@ window.addEventListener("proturnos:memosChanged", () => {
     }
 });
 
-window.addEventListener("proturnos:auditUndoApplied", event => {
-    const canceledReplacements =
-        event.detail?.canceledReplacements || [];
-
+function cancelLinkedInterUnitLoans(canceledReplacements = []) {
     canceledReplacements.forEach(replacement => {
         if (!replacement?.interUnitLoanId) return;
 
@@ -9087,12 +9086,56 @@ window.addEventListener("proturnos:auditUndoApplied", event => {
             );
         });
     });
+}
+
+window.addEventListener("proturnos:auditUndoApplied", event => {
+    const canceledReplacements =
+        event.detail?.canceledReplacements || [];
+
+    cancelLinkedInterUnitLoans(canceledReplacements);
 
     if (!event.detail?.profile || event.detail.profile === getCurrentProfile()) {
         void updateVisibleCalendarDays({ updateSummary: true });
     }
     notifyWorkersOfAuditUndo(event.detail || {});
 });
+
+window.addEventListener(
+    "proturnos:leaveScheduleConflictsCanceled",
+    event => {
+        const detail = event.detail || {};
+        const canceledReplacements = Array.isArray(
+            detail.canceledReplacements
+        )
+            ? detail.canceledReplacements
+            : [];
+        const label = String(detail.label || "una licencia medica");
+
+        cancelLinkedInterUnitLoans(canceledReplacements);
+
+        canceledReplacements.forEach(replacement => {
+            if (!replacement?.worker) return;
+
+            const date = replacement.date || "la fecha asignada";
+            const turn = replacement.turno || "turno";
+
+            void notifyWorkerApp(
+                replacement.worker,
+                `Se anulo tu turno extra del ${date} (${turn}) porque se aplico ${label}.`
+            );
+
+            if (
+                replacement.replaced &&
+                replacement.replaced !== replacement.worker
+            ) {
+                void notifyWorkerApp(
+                    replacement.replaced,
+                    `Se anulo la cobertura de ${replacement.worker} para el ${date} (${turn}) porque se aplico ${label}.`
+                );
+            }
+        });
+    }
+);
 
 window.addEventListener("proturnos:interUnitLoansChanged", () => {
     void updateVisibleCalendarDays({ updateSummary: true });
