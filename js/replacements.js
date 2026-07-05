@@ -111,6 +111,23 @@ export function getReplacementForCoveredShift(profile, keyDay) {
     ) || null;
 }
 
+// Nombres de los trabajadores que cubren el turno del ausente ese dia (uno o
+// varios si el turno esta combinado). Sin duplicados.
+export function getCoveringWorkersForShift(profile, keyDay) {
+    const iso = isoFromKey(keyDay);
+
+    return [...new Set(
+        getReplacements()
+            .filter(replacement =>
+                replacementActive(replacement) &&
+                replacement.replaced === profile &&
+                replacement.date === iso &&
+                replacement.worker
+            )
+            .map(replacement => String(replacement.worker))
+    )];
+}
+
 export function getReplacementForWorkerShift(profile, keyDay) {
     return getReplacementsForWorkerShift(
         profile,

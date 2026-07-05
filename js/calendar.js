@@ -49,7 +49,6 @@ import {
 } from "./rulesEngine.js";
 import { fetchHolidays } from "./holidays.js";
 import {
-    calculateDayHours,
     isBusinessDay,
     isWeekend
 } from "./calculations.js";
@@ -80,6 +79,7 @@ import {
     createReplacementRequest,
     createReplacementRequests,
     expireReplacementRequests,
+    getCoveringWorkersForShift,
     getPendingReplacementRequestsForShift,
     getReplacementForCoveredShift,
     getReplacementForWorkerShift,
@@ -1671,11 +1671,14 @@ function leaveApplicationHoverTitle(
             )
         });
 
+    const covering = getCoveringWorkersForShift(profileName, keyDay);
+
     return [
         leaveLabelForType(type),
         `Aplicado: ${info?.createdAtLabel || "Sin registro"}`,
-        `Usuario: ${info?.actorName || "No registrado"}`
-    ].join("\n");
+        `Usuario: ${info?.actorName || "No registrado"}`,
+        covering.length ? `Cubre: ${covering.join(", ")}` : ""
+    ].filter(Boolean).join("\n");
 }
 
 function leaveDateLabelFromKey(keyDay) {
@@ -1720,6 +1723,7 @@ function openLeaveDetailDialog({
             )
         });
     const canUndo = Boolean(info?.canUndo && info?.logId);
+    const covering = getCoveringWorkersForShift(profile, keyDay);
 
     const backdrop = document.createElement("div");
     backdrop.className = "turn-change-dialog-backdrop";
@@ -1731,6 +1735,9 @@ function openLeaveDetailDialog({
                 <div><span>Fecha</span><b>${escapeHTML(leaveDateLabelFromKey(keyDay))}</b></div>
                 <div><span>Aplicado</span><b>${escapeHTML(info?.createdAtLabel || "Sin registro")}</b></div>
                 <div><span>Por</span><b>${escapeHTML(info?.actorName || "No registrado")}</b></div>
+                ${covering.length
+                    ? `<div><span>Cubre</span><b>${escapeHTML(covering.join(", "))}</b></div>`
+                    : ""}
             </div>
             <p class="leave-detail-note">
                 ${canUndo
@@ -1874,14 +1881,6 @@ function previewDirectTurnChange(
     cell.querySelectorAll(".day-badge").forEach(badge => {
         badge.remove();
     });
-
-    const hours = calculateDayHours(
-        options.profileName || getCurrentProfile(),
-        date,
-        nextTurn,
-        holidays
-    );
-    cell.title = `Diurnas: ${hours.d} | Nocturnas: ${hours.n}`;
 
     window.setTimeout(() => {
         cell.classList.remove("calendar-direct-edit-feedback");
@@ -4056,12 +4055,6 @@ export async function renderCalendar(options = {}) {
                 ? calendarBadges
                 : undefined,
             title: (() => {
-                const hrs = calculateDayHours(
-                    activeWorkerId,
-                    date,
-                    state,
-                    holidays
-                );
                 const leaveTitle = leaveApplicationHoverTitle(
                     activeProfile,
                     keyDay,
@@ -4094,16 +4087,15 @@ export async function renderCalendar(options = {}) {
                         return "Perfil desactivado: calendario solo lectura.";
                     }
 
-                    if (showExtraReason) {
-                        return `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
-                    }
-
                     if (replacementContractError) {
                         return "No tiene contrato vigente en la fecha seleccionada.";
                     }
 
-                    return replacementTitle ||
-                        `Diurnas: ${hrs.d} | Nocturnas: ${hrs.n}${suffix}`;
+                    // Ya no se muestran las HHEE (Diurnas/Nocturnas) en el hover;
+                    // se conservan solo las advertencias del dia si las hay.
+                    const warning = suffix.replace(/^\s*\|\s*/, "");
+
+                    return replacementTitle || warning;
                 })();
 
                 return [
