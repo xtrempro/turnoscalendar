@@ -78,6 +78,10 @@ writeFileSync(
     path.join(DIST, "sw.js"),
     readFileSync("sw.js")
 );
+writeFileSync(
+    path.join(DIST, "manifest.webmanifest"),
+    readFileSync("manifest.webmanifest")
+);
 for (const dir of ["img", "reports"]) {
     if (existsSync(dir)) {
         cpSync(dir, path.join(DIST, dir), { recursive: true });
@@ -99,5 +103,5 @@ const sizeKb = (readFileSync(jsOutput).length / 1024).toFixed(0);
 const workerSizeKb = (readFileSync(workerOutput).length / 1024).toFixed(0);
 console.log(
     `\nOK: ${jsHref} (${sizeKb} KB) + ${workerHref} (${workerSizeKb} KB) ` +
-    `+ index.html + styles.css + img/ + reports/ -> ${DIST}/`
+    `+ index.html + styles.css + manifest.webmanifest + img/ + reports/ -> ${DIST}/`
 );

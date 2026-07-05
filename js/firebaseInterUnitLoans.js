@@ -145,7 +145,7 @@ export async function startInterUnitLoanSync(workspace) {
             },
             error => {
                 console.warn(
-                    "No se pudieron sincronizar prestamos asignados al entorno actual.",
+                    "No se pudieron sincronizar prestamos asignados a la unidad actual.",
                     error
                 );
             }

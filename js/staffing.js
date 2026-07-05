@@ -592,7 +592,7 @@ function staffingReminderVisibilityLabel(visibility) {
         return `Trabajadores: ${visibility.slice(STAFFING_REMINDER_ESTAMENTO_PREFIX.length)}`;
     }
 
-    return "Todos los usuarios administradores del entorno";
+    return "Todos los usuarios administradores de la unidad";
 }
 
 const STAFFING_REMINDER_RECURRENCE_LABELS = {
@@ -3411,7 +3411,7 @@ function openStaffingReminderDialog() {
                 <label class="staffing-reminder-field">
                     <span>Visibilidad</span>
                     <select name="visibility">
-                        <option value="all">Todos los usuarios administradores del entorno</option>
+                        <option value="all">Todos los usuarios administradores de la unidad</option>
                         <option value="workers">Todos los trabajadores</option>
                         ${STAFFING_ESTAMENTOS.map(estamento => `
                         <option value="estamento:${escapeHTML(estamento)}">Trabajadores: ${escapeHTML(estamento)}</option>

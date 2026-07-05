@@ -435,7 +435,7 @@ async function createWorkerAppInvite(
 
     if (!workspace?.id) {
         throw new Error(
-            "Selecciona un entorno Firebase antes de enviar el enlace."
+            "Selecciona una unidad Firebase antes de enviar el enlace."
         );
     }
 

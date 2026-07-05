@@ -298,7 +298,7 @@ export async function startWorkspacePermissionListener(
         applyMemberSnapshot,
         error => {
             console.warn(
-                "No se pudieron sincronizar permisos del entorno.",
+                "No se pudieron sincronizar permisos de la unidad.",
                 error
             );
         }
@@ -350,7 +350,7 @@ export async function saveWorkspaceMemberPermissions(
     permissions
 ) {
     if (!workspaceId || !userId) {
-        throw new Error("Falta el entorno o usuario para guardar permisos.");
+        throw new Error("Falta la unidad o usuario para guardar permisos.");
     }
 
     const { db, firestoreModule } = await getFirebaseServices();
@@ -372,12 +372,12 @@ export async function saveWorkspaceMemberPermissions(
 
 export async function deleteWorkspaceMember(workspaceId, userId) {
     if (!workspaceId || !userId) {
-        throw new Error("Falta el entorno o usuario para eliminar el acceso.");
+        throw new Error("Falta la unidad o usuario para eliminar el acceso.");
     }
 
     const currentUser = getCurrentFirebaseUser();
     if (currentUser?.uid === userId) {
-        throw new Error("No puedes eliminar tu propio acceso al entorno.");
+        throw new Error("No puedes eliminar tu propio acceso a la unidad.");
     }
 
     const { db, firestoreModule } = await getFirebaseServices();

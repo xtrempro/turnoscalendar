@@ -66,7 +66,7 @@ function displayUserName(user) {
 function displayWorkspaceLabel() {
     if (!isFirebaseConfigured()) return "Modo local";
     if (!currentUser) return "Iniciar sesion";
-    if (!currentWorkspace) return "Sin entorno";
+    if (!currentWorkspace) return "Sin unidad";
 
     return currentWorkspace.name;
 }
@@ -74,9 +74,9 @@ function displayWorkspaceLabel() {
 function workspaceText() {
     if (!isFirebaseConfigured()) return "Datos en localStorage";
     if (!currentUser) return "Sin sesion";
-    if (!currentWorkspace) return "Sin entorno";
+    if (!currentWorkspace) return "Sin unidad";
 
-    return `Entorno: ${currentWorkspace.name}`;
+    return `Unidad: ${currentWorkspace.name}`;
 }
 
 function appShareURL() {
@@ -171,13 +171,13 @@ function workspaceInvitationText(workspace) {
         : "";
 
     return [
-        `Te invito a solicitar acceso como supervisor al entorno "${workspace.name || workspace.id}" en TurnoPlus.`,
+        `Te invito a solicitar acceso como supervisor a la unidad "${workspace.name || workspace.id}" en TurnoPlus.`,
         "",
         inviteURL ? `Abre esta invitacion: ${inviteURL}` : "",
         "Inicia sesion con Google.",
         "La invitacion es de un solo uso y debe ser aprobada por el propietario.",
         expiresText ? `Vence el ${expiresText}.` : "",
-        "Si el enlace no aparece automaticamente, pega el enlace completo en Unirse a entorno existente."
+        "Si el enlace no aparece automaticamente, pega el enlace completo en Unirse a una unidad existente."
     ].filter(Boolean).join("\n");
 }
 
@@ -316,12 +316,12 @@ function renderDisabledModal() {
             <strong>Firebase aun no esta activo</strong>
             <p>
                 El sistema sigue trabajando en modo local. Para activar login con Gmail
-                y entornos compartidos, completa <code>js/firebaseConfig.js</code>
+                y unidades compartidas, completa <code>js/firebaseConfig.js</code>
                 con los datos de tu proyecto Firebase y cambia
                 <code>FIREBASE_ENABLED</code> a <code>true</code>.
             </p>
             <div class="firebase-dialog-note">
-                Siguiente etapa: iniciar sesion, crear un entorno y sincronizar el estado completo del sistema.
+                Siguiente etapa: iniciar sesion, crear una unidad y sincronizar el estado completo del sistema.
             </div>
             <div class="turn-change-dialog__actions">
                 <button class="primary-button" type="button" data-action="close">Entendido</button>
@@ -551,7 +551,7 @@ function workspaceListHTML() {
     if (!workspaceList.length) {
         return `
             <div class="firebase-empty">
-                Aun no perteneces a ningun entorno.
+                Aun no perteneces a ninguna unidad.
             </div>
         `;
     }
@@ -582,7 +582,7 @@ function workspaceListHTML() {
                 </div>
 
                 <label class="firebase-workspace-id">
-                    <span>ID del entorno</span>
+                    <span>ID de la unidad</span>
                     <input type="text" readonly value="${escapeHTML(workspace.id)}">
                 </label>
 
@@ -637,7 +637,7 @@ function friendlyFirebaseError(error) {
     ) {
         return [
             "Firebase no permitio esta operacion.",
-            "Si intentabas unirte o enlazar un entorno, revisa que el ID sea correcto, que no exista una solicitud previa y que las reglas actualizadas de Firestore esten publicadas."
+            "Si intentabas unirte o enlazar una unidad, revisa que el ID sea correcto, que no exista una solicitud previa y que las reglas actualizadas de Firestore esten publicadas."
         ].join(" ");
     }
 
@@ -684,12 +684,12 @@ function linkedUnitsPanelHTML() {
             <strong>Unidades enlazadas</strong>
             <p>
                 Solicita enlace a otra unidad para buscar personal compatible
-                como sugerencia de reemplazo. No se agrega el otro entorno al
+                como sugerencia de reemplazo. No se agrega la otra unidad al
                 selector de trabajo.
             </p>
             ${message}
             <div class="firebase-linked-request">
-                <input id="firebaseLinkedWorkspaceId" type="text" placeholder="ID del entorno a enlazar">
+                <input id="firebaseLinkedWorkspaceId" type="text" placeholder="ID de la unidad a enlazar">
                 <button class="secondary-button" type="button" data-action="request-workspace-link" ${linkedUnitState.loading ? "disabled" : ""}>
                     Solicitar enlace
                 </button>
@@ -869,15 +869,15 @@ function renderSignedInModal(backdrop) {
 
     backdrop.innerHTML = `
         <section class="turn-change-dialog firebase-dialog">
-            <strong>Cuenta y entornos</strong>
+            <strong>Cuentas y Unidades</strong>
             <p>
                 ${escapeHTML(currentUser.displayName || currentUser.email || "Usuario")}
-                ${currentWorkspace ? `trabajando en ${escapeHTML(currentWorkspace.name)}.` : "sin entorno activo."}
+                ${currentWorkspace ? `trabajando en ${escapeHTML(currentWorkspace.name)}.` : "sin unidad activa."}
             </p>
             ${locked ? `
                 <div class="firebase-dialog-note">
-                    Debes crear un entorno o unirte a uno para empezar a trabajar.
-                    No se puede editar informacion sin un entorno activo.
+                    Debes crear una unidad o unirte a una para empezar a trabajar.
+                    No se puede editar informacion sin una unidad activa.
                 </div>
             ` : ""}
             ${supervisorInviteState.message ? `
@@ -888,13 +888,13 @@ function renderSignedInModal(backdrop) {
 
             <div class="firebase-dialog-grid">
                 <label class="firebase-field">
-                    <span>Crear entorno nuevo</span>
+                    <span>Crear nueva unidad</span>
                     <input id="firebaseCreateWorkspaceName" type="text" placeholder="Ej: UCI Hospital Central">
-                    <button class="primary-button" type="button" data-action="create-workspace">Crear entorno</button>
+                    <button class="primary-button" type="button" data-action="create-workspace">Crear unidad</button>
                 </label>
 
                 <label class="firebase-field">
-                    <span>Unirse a entorno existente</span>
+                    <span>Unirse a una unidad existente</span>
                     <input id="firebaseJoinWorkspaceId" type="text" placeholder="Pega enlace de invitación segura" value="${escapeHTML(pendingWorkspaceId)}">
                     <button class="secondary-button" type="button" data-action="join-workspace">
                         ${pendingInviteToken ? "Solicitar acceso" : "Solicitar acceso"}
@@ -926,12 +926,12 @@ function renderSignedOutModal(backdrop, options = {}) {
         <section class="turn-change-dialog firebase-dialog">
             <strong>Iniciar sesion</strong>
             <p>
-                Ingresa con tu cuenta Google para crear un entorno de trabajo
-                o unirte a uno existente.
+                Ingresa con tu cuenta Google para crear una unidad de trabajo
+                o unirte a una existente.
             </p>
             ${required ? "" : `
                 <div class="firebase-dialog-note">
-                    Hasta iniciar sesion y elegir un entorno, el sistema seguira trabajando en este equipo.
+                    Hasta iniciar sesion y elegir una unidad, el sistema seguira trabajando en este equipo.
                 </div>
             `}
             <div class="turn-change-dialog__actions">
@@ -1014,14 +1014,14 @@ function workspaceDeletionBlockHTML(workspace) {
             <div class="firebase-workspace-danger is-pending">
                 <strong>Eliminacion programada</strong>
                 <p>
-                    Este entorno se eliminara definitivamente el ${escapeHTML(whenText)}${hoursLeft !== null ? ` (en ~${hoursLeft} h)` : ""}.
+                    Esta unidad se eliminara definitivamente el ${escapeHTML(whenText)}${hoursLeft !== null ? ` (en ~${hoursLeft} h)` : ""}.
                     Hasta entonces se conserva el acceso a los datos.
                 </p>
                 ${isOwner ? `
                     <button class="primary-button" type="button" data-action="cancel-workspace-deletion" data-workspace-ref="${escapeHTML(workspace.id)}">
                         Anular eliminacion
                     </button>
-                ` : `<small>Solo el creador del entorno puede anular la eliminacion.</small>`}
+                ` : `<small>Solo el creador de la unidad puede anular la eliminacion.</small>`}
             </div>
         `;
     }
@@ -1031,7 +1031,7 @@ function workspaceDeletionBlockHTML(workspace) {
     return `
         <div class="firebase-workspace-danger">
             <button class="danger-button firebase-workspace-delete" type="button" data-action="request-workspace-deletion" data-workspace-ref="${escapeHTML(workspace.id)}">
-                Eliminar entorno
+                Eliminar unidad
             </button>
         </div>
     `;
@@ -1109,14 +1109,14 @@ async function handleAction(action, backdrop, sourceButton = null) {
             const workspace = workspaceList.find(item => item.id === id);
             const name = workspace?.name || id || "";
             const typed = await showPrompt(
-                `Esto programara la ELIMINACION del entorno "${name}" en ${WORKSPACE_DELETION_GRACE_HOURS} horas.\n` +
+                `Esto programara la ELIMINACION de la unidad "${name}" en ${WORKSPACE_DELETION_GRACE_HOURS} horas.\n` +
                 "Se avisara a los demas usuarios y a los trabajadores enlazados. Podras anularla durante ese plazo.\n" +
                 "Pasado el plazo se borrara de forma definitiva y no podras volver a acceder.\n\n" +
-                "Para confirmar, escribe el nombre exacto del entorno.",
+                "Para confirmar, escribe el nombre exacto de la unidad.",
                 {
-                    title: "Programar eliminación del entorno",
+                    title: "Programar eliminación de la unidad",
                     tone: "danger",
-                    inputLabel: "Nombre exacto del entorno",
+                    inputLabel: "Nombre exacto de la unidad",
                     placeholder: name,
                     confirmText: "Programar eliminación",
                     destructive: true
@@ -1497,7 +1497,7 @@ async function handleWorkspaceAccessLost(workspaceId) {
         updateTopbar();
 
         window.alert(
-            "Este entorno ya no esta disponible (fue eliminado o perdiste el acceso). Selecciona o crea otro entorno."
+            "Esta unidad ya no esta disponible (fue eliminada o perdiste el acceso). Selecciona o crea otra unidad."
         );
 
         if (activeFirebaseBackdrop?.isConnected) {

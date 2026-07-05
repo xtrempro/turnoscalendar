@@ -3,8 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0d1728">
+<meta name="application-name" content="TurnoPlus Supervisor">
+<meta name="mobile-web-app-capable" content="yes">
 <title>TurnoPlus</title>
 <link rel="icon" type="image/png" sizes="512x512" href="img/favicon-turnoplus-calendar-gray.png">
+<link rel="apple-touch-icon" sizes="192x192" href="img/pwa/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="styles.css">
 </head>
 
@@ -24,6 +29,15 @@
                     <path d="M3 8l4.5 3L12 5l4.5 6L21 8l-1.6 9.1a1 1 0 0 1-1 .9H5.6a1 1 0 0 1-1-.9L3 8z"></path>
                     <path d="M5 21h14"></path>
                 </svg>
+            </button>
+
+            <button id="pwaInstallBtn" class="pwa-install-button" type="button" aria-label="Instalar TurnoPlus en este computador" hidden>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 3v12"></path>
+                    <path d="m7 10 5 5 5-5"></path>
+                    <path d="M5 21h14"></path>
+                </svg>
+                <span>Instalar app</span>
             </button>
 
             <button id="themeToggle" class="theme-switch" type="button" aria-label="Cambiar tema" aria-pressed="true">
@@ -46,7 +60,7 @@
                 </svg>
             </button>
 
-            <button id="authUserChip" class="user-chip" type="button" aria-label="Cuenta y entorno de trabajo">
+            <button id="authUserChip" class="user-chip" type="button" aria-label="Cuentas y unidades">
                 <span class="user-avatar" aria-hidden="true">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M20 21a8 8 0 0 0-16 0"></path>
@@ -1039,6 +1053,15 @@
         </main>
     </div>
 </div>
+
+<button id="pwaInstallGateBtn" class="pwa-install-button pwa-install-gate-button" type="button" aria-label="Instalar TurnoPlus en este computador" hidden>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v12"></path>
+        <path d="m7 10 5 5 5-5"></path>
+        <path d="M5 21h14"></path>
+    </svg>
+    <span>Instalar app</span>
+</button>
 
 <button id="floatingMessagesBtn" class="floating-messages-button" type="button" aria-label="Mensajeria con trabajadores">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

@@ -451,7 +451,7 @@ function renderUsersPanel() {
             <section class="settings-card settings-card--wide">
                 <div class="settings-card__head">
                     <h4>Usuarios y permisos</h4>
-                    <span>Solo el creador del entorno puede administrar permisos.</span>
+                    <span>Solo el creador de la unidad puede administrar permisos.</span>
                 </div>
                 <div class="settings-empty">
                     No tienes permisos para modificar accesos de otros usuarios.
@@ -465,10 +465,10 @@ function renderUsersPanel() {
             <section class="settings-card settings-card--wide">
                 <div class="settings-card__head">
                     <h4>Usuarios y permisos</h4>
-                    <span>Selecciona o crea un entorno para administrar usuarios.</span>
+                    <span>Selecciona o crea una unidad para administrar usuarios.</span>
                 </div>
                 <div class="settings-empty">
-                    No hay un entorno activo.
+                    No hay una unidad activa.
                 </div>
             </section>
         `;
@@ -479,7 +479,7 @@ function renderUsersPanel() {
             <section class="settings-card settings-card--wide">
                 <div class="settings-card__head">
                     <h4>Usuarios y permisos</h4>
-                    <span>Cargando usuarios del entorno...</span>
+                    <span>Cargando usuarios de la unidad...</span>
                 </div>
                 <div class="settings-empty">Cargando permisos.</div>
             </section>
@@ -1103,9 +1103,9 @@ function bindBackdrop(backdrop) {
 
             const label = memberLabel(member);
             const confirmed = await showConfirm(
-                `${label} dejará de tener acceso a los menús y datos compartidos de este entorno.`,
+                `${label} dejará de tener acceso a los menús y datos compartidos de esta unidad.`,
                 {
-                    title: "Quitar acceso al entorno",
+                    title: "Quitar acceso a la unidad",
                     tone: "danger",
                     confirmText: "Quitar acceso",
                     destructive: true
@@ -1123,7 +1123,7 @@ function bindBackdrop(backdrop) {
 
                 addAuditLog(
                     AUDIT_CATEGORY.SYSTEM_SETTINGS,
-                    "Elimino colaborador del entorno",
+                    "Elimino colaborador de la unidad",
                     `Quito el acceso de ${label}.`,
                     {
                         scope: "workspace_members",
@@ -1136,7 +1136,7 @@ function bindBackdrop(backdrop) {
                 deleteMemberButton.disabled = false;
                 alert(
                     error?.message ||
-                    "No se pudo eliminar el usuario del entorno."
+                    "No se pudo eliminar el usuario de la unidad."
                 );
             }
 
@@ -1261,7 +1261,7 @@ export function initSystemSettings(options = {}) {
     options.button?.addEventListener("click", () => {
         if (!isWorkspaceOwner()) {
             alert(
-                "Solo el creador del entorno puede abrir los ajustes del sistema."
+                "Solo el creador de la unidad puede abrir los ajustes del sistema."
             );
             return;
         }

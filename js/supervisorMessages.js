@@ -199,7 +199,7 @@ function openMessagesDialog() {
     }
 
     if (!activeWorkspace?.id) {
-        alert("Selecciona un entorno Firebase para usar mensajeria.");
+        alert("Selecciona una unidad Firebase para usar mensajeria.");
         return;
     }
 

@@ -1761,7 +1761,7 @@ function noAssignmentProfileRows(model) {
     return [
         { campo: "Nombre", valor: model.profile.name },
         { campo: "RUT", valor: model.profile.rut || "Sin registro" },
-        { campo: "Unidad", valor: workspace?.name || "Sin entorno activo" },
+        { campo: "Unidad", valor: workspace?.name || "Sin unidad activa" },
         { campo: "Contrato", valor: model.profile.contractType || "Sin registro" },
         { campo: "Grado", valor: model.profile.grade || "Sin registro" },
         { campo: "Asignaci\u00f3n de Turno", valor: getShiftAssigned(model.profile.name, model.monthDate) ? "S\u00cd" : "NO" },
@@ -2019,7 +2019,7 @@ function buildWorkbookHTML({
     const rotativa = getRotativa(profile.name);
     const title = `Reporte Horas Extras - ${profile.name} - ${monthLabel(monthDate)}`;
     const workspace = getActiveWorkspace();
-    const workspaceUnit = workspace?.name || "Sin entorno activo";
+    const workspaceUnit = workspace?.name || "Sin unidad activa";
     const profileRows = [
         { campo: "Nombre", valor: profile.name },
         { campo: "RUT", valor: profile.rut || "Sin registro" },

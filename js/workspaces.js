@@ -9,7 +9,7 @@ const ACTIVE_WORKSPACE_KEY = "firebaseActiveWorkspace";
 export const WORKSPACE_DELETION_GRACE_HOURS = 72;
 
 function workspaceLabel(workspace) {
-    return String(workspace?.name || workspace?.id || "Entorno");
+    return String(workspace?.name || workspace?.id || "Unidad");
 }
 
 function userPayload(user) {
@@ -82,15 +82,15 @@ export async function requestWorkspaceDeletion(workspaceId) {
     const user = getCurrentFirebaseUser();
 
     if (!user) throw new Error("Debes iniciar sesion.");
-    if (!workspaceId) throw new Error("Entorno invalido.");
+    if (!workspaceId) throw new Error("Unidad invalida.");
 
     const { db, firestoreModule } = await getFirebaseServices();
     const ref = firestoreModule.doc(db, "workspaces", workspaceId);
     const snap = await firestoreModule.getDoc(ref);
 
-    if (!snap.exists()) throw new Error("El entorno no existe.");
+    if (!snap.exists()) throw new Error("La unidad no existe.");
     if (snap.data().ownerUid !== user.uid) {
-        throw new Error("Solo el creador del entorno puede eliminarlo.");
+        throw new Error("Solo el creador de la unidad puede eliminarla.");
     }
 
     const scheduledAt = new Date(
@@ -203,11 +203,11 @@ export async function createWorkspace(user, name) {
     const cleanName = String(name || "").trim();
 
     if (!user) {
-        throw new Error("Debes iniciar sesion para crear un entorno.");
+        throw new Error("Debes iniciar sesion para crear una unidad.");
     }
 
     if (!cleanName) {
-        throw new Error("Debes indicar un nombre para el entorno.");
+        throw new Error("Debes indicar un nombre para la unidad.");
     }
 
     const { db, firestoreModule } = await getFirebaseServices();
@@ -279,7 +279,7 @@ export async function createSupervisorInvitation(
     }
 
     if (!cleanId) {
-        throw new Error("No se pudo identificar el entorno.");
+        throw new Error("No se pudo identificar la unidad.");
     }
 
     const invite = await callWorkspaceFunction("createSupervisorInvite", {
@@ -309,11 +309,11 @@ export async function claimSupervisorInvitation(
         String(tokenInput || parsed.supervisorInvite || "").trim();
 
     if (!user) {
-        throw new Error("Debes iniciar sesion para unirte a un entorno.");
+        throw new Error("Debes iniciar sesion para unirte a una unidad.");
     }
 
     if (!cleanId) {
-        throw new Error("Debes ingresar el ID del entorno.");
+        throw new Error("Debes ingresar el ID de la unidad.");
     }
 
     if (!token) {

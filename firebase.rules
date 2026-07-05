@@ -371,6 +371,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Registro de administradores globales. Los clientes no pueden leerlo ni
+    // modificarlos; solo las Cloud Functions con Admin SDK lo consultan.
+    match /adminUsers/{adminUid} {
+      allow read, write: if false;
+    }
+
     // Cupones: toda lectura/escritura pasa por Cloud Functions (admin SDK).
     // Crear/listar/desactivar es solo del admin; canjear escribe accounts via
     // la function redeemCoupon. El cliente nunca accede directo.
@@ -444,7 +450,11 @@ service cloud.firestore {
       allow create: if signedIn() &&
         (!mfaRequirementActive() || hasMfa()) &&
         request.resource.data.ownerUid == request.auth.uid &&
-        !("inviteCode" in request.resource.data);
+        !("inviteCode" in request.resource.data) &&
+        !("workersCount" in request.resource.data) &&
+        !("activeWorkersCount" in request.resource.data) &&
+        !("pwaUsersCount" in request.resource.data) &&
+        !("countersUpdatedAt" in request.resource.data);
       allow get: if isMember(workspaceId);
       allow list: if false;
       allow update: if isOwner(workspaceId) &&

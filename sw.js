@@ -2,14 +2,21 @@
 // instantaneas y un offline basico. NO intercepta peticiones cross-origin
 // (Firebase, Firestore, CDN del SDK, fuentes) para no interferir con la nube.
 
-const CACHE = "proturnos-shell-v2";
+const CACHE = "proturnos-shell-v3";
 const OFFLINE_URL = "/index.html";
+const APP_SHELL = [
+    OFFLINE_URL,
+    "/styles.css",
+    "/manifest.webmanifest",
+    "/img/pwa/icon-192.png",
+    "/img/pwa/icon-512.png"
+];
 
 self.addEventListener("install", event => {
     self.skipWaiting();
     event.waitUntil(
         caches.open(CACHE)
-            .then(cache => cache.addAll([OFFLINE_URL, "/styles.css"]))
+            .then(cache => cache.addAll(APP_SHELL))
             .catch(() => {})
     );
 });

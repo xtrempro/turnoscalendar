@@ -1183,7 +1183,7 @@ async function getWorkspaceLinkRequests() {
                     "Unidad solicitante",
                 note:
                     link.status === "pending"
-                        ? "Solicita enlazarse a este entorno para gestionar prestamos entre unidades."
+                        ? "Solicita enlazarse a esta unidad para gestionar prestamos entre unidades."
                         : "",
                 rejectReason: link.rejectReason || "",
                 createdAt: timestampISO(
@@ -1194,7 +1194,7 @@ async function getWorkspaceLinkRequests() {
             }));
     } catch (error) {
         console.warn(
-            "No se pudieron cargar solicitudes de enlace entre entornos.",
+            "No se pudieron cargar solicitudes de enlace entre unidades.",
             error
         );
         return [];

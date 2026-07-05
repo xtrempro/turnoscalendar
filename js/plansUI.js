@@ -60,7 +60,7 @@ function usageSummaryHTML(usage, effectivePlanId) {
     if (!usage) {
         return `
             <p class="plans-usage plans-usage--muted">
-                Inicia sesion en un entorno para ver el uso de tu cuenta.
+                Inicia sesion en una unidad para ver el uso de tu cuenta.
             </p>
         `;
     }
@@ -86,7 +86,7 @@ function usageSummaryHTML(usage, effectivePlanId) {
                 </div>
                 <div>
                     <strong>${usage.entornos} / ${escapeHTML(unitLimitLabel(effectivePlanId))}</strong>
-                    <span>Entornos</span>
+                    <span>Unidades</span>
                 </div>
             </div>
         </div>
@@ -98,7 +98,7 @@ function planCardHTML(plan, effectivePlanId) {
     const isFree = plan.id === "free";
     const features = [
         `Hasta <strong>${escapeHTML(workerLimitLabel(plan.id))}</strong> trabajadores activos`,
-        `<strong>${escapeHTML(unitLimitLabel(plan.id))}</strong> ${plan.maxUnits === 1 ? "entorno" : "entornos"}`,
+        `<strong>${escapeHTML(unitLimitLabel(plan.id))}</strong> ${plan.maxUnits === 1 ? "unidad" : "unidades"}`,
         plan.allowAttachments ? "Adjuntar archivos" : "Sin adjuntar archivos",
         plan.allowReportDownload
             ? "Descarga de reportes (PDF y Excel)"
@@ -167,7 +167,7 @@ function quoteRowHTML() {
     const body = encodeURIComponent(
         "Hola, necesito una cotizacion para mas de 150 trabajadores activos.\n\n" +
         "Cantidad aproximada de trabajadores:\n" +
-        "Cantidad de entornos:\n" +
+        "Cantidad de unidades:\n" +
         "Institucion:\n"
     );
 

@@ -326,10 +326,10 @@ Cuando se asigna reemplazo, se registra LOG en categoria `AUDIT_CATEGORY.OVERTIM
 
 Unidades enlazadas:
 
-- En `Cuenta y entornos`, un workspace puede solicitar enlace a otro por ID. El otro workspace debe aceptar la solicitud.
+- En `Cuentas y Unidades`, un workspace puede solicitar enlace a otro por ID. El otro workspace debe aceptar la solicitud.
 - Las solicitudes de enlace entrantes tambien aparecen en el menu `Solicitudes`, junto a las solicitudes de trabajadores, y suman al badge rojo del icono cuando estan pendientes.
 - `js/workerRequests.js` inicia una escucha Firestore en tiempo real sobre `workspaceLinks` entrantes del entorno activo para que el badge de `Solicitudes` se actualice sin tener que abrir el menu.
-- En `Cuenta y entornos`, los enlaces activos se pueden clickear para confirmar el desenlace. El `workspaceLink` queda con estado `unlinked` y deja de aparecer como activo.
+- En `Cuentas y Unidades`, los enlaces activos se pueden clickear para confirmar el desenlace. El `workspaceLink` queda con estado `unlinked` y deja de aparecer como activo.
 - Aceptar no agrega el entorno ajeno al selector de trabajo ni permite navegar sus perfiles.
 - En el dialogo de reemplazo, `Buscar sugerencias en unidades enlazadas` carga enlaces aceptados del entorno activo en ambos sentidos.
 - Cada unidad publica documentos `linkedStaffingMonths/{YYYY-MM}` con una proyeccion minima: nombre operativo, profesion, turno, disponibilidad y HHEE del mes. No incluye RUT, correo, documentos, permisos ni el snapshot completo.
@@ -407,7 +407,7 @@ Arquitectura:
 - La API key web es publica por diseno de Firebase; la seguridad depende de reglas, App Check, Auth y restricciones de clave/referrers. MFA/TOTP queda disponible para endurecimiento futuro.
 - El proyecto de pruebas ya tiene Hosting y Firestore. Storage en test requiere activar facturacion/Blaze; no enlazar facturacion sin autorizacion explicita. TOTP queda desactivado por defecto.
 - Si Google login devuelve `auth/unauthorized-domain`, agregar el hostname usado en navegador en Firebase Console > Authentication > Settings > Authorized domains. Para desarrollo local, autorizar `127.0.0.1` y `localhost` sin puerto.
-- En el modal `Cuenta y entornos`, cada entorno muestra el ID en un input seleccionable. Solo el propietario puede generar invitaciones seguras de supervisor: token de un solo uso, vencimiento de 7 dias, permisos explicitos y aprobacion final del propietario.
+- En el modal `Cuentas y Unidades`, cada unidad muestra el ID en un input seleccionable. Solo el propietario puede generar invitaciones seguras de supervisor: token de un solo uso, vencimiento de 7 dias, permisos explicitos y aprobacion final del propietario.
 - Las invitaciones de supervisor se crean y resuelven solo por Cloud Functions (`createSupervisorInvite`, `claimSupervisorInvite`, `approveSupervisorInvite`, `rejectSupervisorInvite`, `revokeSupervisorInvite`). El token real viaja solo en el enlace `?joinWorkspace=<id>&supervisorInvite=<token>`; Firestore guarda el hash como ID en `workspaces/{workspaceId}/supervisorInvites/{inviteId}`.
 - Si Firebase esta configurado, `js/firebaseShell.js` exige login Google antes de permitir cambios: abre automaticamente el modal de inicio de sesion y bloquea la app con `body.auth-gate-active` hasta que haya usuario autenticado.
 - Para unirse como supervisor, el invitado solo reclama la invitacion y queda pendiente. El documento `members/{uid}` y `users/{uid}/workspaces/{workspaceId}` se crean atomicamente por Function cuando el propietario aprueba. Las reglas bloquean la autocreacion cliente con `inviteCode` heredado y no dan acceso amplio a miembros sin `permissions`.
@@ -416,6 +416,13 @@ CI / pruebas:
 
 - `.github/workflows/security.yml` ejecuta auditorias `npm audit --audit-level=high`, chequeos de sintaxis, `npm run test:state-modules`, pruebas de Security Rules con emuladores y `npm run build`.
 - `tests/security-rules.test.mjs` cubre acceso modular, Storage, acceso de propietarios/supervisores sin MFA mientras TOTP esta desactivado e invitaciones seguras de supervisor.
+
+## PWA de supervisores
+
+- `manifest.webmanifest` publica TurnoPlus como PWA instalable con iconos 192, 512 y maskable.
+- `js/pwaInstall.js` captura `beforeinstallprompt` y muestra `#pwaInstallBtn` solo cuando Chrome o Edge permiten instalar la app. Durante el acceso obligatorio con Google, `#pwaInstallGateBtn` ofrece el mismo CTA por encima del modal. Ambos se ocultan dentro del modo standalone y despues de `appinstalled`.
+- `sw.js` mantiene un shell offline basico; los datos de Firebase siguen necesitando conexion para sincronizarse.
+- La carpeta hermana `PWA Supervisor TurnoPlus` conserva el proyecto/documentacion de la capa PWA. Los archivos que usa produccion deben permanecer en este repositorio porque navegador, manifiesto y `turnoplus.cl` deben compartir origen.
 - `tests/state-modules.test.mjs` cubre clasificacion de modulos de estado.
 
 Verificacion ejecutada tras este avance:

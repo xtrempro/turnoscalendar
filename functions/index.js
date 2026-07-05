@@ -61,6 +61,7 @@ setGlobalOptions({
   // innecesariamente el costo o el impacto de un abuso.
   maxInstances: 10
 });
+Object.assign(exports, require("./getAccountsAndUnits"));
 
 const db = admin.firestore();
 const WORKER_APP_BASE_URL = "https://turnoplusfuncionarios.web.app/";
@@ -1209,7 +1210,7 @@ exports.findCompatibleReplacementInLinkedUnits = onCall(
     let message = "";
 
     if (!result.units.length && !result.failedUnits.length) {
-      message = "No hay unidades enlazadas aceptadas para este entorno.";
+      message = "No hay unidades enlazadas aceptadas para esta unidad.";
     } else if (!result.candidates.length && result.failedUnits.length) {
       message = `No se pudo consultar: ${result.failedUnits.join(", ")}.`;
     } else if (!result.candidates.length) {

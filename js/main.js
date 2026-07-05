@@ -122,6 +122,7 @@ import {
     appTargetUrl
 } from "./navigation.js";
 import { initTheme } from "./theme.js";
+import { initPwaInstall } from "./pwaInstall.js";
 import { getPerfilActual, getDisplayedProfileData } from "./profileQueries.js";
 import { validateProfileDraft } from "./profileValidation.js";
 import {
@@ -6215,7 +6216,7 @@ async function workspaceMemberEmailKeys() {
         });
     } catch (error) {
         console.warn(
-            "No se pudo validar correos de administradores del entorno.",
+            "No se pudo validar correos de administradores de la unidad.",
             error
         );
     }
@@ -6639,7 +6640,7 @@ async function guardarPerfil() {
 
             alert(
                 `Alcanzaste el limite de tu plan ${plan.name} ` +
-                `(${plan.maxActiveWorkers} trabajadores activos en total entre tus entornos). ` +
+                `(${plan.maxActiveWorkers} trabajadores activos en total entre tus unidades). ` +
                 "Para activar mas, mejora tu plan desde el boton de Planes en la barra superior, " +
                 "o desactiva a otro trabajador."
             );
@@ -9334,6 +9335,12 @@ function syncWorkspaceStateViews() {
 }
 
 initTheme();
+initPwaInstall({
+    buttons: [
+        document.getElementById("pwaInstallBtn"),
+        document.getElementById("pwaInstallGateBtn")
+    ]
+});
 
 // Service Worker: cachea el shell para reaperturas instantaneas y offline basico.
 if ("serviceWorker" in navigator) {

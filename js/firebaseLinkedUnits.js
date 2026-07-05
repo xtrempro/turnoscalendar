@@ -15,7 +15,7 @@ function cleanWorkspaceId(value) {
 }
 
 function workspaceName(workspace) {
-    return cleanText(workspace?.name, workspace?.id || "Entorno");
+    return cleanText(workspace?.name, workspace?.id || "Unidad");
 }
 
 function userName(user) {
@@ -60,15 +60,15 @@ export async function requestWorkspaceLink(targetWorkspaceId) {
     }
 
     if (!activeWorkspace?.id) {
-        throw new Error("Selecciona un entorno antes de solicitar un enlace.");
+        throw new Error("Selecciona una unidad antes de solicitar un enlace.");
     }
 
     if (!targetId) {
-        throw new Error("Ingresa el ID del entorno que quieres enlazar.");
+        throw new Error("Ingresa el ID de la unidad que quieres enlazar.");
     }
 
     if (targetId === activeWorkspace.id) {
-        throw new Error("No puedes enlazar el entorno activo consigo mismo.");
+        throw new Error("No puedes enlazar la unidad activa consigo misma.");
     }
 
     const { db, firestoreModule } = await getFirebaseServices();
@@ -135,7 +135,7 @@ export async function acceptWorkspaceLink(linkId) {
     }
 
     if (!activeWorkspace?.id) {
-        throw new Error("Selecciona un entorno antes de aceptar enlaces.");
+        throw new Error("Selecciona una unidad antes de aceptar enlaces.");
     }
 
     const { db, firestoreModule } = await getFirebaseServices();
@@ -149,7 +149,7 @@ export async function acceptWorkspaceLink(linkId) {
     const link = linkSnap.data() || {};
 
     if (link.toWorkspaceId !== activeWorkspace.id) {
-        throw new Error("Solo el entorno invitado puede aceptar este enlace.");
+        throw new Error("Solo la unidad invitada puede aceptar este enlace.");
     }
 
     await firestoreModule.updateDoc(linkRef, {
@@ -167,7 +167,7 @@ export async function rejectWorkspaceLink(linkId, reason = "") {
     const user = getCurrentFirebaseUser();
 
     if (!activeWorkspace?.id) {
-        throw new Error("Selecciona un entorno antes de rechazar enlaces.");
+        throw new Error("Selecciona una unidad antes de rechazar enlaces.");
     }
 
     const { db, firestoreModule } = await getFirebaseServices();
@@ -181,7 +181,7 @@ export async function rejectWorkspaceLink(linkId, reason = "") {
     const link = linkSnap.data() || {};
 
     if (link.toWorkspaceId !== activeWorkspace.id) {
-        throw new Error("Solo el entorno invitado puede rechazar este enlace.");
+        throw new Error("Solo la unidad invitada puede rechazar este enlace.");
     }
 
     await firestoreModule.updateDoc(linkRef, {
@@ -203,7 +203,7 @@ export async function unlinkWorkspaceLink(linkId) {
     }
 
     if (!activeWorkspace?.id) {
-        throw new Error("Selecciona un entorno antes de desenlazar unidades.");
+        throw new Error("Selecciona una unidad antes de desenlazar unidades.");
     }
 
     const { db, firestoreModule } = await getFirebaseServices();
@@ -220,7 +220,7 @@ export async function unlinkWorkspaceLink(linkId) {
         link.toWorkspaceId === activeWorkspace.id;
 
     if (!belongsToActiveWorkspace) {
-        throw new Error("Este enlace no pertenece al entorno activo.");
+        throw new Error("Este enlace no pertenece a la unidad activa.");
     }
 
     if (link.status !== "accepted") {

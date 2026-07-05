@@ -674,6 +674,71 @@ body.theme-dark .brand-logo--dark {
     gap: 12px;
 }
 
+.pwa-install-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 42px;
+    padding: 0 15px;
+    border: 1px solid rgba(45, 212, 191, 0.42);
+    border-radius: 14px;
+    color: #ecfeff;
+    background: linear-gradient(135deg, #0d72d9, #0f9f98);
+    box-shadow: 0 10px 24px rgba(13, 114, 217, 0.2);
+    font: 800 0.78rem/1 var(--font-ui);
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    cursor: pointer;
+    transition:
+        transform 0.2s ease,
+        filter 0.2s ease,
+        box-shadow 0.2s ease;
+}
+
+.pwa-install-button[hidden] {
+    display: none;
+}
+
+.pwa-install-button:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.08);
+    box-shadow: 0 14px 28px rgba(13, 114, 217, 0.28);
+}
+
+.pwa-install-button:focus-visible {
+    outline: 3px solid rgba(45, 212, 191, 0.28);
+    outline-offset: 3px;
+}
+
+.pwa-install-button:disabled {
+    cursor: wait;
+    opacity: 0.68;
+    transform: none;
+}
+
+.pwa-install-button svg {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 18px;
+}
+
+.pwa-install-gate-button:not([hidden]) {
+    display: none;
+}
+
+body.auth-gate-active .topbar .pwa-install-button {
+    display: none;
+}
+
+body.auth-gate-active .pwa-install-gate-button:not([hidden]) {
+    position: fixed;
+    top: max(18px, env(safe-area-inset-top));
+    right: max(18px, env(safe-area-inset-right));
+    z-index: 130;
+    display: inline-flex;
+}
+
 .mobile-menu-toggle,
 .mobile-panel-toggle {
     display: none;
@@ -10933,6 +10998,7 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
 }
 
 @media (display-mode: standalone), (display-mode: fullscreen), (display-mode: minimal-ui) {
+    .pwa-install-button,
     [data-web-only] {
         display: none !important;
     }
@@ -11437,6 +11503,24 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     .topbar-actions {
         justify-content: space-between;
         flex-wrap: wrap;
+    }
+
+    .pwa-install-button span {
+        display: none;
+    }
+
+    .pwa-install-button {
+        width: 42px;
+        padding: 0;
+    }
+
+    .pwa-install-gate-button {
+        width: auto;
+        padding: 0 15px;
+    }
+
+    .pwa-install-gate-button span {
+        display: inline;
     }
 
     .topbar .profile-viewer {

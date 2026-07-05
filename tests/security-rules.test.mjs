@@ -495,6 +495,37 @@ test("reglas modulares de Firestore y Storage", async t => {
     );
 
     await t.test(
+        "adminUsers no se expone ni siquiera a propietarios autenticados",
+        async () => {
+            const adminRef = doc(
+                owner.firestore(),
+                "adminUsers",
+                "owner"
+            );
+
+            await assertFails(getDoc(adminRef));
+            await assertFails(setDoc(adminRef, { active: true }));
+        }
+    );
+
+    await t.test(
+        "el cliente no puede inyectar contadores administrativos",
+        async () => {
+            await assertFails(
+                setDoc(
+                    doc(owner.firestore(), "workspaces", "counter-spoof"),
+                    {
+                        ownerUid: "owner",
+                        name: "Unidad manipulada",
+                        workersCount: 99999,
+                        pwaUsersCount: 99999
+                    }
+                )
+            );
+        }
+    );
+
+    await t.test(
         "la lectura tambien respeta el permiso del modulo",
         async () => {
             const path = [

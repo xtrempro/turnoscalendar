@@ -1898,7 +1898,7 @@ async function linkedWorkspaceCandidates(
 
     if (!activeWorkspace?.id) {
         linkedReplacementStatus =
-            "Selecciona un entorno Firebase activo para buscar en unidades enlazadas.";
+            "Selecciona una unidad Firebase activa para buscar en unidades enlazadas.";
         return [];
     }
 
@@ -2593,7 +2593,7 @@ function replacementDialogHTML({
             ` : ""}
             ${linkedMode ? `
                 <div class="replacement-dialog-note">
-                    Sugerencias de unidades enlazadas activas: se muestran trabajadores compatibles y disponibles segun su unidad. Al asignar, se registra como prestamo en ambos entornos.
+                    Sugerencias de unidades enlazadas activas: se muestran trabajadores compatibles y disponibles segun su unidad. Al asignar, se registra como prestamo en ambas unidades.
                 </div>
             ` : allowWorkerAcceptanceRequest ? `
             <label class="replacement-request-toggle">
