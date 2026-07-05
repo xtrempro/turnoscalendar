@@ -60,7 +60,8 @@ import {
 import { getDayColorGradient } from "./dayColorBands.js";
 import {
     cancelTimelineRender,
-    renderTimeline
+    renderTimeline,
+    updateTimelineCells
 } from "./timeline.js";
 import {
     cededSwapTurnBlocks,
@@ -3026,6 +3027,23 @@ async function openReplacementDialog(profileName, keyDay) {
 
                         close();
                         await updateDayCell(profileName, keyDay);
+
+                        // Actualiza solo las casillas afectadas del timeline (el
+                        // trabajador ausente y quien lo cubre) sin reconstruirlo.
+                        const coveringWorker = button.dataset.worker;
+
+                        if (
+                            coveringWorker &&
+                            coveringWorker !== profileName
+                        ) {
+                            await updateDayCell(coveringWorker, keyDay);
+                        }
+
+                        updateTimelineCells(profileName, [keyDay]);
+
+                        if (coveringWorker) {
+                            updateTimelineCells(coveringWorker, [keyDay]);
+                        }
                     }, {
                         label: requestMode
                             ? "Creando solicitud..."

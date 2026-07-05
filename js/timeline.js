@@ -64,6 +64,9 @@ let timelineRenderRequest = 0;
 const TIMELINE_PAGE_SIZE = 20;
 let timelineRowLimit = TIMELINE_PAGE_SIZE;
 let timelinePageSignature = "";
+// Contexto del ultimo render (mes visible) para actualizar casillas sueltas
+// sin reconstruir todo el timeline.
+let timelineViewState = null;
 
 function yieldTimelineRender() {
     return new Promise(resolve => {
@@ -84,6 +87,129 @@ function timelineRenderIsCurrent(requestId, year, month) {
 
 export function cancelTimelineRender() {
     timelineRenderRequest++;
+}
+
+// Escapa un valor para usarlo dentro de un selector [attr="valor"].
+function cssAttr(value) {
+    return String(value).replace(/["\\]/g, "\\$&");
+}
+
+// Delegacion de clicks de la grilla en el contenedor persistente. Asi las
+// casillas reemplazadas de forma incremental siguen respondiendo sin re-enlazar
+// manejadores. Se enlaza una sola vez por contenedor.
+function ensureTimelineCellDelegation(container) {
+    if (!container || container.dataset.timelineDelegated === "1") return;
+
+    container.dataset.timelineDelegated = "1";
+    container.addEventListener("click", event => {
+        const cell = event.target.closest(
+            "[data-replacement-profile]," +
+            "[data-extra-profile]," +
+            "[data-clock-extra-profile]," +
+            "[data-contract-error-profile]," +
+            "[data-honoraria-limit-profile]"
+        );
+
+        if (!cell || !container.contains(cell)) return;
+
+        if (cell.dataset.replacementProfile) {
+            window.openReplacementDialog?.(
+                cell.dataset.replacementProfile,
+                cell.dataset.replacementKey
+            );
+        } else if (cell.dataset.extraProfile) {
+            window.openExtraReasonDialog?.(
+                cell.dataset.extraProfile,
+                cell.dataset.extraKey,
+                Number(cell.dataset.extraTurn) || 0
+            );
+        } else if (cell.dataset.clockExtraProfile) {
+            window.openClockExtraReasonDialog?.(
+                cell.dataset.clockExtraProfile,
+                cell.dataset.clockExtraKey,
+                Number(cell.dataset.clockExtraTurn) || 0
+            );
+        } else if (cell.dataset.contractErrorProfile) {
+            window.startReplacementContractEdit?.(
+                cell.dataset.contractErrorProfile,
+                cell.dataset.contractErrorKey
+            );
+        } else if (cell.dataset.honorariaLimitProfile) {
+            alert(cell.dataset.honorariaLimitMessage);
+        }
+    });
+}
+
+// Actualiza en el DOM solo las casillas indicadas de un trabajador (color,
+// marcador, titulo y estado) sin reconstruir todo el timeline. No hace nada si
+// el timeline no esta renderizado o el trabajador no esta en la vista actual.
+// Si no se pasan claves, refresca toda la fila del trabajador en el mes visible.
+export function updateTimelineCells(profileName, keys = null) {
+    const container = document.getElementById("teamTimeline");
+
+    if (!container || !timelineViewState || !profileName) return false;
+
+    const rowCell = container.querySelector(
+        `.mini[data-timeline-profile="${cssAttr(profileName)}"]`
+    );
+
+    if (!rowCell) return false;
+
+    const profile = getProfiles().find(item => item.name === profileName);
+
+    if (!profile) return false;
+
+    const { year, month, diasMes, holidays } = timelineViewState;
+    const ctx = {
+        year,
+        month,
+        holidays,
+        leaveMaps: {
+            admin: getAdmin(profileName),
+            legal: getLegal(profileName),
+            comp: getComp(profileName),
+            absences: getAbs(profileName)
+        },
+        honorariaSummary: getHonorariaMonthlySummary(
+            profileName,
+            year,
+            month,
+            holidays
+        )
+    };
+    const targetKeys = Array.isArray(keys)
+        ? keys
+        : keys
+            ? [keys]
+            : monthKeys(year, month, diasMes);
+    const template = document.createElement("tbody");
+    let updated = false;
+
+    targetKeys.forEach(key => {
+        const [ky, km, day] = String(key).split("-").map(Number);
+
+        if (ky !== year || km !== month || !day || day < 1 || day > diasMes) {
+            return;
+        }
+
+        const current = container.querySelector(
+            `.mini[data-timeline-profile="${cssAttr(profileName)}"]` +
+            `[data-timeline-key="${cssAttr(key)}"]`
+        );
+
+        if (!current) return;
+
+        template.innerHTML =
+            `<tr>${renderTimelineDayCell(profile, day, ctx)}</tr>`;
+        const next = template.querySelector("td");
+
+        if (next) {
+            current.replaceWith(next);
+            updated = true;
+        }
+    });
+
+    return updated;
 }
 
 function getData(nombre){
@@ -659,6 +785,175 @@ async function buildTimelineRows(
         });
 }
 
+// Construye una sola casilla-dia del timeline. Se reutiliza en el render
+// completo y en la actualizacion incremental (updateTimelineCells), para no
+// re-renderizar todo el timeline al aplicar un permiso o un reemplazo.
+function renderTimelineDayCell(profile, d, {
+    year,
+    month,
+    holidays,
+    leaveMaps,
+    honorariaSummary
+}) {
+    const key = `${year}-${month}-${d}`;
+    const replacement = replacementMarker(profile.name, key);
+    const color = getColor(
+        profile.name,
+        key,
+        leaveMaps,
+        Boolean(replacement)
+    );
+    const date = new Date(year, month, d);
+    const isInhabil = !isBusinessDay(date, holidays);
+    const workerBlockedDay =
+        getBlockedDayForProfile(profile.name, key);
+    const hourReturn =
+        getHourReturn(profile.name, key);
+    // Mismo esquema de bandas que el calendario (turnos combinados +
+    // extension/reduccion de marcaje). Si devuelve gradiente, se usa.
+    const dayGradient =
+        (!workerBlockedDay && !hourReturn)
+            ? getDayColorGradient(
+                profile.name,
+                key,
+                getTurnoReal(profile.name, key),
+                date,
+                holidays,
+                getAdmin(profile.name)[key],
+                getTurnoBase(profile.name, key)
+            )
+            : null;
+    const background = workerBlockedDay
+        ? timelineBlockedDayBackground(isInhabil)
+        : hourReturn
+        ? "linear-gradient(135deg, #0f766e, #14b8a6)"
+        : dayGradient
+        ? dayGradient
+        : timelineCellBackground(color, isInhabil);
+    const contractError =
+        contractErrorMarker(profile.name, key);
+    const honorariaExcess =
+        getHonorariaExcessForKey(
+            honorariaSummary,
+            key
+        );
+    const needsReplacement =
+        needsReplacementMarker(profile.name, key);
+    const pendingManualExtra =
+        pendingManualExtraMarker(profile.name, key);
+    const severeClockIncident =
+        hasSevereClockIncident(profile.name, key);
+    const simpleClockIncident =
+        !severeClockIncident &&
+        hasSimpleClockIncident(profile.name, key);
+    const clockIncidentDetail =
+        severeClockIncident || simpleClockIncident
+            ? getClockIncidentDetail(
+                profile.name,
+                key,
+                date,
+                getTurnoReal(profile.name, key),
+                holidays
+            )
+            : "";
+    const clockExtra =
+        hasClockExtra(
+            profile.name,
+            key,
+            new Date(year, month, d),
+            getTurnoReal(profile.name, key),
+            holidays
+        );
+    const showClockExtra =
+        clockExtra &&
+        !getClockExtraBackupForWorker(profile.name, key);
+    const showExtraReason =
+        !contractError &&
+        !needsReplacement &&
+        pendingManualExtra;
+    const showHonorariaLimit =
+        Boolean(honorariaExcess) &&
+        !contractError &&
+        !severeClockIncident &&
+        !needsReplacement;
+    const marker = contractError
+        ? "X"
+        : severeClockIncident
+            ? "!!!"
+            : needsReplacement
+                ? "!"
+                : showHonorariaLimit
+                    ? "!"
+                : showExtraReason || showClockExtra
+                    ? "?"
+                    : simpleClockIncident
+                    ? "*"
+                    : (hourReturn
+                        ? hourReturnTimelineMarker(hourReturn)
+                        : replacement
+                        ? (replacement.isLoan ? "P" : "R")
+                        : "");
+    const title = contractError
+        ? "No tiene contrato vigente en la fecha seleccionada"
+        : severeClockIncident
+            ? (
+                clockIncidentDetail ||
+                "Incidencia grave de marcaje"
+            )
+            : needsReplacement
+                ? "Requiere reemplazo de turno base"
+                : showHonorariaLimit
+                    ? getHonorariaLimitMessage(honorariaSummary)
+                : showExtraReason
+                ? "Requiere motivo de horas extras"
+                : showClockExtra
+                    ? "Requiere motivo por horas extras de marcaje"
+                    : simpleClockIncident
+                        ? (
+                            clockIncidentDetail ||
+                            "Incidencia de marcaje"
+                        )
+                : hourReturn
+                    ? `${hourReturn.fullTurn ? "Devolución" : "Dev. Parcial"}: ${hourReturn.hours || 0} hrs.`
+                : replacement
+                    ? (
+                        replacement.replaced
+                            ? `${replacement.isLoan ? "Prestamo cubriendo a" : "Reemplazo de"} ${replacement.replaced} por ${replacement.absenceType || "ausencia"}`
+                            : `Motivo HHEE: ${replacement.reason || replacement.absenceType || "sin detalle"}`
+                    )
+                    : "";
+    const leaveTitle = leaveApplicationHoverTitle(
+        profile.name,
+        key,
+        leaveMaps
+    );
+    const titleText = [
+        title,
+        leaveTitle,
+        workerBlockedDay
+            ? workerBlockedDay.message ||
+                "El trabajador solicito no hacer reemplazos ni cambios de turno en esta fecha."
+            : ""
+    ].filter(Boolean).join("\n");
+
+    return `
+        <td
+            data-timeline-profile="${escapeHtml(profile.name)}"
+            data-timeline-key="${escapeHtml(key)}"
+            class="mini ${workerBlockedDay ? "worker-blocked-mini" : ""} ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
+            style="background:${escapeHtml(background)}"
+            title="${escapeHtml(titleText)}"
+            ${contractError ? `data-contract-error-profile="${escapeHtml(profile.name)}" data-contract-error-key="${escapeHtml(key)}"` : ""}
+            ${showHonorariaLimit ? `data-honoraria-limit-profile="${escapeHtml(profile.name)}" data-honoraria-limit-key="${escapeHtml(key)}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
+            ${needsReplacement ? `data-replacement-profile="${escapeHtml(profile.name)}" data-replacement-key="${escapeHtml(key)}"` : ""}
+            ${showExtraReason ? `data-extra-profile="${escapeHtml(profile.name)}" data-extra-key="${escapeHtml(key)}" data-extra-turn="${escapeHtml(showExtraReason)}"` : ""}
+            ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${escapeHtml(profile.name)}" data-clock-extra-key="${escapeHtml(key)}" data-clock-extra-turn="${escapeHtml(getTurnoReal(profile.name, key))}"` : ""}
+        >
+            ${marker ? `<span class="timeline-replacement-marker">${marker}</span>` : ""}
+        </td>
+    `;
+}
+
 export async function renderTimeline(){
     const div = document.getElementById("teamTimeline");
     const requestId = ++timelineRenderRequest;
@@ -725,6 +1020,7 @@ export async function renderTimeline(){
 
     const visibleGroup = orderedGroup.slice(0, timelineRowLimit);
     const holidays = await fetchHolidays(year);
+    timelineViewState = { year, month, diasMes, holidays };
 
     if (
         requestId !== timelineRenderRequest ||
@@ -850,162 +1146,13 @@ export async function renderTimeline(){
         `;
 
         for (let d = 1; d <= diasMes; d++) {
-            const key = `${year}-${month}-${d}`;
-            const replacement =
-                replacementMarker(profile.name, key);
-            const color = getColor(
-                profile.name,
-                key,
+            html += renderTimelineDayCell(profile, d, {
+                year,
+                month,
+                holidays,
                 leaveMaps,
-                Boolean(replacement)
-            );
-            const date = new Date(year, month, d);
-            const isInhabil = !isBusinessDay(date, holidays);
-            const workerBlockedDay =
-                getBlockedDayForProfile(profile.name, key);
-            const hourReturn =
-                getHourReturn(profile.name, key);
-            // Mismo esquema de bandas que el calendario (turnos combinados +
-            // extension/reduccion de marcaje). Si devuelve gradiente, se usa.
-            const dayGradient =
-                (!workerBlockedDay && !hourReturn)
-                    ? getDayColorGradient(
-                        profile.name,
-                        key,
-                        getTurnoReal(profile.name, key),
-                        date,
-                        holidays,
-                        getAdmin(profile.name)[key],
-                        getTurnoBase(profile.name, key)
-                    )
-                    : null;
-            const background = workerBlockedDay
-                ? timelineBlockedDayBackground(isInhabil)
-                : hourReturn
-                ? "linear-gradient(135deg, #0f766e, #14b8a6)"
-                : dayGradient
-                ? dayGradient
-                : timelineCellBackground(color, isInhabil);
-            const contractError =
-                contractErrorMarker(profile.name, key);
-            const honorariaExcess =
-                getHonorariaExcessForKey(
-                    honorariaSummary,
-                    key
-                );
-            const needsReplacement =
-                needsReplacementMarker(profile.name, key);
-            const pendingManualExtra =
-                pendingManualExtraMarker(profile.name, key);
-            const severeClockIncident =
-                hasSevereClockIncident(profile.name, key);
-            const simpleClockIncident =
-                !severeClockIncident &&
-                hasSimpleClockIncident(profile.name, key);
-            const clockIncidentDetail =
-                severeClockIncident || simpleClockIncident
-                    ? getClockIncidentDetail(
-                        profile.name,
-                        key,
-                        date,
-                        getTurnoReal(profile.name, key),
-                        holidays
-                    )
-                    : "";
-            const clockExtra =
-                hasClockExtra(
-                    profile.name,
-                    key,
-                    new Date(year, month, d),
-                    getTurnoReal(profile.name, key),
-                    holidays
-                );
-            const showClockExtra =
-                clockExtra &&
-                !getClockExtraBackupForWorker(profile.name, key);
-            const showExtraReason =
-                !contractError &&
-                !needsReplacement &&
-                pendingManualExtra;
-            const showHonorariaLimit =
-                Boolean(honorariaExcess) &&
-                !contractError &&
-                !severeClockIncident &&
-                !needsReplacement;
-            const marker = contractError
-                ? "X"
-                : severeClockIncident
-                    ? "!!!"
-                    : needsReplacement
-                        ? "!"
-                        : showHonorariaLimit
-                            ? "!"
-                        : showExtraReason || showClockExtra
-                            ? "?"
-                            : simpleClockIncident
-                            ? "*"
-                            : (hourReturn
-                                ? hourReturnTimelineMarker(hourReturn)
-                                : replacement
-                                ? (replacement.isLoan ? "P" : "R")
-                                : "");
-            const title = contractError
-                ? "No tiene contrato vigente en la fecha seleccionada"
-                : severeClockIncident
-                    ? (
-                        clockIncidentDetail ||
-                        "Incidencia grave de marcaje"
-                    )
-                    : needsReplacement
-                        ? "Requiere reemplazo de turno base"
-                        : showHonorariaLimit
-                            ? getHonorariaLimitMessage(honorariaSummary)
-                        : showExtraReason
-                        ? "Requiere motivo de horas extras"
-                        : showClockExtra
-                            ? "Requiere motivo por horas extras de marcaje"
-                            : simpleClockIncident
-                                ? (
-                                    clockIncidentDetail ||
-                                    "Incidencia de marcaje"
-                                )
-                        : hourReturn
-                            ? `${hourReturn.fullTurn ? "Devoluci\u00f3n" : "Dev. Parcial"}: ${hourReturn.hours || 0} hrs.`
-                        : replacement
-                            ? (
-                                replacement.replaced
-                                    ? `${replacement.isLoan ? "Prestamo cubriendo a" : "Reemplazo de"} ${replacement.replaced} por ${replacement.absenceType || "ausencia"}`
-                                    : `Motivo HHEE: ${replacement.reason || replacement.absenceType || "sin detalle"}`
-                            )
-                            : "";
-            const leaveTitle = leaveApplicationHoverTitle(
-                profile.name,
-                key,
-                leaveMaps
-            );
-            const titleText = [
-                title,
-                leaveTitle,
-                workerBlockedDay
-                    ? workerBlockedDay.message ||
-                        "El trabajador solicito no hacer reemplazos ni cambios de turno en esta fecha."
-                    : ""
-            ].filter(Boolean).join("\n");
-
-            html += `
-                <td
-                    class="mini ${workerBlockedDay ? "worker-blocked-mini" : ""} ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement ? "needs-replacement" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
-                    style="background:${escapeHtml(background)}"
-                    title="${escapeHtml(titleText)}"
-                    ${contractError ? `data-contract-error-profile="${escapeHtml(profile.name)}" data-contract-error-key="${escapeHtml(key)}"` : ""}
-                    ${showHonorariaLimit ? `data-honoraria-limit-profile="${escapeHtml(profile.name)}" data-honoraria-limit-key="${escapeHtml(key)}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
-                    ${needsReplacement ? `data-replacement-profile="${escapeHtml(profile.name)}" data-replacement-key="${escapeHtml(key)}"` : ""}
-                    ${showExtraReason ? `data-extra-profile="${escapeHtml(profile.name)}" data-extra-key="${escapeHtml(key)}" data-extra-turn="${escapeHtml(showExtraReason)}"` : ""}
-                    ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${escapeHtml(profile.name)}" data-clock-extra-key="${escapeHtml(key)}" data-clock-extra-turn="${escapeHtml(getTurnoReal(profile.name, key))}"` : ""}
-                >
-                    ${marker ? `<span class="timeline-replacement-marker">${marker}</span>` : ""}
-                </td>
-            `;
+                honorariaSummary
+            });
         }
 
         html += `</tr>`;
@@ -1077,50 +1224,7 @@ export async function renderTimeline(){
                 );
             };
         });
-    div.querySelectorAll("[data-replacement-profile]")
-        .forEach(cell => {
-            cell.onclick = () => {
-                window.openReplacementDialog?.(
-                    cell.dataset.replacementProfile,
-                    cell.dataset.replacementKey
-                );
-            };
-        });
-    div.querySelectorAll("[data-extra-profile]")
-        .forEach(cell => {
-            cell.onclick = () => {
-                window.openExtraReasonDialog?.(
-                    cell.dataset.extraProfile,
-                    cell.dataset.extraKey,
-                    Number(cell.dataset.extraTurn) || 0
-                );
-            };
-        });
-    div.querySelectorAll("[data-clock-extra-profile]")
-        .forEach(cell => {
-            cell.onclick = () => {
-                window.openClockExtraReasonDialog?.(
-                    cell.dataset.clockExtraProfile,
-                    cell.dataset.clockExtraKey,
-                    Number(cell.dataset.clockExtraTurn) || 0
-                );
-            };
-        });
-    div.querySelectorAll("[data-contract-error-profile]")
-        .forEach(cell => {
-            cell.onclick = () => {
-                window.startReplacementContractEdit?.(
-                    cell.dataset.contractErrorProfile,
-                    cell.dataset.contractErrorKey
-                );
-            };
-        });
-    div.querySelectorAll("[data-honoraria-limit-profile]")
-        .forEach(cell => {
-            cell.onclick = () => {
-                alert(cell.dataset.honorariaLimitMessage);
-            };
-        });
+    ensureTimelineCellDelegation(div);
     syncTimelineStickyOffsets(div);
     requestAnimationFrame(() => syncTimelineStickyOffsets(div));
     bindTimelineOutsideClickListener(div);

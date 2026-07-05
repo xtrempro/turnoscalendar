@@ -258,7 +258,7 @@ import {
     initHoursCharts,
     renderHoursCharts
 } from "./hoursCharts.js";
-import { renderTimeline } from "./timeline.js";
+import { renderTimeline, updateTimelineCells } from "./timeline.js";
 import { withBusyState } from "./busy.js";
 import {
     addAuditLog,
@@ -5518,6 +5518,9 @@ function clearSelectionMode(shouldRefresh = true) {
 
     if (shouldRefresh) {
         void updateVisibleCalendarDays({ updateSummary: true });
+        // Refresca solo la fila del trabajador activo en el timeline (permisos,
+        // feriados, rotativa, etc.) sin reconstruir todo el timeline.
+        updateTimelineCells(getCurrentProfile());
     }
 }
 
