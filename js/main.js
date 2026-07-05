@@ -2363,6 +2363,60 @@ function openCalendarRotationConfigModal() {
     render();
 }
 
+// Antes de mover el inicio de la rotativa hacia la fecha elegida, materializa
+// (congela) en baseData los turnos ANTERIORES que hoy solo se computan a partir
+// de la rotativa vigente. Sin esto, al mover el inicio hacia adelante esos dias
+// pasan a calcularse como "libre" y se borran visualmente. No toca dias con
+// turno base explicito ni dias libres.
+function freezePriorRotationSchedule(boundaryISO) {
+    const profileName = getCurrentProfile();
+
+    if (!profileName) return;
+
+    const rotativa = getRotativa(profileName);
+
+    if (!rotativa || rotativa.type === "libre" || !rotativa.start) return;
+
+    const start = parseInputDate(rotativa.start);
+    const boundary = parseInputDate(boundaryISO);
+
+    if (!start || !boundary || !(start < boundary)) return;
+
+    const data = getProfileData();
+    const baseData = getBaseProfileData();
+    const blocked = getBlockedDays();
+    let changed = false;
+
+    for (
+        let cursor = new Date(start);
+        cursor < boundary;
+        cursor.setDate(cursor.getDate() + 1)
+    ) {
+        const key = keyFromDate(cursor);
+
+        if (Object.prototype.hasOwnProperty.call(baseData, key)) continue;
+
+        const turn = getTurnoBase(profileName, key);
+
+        if (!turn) continue;
+
+        baseData[key] = turn;
+
+        if (!Object.prototype.hasOwnProperty.call(data, key)) {
+            data[key] = turn;
+        }
+
+        blocked[key] = true;
+        changed = true;
+    }
+
+    if (changed) {
+        saveBaseProfileData(baseData);
+        saveProfileData(data);
+        saveBlockedDays(blocked);
+    }
+}
+
 async function applyCalendarRotationChange(fecha) {
     const profile = getPerfilActual();
     const pending = pendingRotationChange;
@@ -2422,6 +2476,10 @@ async function applyCalendarRotationChange(fecha) {
 
     await withBusyState(async () => {
         pushHistory();
+
+        // Preserva el horario anterior a la fecha elegida antes de reubicar el
+        // inicio de la rotativa (evita que se borren los turnos "hacia atras").
+        freezePriorRotationSchedule(startISO);
 
         if (type === "libre") {
             saveRotativa({
