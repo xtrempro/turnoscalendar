@@ -15,6 +15,7 @@
     "security:appcheck:test:apply": "node scripts/configure-test-app-check.mjs --apply",
     "security:appcheck:test:monitor": "node scripts/configure-test-app-check.mjs --monitor",
     "security:appcheck:test:enforce": "node scripts/configure-test-app-check.mjs --enforce",
+    "security:appcheck:test:invokers": "node scripts/configure-test-app-check.mjs --fix-invokers",
     "test:state-modules": "node --test tests/state-modules.test.mjs",
     "test:shift-assignment": "node --test tests/shift-assignment-history.test.mjs",
     "test:replacement-leaves": "node --test tests/replacement-leave-grouping.test.mjs",

@@ -21,10 +21,12 @@ const PROTECTED_FIREBASE_SERVICES = [
 ];
 const ENFORCE = process.argv.includes("--enforce");
 const MONITOR = process.argv.includes("--monitor");
+const FIX_INVOKERS = process.argv.includes("--fix-invokers");
 const APPLY =
     process.argv.includes("--apply") ||
     ENFORCE ||
-    MONITOR;
+    MONITOR ||
+    FIX_INVOKERS;
 
 function firebaseToolsModule(relativePath) {
     const npmRoot = process.platform === "win32"
@@ -334,6 +336,126 @@ async function setEnforcementMode(mode) {
     return updated;
 }
 
+async function listCallableFunctions() {
+    const functions = [];
+    let pageToken = "";
+
+    do {
+        const query = new URLSearchParams({ pageSize: "100" });
+
+        if (pageToken) query.set("pageToken", pageToken);
+
+        const { body } = await api(
+            "https://cloudfunctions.googleapis.com/v2/" +
+            `projects/${PROJECT_ID}/locations/-/functions?${query}`
+        );
+
+        functions.push(...(body.functions || []));
+        pageToken = body.nextPageToken || "";
+    } while (pageToken);
+
+    return functions.filter(fn =>
+        fn.labels?.["deployment-callable"] === "true"
+    );
+}
+
+function publicInvokerBinding(policy) {
+    return (policy.bindings || []).find(binding =>
+        binding.role === "roles/run.invoker" && !binding.condition
+    );
+}
+
+function hasPublicInvoker(policy) {
+    return publicInvokerBinding(policy)?.members?.includes("allUsers") === true;
+}
+
+async function getRunPolicy(service) {
+    const { body } = await api(
+        `https://run.googleapis.com/v2/${service}:getIamPolicy?` +
+        "options.requestedPolicyVersion=3"
+    );
+
+    return body;
+}
+
+async function setRunPolicy(service, policy) {
+    const { body } = await api(
+        `https://run.googleapis.com/v2/${service}:setIamPolicy`,
+        {
+            method: "POST",
+            body: JSON.stringify({ policy })
+        }
+    );
+
+    return body;
+}
+
+async function ensureCallableInvokers() {
+    const callableFunctions = await listCallableFunctions();
+
+    if (callableFunctions.length === 0) {
+        throw new Error(
+            "No se encontraron Functions callable desplegadas en Test."
+        );
+    }
+
+    let updated = 0;
+
+    for (const fn of callableFunctions) {
+        const functionName = String(fn.name || "").split("/").pop();
+        const service = fn.serviceConfig?.service;
+
+        if (!service) {
+            throw new Error(
+                `${functionName} no informa su servicio subyacente de Cloud Run.`
+            );
+        }
+
+        const policy = await getRunPolicy(service);
+
+        if (!hasPublicInvoker(policy)) {
+            if (!FIX_INVOKERS) {
+                throw new Error(
+                    `${functionName} bloquea el preflight CORS. ` +
+                    "Ejecuta el comando con --fix-invokers."
+                );
+            }
+
+            policy.bindings ||= [];
+            const binding = publicInvokerBinding(policy);
+
+            if (binding) {
+                binding.members ||= [];
+                binding.members.push("allUsers");
+            } else {
+                policy.bindings.push({
+                    role: "roles/run.invoker",
+                    members: ["allUsers"]
+                });
+            }
+
+            if (policy.bindings.some(item => item.condition)) {
+                policy.version = Math.max(Number(policy.version || 0), 3);
+            }
+
+            const savedPolicy = await setRunPolicy(service, policy);
+
+            if (!hasPublicInvoker(savedPolicy)) {
+                throw new Error(
+                    `${functionName} no aceptó el rol público de invocación.`
+                );
+            }
+
+            updated++;
+        }
+    }
+
+    return {
+        total: callableFunctions.length,
+        updated
+    };
+}
+
 async function main() {
     for (const service of REQUIRED_SERVICES) {
         await ensureService(service);
@@ -352,6 +474,7 @@ async function main() {
     const enforcementModes = desiredMode
         ? await setEnforcementMode(desiredMode)
         : await getEnforcementModes();
+    const callableInvokers = await ensureCallableInvokers();
 
     console.log(
         APPLY
@@ -363,6 +486,11 @@ async function main() {
     PROTECTED_FIREBASE_SERVICES.forEach(service => {
         console.log(`${service}: ${enforcementModes[service]}`);
     });
+    console.log(
+        "Callable con preflight habilitado: " +
+        `${callableInvokers.total} ` +
+        `(actualizadas: ${callableInvokers.updated})`
+    );
 }
 
 main().catch(error => {
