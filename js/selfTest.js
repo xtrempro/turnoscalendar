@@ -11,19 +11,28 @@ import {
     replaceLocalSnapshot,
     runWithoutPersistenceEvents,
     listKeys,
-    removeKey
+    removeKey,
+    setJSON
 } from "./persistence.js";
 import {
     getCurrentProfile,
+    getSwaps,
     setCurrentProfile,
+    saveProfiles,
     saveRotativa,
     saveBaseProfileData,
+    saveSwaps,
+    saveTurnChangeConfig,
     getAdminDays,
     getLegalDays,
     getCompDays,
     profileCanCoverProfile
 } from "./storage.js";
-import { getTurnoBase } from "./turnEngine.js";
+import {
+    aplicarCambiosTurno,
+    getTurnoBase,
+    getTurnoProgramado
+} from "./turnEngine.js";
 import { getRotationSequence } from "./rotationUtils.js";
 import { freezePriorRotationSchedule } from "./rotationFreeze.js";
 import {
@@ -34,8 +43,17 @@ import {
 import { keyFromDate } from "./dateUtils.js";
 import { TURNO } from "./constants.js";
 import { escapeHTML } from "./htmlUtils.js";
+import {
+    canSwapProfiles,
+    getEligibleSwapReceivers,
+    registrarCambio
+} from "./swaps.js";
 
 const FAKE_PROFILE = "__selftest__";
+const FAKE_SWAP_RECEIVER = "__receiver___selftest__";
+const FAKE_SWAP_SAME_TURN = "__same_turn___selftest__";
+const FAKE_SWAP_ABSENT = "__absent___selftest__";
+const FAKE_SWAP_OTHER_ROLE = "__other_role___selftest__";
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -56,6 +74,53 @@ function resetFakeProfile() {
     listKeys().forEach(storageKey => {
         if (storageKey.endsWith(FAKE_PROFILE)) removeKey(storageKey);
     });
+}
+
+function selfTestProfile(name, profession = "Enfermería") {
+    return {
+        name,
+        estamento: "Profesional",
+        profession,
+        contractType: "Planta",
+        active: true
+    };
+}
+
+function setupSwapSelfTest() {
+    const changeKey = key(2026, 5, 10);
+    const returnKey = key(2026, 5, 12);
+
+    saveProfiles([
+        selfTestProfile(FAKE_PROFILE),
+        selfTestProfile(FAKE_SWAP_RECEIVER),
+        selfTestProfile(FAKE_SWAP_SAME_TURN),
+        selfTestProfile(FAKE_SWAP_ABSENT),
+        selfTestProfile(FAKE_SWAP_OTHER_ROLE, "Kinesiología")
+    ]);
+    saveTurnChangeConfig({
+        allowSwaps: true,
+        allowDifferentTurnTypes: true,
+        allowTwentyFourHourShifts: true,
+        allowInvertedTwentyFourHourShifts: true,
+        limitMonthlySwaps: false
+    });
+    saveSwaps([]);
+    saveBaseProfileData({
+        [changeKey]: TURNO.LARGA,
+        [returnKey]: TURNO.LIBRE
+    }, FAKE_PROFILE);
+    saveBaseProfileData({
+        [changeKey]: TURNO.LIBRE,
+        [returnKey]: TURNO.NOCHE
+    }, FAKE_SWAP_RECEIVER);
+    saveBaseProfileData({ [changeKey]: TURNO.LARGA }, FAKE_SWAP_SAME_TURN);
+    saveBaseProfileData({ [changeKey]: TURNO.LIBRE }, FAKE_SWAP_ABSENT);
+    saveBaseProfileData({ [changeKey]: TURNO.LIBRE }, FAKE_SWAP_OTHER_ROLE);
+    setJSON(`absences_${FAKE_SWAP_ABSENT}`, {
+        [changeKey]: { type: "license" }
+    });
+
+    return { changeKey, returnKey };
 }
 
 const TESTS = [
@@ -231,6 +296,101 @@ const TESTS = [
                     { estamento: "Profesional", profession: "Enfermería" }
                 ) === false,
                 "distinto estamento no deberia ser compatible"
+            );
+        }
+    },
+    {
+        name: "Cambio de turno: exige trabajadores compatibles",
+        run() {
+            setupSwapSelfTest();
+
+            assert(
+                canSwapProfiles(FAKE_PROFILE, FAKE_SWAP_RECEIVER) === true,
+                "misma profesion y estamento deberian permitir el cambio"
+            );
+            assert(
+                canSwapProfiles(FAKE_PROFILE, FAKE_SWAP_OTHER_ROLE) === false,
+                "distinta profesion no deberia permitir el cambio"
+            );
+        }
+    },
+    {
+        name: "Cambio de turno: filtra quien puede recibir el turno elegido",
+        run() {
+            const { changeKey } = setupSwapSelfTest();
+            const receivers = getEligibleSwapReceivers(
+                FAKE_PROFILE,
+                changeKey
+            ).map(profile => profile.name);
+
+            assertEqual(
+                receivers.length,
+                1,
+                "deberia quedar un solo receptor habilitado"
+            );
+            assertEqual(
+                receivers[0],
+                FAKE_SWAP_RECEIVER,
+                "se habilito un receptor con turno o ausencia incompatible"
+            );
+        }
+    },
+    {
+        name: "Cambio de turno: aplica entrega y devolucion en ambos calendarios",
+        run() {
+            const { changeKey, returnKey } = setupSwapSelfTest();
+
+            registrarCambio({
+                from: FAKE_PROFILE,
+                to: FAKE_SWAP_RECEIVER,
+                fecha: "2026-06-10",
+                devolucion: "2026-06-12",
+                turno: "L",
+                turnoDevuelto: "N",
+                year: 2026,
+                month: 5
+            });
+
+            assertEqual(
+                getSwaps().length,
+                1,
+                "el cambio no quedo registrado"
+            );
+            assertEqual(
+                aplicarCambiosTurno(
+                    FAKE_PROFILE,
+                    changeKey,
+                    getTurnoProgramado(FAKE_PROFILE, changeKey)
+                ),
+                TURNO.LIBRE,
+                "quien entrega deberia quedar libre en la fecha del cambio"
+            );
+            assertEqual(
+                aplicarCambiosTurno(
+                    FAKE_SWAP_RECEIVER,
+                    changeKey,
+                    getTurnoProgramado(FAKE_SWAP_RECEIVER, changeKey)
+                ),
+                TURNO.LARGA,
+                "quien recibe no obtuvo el turno entregado"
+            );
+            assertEqual(
+                aplicarCambiosTurno(
+                    FAKE_SWAP_RECEIVER,
+                    returnKey,
+                    getTurnoProgramado(FAKE_SWAP_RECEIVER, returnKey)
+                ),
+                TURNO.LIBRE,
+                "quien devuelve deberia quedar libre en la devolucion"
+            );
+            assertEqual(
+                aplicarCambiosTurno(
+                    FAKE_PROFILE,
+                    returnKey,
+                    getTurnoProgramado(FAKE_PROFILE, returnKey)
+                ),
+                TURNO.NOCHE,
+                "quien recibe la devolucion no obtuvo el turno"
             );
         }
     }

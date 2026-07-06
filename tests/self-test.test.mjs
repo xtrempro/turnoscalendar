@@ -64,5 +64,11 @@ test("todas las auto-pruebas de reglas basicas pasan", async () => {
         0,
         `Auto-pruebas con fallas (${result.failed}/${result.total}):\n${failures.join("\n")}`
     );
-    assert.ok(result.total >= 8, "deberian correr varias pruebas");
+    assert.ok(result.total >= 13, "deberian correr todas las reglas basicas");
+    assert.ok(
+        result.results.some(item =>
+            item.name.startsWith("Cambio de turno:")
+        ),
+        "el AUTO-TEST deberia incluir reglas de cambios de turno"
+    );
 });
