@@ -26,6 +26,7 @@ import {
     getAdminDays,
     getLegalDays,
     getCompDays,
+    getReplacements,
     profileCanCoverProfile
 } from "./storage.js";
 import {
@@ -48,6 +49,10 @@ import {
     getEligibleSwapReceivers,
     registrarCambio
 } from "./swaps.js";
+import {
+    cancelFutureReplacementsForWorker,
+    saveReplacement
+} from "./replacements.js";
 
 const FAKE_PROFILE = "__selftest__";
 const FAKE_SWAP_RECEIVER = "__receiver___selftest__";
@@ -210,6 +215,44 @@ const TESTS = [
                 getTurnoBase(FAKE_PROFILE, key(2026, 1, 1)),
                 TURNO.LARGA,
                 "el nuevo inicio deberia arrancar la rotativa"
+            );
+        }
+    },
+    {
+        name: "Nueva rotativa anula turnos extras y motivos futuros",
+        run() {
+            // Un motivo/turno extra manual antes y otro despues del corte.
+            saveReplacement({
+                worker: FAKE_PROFILE,
+                keyDay: key(2026, 0, 15),
+                turno: TURNO.LARGA,
+                reason: "Motivo previo",
+                source: "manual_extra",
+                addsShift: false
+            });
+            saveReplacement({
+                worker: FAKE_PROFILE,
+                keyDay: key(2026, 2, 15),
+                turno: TURNO.LARGA,
+                reason: "Motivo futuro",
+                source: "manual_extra",
+                addsShift: false
+            });
+
+            cancelFutureReplacementsForWorker(FAKE_PROFILE, "2026-02-01");
+
+            const mine = getReplacements()
+                .filter(replacement => replacement.worker === FAKE_PROFILE);
+            const previo = mine.find(r => r.date === "2026-01-15");
+            const futuro = mine.find(r => r.date === "2026-03-15");
+
+            assert(
+                previo && previo.canceled !== true,
+                "el turno extra anterior a la fecha no debe anularse"
+            );
+            assert(
+                futuro && futuro.canceled === true,
+                "el turno extra/motivo futuro deberia quedar anulado"
             );
         }
     },

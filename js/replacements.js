@@ -267,6 +267,57 @@ export function cancelReplacementsForWorkerKeys(
     return canceled;
 }
 
+// Anula los reemplazos activos del trabajador (turnos extras, motivos manuales,
+// horas extras del reloj) desde una fecha ISO en adelante. Se usa al aplicar una
+// rotativa nueva para que el calendario hacia adelante quede limpio.
+export function cancelFutureReplacementsForWorker(
+    profile,
+    startISO,
+    {
+        reason = "rotation_reset",
+        details = "Turno extra anulado al aplicar una nueva rotativa."
+    } = {}
+) {
+    const boundary = String(startISO || "");
+
+    if (!profile || !boundary) return [];
+
+    const canceledAt = new Date().toISOString();
+    const canceled = [];
+    const replacements = getReplacements().map(replacement => {
+        if (
+            !replacementActive(replacement) ||
+            replacement.worker !== profile ||
+            !replacement.date ||
+            String(replacement.date) < boundary
+        ) {
+            return replacement;
+        }
+
+        const nextReplacement = {
+            ...replacement,
+            canceled: true,
+            canceledAt,
+            cancelReason: reason,
+            cancellationDetails: details
+        };
+
+        canceled.push(nextReplacement);
+        return nextReplacement;
+    });
+
+    if (!canceled.length) return [];
+
+    saveReplacements(replacements);
+    cancelLinkedRequestsForReplacements(canceled, {
+        canceledAt,
+        reason,
+        details
+    });
+
+    return canceled;
+}
+
 export function getReplacementTurnForWorker(profile, keyDay) {
     return getReplacementsForWorkerShift(profile, keyDay)
         .filter(replacementAddsShift)

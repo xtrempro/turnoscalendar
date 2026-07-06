@@ -340,7 +340,10 @@ import {
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import { registerShiftMove } from "./shiftMoves.js";
-import { renderReplacementLogHTML } from "./replacements.js";
+import {
+    cancelFutureReplacementsForWorker,
+    renderReplacementLogHTML
+} from "./replacements.js";
 import {
     refreshWorkerRequestsNavBadge,
     renderWorkerRequestsPanel,
@@ -387,7 +390,9 @@ import {
 } from "./clockMarks.js";
 import {
     getHourReturn,
-    saveHourReturn
+    getHourReturns,
+    saveHourReturn,
+    saveHourReturns
 } from "./hourReturns.js";
 import {
     calculateHheeReturnTransferHours,
@@ -6651,6 +6656,7 @@ async function cleanupFutureSchedule(startDate) {
     const legal = getLegalDays();
     const comp = getCompDays();
     const absences = getAbsences();
+    const hourReturns = getHourReturns(profileName);
     const returnedLegal = {};
     const returnedComp = {};
     const returnedAdmin = {};
@@ -6691,7 +6697,16 @@ async function cleanupFutureSchedule(startDate) {
         delete absences[key];
     });
 
+    futureKeys(hourReturns, startDate).forEach(key => {
+        delete hourReturns[key];
+    });
+
     cleanupFutureSwaps(profileName, startISO);
+    cancelFutureReplacementsForWorker(profileName, startISO, {
+        reason: "rotation_reset",
+        details:
+            "Turno extra anulado al aplicar una nueva rotativa desde esta fecha."
+    });
 
     await returnBusinessBalances("legal", returnedLegal);
     await returnBusinessBalances("comp", returnedComp);
@@ -6704,6 +6719,7 @@ async function cleanupFutureSchedule(startDate) {
     saveLegalDays(legal);
     saveCompDays(comp);
     saveAbsences(absences);
+    saveHourReturns(profileName, hourReturns);
 }
 
 async function applyDraftRotation(
