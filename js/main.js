@@ -826,6 +826,40 @@ function incrementManualBalance(
     });
 }
 
+// Devuelve el saldo manual del permiso anulado desde el LOG, en el ANIO y el
+// TRABAJADOR del permiso (la anulacion puede ser de otro trabajador distinto al
+// activo). Solo aplica si ese trabajador tiene saldo manual configurado; si es
+// calculado, se restaura solo al quitar los dias.
+const LEAVE_UNDO_BALANCE_FIELD = {
+    admin: "admin",
+    half_admin_morning: "admin",
+    half_admin_afternoon: "admin",
+    legal: "legal",
+    comp: "comp"
+};
+
+function restoreLeaveBalanceFromUndo(detail = {}) {
+    const field = LEAVE_UNDO_BALANCE_FIELD[detail.leaveType];
+    const amount = Number(detail.leaveAmount) || 0;
+    const year = Number(detail.leaveYear) || new Date().getFullYear();
+    const profile = String(detail.profile || "") || getCurrentProfile();
+
+    if (!field || amount <= 0 || !profile) return;
+
+    const manual = getManualLeaveBalances(year, profile);
+    const currentValue = Number(manual[field]);
+
+    if (!Number.isFinite(currentValue)) return;
+
+    saveManualLeaveBalances(year, {
+        ...manual,
+        [field]: Math.max(
+            0,
+            normalizeBalanceValue(currentValue + amount)
+        )
+    }, profile);
+}
+
 function syncRutValidity(showMessage = false) {
     const message = getRutValidationMessage(
         DOM.profileRutInput.value
@@ -9099,15 +9133,23 @@ function cancelLinkedInterUnitLoans(canceledReplacements = []) {
 }
 
 window.addEventListener("proturnos:auditUndoApplied", event => {
-    const canceledReplacements =
-        event.detail?.canceledReplacements || [];
+    const detail = event.detail || {};
+    const canceledReplacements = detail.canceledReplacements || [];
 
     cancelLinkedInterUnitLoans(canceledReplacements);
 
-    if (!event.detail?.profile || event.detail.profile === getCurrentProfile()) {
+    // Devuelve el saldo del permiso anulado para que el numero entre parentesis
+    // vuelva de inmediato.
+    restoreLeaveBalanceFromUndo(detail);
+
+    if (!detail.profile || detail.profile === getCurrentProfile()) {
         void updateVisibleCalendarDays({ updateSummary: true });
+        updateTimelineCells(detail.profile || getCurrentProfile());
+        // Refresca el saldo entre parentesis de los botones inmediatamente.
+        renderLeaveActionLabels();
     }
-    notifyWorkersOfAuditUndo(event.detail || {});
+
+    notifyWorkersOfAuditUndo(detail);
 });
 
 window.addEventListener(

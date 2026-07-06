@@ -1120,6 +1120,9 @@ export async function undoAuditLogEntry(logId, options = {}) {
                 leaveType: log.category === AUDIT_CATEGORY.LEAVE_ABSENCE
                     ? getLeaveUndoType(log)
                     : "",
+                leaveAmount: Number(log.meta?.amount) || 0,
+                leaveYear:
+                    Number(String(log.meta?.date || "").slice(0, 4)) || 0,
                 canceledReplacements
             }
         })
