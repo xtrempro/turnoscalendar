@@ -133,6 +133,10 @@ import {
     renderProfileRotationStatus
 } from "./profileRotationStatus.js";
 import {
+    getProfileLeaveHistory,
+    getProfileLeaveHistoryYears
+} from "./profileLeaveHistory.js";
+import {
     activeLabel,
     yesNoLabel,
     getLicenseTypeLabel
@@ -421,6 +425,8 @@ let legalCantidad = 0;
 let licenseCantidad = 0;
 let licenseType = "license";
 let availabilityEditMode = false;
+let availabilityHistoryYear = new Date().getFullYear();
+let availabilityHistoryProfile = "";
 let profileRotationMiniDate = new Date();
 let replacementContractMonthHint = "";
 let profileHoursSummaryRequest = 0;
@@ -3176,6 +3182,110 @@ function renderProfileRecords(profile, editing) {
         });
 }
 
+function formatAvailabilityHistoryDate(key) {
+    const [year, month, day] = String(key || "")
+        .split("-")
+        .map(Number);
+
+    if (!year || !Number.isFinite(month) || !day) return "";
+
+    return [
+        String(day).padStart(2, "0"),
+        String(month + 1).padStart(2, "0"),
+        year
+    ].join("-");
+}
+
+function availabilityHistoryHTML(profileName) {
+    const currentYear = new Date().getFullYear();
+
+    if (availabilityHistoryProfile !== profileName) {
+        availabilityHistoryProfile = profileName;
+        availabilityHistoryYear = currentYear;
+    }
+
+    const years = getProfileLeaveHistoryYears(
+        profileName,
+        currentYear
+    );
+
+    if (!years.includes(availabilityHistoryYear)) {
+        availabilityHistoryYear = currentYear;
+    }
+
+    const records = getProfileLeaveHistory(
+        profileName,
+        availabilityHistoryYear
+    );
+    const yearOptions = years.map(year => `
+        <option value="${year}" ${year === availabilityHistoryYear ? "selected" : ""}>
+            ${year}
+        </option>
+    `).join("");
+    const recordsHTML = records.length
+        ? records.map(record => {
+            const start = formatAvailabilityHistoryDate(record.startKey);
+            const end = formatAvailabilityHistoryDate(record.endKey);
+            const period = start === end
+                ? start
+                : `${start} al ${end}`;
+            const amount = record.amount === null
+                ? ""
+                : `
+                    <span class="availability-history__amount">
+                        ${formatSaldo(record.amount)} ${record.amount === 1 ? "d\u00eda" : "d\u00edas"}
+                    </span>
+                `;
+
+            return `
+                <article class="availability-history__item">
+                    <div>
+                        <strong>${escapeHTML(record.label)}</strong>
+                        <span>${escapeHTML(period)}</span>
+                    </div>
+                    ${amount}
+                </article>
+            `;
+        }).join("")
+        : `
+            <div class="availability-history__empty">
+                Sin vacaciones o ausencias registradas en ${availabilityHistoryYear}.
+            </div>
+        `;
+
+    return `
+        <section class="availability-history" aria-label="Registro de vacaciones y ausencias">
+            <div class="availability-history__head">
+                <strong>Registro de vacaciones / ausencias</strong>
+                <label>
+                    <span>A&ntilde;o</span>
+                    <select id="availabilityHistoryYear" aria-label="A&ntilde;o del registro">
+                        ${yearOptions}
+                    </select>
+                </label>
+            </div>
+            <div class="availability-history__list">
+                ${recordsHTML}
+            </div>
+        </section>
+    `;
+}
+
+function bindAvailabilityHistoryYear() {
+    const input = document.getElementById("availabilityHistoryYear");
+
+    if (!input) return;
+
+    input.onchange = () => {
+        const year = Number(input.value);
+
+        if (!Number.isInteger(year)) return;
+
+        availabilityHistoryYear = year;
+        renderDisponibilidadVacaciones();
+    };
+}
+
 function renderDisponibilidadVacaciones() {
     if (!DOM.availabilitySummary) return;
 
@@ -3185,6 +3295,7 @@ function renderDisponibilidadVacaciones() {
 
     if (!profile && !creating) {
         availabilityEditMode = false;
+        availabilityHistoryProfile = "";
 
         DOM.availabilitySummary.innerHTML = `
             <div class="availability-empty">
@@ -3221,6 +3332,9 @@ function renderDisponibilidadVacaciones() {
     const showCompBalance = isProfileEditing()
         ? Boolean(profileDraft.shiftAssigned)
         : getShiftAssigned(profile.name, currentDate);
+    const historyHTML = creating
+        ? ""
+        : availabilityHistoryHTML(profile.name);
 
     if (availabilityEditMode || creating) {
         DOM.availabilitySummary.innerHTML = `
@@ -3256,6 +3370,8 @@ function renderDisponibilidadVacaciones() {
                     : `Editando saldos vigentes del a\u00f1o ${year}.`}
                 FL solo admite d&iacute;as completos. FC anual solo puede ser 10 o 20 d&iacute;as.
             </div>
+
+            ${historyHTML}
         `;
 
         if (creating) {
@@ -3281,6 +3397,8 @@ function renderDisponibilidadVacaciones() {
                 input.onchange = input.oninput;
             });
         }
+
+        bindAvailabilityHistoryYear();
 
         return;
     }
@@ -3313,7 +3431,11 @@ function renderDisponibilidadVacaciones() {
         <div class="availability-note">
             Saldos vigentes del a\u00f1o ${year}.
         </div>
+
+        ${historyHTML}
     `;
+
+    bindAvailabilityHistoryYear();
 }
 
 function renderLeaveActionLabels() {

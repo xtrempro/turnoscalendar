@@ -24,6 +24,7 @@
     "test:worker": "node --test tests/schedule-worker.test.mjs",
     "test:linked-units": "node --test tests/linked-units-on-demand.test.mjs",
     "test:leave-application": "node --test tests/leave-application.test.mjs",
+    "test:profile-leave-history": "node --test tests/profile-leave-history.test.mjs",
     "test:self-test": "node --test tests/self-test.test.mjs",
     "test:main-thread": "node --test tests/main-thread-scheduler.test.mjs",
     "test:pwa": "node --test tests/pwa-install.test.mjs",
