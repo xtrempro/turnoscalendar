@@ -2347,8 +2347,7 @@ async function getReplacementCandidates(
             });
         }, {
             shouldContinue: () =>
-                requestId === replacementCandidateRequest &&
-                getCurrentProfile() === profileName
+                requestId === replacementCandidateRequest
         }
     );
 

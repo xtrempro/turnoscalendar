@@ -162,12 +162,14 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
         calendarSource,
         mainSource,
         firebaseSource,
-        rotationSource
+        rotationSource,
+        timelineSource
     ] = await Promise.all([
         readFile(new URL("../js/calendar.js", import.meta.url), "utf8"),
         readFile(new URL("../js/main.js", import.meta.url), "utf8"),
         readFile(new URL("../js/firebaseAppState.js", import.meta.url), "utf8"),
-        readFile(new URL("../js/rotationApply.js", import.meta.url), "utf8")
+        readFile(new URL("../js/rotationApply.js", import.meta.url), "utf8"),
+        readFile(new URL("../js/timeline.js", import.meta.url), "utf8")
     ]);
 
     assert.match(calendarSource, /delegatedCalendar\.addEventListener\("click"/);
@@ -189,4 +191,16 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     );
     assert.doesNotMatch(rotationSource, /refreshAll/);
     assert.match(rotationSource, /updateVisibleCalendarDays/);
+    assert.match(
+        timelineSource,
+        /openReplacementDialog\?\.\(\s*cell\.dataset\.replacementProfile,\s*cell\.dataset\.replacementKey/
+    );
+    assert.match(
+        calendarSource,
+        /shouldContinue:\s*\(\)\s*=>\s*requestId === replacementCandidateRequest/
+    );
+    assert.doesNotMatch(
+        calendarSource,
+        /requestId === replacementCandidateRequest\s*&&\s*getCurrentProfile\(\) === profileName/
+    );
 });
