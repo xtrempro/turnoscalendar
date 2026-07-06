@@ -53,7 +53,10 @@ setGlobalOptions({
   region: "southamerica-west1",
   // Evita que una ráfaga de eventos dispare instancias sin límite y eleve
   // innecesariamente el costo o el impacto de un abuso.
-  maxInstances: 10
+  maxInstances: 10,
+  // Los preflight CORS deben alcanzar el runtime de Firebase. La autorizacion
+  // real de los callable se mantiene en Auth + App Check dentro del runtime.
+  invoker: "public"
 });
 Object.assign(exports, require("./getAccountsAndUnits"));
 

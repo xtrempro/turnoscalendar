@@ -34,3 +34,15 @@ test("los m\u00f3dulos callable fijan App Check como obligatorio", () => {
         );
     });
 });
+
+test("los endpoints HTTPS permiten preflight y delegan seguridad al runtime", () => {
+    const indexSource = callableSources.find(({ file }) =>
+        file === "functions/index.js"
+    ).source;
+
+    assert.match(
+        indexSource,
+        /setGlobalOptions\(\{[\s\S]*?invoker\s*:\s*"public"[\s\S]*?\}\);/,
+        "Functions HTTPS no permite que el preflight CORS alcance el runtime"
+    );
+});
