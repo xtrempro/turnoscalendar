@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "deploy": "node build.mjs && firebase deploy --only hosting",
+    "deploy": "node build.mjs && npm run deploy:hosting:production && npm run deploy:hosting:test",
+    "deploy:hosting:production": "firebase deploy --only hosting --project calendarioturnos-7c4d9",
+    "deploy:hosting:test": "firebase deploy --only hosting --config firebase.test.json --project turnoplus-test-7c4d9",
     "deploy:security": "node build.mjs && firebase deploy --only firestore:rules,storage,hosting --project calendarioturnos-7c4d9",
     "test:state-modules": "node --test tests/state-modules.test.mjs",
     "test:shift-assignment": "node --test tests/shift-assignment-history.test.mjs",
