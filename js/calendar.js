@@ -15,7 +15,7 @@ import {
     getProfileData,
     getBlockedDays,
     getCarry,
-    saveProfileData,
+    saveProfileDayTurn,
     saveCarry,
     getAdminDays,
     getLegalDays,
@@ -3553,9 +3553,7 @@ window.openClockExtraReasonDialog = openClockExtraReasonDialog;
 
 async function clickDia(
     keyDay,
-    state,
     isHab,
-    data,
     admin,
     legal,
     comp,
@@ -3569,13 +3567,15 @@ async function clickDia(
         return true;
     }
 
-    if (!isProfileActive(getCurrentProfile())) {
+    const profileName = getCurrentProfile();
+
+    if (!isProfileActive(profileName)) {
         alert("Este perfil esta desactivado. Reactivalo desde Perfil para modificar su calendario.");
         return true;
     }
 
     const turnChange =
-        getCambioTurnoCalendario(getCurrentProfile(), keyDay)?.swap;
+        getCambioTurnoCalendario(profileName, keyDay)?.swap;
 
     if (turnChange) {
         return handleTurnChangeDayClick(turnChange);
@@ -3585,25 +3585,25 @@ async function clickDia(
     if (window.selectionMode) return;
 
     const replacementNeededTurn =
-        getReplacementNeededTurn(getCurrentProfile(), keyDay);
+        getReplacementNeededTurn(profileName, keyDay);
     const needsReplacement =
         Boolean(replacementNeededTurn) &&
         requiereReemplazoTurnoBase(
             keyDay,
-            getTurnoBase(getCurrentProfile(), keyDay),
+            getTurnoBase(profileName, keyDay),
             admin,
             legal,
             comp,
             absences
         ) &&
         !getReplacementForCoveredShift(
-            getCurrentProfile(),
+            profileName,
             keyDay
         );
 
     if (needsReplacement) {
         return openReplacementDialog(
-            getCurrentProfile(),
+            profileName,
             keyDay
         );
     }
@@ -3618,7 +3618,7 @@ async function clickDia(
         )
     ) {
         openLeaveDetailDialog({
-            profile: getCurrentProfile(),
+            profile: profileName,
             keyDay,
             admin,
             legal,
@@ -3638,7 +3638,7 @@ async function clickDia(
     }
 
     const baseTurno = getTurnoBase(
-        getCurrentProfile(),
+        profileName,
         keyDay
     );
     const previewState = Number(
@@ -3646,9 +3646,9 @@ async function clickDia(
     );
     const currentState = Number.isFinite(previewState)
         ? previewState
-        : state;
+        : getActualState(profileName, keyDay);
     const nuevo = siguienteTurnoValido(
-        getCurrentProfile(),
+        profileName,
         keyDay,
         currentState,
         isHab,
@@ -3657,14 +3657,14 @@ async function clickDia(
         }
     );
     const effectiveBaseTurn = aplicarCambiosTurno(
-        getCurrentProfile(),
+        profileName,
         keyDay,
         baseTurno,
         { includeReplacements: false }
     );
     const manualExtra = Boolean(
         getShiftAssigned(
-            getCurrentProfile(),
+            profileName,
             options.date || dateFromKeyDay(keyDay)
         ) &&
         getTurnoExtraAgregado(effectiveBaseTurn, nuevo)
@@ -3676,7 +3676,7 @@ async function clickDia(
         options.date || dateFromKeyDay(keyDay),
         options.holidays || {},
         {
-            profileName: getCurrentProfile(),
+            profileName,
             keyDay,
             baseTurn: effectiveBaseTurn,
             manualExtra
@@ -3688,15 +3688,14 @@ async function clickDia(
     );
     if (Number(nuevo) !== Number(currentState)) {
         cancelManualExtraBackupsForTurnChange(
-            getCurrentProfile(),
+            profileName,
             keyDay,
             nuevo
         );
     }
-    data[keyDay] = nuevo;
-    saveProfileData(data);
+    saveProfileDayTurn(keyDay, nuevo, profileName);
     scheduleCalendarAuditLog({
-        profile: getCurrentProfile(),
+        profile: profileName,
         keyDay,
         previousTurn: currentState,
         nextTurn: nuevo
@@ -4336,9 +4335,7 @@ export async function renderCalendar(options = {}) {
 
             await clickDia(
                 keyDay,
-                state,
                 isHab,
-                data,
                 admin,
                 legal,
                 comp,

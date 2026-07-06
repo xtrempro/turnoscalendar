@@ -1155,6 +1155,20 @@ export function saveProfileData(data, profile = currentProfile){
     setJSON("data_" + profile, data);
 }
 
+export function saveProfileDayTurn(
+    keyDay,
+    turn,
+    profile = currentProfile
+){
+    if (!profile || !keyDay) return {};
+
+    const latestData = getProfileData(profile);
+    latestData[keyDay] = turn;
+    saveProfileData(latestData, profile);
+
+    return latestData;
+}
+
 export function getBaseProfileData(profile = currentProfile){
     return getJSON("baseData_" + profile, {});
 }
