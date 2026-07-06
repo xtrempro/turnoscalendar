@@ -7,6 +7,11 @@ const PROJECT_ID = "turnoplus-test-7c4d9";
 const BUCKET_LOCATION = "SOUTHAMERICA-WEST1";
 const APPLY_STORAGE = process.argv.includes("--apply-storage");
 const ENABLE_TOTP = process.argv.includes("--enable-totp");
+const DISABLE_TOTP = process.argv.includes("--disable-totp");
+
+if (ENABLE_TOTP && DISABLE_TOTP) {
+    throw new Error("No se puede habilitar y deshabilitar TOTP a la vez.");
+}
 
 function firebaseToolsModule(relativePath) {
     const npmRoot = process.platform === "win32"
@@ -146,8 +151,28 @@ async function ensureTotp() {
         })).body;
     }
 
+    if (totpEnabled(config) && DISABLE_TOTP) {
+        config = (await api(`${url}?updateMask=mfa`, {
+            method: "PATCH",
+            body: JSON.stringify({
+                mfa: {
+                    state: "DISABLED",
+                    providerConfigs: [{
+                        state: "DISABLED",
+                        totpProviderConfig: {
+                            adjacentIntervals: 2
+                        }
+                    }]
+                }
+            })
+        })).body;
+    }
+
     if (ENABLE_TOTP && !totpEnabled(config)) {
         throw new Error("Firebase Auth no confirmo la activacion de TOTP.");
+    }
+    if (DISABLE_TOTP && totpEnabled(config)) {
+        throw new Error("Firebase Auth no confirmo la desactivacion de TOTP.");
     }
 
     return totpEnabled(config);

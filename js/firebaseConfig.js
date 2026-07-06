@@ -38,9 +38,9 @@ const useTestProject =
     typeof location !== "undefined" &&
     TEST_HOSTS.has(location.hostname);
 
-// Durante la adopcion inicial, TOTP se exige solo en TurnoPlus Test. Asi se
-// valida el enrolamiento completo antes de cambiar el acceso de produccion.
-export const FIREBASE_REQUIRE_PRIVILEGED_MFA = useTestProject;
+// TOTP queda implementado, pero apagado durante la etapa comercial inicial.
+// Solo debe activarse cuando un centro lo solicite o pase a ser requisito.
+export const FIREBASE_REQUIRE_PRIVILEGED_MFA = false;
 
 // Verdadero solo en el sitio de pruebas (turnoplus-test-7c4d9). Se usa para
 // exponer utilidades de diagnostico (auto-pruebas) que no deben aparecer en

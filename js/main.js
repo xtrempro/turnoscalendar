@@ -9589,24 +9589,6 @@ initFirebaseShell({
 
         await loadWorkspacePermissions();
 
-        // Un propietario nuevo aun no tiene unidad, pero las reglas Test ya
-        // exigen MFA para crearla. Enrolarlo aqui evita un callejon sin salida
-        // antes de que exista el primer documento de membresia.
-        if (user && workspaceRequiresMfa()) {
-            try {
-                await enforceWorkspaceMfa(
-                    getActiveWorkspace() || { id: "new-account" }
-                );
-            } catch (error) {
-                console.warn(
-                    "La cuenta no completo el enrolamiento MFA.",
-                    error
-                );
-                await signOutFirebase();
-                return;
-            }
-        }
-
         syncWorkspacePermissionUI();
         syncCalendarDirectEditToggle();
 

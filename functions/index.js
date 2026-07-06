@@ -44,10 +44,9 @@ const MAIL_FROM = defineString("MAIL_FROM", {
 // TurnoPlus, la PWA y TurnoPlus Test tienen proveedor App Check registrado.
 // Todos los endpoints callable deben rechazar clientes sin token valido.
 const ENFORCE_APP_CHECK = true;
-// La primera activacion de TOTP se limita al proyecto Test. Un despliegue del
-// mismo codigo en produccion conserva la exigencia apagada hasta su rollout.
-const REQUIRE_PRIVILEGED_MFA =
-  process.env.GCLOUD_PROJECT === "turnoplus-test-7c4d9";
+// Capacidad preparada pero apagada durante el lanzamiento comercial. Activar
+// solo junto al enrolamiento del cliente y las reglas del entorno objetivo.
+const REQUIRE_PRIVILEGED_MFA = false;
 // Flujo preparado para centros que pidan doble chequeo por correo en la PWA.
 // En etapa comercial queda apagado: el correo de invitacion lleva directamente
 // al token de enlace y la PWA no debe mandar un segundo correo passwordless.

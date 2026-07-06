@@ -401,13 +401,13 @@ Arquitectura:
 - Los adjuntos nuevos se guardan en `workspaces/{workspaceId}/attachments/{moduleId}/{ownerId}/{recordId}/{fileName}`.
 - `storage.rules` exige membresia, permiso del modulo, metadatos coherentes, tipos permitidos y limite de 5 MB. El cargador original puede eliminar su propio archivo.
 - Los adjuntos base64 antiguos siguen siendo legibles por compatibilidad, pero los nuevos perfiles, marcajes, agenda, memorandos y postulantes usan Firebase Storage.
-- MFA/TOTP esta activo exclusivamente en `turnoplus-test-7c4d9` para propietarios y supervisores con permisos de edicion. Produccion conserva la exigencia apagada durante la validacion. La UI enrola el autenticador, resuelve el segundo factor al iniciar sesion y exige guardar la clave TOTP como respaldo.
+- MFA/TOTP esta implementado, pero apagado en todos los entornos durante la etapa comercial inicial. La UI conserva el enrolamiento y la resolucion del segundo factor como capacidad dormida para activarla solo cuando un centro lo solicite o pase a ser un requisito esencial.
 - El proyecto productivo tiene Firestore con proteccion contra eliminacion, PITR de 7 dias y respaldo diario con retencion de 7 dias.
 - `scripts/cloud-hardening.mjs` aplica/valida restriccion de API key publica a APIs Firebase, metricas de logs, alertas de Functions/App Check y presupuesto mensual. TOTP solo se activa si se ejecuta con `TURNOPLUS_ENABLE_TOTP=true`.
 - La API key web es publica por diseno de Firebase; la seguridad depende de reglas, App Check, Auth y restricciones de clave/referrers.
-- El proyecto de pruebas tiene Hosting, Firestore y el bucket `turnoplus-test-7c4d9.firebasestorage.app` en `SOUTHAMERICA-WEST1`. App Check y TOTP estan activos en Test.
-- `scripts/build-test-security-rules.mjs` genera en `.firebase/turnoplus-test/` variantes de Firestore/Storage con MFA activo. `firebase.rules` y `storage.rules` mantienen produccion desactivada; no publicar reglas Test en produccion.
-- `scripts/configure-test-security.mjs` verifica/provisiona el bucket y habilita TOTP solo con opciones explicitas. Los comandos operativos son `npm run security:storage:test:apply`, `npm run security:totp:test:enable` y `npm run deploy:security-rules:test`.
+- El proyecto de pruebas tiene Hosting, Firestore y el bucket `turnoplus-test-7c4d9.firebasestorage.app` en `SOUTHAMERICA-WEST1`. App Check esta activo en Test; TOTP esta desactivado.
+- `scripts/build-test-security-rules.mjs` genera por defecto en `.firebase/turnoplus-test/` variantes de Firestore/Storage sin MFA. La variante futura con MFA requiere `--enable-mfa`; `firebase.rules` y `storage.rules` tambien mantienen la exigencia apagada.
+- `scripts/configure-test-security.mjs` verifica/provisiona el bucket y cambia TOTP solo con opciones explicitas. Los comandos operativos son `npm run security:storage:test:apply`, `npm run security:totp:test:enable`, `npm run security:totp:test:disable`, `npm run deploy:security-rules:test` y, solo para una activacion futura coordinada, `npm run deploy:security-rules:test:mfa`.
 - Recuperacion TOTP: el usuario debe conservar la clave de enrolamiento en un gestor seguro. Si la pierde, el administrador del proyecto elimina sus factores MFA desde Firebase Authentication > Users; el usuario vuelve a ingresar y la app exige un enrolamiento nuevo.
 - Si Google login devuelve `auth/unauthorized-domain`, agregar el hostname usado en navegador en Firebase Console > Authentication > Settings > Authorized domains. Para desarrollo local, autorizar `127.0.0.1` y `localhost` sin puerto.
 - En el modal `Cuentas y Unidades`, cada unidad muestra el ID en un input seleccionable. Solo el propietario puede generar invitaciones seguras de supervisor: token de un solo uso, vencimiento de 7 dias, permisos explicitos y aprobacion final del propietario.
@@ -545,5 +545,5 @@ git diff --stat
 1. Revisar manualmente la UI de Perfil tras los cambios de profesiones y layout.
 2. Considerar limpiar mojibake de `js/constants.js` con mucho cuidado, verificando que no rompa claves historicas.
 3. Crear una rutina manual de QA minima documentada para calendario, permisos, reemplazos, LOG, perfil y solicitudes.
-4. Completar la prueba manual de enrolamiento, segundo inicio de sesion, adjuntos y recuperacion TOTP en `turnoplus-test-7c4d9` antes de planificar produccion.
+4. Mantener TOTP archivado hasta que un centro lo solicite o sea requisito esencial; cuando se decida activarlo, validar enrolamiento, segundo inicio de sesion y recuperacion primero en `turnoplus-test-7c4d9`.
 5. Pendiente archivado: admitir cambios de asignacion de turno a mitad de mes. Ese caso debera dividir el periodo en dos tramos y generar dos informes con motores de calculo distintos. Por ahora solo se permiten vigencias desde el dia 1 de un mes.

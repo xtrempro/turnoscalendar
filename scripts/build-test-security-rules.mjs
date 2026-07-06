@@ -8,8 +8,9 @@ const OUTPUT_DIRECTORY = path.join(
 const SOURCE_MARKER = "return false; // TURNOPLUS_TEST_MFA";
 const TEST_REPLACEMENT = "return true; // TURNOPLUS_TEST_MFA";
 const RULE_FILES = ["firebase.rules", "storage.rules"];
+const ENABLE_MFA = process.argv.includes("--enable-mfa");
 
-function enableTestMfa(source, file) {
+function buildTestRules(source, file) {
     const occurrences = source.split(SOURCE_MARKER).length - 1;
 
     if (occurrences !== 1) {
@@ -18,7 +19,9 @@ function enableTestMfa(source, file) {
         );
     }
 
-    return source.replace(SOURCE_MARKER, TEST_REPLACEMENT);
+    return ENABLE_MFA
+        ? source.replace(SOURCE_MARKER, TEST_REPLACEMENT)
+        : source;
 }
 
 await mkdir(OUTPUT_DIRECTORY, { recursive: true });
@@ -27,6 +30,8 @@ for (const file of RULE_FILES) {
     const source = await readFile(file, "utf8");
     const target = path.join(OUTPUT_DIRECTORY, file);
 
-    await writeFile(target, enableTestMfa(source, file), "utf8");
+    await writeFile(target, buildTestRules(source, file), "utf8");
     console.log(`${file} -> ${target}`);
 }
+
+console.log(`TOTP en reglas Test: ${ENABLE_MFA ? "ENABLED" : "DISABLED"}`);
