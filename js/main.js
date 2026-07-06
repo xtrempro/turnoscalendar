@@ -339,7 +339,10 @@ import {
     getTurnChangeConfig
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
-import { registerShiftMove } from "./shiftMoves.js";
+import {
+    cancelFutureShiftMovesForWorker,
+    registerShiftMove
+} from "./shiftMoves.js";
 import {
     cancelFutureReplacementsForWorker,
     renderReplacementLogHTML
@@ -6702,6 +6705,7 @@ async function cleanupFutureSchedule(startDate) {
     });
 
     cleanupFutureSwaps(profileName, startISO);
+    cancelFutureShiftMovesForWorker(profileName, startDate);
     cancelFutureReplacementsForWorker(profileName, startISO, {
         reason: "rotation_reset",
         details:

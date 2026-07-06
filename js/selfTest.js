@@ -53,6 +53,11 @@ import {
     cancelFutureReplacementsForWorker,
     saveReplacement
 } from "./replacements.js";
+import {
+    cancelFutureShiftMovesForWorker,
+    getShiftMoves,
+    registerShiftMove
+} from "./shiftMoves.js";
 
 const FAKE_PROFILE = "__selftest__";
 const FAKE_SWAP_RECEIVER = "__receiver___selftest__";
@@ -253,6 +258,42 @@ const TESTS = [
             assert(
                 futuro && futuro.canceled === true,
                 "el turno extra/motivo futuro deberia quedar anulado"
+            );
+        }
+    },
+    {
+        name: "Nueva rotativa elimina turnos movidos (TTMM) futuros",
+        run() {
+            // Un turno movido antes del corte y otro despues.
+            registerShiftMove({
+                profile: FAKE_PROFILE,
+                sourceKey: key(2026, 0, 10),
+                targetKey: key(2026, 0, 12),
+                sourceTurn: TURNO.LARGA,
+                destinationTurn: TURNO.NOCHE
+            });
+            registerShiftMove({
+                profile: FAKE_PROFILE,
+                sourceKey: key(2026, 2, 10),
+                targetKey: key(2026, 2, 12),
+                sourceTurn: TURNO.LARGA,
+                destinationTurn: TURNO.NOCHE
+            });
+
+            cancelFutureShiftMovesForWorker(FAKE_PROFILE, new Date(2026, 1, 1));
+
+            const mine = getShiftMoves()
+                .filter(move => move.profile === FAKE_PROFILE);
+            const previo = mine.some(m => m.sourceKey === key(2026, 0, 10));
+            const futuro = mine.some(m => m.sourceKey === key(2026, 2, 10));
+
+            assert(
+                previo,
+                "el turno movido anterior a la fecha no debe eliminarse"
+            );
+            assert(
+                !futuro,
+                "el turno movido futuro deberia eliminarse"
             );
         }
     },

@@ -4,6 +4,7 @@ import {
     setJSON,
     setRaw
 } from "./persistence.js";
+import { isDateKeyOnOrAfter } from "./dateUtils.js";
 
 const STORAGE_KEY = "shiftMoves";
 const MIGRATION_KEY = "shiftMovesAuditMigrationV1";
@@ -104,6 +105,34 @@ export function registerShiftMove(move = {}) {
     ]);
 
     return normalized;
+}
+
+// Elimina los movimientos de turno (TTMM) del trabajador cuyo origen o destino
+// cae en/desde la fecha dada. Se usa al aplicar una rotativa nueva para que la
+// leyenda de "turno modificado" no quede pegada en el calendario futuro.
+export function cancelFutureShiftMovesForWorker(profile, startDate) {
+    if (!profile || !(startDate instanceof Date)) return [];
+
+    const moves = getShiftMoves();
+    const removed = [];
+    const remaining = moves.filter(move => {
+        const touchesFuture =
+            isDateKeyOnOrAfter(move.sourceKey, startDate) ||
+            isDateKeyOnOrAfter(move.targetKey, startDate);
+
+        if (move.profile === profile && touchesFuture) {
+            removed.push(move);
+            return false;
+        }
+
+        return true;
+    });
+
+    if (removed.length) {
+        saveShiftMoves(remaining);
+    }
+
+    return removed;
 }
 
 export function getShiftMoveMarkers(profile, keyDay) {
