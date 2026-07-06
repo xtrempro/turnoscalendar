@@ -36,15 +36,9 @@ const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 const MAIL_FROM = defineString("MAIL_FROM", {
   default: "TurnoPlus <onboarding@resend.dev>"
 });
-// TurnoPlus y la PWA están registrados con reCAPTCHA Enterprise en producción,
-// por eso allí los callables siempre exigen App Check. El proyecto de pruebas no
-// tiene App Check configurado (el cliente de test no envía token), así que la
-// exigencia se desactiva solo en ese proyecto. Ante un proyecto desconocido se
-// mantiene la exigencia por defecto.
-const TEST_PROJECT_ID = "turnoplus-test-7c4d9";
-const ENFORCE_APP_CHECK =
-  (process.env.GCLOUD_PROJECT || process.env.GOOGLE_CLOUD_PROJECT) !==
-  TEST_PROJECT_ID;
+// TurnoPlus, la PWA y TurnoPlus Test tienen proveedor App Check registrado.
+// Todos los endpoints callable deben rechazar clientes sin token valido.
+const ENFORCE_APP_CHECK = true;
 // TOTP queda preparado para una etapa futura, pero no se exige por ahora.
 // Cambiar a true cuando se quiera reactivar MFA obligatorio para propietarios
 // y supervisores con permisos de edicion.
@@ -2861,9 +2855,7 @@ function serializeCoupon(code, data = {}) {
 
 exports.createCoupon = onCall(
   {
-    // Sin App Check: lo usa el panel admin estatico. La seguridad es auth +
-    // chequeo de admin (isCouponAdmin).
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -3123,8 +3115,7 @@ exports.redeemCoupon = onCall(
 
 exports.listCoupons = onCall(
   {
-    // Sin App Check: lo usa el panel admin estatico (auth + isCouponAdmin).
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -3153,8 +3144,7 @@ exports.listCoupons = onCall(
 
 exports.setCouponActive = onCall(
   {
-    // Sin App Check: lo usa el panel admin estatico (auth + isCouponAdmin).
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -3248,7 +3238,7 @@ async function readWorkspaceProfileCounts(workspaceId) {
 
 exports.getAdminDashboard = onCall(
   {
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 180
   },
   async (request) => {
@@ -3394,7 +3384,7 @@ exports.getAdminDashboard = onCall(
 // Enciende/apaga el gating de planes (config/billing.gatingEnabled). Solo admin.
 exports.setGatingEnabled = onCall(
   {
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -3430,7 +3420,7 @@ exports.setGatingEnabled = onCall(
 // y luego vuelven a "free". No sobrescribe cuentas existentes (pagadas/cupon).
 exports.grandfatherAccounts = onCall(
   {
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 300
   },
   async (request) => {

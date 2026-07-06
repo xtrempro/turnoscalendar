@@ -15,7 +15,16 @@ const REQUIRED_SERVICES = [
     "firebaseappcheck.googleapis.com",
     "recaptchaenterprise.googleapis.com"
 ];
-const APPLY = process.argv.includes("--apply");
+const PROTECTED_FIREBASE_SERVICES = [
+    "firebasestorage.googleapis.com",
+    "firestore.googleapis.com"
+];
+const ENFORCE = process.argv.includes("--enforce");
+const MONITOR = process.argv.includes("--monitor");
+const APPLY =
+    process.argv.includes("--apply") ||
+    ENFORCE ||
+    MONITOR;
 
 function firebaseToolsModule(relativePath) {
     const npmRoot = process.platform === "win32"
@@ -253,6 +262,78 @@ async function ensureAppCheckConfig(siteKey) {
     return body;
 }
 
+function serviceConfigUrl(service) {
+    return (
+        "https://firebaseappcheck.googleapis.com/v1/" +
+        `projects/${PROJECT_NUMBER}/services/${service}`
+    );
+}
+
+async function getEnforcementModes() {
+    const entries = await Promise.all(
+        PROTECTED_FIREBASE_SERVICES.map(async service => {
+            const { body, status } = await api(
+                serviceConfigUrl(service),
+                {},
+                [404]
+            );
+
+            return [
+                service,
+                status === 200
+                    ? String(body.enforcementMode || "OFF")
+                    : "OFF"
+            ];
+        })
+    );
+
+    return Object.fromEntries(entries);
+}
+
+async function setEnforcementMode(mode) {
+    const current = await getEnforcementModes();
+
+    if (PROTECTED_FIREBASE_SERVICES.every(service =>
+        current[service] === mode
+    )) {
+        return current;
+    }
+
+    const parent = `projects/${PROJECT_NUMBER}`;
+    const { body } = await api(
+        `https://firebaseappcheck.googleapis.com/v1/${parent}/services:batchUpdate`,
+        {
+            method: "POST",
+            body: JSON.stringify({
+                updateMask: "enforcementMode",
+                requests: PROTECTED_FIREBASE_SERVICES.map(service => ({
+                    updateMask: "enforcementMode",
+                    service: {
+                        name: `${parent}/services/${service}`,
+                        enforcementMode: mode
+                    }
+                }))
+            })
+        }
+    );
+    const updated = Object.fromEntries(
+        (body.services || []).map(service => [
+            String(service.name || "").split("/").pop(),
+            service.enforcementMode
+        ])
+    );
+
+    if (!PROTECTED_FIREBASE_SERVICES.every(service =>
+        updated[service] === mode
+    )) {
+        throw new Error(
+            `No todos los servicios quedaron en modo ${mode}.`
+        );
+    }
+
+    return updated;
+}
+
 async function main() {
     for (const service of REQUIRED_SERVICES) {
         await ensureService(service);
@@ -265,6 +346,13 @@ async function main() {
         throw new Error("La verificaci\u00f3n final de App Check no coincide.");
     }
 
+    const desiredMode = ENFORCE
+        ? "ENFORCED"
+        : (MONITOR ? "UNENFORCED" : "");
+    const enforcementModes = desiredMode
+        ? await setEnforcementMode(desiredMode)
+        : await getEnforcementModes();
+
     console.log(
         APPLY
             ? "App Check de TurnoPlus Test configurado."
@@ -272,6 +360,9 @@ async function main() {
     );
     console.log(`Site key p\u00fablica: ${siteKey}`);
     console.log(`Dominios: ${REQUIRED_DOMAINS.join(", ")}`);
+    PROTECTED_FIREBASE_SERVICES.forEach(service => {
+        console.log(`${service}: ${enforcementModes[service]}`);
+    });
 }
 
 main().catch(error => {

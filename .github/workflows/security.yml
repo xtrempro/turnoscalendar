@@ -75,3 +75,6 @@ jobs:
 
       - name: Probar configuracion App Check por entorno
         run: npm run test:app-check
+
+      - name: Exigir App Check en Functions callable
+        run: npm run test:functions-app-check

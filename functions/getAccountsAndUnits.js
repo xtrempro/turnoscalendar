@@ -24,6 +24,7 @@ if (!admin.apps.length) admin.initializeApp();
 const db = admin.firestore();
 const REGION = "southamerica-west1";
 const DEFAULT_ADMIN_EMAILS = ["tm.alanplaza@gmail.com"];
+const ENFORCE_APP_CHECK = true;
 const MAX_PAGE_SIZE = 50;
 
 function cleanText(value, maxLength = 160) {
@@ -400,7 +401,7 @@ async function listUserDocs(pageSize, pageToken) {
 const getAccountsAndUnits = onCall(
   {
     region: REGION,
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 180,
     memory: "512MiB"
   },
@@ -518,7 +519,7 @@ async function deleteWorkspaceCascade(workspaceId) {
 const deleteAdminWorkspace = onCall(
   {
     region: REGION,
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 540,
     memory: "512MiB"
   },
@@ -547,7 +548,7 @@ const deleteAdminWorkspace = onCall(
 const setAdminAccountPlan = onCall(
   {
     region: REGION,
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 30
   },
   async (request) => {
@@ -635,7 +636,7 @@ const setAdminAccountPlan = onCall(
 const deleteAdminUser = onCall(
   {
     region: REGION,
-    enforceAppCheck: false,
+    enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 540,
     memory: "512MiB"
   },
