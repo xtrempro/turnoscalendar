@@ -14,9 +14,9 @@ service cloud.firestore {
     }
 
     function mfaRequirementActive() {
-      // TOTP queda listo para reactivarse, pero no se exige en esta etapa
-      // comercial inicial.
-      return false;
+      // Produccion permanece desactivada. El build de reglas Test reemplaza
+      // exclusivamente esta marca antes de publicar en ese proyecto.
+      return false; // TURNOPLUS_TEST_MFA
     }
 
     function memberData(workspaceId) {

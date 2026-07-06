@@ -401,11 +401,14 @@ Arquitectura:
 - Los adjuntos nuevos se guardan en `workspaces/{workspaceId}/attachments/{moduleId}/{ownerId}/{recordId}/{fileName}`.
 - `storage.rules` exige membresia, permiso del modulo, metadatos coherentes, tipos permitidos y limite de 5 MB. El cargador original puede eliminar su propio archivo.
 - Los adjuntos base64 antiguos siguen siendo legibles por compatibilidad, pero los nuevos perfiles, marcajes, agenda, memorandos y postulantes usan Firebase Storage.
-- MFA/TOTP queda preparado para una etapa futura, pero actualmente esta desactivado para reducir friccion comercial inicial. La UI conserva el codigo de enrolamiento, y `firebase.rules`, `storage.rules`, Functions y `scripts/cloud-hardening.mjs` lo controlan por bandera/constante antes de exigir `firebase.sign_in_second_factor`.
+- MFA/TOTP esta activo exclusivamente en `turnoplus-test-7c4d9` para propietarios y supervisores con permisos de edicion. Produccion conserva la exigencia apagada durante la validacion. La UI enrola el autenticador, resuelve el segundo factor al iniciar sesion y exige guardar la clave TOTP como respaldo.
 - El proyecto productivo tiene Firestore con proteccion contra eliminacion, PITR de 7 dias y respaldo diario con retencion de 7 dias.
 - `scripts/cloud-hardening.mjs` aplica/valida restriccion de API key publica a APIs Firebase, metricas de logs, alertas de Functions/App Check y presupuesto mensual. TOTP solo se activa si se ejecuta con `TURNOPLUS_ENABLE_TOTP=true`.
-- La API key web es publica por diseno de Firebase; la seguridad depende de reglas, App Check, Auth y restricciones de clave/referrers. MFA/TOTP queda disponible para endurecimiento futuro.
-- El proyecto de pruebas ya tiene Hosting y Firestore. Storage en test requiere activar facturacion/Blaze; no enlazar facturacion sin autorizacion explicita. TOTP queda desactivado por defecto.
+- La API key web es publica por diseno de Firebase; la seguridad depende de reglas, App Check, Auth y restricciones de clave/referrers.
+- El proyecto de pruebas tiene Hosting, Firestore y el bucket `turnoplus-test-7c4d9.firebasestorage.app` en `SOUTHAMERICA-WEST1`. App Check y TOTP estan activos en Test.
+- `scripts/build-test-security-rules.mjs` genera en `.firebase/turnoplus-test/` variantes de Firestore/Storage con MFA activo. `firebase.rules` y `storage.rules` mantienen produccion desactivada; no publicar reglas Test en produccion.
+- `scripts/configure-test-security.mjs` verifica/provisiona el bucket y habilita TOTP solo con opciones explicitas. Los comandos operativos son `npm run security:storage:test:apply`, `npm run security:totp:test:enable` y `npm run deploy:security-rules:test`.
+- Recuperacion TOTP: el usuario debe conservar la clave de enrolamiento en un gestor seguro. Si la pierde, el administrador del proyecto elimina sus factores MFA desde Firebase Authentication > Users; el usuario vuelve a ingresar y la app exige un enrolamiento nuevo.
 - Si Google login devuelve `auth/unauthorized-domain`, agregar el hostname usado en navegador en Firebase Console > Authentication > Settings > Authorized domains. Para desarrollo local, autorizar `127.0.0.1` y `localhost` sin puerto.
 - En el modal `Cuentas y Unidades`, cada unidad muestra el ID en un input seleccionable. Solo el propietario puede generar invitaciones seguras de supervisor: token de un solo uso, vencimiento de 7 dias, permisos explicitos y aprobacion final del propietario.
 - Las invitaciones de supervisor se crean y resuelven solo por Cloud Functions (`createSupervisorInvite`, `claimSupervisorInvite`, `approveSupervisorInvite`, `rejectSupervisorInvite`, `revokeSupervisorInvite`). El token real viaja solo en el enlace `?joinWorkspace=<id>&supervisorInvite=<token>`; Firestore guarda el hash como ID en `workspaces/{workspaceId}/supervisorInvites/{inviteId}`.
@@ -415,7 +418,7 @@ Arquitectura:
 CI / pruebas:
 
 - `.github/workflows/security.yml` ejecuta auditorias `npm audit --audit-level=high`, chequeos de sintaxis, `npm run test:state-modules`, pruebas de Security Rules con emuladores y `npm run build`.
-- `tests/security-rules.test.mjs` cubre acceso modular, Storage, acceso de propietarios/supervisores sin MFA mientras TOTP esta desactivado e invitaciones seguras de supervisor.
+- `tests/security-rules.test.mjs` cubre acceso modular, Storage e invitaciones seguras. `tests/security-rules-test-mfa.test.mjs` repite la suite con las reglas Test y verifica que operaciones privilegiadas sin MFA queden bloqueadas.
 
 ## PWA de supervisores
 
@@ -542,5 +545,5 @@ git diff --stat
 1. Revisar manualmente la UI de Perfil tras los cambios de profesiones y layout.
 2. Considerar limpiar mojibake de `js/constants.js` con mucho cuidado, verificando que no rompa claves historicas.
 3. Crear una rutina manual de QA minima documentada para calendario, permisos, reemplazos, LOG, perfil y solicitudes.
-4. Si se quiere staging completo, activar facturacion en `turnoplus-test-7c4d9` y luego habilitar Authentication/TOTP y Storage en ese proyecto.
+4. Completar la prueba manual de enrolamiento, segundo inicio de sesion, adjuntos y recuperacion TOTP en `turnoplus-test-7c4d9` antes de planificar produccion.
 5. Pendiente archivado: admitir cambios de asignacion de turno a mitad de mes. Ese caso debera dividir el periodo en dos tramos y generar dos informes con motores de calculo distintos. Por ahora solo se permiten vigencias desde el dia 1 de un mes.

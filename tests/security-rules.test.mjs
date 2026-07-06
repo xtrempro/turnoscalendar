@@ -23,6 +23,14 @@ import {
 const PROJECT_ID = "demo-proturnos";
 const WORKSPACE_ID = "workspace-security-test";
 const TARGET_WORKSPACE_ID = "workspace-security-target";
+const TEST_MFA_RULES =
+    process.env.TURNOPLUS_RULES_VARIANT === "test-mfa";
+const FIRESTORE_RULES_PATH = TEST_MFA_RULES
+    ? ".firebase/turnoplus-test/firebase.rules"
+    : "firebase.rules";
+const STORAGE_RULES_PATH = TEST_MFA_RULES
+    ? ".firebase/turnoplus-test/storage.rules"
+    : "storage.rules";
 
 function permissions(editable = [], hidden = []) {
     const keys = [
@@ -113,10 +121,10 @@ test("reglas modulares de Firestore y Storage", async t => {
     const env = await initializeTestEnvironment({
         projectId: PROJECT_ID,
         firestore: {
-            rules: fs.readFileSync("firebase.rules", "utf8")
+            rules: fs.readFileSync(FIRESTORE_RULES_PATH, "utf8")
         },
         storage: {
-            rules: fs.readFileSync("storage.rules", "utf8")
+            rules: fs.readFileSync(STORAGE_RULES_PATH, "utf8")
         }
     });
 
@@ -489,7 +497,9 @@ test("reglas modulares de Firestore y Storage", async t => {
     );
 
     await t.test(
-        "propietarios y supervisores pueden operar sin MFA mientras TOTP esta desactivado",
+        TEST_MFA_RULES
+            ? "Test bloquea operaciones privilegiadas sin MFA"
+            : "produccion permite operar sin MFA mientras TOTP esta desactivado",
         async () => {
             const profilePath = [
                 "workspaces",
@@ -498,7 +508,11 @@ test("reglas modulares de Firestore y Storage", async t => {
                 "profile"
             ];
 
-            await assertSucceeds(
+            const privilegedExpectation = TEST_MFA_RULES
+                ? assertFails
+                : assertSucceeds;
+
+            await privilegedExpectation(
                 getDoc(
                     doc(
                         profileEditorWithoutMfa.firestore(),
@@ -506,7 +520,7 @@ test("reglas modulares de Firestore y Storage", async t => {
                     )
                 )
             );
-            await assertSucceeds(
+            await privilegedExpectation(
                 setDoc(
                     doc(
                         profileEditorWithoutMfa.firestore(),
@@ -515,7 +529,7 @@ test("reglas modulares de Firestore y Storage", async t => {
                     manifest("profile", "profile")
                 )
             );
-            await assertSucceeds(
+            await privilegedExpectation(
                 getDoc(
                     doc(
                         ownerWithoutMfa.firestore(),
@@ -537,6 +551,31 @@ test("reglas modulares de Firestore y Storage", async t => {
                     )
                 )
             );
+
+            if (TEST_MFA_RULES) {
+                const path = [
+                    "workspaces",
+                    WORKSPACE_ID,
+                    "attachments",
+                    "profile",
+                    "worker-no-mfa",
+                    "profile-documents",
+                    "mfa-required.pdf"
+                ].join("/");
+
+                await assertFails(
+                    uploadBytes(
+                        ref(profileEditorWithoutMfa.storage(), path),
+                        new Uint8Array([37, 80, 68, 70]),
+                        attachmentMetadata(
+                            "profile",
+                            "worker-no-mfa",
+                            "profile-documents",
+                            "profile-editor-no-mfa"
+                        )
+                    )
+                );
+            }
         }
     );
 

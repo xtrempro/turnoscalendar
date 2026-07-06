@@ -6,11 +6,6 @@ export const FIREBASE_ENABLED = true;
 export const FIREBASE_SDK_BASE_URL =
     "https://www.gstatic.com/firebasejs/12.15.0";
 
-// TOTP queda preparado para una etapa futura, pero no se exige por ahora.
-// Cambiar a true cuando se quiera reactivar MFA obligatorio para propietarios
-// y supervisores con permisos de edicion.
-export const FIREBASE_REQUIRE_PRIVILEGED_MFA = false;
-
 const PRODUCTION_APP_CHECK_SITE_KEY =
     "6Lff2zMtAAAAALE9w8AfJOfrWuoPy_35_aNwnh_8";
 const TEST_APP_CHECK_SITE_KEY =
@@ -42,6 +37,10 @@ const TEST_HOSTS = new Set([
 const useTestProject =
     typeof location !== "undefined" &&
     TEST_HOSTS.has(location.hostname);
+
+// Durante la adopcion inicial, TOTP se exige solo en TurnoPlus Test. Asi se
+// valida el enrolamiento completo antes de cambiar el acceso de produccion.
+export const FIREBASE_REQUIRE_PRIVILEGED_MFA = useTestProject;
 
 // Verdadero solo en el sitio de pruebas (turnoplus-test-7c4d9). Se usa para
 // exponer utilidades de diagnostico (auto-pruebas) que no deben aparecer en

@@ -319,6 +319,10 @@ function promptTotpCode({
                 <span>Codigo TOTP</span>
                 <input inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
             </label>
+            <small>
+                Si perdiste el autenticador, solicita al administrador del proyecto
+                que reinicie el segundo factor de tu cuenta.
+            </small>
             <small data-mfa-error></small>
         `;
         const input = dialog.content.querySelector("input");
@@ -360,6 +364,10 @@ function promptTotpEnrollment({ secret, uri, reason }) {
         dialog.content.innerHTML = `
             <div class="firebase-mfa-step">
                 <strong>1. Agrega la cuenta en Google Authenticator, Microsoft Authenticator, 1Password u otra aplicacion TOTP.</strong>
+                <p>
+                    Guarda esta clave en un gestor de contraseñas seguro. Es tu
+                    respaldo para recuperar el autenticador en otro dispositivo.
+                </p>
                 <label>
                     <span>Clave de configuracion</span>
                     <div class="firebase-mfa-secret-row">
@@ -416,7 +424,7 @@ function promptTotpEnrollment({ secret, uri, reason }) {
         dialog.cancel.onclick = () => {
             dialog.backdrop.remove();
             reject(new Error(
-                "TOTP es obligatorio para propietarios y supervisores."
+                "TOTP es obligatorio para propietarios y supervisores. Si perdiste el acceso, solicita al administrador del proyecto reiniciar tu segundo factor."
             ));
         };
         codeInput.focus();
