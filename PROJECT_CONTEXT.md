@@ -403,6 +403,7 @@ Arquitectura:
 - Los adjuntos base64 antiguos siguen siendo legibles por compatibilidad, pero los nuevos perfiles, marcajes, agenda, memorandos y postulantes usan Firebase Storage.
 - MFA/TOTP esta implementado, pero apagado en todos los entornos durante la etapa comercial inicial. La UI conserva el enrolamiento y la resolucion del segundo factor como capacidad dormida para activarla solo cuando un centro lo solicite o pase a ser un requisito esencial.
 - El proyecto productivo tiene Firestore con proteccion contra eliminacion, PITR de 7 dias y respaldo diario con retencion de 7 dias.
+- Produccion y Test exigen App Check en Firestore, Storage y todas las Functions callable. Las reglas endurecidas por unidad/modulo y el almacenamiento de adjuntos estan desplegados en ambos entornos; TOTP permanece desactivado.
 - `scripts/cloud-hardening.mjs` aplica/valida restriccion de API key publica a APIs Firebase, metricas de logs, alertas de Functions/App Check y presupuesto mensual. TOTP solo se activa si se ejecuta con `TURNOPLUS_ENABLE_TOTP=true`.
 - La API key web es publica por diseno de Firebase; la seguridad depende de reglas, App Check, Auth y restricciones de clave/referrers.
 - El proyecto de pruebas tiene Hosting, Firestore y el bucket `turnoplus-test-7c4d9.firebasestorage.app` en `SOUTHAMERICA-WEST1`. App Check esta activo en Test; TOTP esta desactivado.
