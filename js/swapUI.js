@@ -5,6 +5,7 @@ import {
     cambiosDelMes,
     cambioEstaAnulado,
     canSwapProfiles,
+    getEligibleSwapReceivers,
     getSwapDateBlockReason,
     getSwapTurnState,
     isSwapExchangeableTurn,
@@ -97,15 +98,10 @@ function codigoTurno(valor){
     return "";
 }
 
-function getTrabajadoresDisponibles(nombreFrom) {
+function getTrabajadoresDisponibles(nombreFrom, keyDay = "") {
     if (!getPerfil(nombreFrom)) return [];
 
-    return getProfiles().filter(profile =>
-        profile.name !== nombreFrom &&
-        isProfileActive(profile) &&
-        !noPuedeIntercambiar(profile.name) &&
-        canSwapProfiles(nombreFrom, profile.name)
-    );
+    return getEligibleSwapReceivers(nombreFrom, keyDay);
 }
 
 function getSwapYear(){
@@ -533,6 +529,7 @@ export function renderSwapPanel(){
         guardarCambioTurno;
 
     document.getElementById("swapTo").onchange = () => {
+        fechaDevolucionSeleccionada = "";
         renderMiniCalendarios();
         renderSwapList();
     };
@@ -694,7 +691,12 @@ function renderMiniCalendar(
                 const fecha = item.dataset.fecha;
 
                 if (item.dataset.tipo === "1") {
+                    const previousTo =
+                        document.getElementById("swapTo")?.value || "";
+
                     fechaCambioSeleccionada = fecha;
+                    fechaDevolucionSeleccionada = "";
+                    actualizarSwapTo(previousTo);
                 } else {
                     fechaDevolucionSeleccionada = fecha;
                 }
@@ -710,7 +712,13 @@ function actualizarSwapTo(preferredTo = ""){
 
     if (!from || !toSelect) return;
 
-    const filtrados = getTrabajadoresDisponibles(from);
+    const selectedChangeKey = fechaCambioSeleccionada
+        ? keyFromInputDate(fechaCambioSeleccionada)
+        : "";
+    const filtrados = getTrabajadoresDisponibles(
+        from,
+        selectedChangeKey
+    );
 
     const selectedTo =
         filtrados.some(profile => profile.name === preferredTo)
@@ -740,7 +748,7 @@ function actualizarSwapTo(preferredTo = ""){
 
         document.getElementById("swapCalendar1").innerHTML = `
             <div class="empty-state empty-state--compact">
-                No hay colegas compatibles para este cambio.
+                No hay trabajadores habilitados para recibir el turno seleccionado.
             </div>
         `;
 
@@ -749,7 +757,7 @@ function actualizarSwapTo(preferredTo = ""){
                 Ajusta la selección para continuar.
             </div>
         `;
-        return;
+        return "";
     }
 
     toSelect.disabled = false;
@@ -760,6 +768,8 @@ function actualizarSwapTo(preferredTo = ""){
     if (saveButton) {
         saveButton.disabled = false;
     }
+
+    return selectedTo;
 }
 
 function renderSwapList(){

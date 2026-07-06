@@ -721,6 +721,24 @@ export function getSwapDateBlockReason({
     return "";
 }
 
+export function getEligibleSwapReceivers(giver, keyDay = "") {
+    if (!giver) return [];
+
+    return getProfiles().filter(profile =>
+        profile.name !== giver &&
+        profile.active !== false &&
+        canSwapProfiles(giver, profile.name) &&
+        (
+            !keyDay ||
+            !getSwapDateBlockReason({
+                giver,
+                receiver: profile.name,
+                keyDay
+            })
+        )
+    );
+}
+
 export function getActiveSwapsForProfileKeys(profile, keys = []) {
     const keySet = new Set(keys.map(isoFromKey));
 

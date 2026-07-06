@@ -16,6 +16,7 @@
     "test:replacement-rotation": "node --test tests/replacement-rotation.test.mjs",
     "test:calendar-rotation-month": "node --test tests/calendar-rotation-month.test.mjs",
     "test:calendar-direct-edit": "node --test tests/calendar-direct-edit.test.mjs",
+    "test:swap-receivers": "node --test tests/swap-receiver-filter.test.mjs",
     "test:worker-app-unlink": "node --test tests/worker-app-unlink.test.mjs",
     "test:worker-app-sync": "node --test tests/worker-app-publish-queue.test.mjs",
     "test:worker-app-months": "node --test tests/worker-app-months.test.mjs",
