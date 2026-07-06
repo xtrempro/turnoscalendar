@@ -46,9 +46,21 @@ service firebase.storage {
         ("log" in permissions && permissions.log.edit == true);
     }
 
+    function memberHasExplicitAccess(workspaceId) {
+      let data = member(workspaceId);
+
+      return data.role == "owner" ||
+        (
+          data.role == "member" &&
+          "permissions" in data &&
+          data.permissions is map
+        );
+    }
+
     function isWorkspaceMember(workspaceId) {
       return signedIn() &&
         firestore.exists(/databases/(default)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+        memberHasExplicitAccess(workspaceId) &&
         (
           !mfaRequirementActive() ||
           !memberRequiresMfa(workspaceId) ||

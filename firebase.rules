@@ -105,31 +105,6 @@ service cloud.firestore {
         request.auth.uid in getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids;
     }
 
-    function canMemberWriteWorkspaceState(workspaceId) {
-      let member =
-        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
-      let permissions =
-        "permissions" in member ? member.permissions : {};
-
-      return isMember(workspaceId) &&
-        (
-          member.role == "owner" ||
-          ("turnos" in permissions && permissions.turnos.edit == true) ||
-          ("weekly" in permissions && permissions.weekly.edit == true) ||
-          ("tasks" in permissions && permissions.tasks.edit == true) ||
-          ("kanban" in permissions && permissions.kanban.edit == true) ||
-          ("agenda" in permissions && permissions.agenda.edit == true) ||
-          ("profile" in permissions && permissions.profile.edit == true) ||
-          ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
-          ("requests" in permissions && permissions.requests.edit == true) ||
-          ("memos" in permissions && permissions.memos.edit == true) ||
-          ("swap" in permissions && permissions.swap.edit == true) ||
-          ("hours" in permissions && permissions.hours.edit == true) ||
-          ("reports" in permissions && permissions.reports.edit == true) ||
-          ("log" in permissions && permissions.log.edit == true)
-        );
-    }
-
     function canManageProfiles(workspaceId) {
       let member =
         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
@@ -155,6 +130,26 @@ service cloud.firestore {
           ("requests" in permissions && permissions.requests.edit == true) ||
           ("turnos" in permissions && permissions.turnos.edit == true)
         );
+    }
+
+    function canPublishWorkerData(workspaceId) {
+      return canManageProfiles(workspaceId) ||
+        canManageRequests(workspaceId);
+    }
+
+    function canReadWorkerData(workspaceId) {
+      return isOwner(workspaceId) ||
+        canViewMenu(workspaceId, "profile") ||
+        canViewMenu(workspaceId, "turnos") ||
+        canViewMenu(workspaceId, "requests") ||
+        canViewMenu(workspaceId, "swap");
+    }
+
+    function canReadRequests(workspaceId) {
+      return isOwner(workspaceId) ||
+        canViewMenu(workspaceId, "requests") ||
+        canViewMenu(workspaceId, "turnos") ||
+        canViewMenu(workspaceId, "swap");
     }
 
     function canEditMenu(workspaceId, menuKey) {
@@ -312,7 +307,7 @@ service cloud.firestore {
 
     function canResolveWorkspaceLink() {
       return resource.data.status == "pending" &&
-        isMember(resource.data.toWorkspaceId) &&
+        canManageRequests(resource.data.toWorkspaceId) &&
         request.resource.data.status in ["accepted", "rejected"] &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           "status",
@@ -339,8 +334,8 @@ service cloud.firestore {
           "updatedAt"
         ]) &&
         (
-          isMember(resource.data.fromWorkspaceId) ||
-          isMember(resource.data.toWorkspaceId)
+          canManageRequests(resource.data.fromWorkspaceId) ||
+          canManageRequests(resource.data.toWorkspaceId)
         );
     }
 
@@ -406,11 +401,11 @@ service cloud.firestore {
         optionalText(request.resource.data, "fromWorkspaceName", 160) &&
         optionalText(request.resource.data, "toWorkspaceName", 160) &&
         optionalText(request.resource.data, "requestedByName", 160) &&
-        isMember(request.resource.data.fromWorkspaceId) &&
+        canManageRequests(request.resource.data.fromWorkspaceId) &&
         workspaceExists(request.resource.data.toWorkspaceId);
 
-      allow read: if isMember(resource.data.fromWorkspaceId) ||
-        isMember(resource.data.toWorkspaceId);
+      allow read: if canReadRequests(resource.data.fromWorkspaceId) ||
+        canReadRequests(resource.data.toWorkspaceId);
 
       allow update: if linkIdentityUnchanged() &&
         (
@@ -561,37 +556,34 @@ service cloud.firestore {
       // ve nombre, profesion, turnos y disponibilidad del mes; nunca accede al
       // snapshot completo, RUT, correo, documentos, permisos ni configuracion.
       match /linkedStaffingMonths/{monthId} {
-        allow read: if isMember(workspaceId);
+        allow read: if canReadWorkerData(workspaceId);
         allow create, update: if
-          isMember(workspaceId) &&
-          canMemberWriteWorkspaceState(workspaceId) &&
+          canPublishWorkerData(workspaceId) &&
           request.resource.data.workspaceId == workspaceId &&
           request.resource.data.month == monthId &&
           request.resource.data.workers is list &&
           request.resource.data.workers.size() <= 500;
-        allow delete: if isMember(workspaceId) &&
-          canMemberWriteWorkspaceState(workspaceId);
+        allow delete: if canPublishWorkerData(workspaceId);
       }
 
       // Solo las Cloud Functions crean o anulan estos documentos. Los clientes
       // autenticados de cada unidad pueden leer su propia proyeccion.
       match /loanAssignments/{loanId} {
-        allow read: if isMember(workspaceId);
+        allow read: if canReadRequests(workspaceId);
         allow write: if false;
       }
 
       match /system/localStorageSnapshot {
-        allow read: if isMember(workspaceId);
-        allow write: if false;
+        allow read, write: if false;
       }
 
       match /profiles/{profileId} {
-        allow read: if isMember(workspaceId);
+        allow read: if canReadWorkerData(workspaceId);
         allow write: if canManageProfiles(workspaceId);
       }
 
       match /replacementRequests/{requestId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadRequests(workspaceId) ||
           (signedIn() && resource.data.workerUid == request.auth.uid);
         allow create, delete: if canManageRequests(workspaceId);
         allow update: if canManageRequests(workspaceId) ||
@@ -613,7 +605,7 @@ service cloud.firestore {
       }
 
       match /workerBlockedDays/{blockedDayId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadRequests(workspaceId) ||
           (signedIn() && resource.data.workerUid == request.auth.uid);
         allow create: if canManageRequests(workspaceId) ||
           (
@@ -650,7 +642,7 @@ service cloud.firestore {
       }
 
       match /workerRequests/{requestId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadRequests(workspaceId) ||
           (
             signedIn() &&
             (
@@ -688,28 +680,34 @@ service cloud.firestore {
             request.resource.data.status == "canceled" &&
             request.resource.data.createdByUid == resource.data.createdByUid &&
             request.resource.data.type == resource.data.type &&
+            request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              "status",
+              "canceledAt",
+              "canceledByUid",
+              "cancelReason",
+              "notificationStatus",
+              "updatedAt"
+            ]) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
         allow delete: if canManageRequests(workspaceId);
       }
 
       match /workerSwapCandidates/{userId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadRequests(workspaceId) ||
           (
             signedIn() &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
         allow create, update, delete: if
-          isMember(workspaceId) &&
-          canMemberWriteWorkspaceState(workspaceId);
+          canPublishWorkerData(workspaceId);
       }
 
       match /workerMessageDirectory/{userId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadRequests(workspaceId) ||
           isCurrentLinkedWorker(workspaceId);
         allow create, update, delete: if
-          isMember(workspaceId) &&
-          canMemberWriteWorkspaceState(workspaceId);
+          canPublishWorkerData(workspaceId);
       }
 
       match /workerPeerThreads/{threadId} {
@@ -757,7 +755,7 @@ service cloud.firestore {
       }
 
       match /workerSwapRequests/{requestId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadRequests(workspaceId) ||
           (
             signedIn() &&
             (
@@ -812,7 +810,7 @@ service cloud.firestore {
       }
 
       match /workerSwapOpenRequests/{openId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadRequests(workspaceId) ||
           (
             signedIn() &&
             resource.data.createdByUid == request.auth.uid &&
@@ -856,7 +854,7 @@ service cloud.firestore {
       }
 
       match /workerLinks/{userId} {
-        allow read: if isMember(workspaceId) ||
+        allow read: if canReadWorkerData(workspaceId) ||
           (signedIn() && request.auth.uid == userId);
         allow create, update: if (
           canManageProfiles(workspaceId) &&
@@ -934,11 +932,11 @@ service cloud.firestore {
       }
 
       match /workerAppData/{userId} {
-        allow get: if isMember(workspaceId) ||
+        allow get: if canReadWorkerData(workspaceId) ||
           isLinkedWorker(workspaceId, userId);
-        allow list: if isMember(workspaceId);
+        allow list: if canReadWorkerData(workspaceId);
         allow create: if
-          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId)) ||
+          canPublishWorkerData(workspaceId) ||
           (
             isLinkedWorker(workspaceId, userId) &&
             request.resource.data.keys().hasOnly([
@@ -951,7 +949,7 @@ service cloud.firestore {
             ])
           );
         allow update: if
-          (isMember(workspaceId) && canMemberWriteWorkspaceState(workspaceId)) ||
+          canPublishWorkerData(workspaceId) ||
           (
             isLinkedWorker(workspaceId, userId) &&
             request.resource.data.diff(resource.data).changedKeys().hasOnly([
@@ -964,15 +962,13 @@ service cloud.firestore {
             ])
           );
         allow delete: if
-          isMember(workspaceId) &&
-          canMemberWriteWorkspaceState(workspaceId);
+          canPublishWorkerData(workspaceId);
 
         match /months/{monthId} {
-          allow read: if isMember(workspaceId) ||
+          allow read: if canReadWorkerData(workspaceId) ||
             isLinkedWorker(workspaceId, userId);
           allow write: if
-            isMember(workspaceId) &&
-            canMemberWriteWorkspaceState(workspaceId);
+            canPublishWorkerData(workspaceId);
         }
       }
 

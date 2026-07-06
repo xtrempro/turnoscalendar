@@ -58,6 +58,11 @@ test("autoriza claim, adminUsers o email; rechaza cuentas normales", () => {
     hasAdminDocument: true,
     configuredEmails
   }), false);
+  assert.equal(isAuthorizedAdminIdentity({
+    token: { admin: true },
+    hasAdminDocument: true,
+    configuredEmails
+  }), false);
 });
 
 test("resume una cuenta sin unidades", () => {

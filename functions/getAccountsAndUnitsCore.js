@@ -22,7 +22,7 @@ function isAuthorizedAdminIdentity({
   hasAdminDocument = false,
   configuredEmails = []
 } = {}) {
-  if (token.email_verified === false) return false;
+  if (token.email_verified !== true) return false;
   if (token.admin === true || token.globalAdmin === true) return true;
   if (hasAdminDocument) return true;
 

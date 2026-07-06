@@ -20,6 +20,11 @@ const {
   findCompatibleReplacementCandidates
 } = require("./linkedReplacementSearch");
 const {
+  memberCanManageRequests,
+  memberCanReadWorkerCalendar,
+  memberHasExplicitAccess
+} = require("./authorization");
+const {
   WebpayPlus,
   Options: TbkOptions,
   IntegrationApiKeys,
@@ -147,14 +152,6 @@ function validISODate(value) {
     date.toISOString().slice(0, 10) === text;
 }
 
-function memberCanManageRequests(member = {}) {
-  const permissions = member.permissions || {};
-
-  return member.role === "owner" ||
-    permissions.requests?.edit === true ||
-    permissions.turnos?.edit === true;
-}
-
 function memberRequiresMfa(member = {}) {
   const permissions = member.permissions || {};
 
@@ -214,7 +211,10 @@ async function requireWorkspaceMember(workspaceId, uid, token) {
     .doc(uid)
     .get();
 
-  if (!memberSnap.exists) {
+  if (
+    !memberSnap.exists ||
+    !memberHasExplicitAccess(memberSnap.data() || {})
+  ) {
     throw new HttpsError(
       "permission-denied",
       "No perteneces a la unidad solicitante."
@@ -1192,7 +1192,7 @@ exports.findCompatibleReplacementInLinkedUnits = onCall(
       );
     }
 
-    await requireWorkspaceMember(
+    await requireWorkspaceRequestManager(
       requesterWorkspaceId,
       uid,
       request.auth.token
@@ -1263,7 +1263,10 @@ exports.getWorkerAppMonth = onCall(
       workspaceRef.collection("workerLinks").doc(authUid).get()
     ]);
     const member = memberSnap.data() || {};
-    const canRead = memberSnap.exists ||
+    const canRead = (
+      memberSnap.exists &&
+      memberCanReadWorkerCalendar(member)
+    ) ||
       (authUid === requestedUid && workerLinkSnap.exists);
 
     if (!canRead) {
@@ -2805,7 +2808,7 @@ function normalizeEmailForAdmin(email) {
 }
 
 function isCouponAdmin(token = {}) {
-  if (token.email_verified === false) return false;
+  if (token.email_verified !== true) return false;
 
   const email = normalizeEmailForAdmin(token.email);
 
@@ -3179,8 +3182,7 @@ exports.setCouponActive = onCall(
 
 // ===========================================================================
 // Panel de control admin: metricas agregadas de toda la plataforma.
-// Solo para el admin. No exige App Check para simplificar la app del panel
-// (la seguridad real es auth + admin); la app del panel solo lee este dato.
+// Solo para el admin y protegido por Auth + App Check.
 // ===========================================================================
 
 // Cuenta perfiles activos y totales de un entorno desde el modulo "profile".

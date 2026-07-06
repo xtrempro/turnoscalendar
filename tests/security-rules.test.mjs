@@ -22,6 +22,7 @@ import {
 
 const PROJECT_ID = "demo-proturnos";
 const WORKSPACE_ID = "workspace-security-test";
+const TARGET_WORKSPACE_ID = "workspace-security-target";
 
 function permissions(editable = [], hidden = []) {
     const keys = [
@@ -140,6 +141,15 @@ test("reglas modulares de Firestore y Storage", async t => {
             sign_in_second_factor: "totp"
         }
     });
+    const agendaEditor = env.authenticatedContext("agenda-editor", {
+        email: "agenda@example.com"
+    });
+    const workerA = env.authenticatedContext("worker-a", {
+        email: "worker-a@example.com"
+    });
+    const legacyMember = env.authenticatedContext("legacy", {
+        email: "legacy@example.com"
+    });
     const profileEditorWithoutMfa = env.authenticatedContext(
         "profile-editor-no-mfa",
         { email: "profile-no-mfa@example.com" }
@@ -166,6 +176,10 @@ test("reglas modulares de Firestore y Storage", async t => {
             ownerUid: "owner",
             name: "Pruebas"
         });
+        await setDoc(doc(db, "workspaces", TARGET_WORKSPACE_ID), {
+            ownerUid: "target-owner",
+            name: "Unidad destino"
+        });
         await setDoc(
             doc(db, "workspaces", WORKSPACE_ID, "members", "owner"),
             { role: "owner", permissions: permissions() }
@@ -189,6 +203,88 @@ test("reglas modulares de Firestore y Storage", async t => {
                 "profile-editor"
             ),
             { role: "member", permissions: permissions(["profile"]) }
+        );
+        await setDoc(
+            doc(
+                db,
+                "workspaces",
+                WORKSPACE_ID,
+                "members",
+                "agenda-editor"
+            ),
+            {
+                role: "member",
+                permissions: permissions(["agenda"], [
+                    "turnos",
+                    "weekly",
+                    "tasks",
+                    "kanban",
+                    "profile",
+                    "clockmarks",
+                    "requests",
+                    "memos",
+                    "swap",
+                    "hours",
+                    "reports",
+                    "dashboard",
+                    "log"
+                ])
+            }
+        );
+        await setDoc(
+            doc(
+                db,
+                "workspaces",
+                WORKSPACE_ID,
+                "workerLinks",
+                "worker-a"
+            ),
+            {
+                uid: "worker-a",
+                workspaceId: WORKSPACE_ID,
+                status: "active"
+            }
+        );
+        for (const requestId of ["worker-cancel", "worker-cancel-malicious"]) {
+            await setDoc(
+                doc(
+                    db,
+                    "workspaces",
+                    WORKSPACE_ID,
+                    "workerRequests",
+                    requestId
+                ),
+                {
+                    createdByUid: "worker-a",
+                    source: "worker_app",
+                    status: "pending",
+                    type: "leave",
+                    targetUid: "worker-a"
+                }
+            );
+        }
+        await setDoc(
+            doc(
+                db,
+                "workspaces",
+                WORKSPACE_ID,
+                "workerAppData",
+                "worker-a"
+            ),
+            {
+                uid: "worker-a",
+                workspaceId: WORKSPACE_ID,
+                days: { "2026-07-06": 1 }
+            }
+        );
+        await setDoc(
+            doc(db, "workspaceLinks", "incoming-security-link"),
+            {
+                fromWorkspaceId: TARGET_WORKSPACE_ID,
+                toWorkspaceId: WORKSPACE_ID,
+                status: "pending",
+                requestedByUid: "target-owner"
+            }
         );
         await setDoc(
             doc(db, "workspaces", WORKSPACE_ID, "workerRequests", "swap-canceled"),
@@ -287,6 +383,16 @@ test("reglas modulares de Firestore y Storage", async t => {
                 "appState"
             ),
             { hash: "legacy" }
+        );
+        await setDoc(
+            doc(
+                db,
+                "workspaces",
+                WORKSPACE_ID,
+                "system",
+                "localStorageSnapshot"
+            ),
+            { profiles: "datos sensibles heredados" }
         );
     });
 
@@ -489,6 +595,185 @@ test("reglas modulares de Firestore y Storage", async t => {
                         "system",
                         "appState"
                     )
+                )
+            );
+            await assertFails(
+                getDoc(
+                    doc(
+                        owner.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "system",
+                        "localStorageSnapshot"
+                    )
+                )
+            );
+        }
+    );
+
+    await t.test(
+        "los permisos de un modulo no exponen calendarios PWA",
+        async () => {
+            const appDataPath = [
+                "workspaces",
+                WORKSPACE_ID,
+                "workerAppData",
+                "worker-a"
+            ];
+
+            await assertFails(
+                getDoc(doc(agendaEditor.firestore(), ...appDataPath))
+            );
+            await assertFails(
+                setDoc(
+                    doc(
+                        agendaEditor.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerAppData",
+                        "agenda-write"
+                    ),
+                    {
+                        uid: "agenda-write",
+                        workspaceId: WORKSPACE_ID,
+                        days: { "2026-07-06": 9 }
+                    }
+                )
+            );
+            await assertSucceeds(
+                getDoc(doc(profileEditor.firestore(), ...appDataPath))
+            );
+            await assertSucceeds(
+                setDoc(
+                    doc(
+                        profileEditor.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerAppData",
+                        "profile-write"
+                    ),
+                    {
+                        uid: "profile-write",
+                        workspaceId: WORKSPACE_ID,
+                        days: {}
+                    }
+                )
+            );
+        }
+    );
+
+    await t.test(
+        "solo gestores de solicitudes administran enlaces entre unidades",
+        async () => {
+            await assertFails(
+                setDoc(
+                    doc(viewer.firestore(), "workspaceLinks", "viewer-link"),
+                    {
+                        fromWorkspaceId: WORKSPACE_ID,
+                        toWorkspaceId: TARGET_WORKSPACE_ID,
+                        status: "pending",
+                        requestedByUid: "viewer"
+                    }
+                )
+            );
+            await assertSucceeds(
+                setDoc(
+                    doc(
+                        turnosEditor.firestore(),
+                        "workspaceLinks",
+                        "manager-link"
+                    ),
+                    {
+                        fromWorkspaceId: WORKSPACE_ID,
+                        toWorkspaceId: TARGET_WORKSPACE_ID,
+                        status: "pending",
+                        requestedByUid: "turnos-editor"
+                    }
+                )
+            );
+
+            const incomingRef = doc(
+                viewer.firestore(),
+                "workspaceLinks",
+                "incoming-security-link"
+            );
+            await assertFails(
+                updateDoc(incomingRef, {
+                    status: "accepted",
+                    acceptedByUid: "viewer",
+                    updatedAt: new Date()
+                })
+            );
+            await assertSucceeds(
+                updateDoc(
+                    doc(
+                        turnosEditor.firestore(),
+                        "workspaceLinks",
+                        "incoming-security-link"
+                    ),
+                    {
+                        status: "accepted",
+                        acceptedByUid: "turnos-editor",
+                        updatedAt: new Date()
+                    }
+                )
+            );
+            await assertFails(
+                updateDoc(incomingRef, {
+                    status: "unlinked",
+                    unlinkedByUid: "viewer",
+                    updatedAt: new Date()
+                })
+            );
+            await assertSucceeds(
+                updateDoc(
+                    doc(
+                        turnosEditor.firestore(),
+                        "workspaceLinks",
+                        "incoming-security-link"
+                    ),
+                    {
+                        status: "unlinked",
+                        unlinkedByUid: "turnos-editor",
+                        updatedAt: new Date()
+                    }
+                )
+            );
+        }
+    );
+
+    await t.test(
+        "un trabajador solo cambia campos de cancelacion de su solicitud",
+        async () => {
+            await assertFails(
+                updateDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerRequests",
+                        "worker-cancel-malicious"
+                    ),
+                    {
+                        status: "canceled",
+                        targetUid: "outsider"
+                    }
+                )
+            );
+            await assertSucceeds(
+                updateDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerRequests",
+                        "worker-cancel"
+                    ),
+                    {
+                        status: "canceled",
+                        canceledByUid: "worker-a",
+                        updatedAt: new Date()
+                    }
                 )
             );
         }
@@ -768,6 +1053,9 @@ test("reglas modulares de Firestore y Storage", async t => {
             );
             await assertFails(
                 getBytes(ref(restrictedViewer.storage(), profilePath))
+            );
+            await assertFails(
+                getBytes(ref(legacyMember.storage(), profilePath))
             );
             await assertFails(
                 uploadBytes(
