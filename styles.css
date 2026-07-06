@@ -13465,3 +13465,93 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
         text-align: center;
     }
 }
+
+/* Auto-pruebas de reglas basicas (solo entorno de pruebas) */
+.selftest-fab {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 9998;
+    padding: 10px 14px;
+    border: none;
+    border-radius: 999px;
+    background: #7c3aed;
+    color: #fff;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 6px 18px rgba(124, 58, 237, 0.4);
+}
+
+.selftest-fab:hover {
+    background: #6d28d9;
+}
+
+.selftest-fab:disabled {
+    opacity: 0.7;
+    cursor: default;
+}
+
+.selftest-dialog {
+    max-width: 560px;
+    width: min(560px, 92vw);
+}
+
+.selftest-summary {
+    font-weight: 600;
+    margin: 4px 0 10px;
+}
+
+.selftest-summary.is-ok {
+    color: #15803d;
+}
+
+.selftest-summary.is-fail {
+    color: #b91c1c;
+}
+
+.selftest-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 52vh;
+    overflow-y: auto;
+}
+
+.selftest-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: #f3f4f6;
+    font-size: 13px;
+}
+
+.selftest-row.is-fail {
+    background: #fef2f2;
+}
+
+.selftest-mark {
+    font-weight: 700;
+}
+
+.selftest-row.is-ok .selftest-mark {
+    color: #15803d;
+}
+
+.selftest-row.is-fail .selftest-mark {
+    color: #b91c1c;
+}
+
+.selftest-name {
+    flex: 1;
+    min-width: 0;
+}
+
+.selftest-error {
+    width: 100%;
+    color: #b91c1c;
+    font-size: 12px;
+}

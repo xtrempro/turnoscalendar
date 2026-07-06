@@ -88,6 +88,19 @@ function notifyPersistenceChanged(
     );
 }
 
+// Ejecuta `fn` sin emitir eventos de persistencia (sin sync a Firebase ni
+// re-render). Util para correr pruebas aisladas sobre localStorage. Soporta fn
+// sincronica o async; siempre restaura el contador.
+export async function runWithoutPersistenceEvents(fn) {
+    suppressChangeEvents++;
+
+    try {
+        return await fn();
+    } finally {
+        suppressChangeEvents--;
+    }
+}
+
 export function getRaw(key, fallback = null) {
     const store = storage();
     if (!store) return fallback;

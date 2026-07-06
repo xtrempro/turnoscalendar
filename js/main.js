@@ -104,6 +104,7 @@ import {
     aplicarCuartoTurnoDesde,
     aplicarTercerTurnoDesde
 } from "./rotationApply.js";
+import { freezePriorRotationSchedule } from "./rotationFreeze.js";
 import {
     getClockActualState,
     buildClockMarkRecordsForProfile
@@ -123,6 +124,7 @@ import {
 } from "./navigation.js";
 import { initTheme } from "./theme.js";
 import { initPwaInstall } from "./pwaInstall.js";
+import { initSelfTestButton } from "./selfTest.js";
 import { getPerfilActual, getDisplayedProfileData } from "./profileQueries.js";
 import { validateProfileDraft } from "./profileValidation.js";
 import {
@@ -2361,60 +2363,6 @@ function openCalendarRotationConfigModal() {
     });
 
     render();
-}
-
-// Antes de mover el inicio de la rotativa hacia la fecha elegida, materializa
-// (congela) en baseData los turnos ANTERIORES que hoy solo se computan a partir
-// de la rotativa vigente. Sin esto, al mover el inicio hacia adelante esos dias
-// pasan a calcularse como "libre" y se borran visualmente. No toca dias con
-// turno base explicito ni dias libres.
-function freezePriorRotationSchedule(boundaryISO) {
-    const profileName = getCurrentProfile();
-
-    if (!profileName) return;
-
-    const rotativa = getRotativa(profileName);
-
-    if (!rotativa || rotativa.type === "libre" || !rotativa.start) return;
-
-    const start = parseInputDate(rotativa.start);
-    const boundary = parseInputDate(boundaryISO);
-
-    if (!start || !boundary || !(start < boundary)) return;
-
-    const data = getProfileData();
-    const baseData = getBaseProfileData();
-    const blocked = getBlockedDays();
-    let changed = false;
-
-    for (
-        let cursor = new Date(start);
-        cursor < boundary;
-        cursor.setDate(cursor.getDate() + 1)
-    ) {
-        const key = keyFromDate(cursor);
-
-        if (Object.prototype.hasOwnProperty.call(baseData, key)) continue;
-
-        const turn = getTurnoBase(profileName, key);
-
-        if (!turn) continue;
-
-        baseData[key] = turn;
-
-        if (!Object.prototype.hasOwnProperty.call(data, key)) {
-            data[key] = turn;
-        }
-
-        blocked[key] = true;
-        changed = true;
-    }
-
-    if (changed) {
-        saveBaseProfileData(baseData);
-        saveProfileData(data);
-        saveBlockedDays(blocked);
-    }
 }
 
 async function applyCalendarRotationChange(fecha) {
@@ -9399,6 +9347,9 @@ initPwaInstall({
         document.getElementById("pwaInstallGateBtn")
     ]
 });
+
+// Boton flotante de auto-pruebas (solo aparece en el entorno de pruebas).
+initSelfTestButton();
 
 // Service Worker: cachea el shell para reaperturas instantaneas y offline basico.
 if ("serviceWorker" in navigator) {

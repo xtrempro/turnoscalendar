@@ -38,6 +38,11 @@ const useTestProject =
     typeof location !== "undefined" &&
     TEST_HOSTS.has(location.hostname);
 
+// Verdadero solo en el sitio de pruebas (turnoplus-test-7c4d9). Se usa para
+// exponer utilidades de diagnostico (auto-pruebas) que no deben aparecer en
+// produccion.
+export const IS_TEST_ENVIRONMENT = useTestProject;
+
 export const FIREBASE_APP_CHECK_SITE_KEY = useTestProject
     ? ""
     : "6Lff2zMtAAAAALE9w8AfJOfrWuoPy_35_aNwnh_8";
