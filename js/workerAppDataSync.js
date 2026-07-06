@@ -48,6 +48,7 @@ import {
     normalizeProfileTargets,
     splitDaysByMonth
 } from "./workerAppMonths.js";
+import { baseRenderDay } from "./rotationBase.js";
 
 // Publicacion "caliente" (mes en curso + siguiente): frecuente y barata.
 const HOT_PUBLISH_DELAY_MS = 1200;
@@ -439,6 +440,72 @@ function computeProfileSchedule(profile) {
     };
 }
 
+// ───────── Excepciones (rediseno de sincronizacion) ─────────
+// La PWA calcula la rotativa base para cualquier mes con la MISMA secuencia
+// (rotationBase.js / rotationEngine.js). Aqui solo publicamos el mapa disperso
+// de dias donde lo real difiere de esa base (cambios de turno, permisos,
+// ediciones manuales, feriados en diurno, reemplazos...). El pasado mas antiguo
+// que EXCEPTIONS_MONTHS_BACK es inmutable y queda cacheado en cada PWA; el
+// futuro lejano lo calcula la PWA desde la secuencia.
+const EXCEPTIONS_MONTHS_BACK = 2;
+const EXCEPTIONS_MONTHS_FORWARD = 12;
+const WORKER_APP_BASE_VERSION = 1;
+
+function exceptionsScanRange(today = new Date()) {
+    return {
+        start: new Date(
+            today.getFullYear(),
+            today.getMonth() - EXCEPTIONS_MONTHS_BACK,
+            1
+        ),
+        end: new Date(
+            today.getFullYear(),
+            today.getMonth() + EXCEPTIONS_MONTHS_FORWARD + 1,
+            0
+        )
+    };
+}
+
+function dayDiffersFromBase(actual, base) {
+    return (
+        (Number(actual.turno) || TURNO.LIBRE) !== (Number(base.turno) || TURNO.LIBRE) ||
+        String(actual.displayLabel || "") !== String(base.displayLabel || "") ||
+        String(actual.className || "") !== String(base.className || "") ||
+        Boolean(actual.hasLeave) !== Boolean(base.hasLeave) ||
+        Boolean(actual.isManualExtra) !== Boolean(base.isManualExtra)
+    );
+}
+
+// Recorre la ventana de barrido y devuelve solo los dias-excepcion (objeto-dia
+// completo, con colorGradient) para que la PWA los superponga sobre su base.
+function computeProfileExceptions(profile) {
+    const rotativa = getRotativa(profile.name);
+    const { start, end } = exceptionsScanRange();
+    const months = listMonthsInRange(start, end);
+    const maps = profileLeaveMaps(profile.name);
+    const profileData = getJSON("data_" + profile.name, {});
+    const colorResolver = buildHexColorResolver(getTurnoColorConfig());
+    const ctx = { maps, profileData, colorResolver, holidaysByYear: {} };
+
+    const exceptions = {};
+
+    months.forEach(month => {
+        const days = computeMonthDays(profile, month, ctx);
+
+        Object.entries(days).forEach(([iso, day]) => {
+            if (dayDiffersFromBase(day, baseRenderDay(rotativa, iso))) {
+                exceptions[iso] = day;
+            }
+        });
+    });
+
+    return {
+        exceptions,
+        exceptionsStart: toISODate(start),
+        exceptionsEnd: toISODate(end)
+    };
+}
+
 function isBusinessDayForLegal(date, holidays) {
     const day = date.getDay();
 
@@ -734,6 +801,8 @@ async function buildWorkerAppPayload(
         schedule
     );
     const reportsByMonth = await buildWorkerReports(profile);
+    const { exceptions, exceptionsStart, exceptionsEnd } =
+        computeProfileExceptions(profile);
 
     return {
         uid: link.uid,
@@ -755,6 +824,14 @@ async function buildWorkerAppPayload(
         },
         rotativa: getRotativa(profile.name),
         shiftAssigned: Boolean(getShiftAssigned(profile.name)),
+        baseVersion: WORKER_APP_BASE_VERSION,
+        // Serializado a string: bajo setDoc({merge:true}) un string se reemplaza
+        // entero, mientras que un mapa haria deep-merge y dejaria pegadas claves
+        // de dias que ya dejaron de ser excepcion.
+        exceptionsJson: JSON.stringify(exceptions),
+        exceptionsCount: Object.keys(exceptions).length,
+        exceptionsStart,
+        exceptionsEnd,
         leaveBalances,
         leaveBalancesByYear,
         scheduleStart: schedule.start,
