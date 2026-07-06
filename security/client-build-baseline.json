@@ -1,0 +1,20 @@
+{
+  "allowedIncreasePercent": 5,
+  "assets": {
+    "app": {
+      "raw": 801484,
+      "gzip": 223613,
+      "brotli": 173984
+    },
+    "scheduleWorker": {
+      "raw": 4874,
+      "gzip": 2161,
+      "brotli": 1932
+    },
+    "styles": {
+      "raw": 298258,
+      "gzip": 40220,
+      "brotli": 31877
+    }
+  }
+}

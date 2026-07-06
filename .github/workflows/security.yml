@@ -66,3 +66,9 @@ jobs:
 
       - name: Compilar aplicacion
         run: npm run build
+
+      - name: Verificar artefactos publicos y presupuesto de peso
+        run: npm run security:client
+
+      - name: Probar cabeceras de Hosting
+        run: npm run test:hosting-security
