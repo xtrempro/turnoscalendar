@@ -5528,6 +5528,9 @@ function clearSelectionMode(shouldRefresh = true) {
         // Refresca solo la fila del trabajador activo en el timeline (permisos,
         // feriados, rotativa, etc.) sin reconstruir todo el timeline.
         updateTimelineCells(getCurrentProfile());
+        // Actualiza el saldo entre parentesis de los botones (P. Administrativo,
+        // F. Legal, F. Compensatorio, etc.) inmediatamente tras aplicar.
+        renderLeaveActionLabels();
     }
 }
 
