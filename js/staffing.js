@@ -3769,7 +3769,11 @@ export async function analizarStaffingMes(
         mostrarResultado(data, year, month);
     }
 
-    patchInlineStaffingReport(data, days, year, month);
+    // Analisis completo del mes: render completo del panel inline (recordatorios,
+    // incidencias y cumpleanios + boton "+"). El patch incremental por dia lo hace
+    // updateInlineStaffingDays. (Antes se llamaba con un `days` inexistente ->
+    // ReferenceError -> panel en blanco.)
+    renderInlineStaffingReport(data, year, month);
     return data;
 }
 
