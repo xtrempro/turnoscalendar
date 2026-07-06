@@ -72,3 +72,6 @@ jobs:
 
       - name: Probar cabeceras de Hosting
         run: npm run test:hosting-security
+
+      - name: Probar configuracion App Check por entorno
+        run: npm run test:app-check

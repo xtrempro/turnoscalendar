@@ -11,6 +11,11 @@ export const FIREBASE_SDK_BASE_URL =
 // y supervisores con permisos de edicion.
 export const FIREBASE_REQUIRE_PRIVILEGED_MFA = false;
 
+const PRODUCTION_APP_CHECK_SITE_KEY =
+    "6Lff2zMtAAAAALE9w8AfJOfrWuoPy_35_aNwnh_8";
+const TEST_APP_CHECK_SITE_KEY =
+    "6LdZgEctAAAAAGMCUugxmTLm3bfspq8OzqI5xs9M";
+
 const PRODUCTION_CONFIG = {
     apiKey: "AIzaSyCG7KarKpMMGzTHIXnRit9E2CGpGgjf6_k",
     authDomain: "calendarioturnos-7c4d9.firebaseapp.com",
@@ -44,8 +49,8 @@ const useTestProject =
 export const IS_TEST_ENVIRONMENT = useTestProject;
 
 export const FIREBASE_APP_CHECK_SITE_KEY = useTestProject
-    ? ""
-    : "6Lff2zMtAAAAALE9w8AfJOfrWuoPy_35_aNwnh_8";
+    ? TEST_APP_CHECK_SITE_KEY
+    : PRODUCTION_APP_CHECK_SITE_KEY;
 
 export const FIREBASE_CONFIG = useTestProject
     ? TEST_CONFIG
