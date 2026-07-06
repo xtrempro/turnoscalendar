@@ -14,8 +14,55 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 const {
   deleteAdminUser,
-  deleteAdminWorkspace
+  deleteAdminWorkspace,
+  setAdminAccountPlan
 } = require("../getAccountsAndUnits");
+
+test("el admin asigna un plan temporal y también puede volver a Gratis", async () => {
+  const uid = "admin-plan-assignment-test";
+  const accountRef = db.collection("accounts").doc(uid);
+  await db.collection("users").doc(uid).set({
+    email: "plan-test@example.com",
+    displayName: "Cuenta con plan"
+  });
+
+  await assert.rejects(
+    setAdminAccountPlan.run({
+      auth: {
+        uid: "normal-user",
+        token: { email: "normal@example.com", email_verified: true }
+      },
+      data: { uid, plan: "p2", durationDays: 45 }
+    }),
+    /permisos de administrador/i
+  );
+
+  const assigned = await setAdminAccountPlan.run({
+    auth: { uid: "admin-test", token: { admin: true, email_verified: true } },
+    data: { uid, plan: "p2", durationDays: 45 }
+  });
+
+  assert.equal(assigned.subscription.plan, "p2");
+  assert.equal(assigned.subscription.effectivePlan, "p2");
+  assert.equal(assigned.subscription.source, "admin");
+  assert.equal(assigned.subscription.expired, false);
+  assert.ok(assigned.subscription.currentPeriodEnd > Date.now());
+
+  let account = (await accountRef.get()).data();
+  assert.equal(account.plan, "p2");
+  assert.equal(account.source, "admin");
+  assert.equal(account.adminAssignedByUid, "admin-test");
+
+  const downgraded = await setAdminAccountPlan.run({
+    auth: { uid: "admin-test", token: { admin: true, email_verified: true } },
+    data: { uid, plan: "free", durationDays: 0 }
+  });
+
+  account = (await accountRef.get()).data();
+  assert.equal(downgraded.subscription.plan, "free");
+  assert.equal(account.plan, "free");
+  assert.equal(account.currentPeriodEnd, null);
+});
 
 test("el admin elimina una unidad y todas sus referencias", async () => {
   const workspaceId = "delete-workspace-test";

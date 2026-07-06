@@ -6,8 +6,10 @@ const {
   confirmationMatches,
   countProfiles,
   isAuthorizedAdminIdentity,
+  normalizeAdminPlanAssignment,
   normalizeEmail,
   summarizeAccount,
+  summarizeSubscription,
   timestampToMillis
 } = require("../getAccountsAndUnitsCore");
 
@@ -146,4 +148,58 @@ test("serializa timestamps de Firestore y fechas ISO", () => {
     timestampToMillis("2026-07-05T12:00:00.000Z"),
     Date.parse("2026-07-05T12:00:00.000Z")
   );
+});
+
+test("normaliza una asignación administrativa de plan y duración", () => {
+  assert.deepEqual(normalizeAdminPlanAssignment(" P2 ", 90), {
+    plan: "p2",
+    durationDays: 90
+  });
+  assert.deepEqual(normalizeAdminPlanAssignment("free", 999), {
+    plan: "free",
+    durationDays: 0
+  });
+  assert.throws(
+    () => normalizeAdminPlanAssignment("enterprise", 30),
+    /invalid-plan/
+  );
+  assert.throws(
+    () => normalizeAdminPlanAssignment("p1", 0),
+    /invalid-duration/
+  );
+  assert.throws(
+    () => normalizeAdminPlanAssignment("p3", 30.5),
+    /invalid-duration/
+  );
+});
+
+test("resume el plan efectivo y detecta su vencimiento", () => {
+  const now = Date.parse("2026-07-06T12:00:00.000Z");
+  const activeEnd = now + 30 * 86400000;
+
+  assert.deepEqual(
+    summarizeSubscription({
+      plan: "p2",
+      source: "admin",
+      currentPeriodEnd: { toMillis: () => activeEnd },
+      adminAssignedAt: { seconds: now / 1000 },
+      adminAssignedByEmail: "admin@example.com"
+    }, now),
+    {
+      plan: "p2",
+      effectivePlan: "p2",
+      currentPeriodEnd: activeEnd,
+      source: "admin",
+      expired: false,
+      assignedAt: now,
+      assignedByEmail: "admin@example.com"
+    }
+  );
+
+  const expired = summarizeSubscription({
+    plan: "p1",
+    currentPeriodEnd: now - 1
+  }, now);
+  assert.equal(expired.expired, true);
+  assert.equal(expired.effectivePlan, "free");
 });

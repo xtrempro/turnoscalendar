@@ -12,8 +12,10 @@ const {
   countProfiles,
   isAuthorizedAdminIdentity,
   nonNegativeCount,
+  normalizeAdminPlanAssignment,
   normalizeEmail,
   summarizeAccount,
+  summarizeSubscription,
   timestampToMillis
 } = require("./getAccountsAndUnitsCore");
 
@@ -251,6 +253,14 @@ async function loadAccounts(userDocs) {
   });
 
   const workspaceMap = await loadWorkspaceMap(workspaceIds);
+  const subscriptionDocs = userDocs.length
+    ? await getAllInChunks(
+      userDocs.map((userDoc) => db.collection("accounts").doc(userDoc.id))
+    )
+    : [];
+  const subscriptionsByUid = new Map(
+    subscriptionDocs.map((doc) => [doc.id, doc])
+  );
 
   return userDocs.map((userDoc) => {
     const units = (membershipsByUid.get(userDoc.id) || []).map((membership) => {
@@ -278,7 +288,18 @@ async function loadAccounts(userDocs) {
     });
 
     units.sort((a, b) => a.name.localeCompare(b.name, "es"));
-    return summarizeAccount(userDoc.id, userDoc.data() || {}, units);
+    const account = summarizeAccount(userDoc.id, userDoc.data() || {}, units);
+    const subscriptionDoc = subscriptionsByUid.get(userDoc.id);
+
+    return {
+      ...account,
+      subscription: {
+        ...summarizeSubscription(
+          subscriptionDoc?.exists ? subscriptionDoc.data() || {} : {}
+        ),
+        hasAccountDocument: Boolean(subscriptionDoc?.exists)
+      }
+    };
   });
 }
 
@@ -523,6 +544,94 @@ const deleteAdminWorkspace = onCall(
   }
 );
 
+const setAdminAccountPlan = onCall(
+  {
+    region: REGION,
+    enforceAppCheck: false,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    await requireAdmin(request.auth);
+
+    const uid = cleanText(request.data?.uid, 160);
+    if (!uid) {
+      throw new HttpsError("invalid-argument", "Usuario inválido.");
+    }
+
+    let assignment;
+    try {
+      assignment = normalizeAdminPlanAssignment(
+        request.data?.plan,
+        request.data?.durationDays
+      );
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw new HttpsError(
+          "invalid-argument",
+          "La duración debe ser un número entero entre 1 y 3650 días."
+        );
+      }
+      throw new HttpsError(
+        "invalid-argument",
+        "El plan debe ser Gratis, Plan 1, Plan 2 o Plan 3."
+      );
+    }
+
+    const userRef = db.collection("users").doc(uid);
+    const accountRef = db.collection("accounts").doc(uid);
+    const nowMs = Date.now();
+    const now = admin.firestore.Timestamp.fromMillis(nowMs);
+    const currentPeriodEnd = assignment.plan === "free"
+      ? null
+      : admin.firestore.Timestamp.fromMillis(
+        nowMs + assignment.durationDays * 86400000
+      );
+    const payload = {
+      plan: assignment.plan,
+      period: null,
+      source: "admin",
+      couponCode: null,
+      currentPeriodEnd,
+      adminAssignedAt: now,
+      adminAssignedByUid: request.auth.uid,
+      adminAssignedByEmail: cleanText(request.auth.token?.email, 254),
+      updatedAt: now
+    };
+
+    const previousPlan = await db.runTransaction(async (transaction) => {
+      const [userDoc, accountDoc] = await Promise.all([
+        transaction.get(userRef),
+        transaction.get(accountRef)
+      ]);
+
+      if (!userDoc.exists) {
+        throw new HttpsError("not-found", "Cuenta no encontrada.");
+      }
+
+      transaction.set(accountRef, payload, { merge: true });
+      return String(accountDoc.data()?.plan || "free");
+    });
+
+    logger.info("Plan modificado por administrador global.", {
+      uid,
+      previousPlan,
+      plan: assignment.plan,
+      durationDays: assignment.durationDays,
+      currentPeriodEnd: currentPeriodEnd?.toMillis() || null,
+      adminUid: request.auth.uid
+    });
+
+    return {
+      ok: true,
+      uid,
+      subscription: {
+        ...summarizeSubscription(payload, nowMs),
+        hasAccountDocument: true
+      }
+    };
+  }
+);
+
 const deleteAdminUser = onCall(
   {
     region: REGION,
@@ -694,6 +803,7 @@ module.exports = {
   deleteAdminWorkspace,
   getAccountsAndUnits,
   initializeWorkspaceUsageCounters,
+  setAdminAccountPlan,
   syncLegacyWorkspaceWorkerCounters,
   syncWorkspacePwaCounters,
   syncWorkspaceWorkerCounters

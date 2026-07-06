@@ -53,6 +53,54 @@ function timestampToMillis(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+const ADMIN_ASSIGNABLE_PLANS = new Set(["free", "p1", "p2", "p3"]);
+
+function normalizeAdminPlanAssignment(planValue, durationValue) {
+  const plan = String(planValue || "").trim().toLowerCase();
+
+  if (!ADMIN_ASSIGNABLE_PLANS.has(plan)) {
+    throw new TypeError("invalid-plan");
+  }
+
+  if (plan === "free") {
+    return { plan, durationDays: 0 };
+  }
+
+  const durationDays = Number(durationValue);
+  if (
+    !Number.isInteger(durationDays) ||
+    durationDays < 1 ||
+    durationDays > 3650
+  ) {
+    throw new RangeError("invalid-duration");
+  }
+
+  return { plan, durationDays };
+}
+
+function summarizeSubscription(accountData = {}, now = Date.now()) {
+  const plan = typeof accountData.plan === "string" && accountData.plan
+    ? accountData.plan
+    : "free";
+  const currentPeriodEnd = timestampToMillis(accountData.currentPeriodEnd);
+  const expired = plan !== "free" && currentPeriodEnd > 0 && now > currentPeriodEnd;
+
+  return {
+    plan,
+    effectivePlan: expired ? "free" : plan,
+    currentPeriodEnd: currentPeriodEnd || null,
+    source: typeof accountData.source === "string" ? accountData.source : null,
+    expired,
+    assignedAt: timestampToMillis(
+      accountData.adminAssignedAt || accountData.updatedAt
+    ) || null,
+    assignedByEmail:
+      typeof accountData.adminAssignedByEmail === "string"
+        ? accountData.adminAssignedByEmail
+        : null
+  };
+}
+
 function parseJSON(value, fallback) {
   if (value === null || value === undefined || value === "") return fallback;
   if (typeof value !== "string") return value;
@@ -116,7 +164,9 @@ module.exports = {
   isAuthorizedAdminIdentity,
   nonNegativeCount,
   normalizeEmail,
+  normalizeAdminPlanAssignment,
   profilesFromState,
   summarizeAccount,
+  summarizeSubscription,
   timestampToMillis
 };
