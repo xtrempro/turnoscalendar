@@ -17,6 +17,11 @@ const {
 } = require("./swapCancellation");
 const { cancelWorkerSwapHandler } = require("./workerSwapCancellation");
 const {
+  createWorkerSwapOpenRequestHandler,
+  createWorkerSwapRequestHandler,
+  respondWorkerSwapRequestHandler
+} = require("./workerSwapRequests");
+const {
   findCompatibleReplacementCandidates
 } = require("./linkedReplacementSearch");
 const {
@@ -1515,6 +1520,42 @@ exports.cancelWorkerSwap = onCall(
     timeoutSeconds: 30
   },
   (request) => cancelWorkerSwapHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()
+  })
+);
+
+exports.createWorkerSwapRequest = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => createWorkerSwapRequestHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()
+  })
+);
+
+exports.respondWorkerSwapRequest = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => respondWorkerSwapRequestHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()
+  })
+);
+
+exports.createWorkerSwapOpenRequest = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => createWorkerSwapOpenRequestHandler(request, {
     db,
     HttpsError,
     serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()

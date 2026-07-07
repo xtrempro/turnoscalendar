@@ -9,7 +9,9 @@ const APP_ID = "1:596177989812:web:6e1e5a1e194dac99fbe7e1";
 const KEY_DISPLAY_NAME = "TurnoPlus Test App Check";
 const REQUIRED_DOMAINS = [
     "turnoplus-test-7c4d9.web.app",
-    "turnoplus-test-7c4d9.firebaseapp.com"
+    "turnoplus-test-7c4d9.firebaseapp.com",
+    "turnoplusfunc-test.web.app",
+    "turnoplusfunc-test.firebaseapp.com"
 ];
 const REQUIRED_SERVICES = [
     "firebaseappcheck.googleapis.com",
@@ -179,10 +181,38 @@ async function ensureRecaptchaKey() {
 
     if (existing) {
         if (!keyMatches(existing)) {
-            throw new Error(
-                `La clave existente ${KEY_DISPLAY_NAME} no tiene ` +
-                "los dominios o el modo SCORE esperados."
+            if (!APPLY) {
+                throw new Error(
+                    `La clave existente ${KEY_DISPLAY_NAME} no tiene ` +
+                    "los dominios o el modo SCORE esperados. " +
+                    "Ejecuta el comando con --apply."
+                );
+            }
+
+            const settings = existing.webSettings || {};
+            const allowedDomains = Array.from(new Set([
+                ...(settings.allowedDomains || []),
+                ...REQUIRED_DOMAINS
+            ]));
+
+            const { body } = await api(
+                `https://recaptchaenterprise.googleapis.com/v1/${existing.name}?updateMask=web_settings`,
+                {
+                    method: "PATCH",
+                    body: JSON.stringify({
+                        ...existing,
+                        webSettings: {
+                            ...settings,
+                            allowAllDomains: false,
+                            allowedDomains,
+                            allowAmpTraffic: false,
+                            integrationType: "SCORE"
+                        }
+                    })
+                }
             );
+
+            return keyId(body);
         }
 
         return keyId(existing);

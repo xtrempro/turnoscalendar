@@ -253,6 +253,20 @@ test("reglas modulares de Firestore y Storage", async t => {
                 status: "active"
             }
         );
+        await setDoc(
+            doc(
+                db,
+                "workspaces",
+                WORKSPACE_ID,
+                "workerLinks",
+                "worker-b"
+            ),
+            {
+                uid: "worker-b",
+                workspaceId: WORKSPACE_ID,
+                status: "active"
+            }
+        );
         for (const requestId of ["worker-cancel", "worker-cancel-malicious"]) {
             await setDoc(
                 doc(
@@ -301,6 +315,17 @@ test("reglas modulares de Firestore y Storage", async t => {
         await setDoc(
             doc(db, "workspaces", WORKSPACE_ID, "workerSwapRequests", "swap-canceled"),
             { status: "canceled", createdByUid: "worker-a", targetUid: "worker-b" }
+        );
+        await setDoc(
+            doc(db, "workspaces", WORKSPACE_ID, "workerSwapRequests", "swap-pending-worker-a"),
+            {
+                workspaceId: WORKSPACE_ID,
+                status: "pending_colleague",
+                source: "worker_app",
+                type: "swap",
+                createdByUid: "worker-b",
+                targetUid: "worker-a"
+            }
         );
         await setDoc(
             doc(db, "workspaces", WORKSPACE_ID, "workerSwapOpenRequests", "open-canceled"),
@@ -812,6 +837,67 @@ test("reglas modulares de Firestore y Storage", async t => {
                         status: "canceled",
                         canceledByUid: "worker-a",
                         updatedAt: new Date()
+                    }
+                )
+            );
+        }
+    );
+
+    await t.test(
+        "los cambios de turno PWA se escriben solo por Cloud Functions",
+        async () => {
+            const workerDb = workerA.firestore();
+
+            await assertFails(
+                setDoc(
+                    doc(
+                        workerDb,
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerSwapRequests",
+                        "client-direct-swap"
+                    ),
+                    {
+                        workspaceId: WORKSPACE_ID,
+                        createdByUid: "worker-a",
+                        targetUid: "worker-b",
+                        source: "worker_app",
+                        type: "swap",
+                        status: "pending_colleague"
+                    }
+                )
+            );
+            await assertFails(
+                updateDoc(
+                    doc(
+                        workerDb,
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerSwapRequests",
+                        "swap-pending-worker-a"
+                    ),
+                    {
+                        status: "colleague_accepted",
+                        colleagueAcceptedAt: new Date(),
+                        updatedAt: new Date()
+                    }
+                )
+            );
+            await assertFails(
+                setDoc(
+                    doc(
+                        workerDb,
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerSwapOpenRequests",
+                        "client-open-swap"
+                    ),
+                    {
+                        workspaceId: WORKSPACE_ID,
+                        createdByUid: "worker-a",
+                        source: "worker_app",
+                        status: "open",
+                        ownDate: "2026-07-10"
                     }
                 )
             );

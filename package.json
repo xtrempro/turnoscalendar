@@ -43,7 +43,7 @@
     "test:hosting-security": "node --test tests/hosting-security-config.test.mjs",
     "test:app-check": "node --test tests/firebase-app-check-config.test.mjs",
     "test:functions-app-check": "node --test tests/functions-app-check-enforcement.test.mjs",
-    "test:backend-authorization": "node --test functions/test/authorization.test.js functions/test/getAccountsAndUnits.test.js tests/backend-authorization-wiring.test.mjs",
+    "test:backend-authorization": "node --test functions/test/authorization.test.js functions/test/getAccountsAndUnits.test.js functions/test/workerSwapRequests.test.js tests/backend-authorization-wiring.test.mjs",
     "test:test-security-config": "node --test tests/test-security-configuration.test.mjs",
     "test:self-test": "node --test tests/self-test.test.mjs",
     "test:main-thread": "node --test tests/main-thread-scheduler.test.mjs",

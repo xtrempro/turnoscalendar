@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 async function configForHost(hostname, cacheKey) {
@@ -41,4 +42,14 @@ test("producci\u00f3n y Test usan proveedores App Check independientes", async (
     );
 
     delete globalThis.location;
+});
+
+test("App Check Test autoriza tambien la PWA de funcionarios Test", () => {
+    const automation = readFileSync(
+        "scripts/configure-test-app-check.mjs",
+        "utf8"
+    );
+
+    assert.match(automation, /"turnoplusfunc-test\.web\.app"/);
+    assert.match(automation, /"turnoplusfunc-test\.firebaseapp\.com"/);
 });

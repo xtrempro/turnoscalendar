@@ -764,19 +764,7 @@ service cloud.firestore {
             ) &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow create: if canManageRequests(workspaceId) ||
-          (
-            signedIn() &&
-            request.resource.data.createdByUid == request.auth.uid &&
-            request.resource.data.targetUid is string &&
-            request.resource.data.targetUid != request.auth.uid &&
-            request.resource.data.workspaceId == workspaceId &&
-            request.resource.data.source == "worker_app" &&
-            request.resource.data.type == "swap" &&
-            request.resource.data.status == "pending_colleague" &&
-            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid)) &&
-            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.resource.data.targetUid))
-          );
+        allow create: if canManageRequests(workspaceId);
         allow update: if
           (
             canManageRequests(workspaceId) &&
@@ -784,27 +772,6 @@ service cloud.firestore {
               resource.data.status != "canceled" ||
               request.resource.data.status == "canceled"
             )
-          ) ||
-          (
-            signedIn() &&
-            resource.data.targetUid == request.auth.uid &&
-            request.resource.data.targetUid == resource.data.targetUid &&
-            request.resource.data.createdByUid == resource.data.createdByUid &&
-            resource.data.status == "pending_colleague" &&
-            request.resource.data.status in ["colleague_accepted", "colleague_rejected"] &&
-            request.resource.data.diff(resource.data).changedKeys().hasOnly([
-              "status",
-              "colleagueAcceptedAt",
-              "colleagueRejectedAt",
-              "colleagueResponseAt",
-              "rejectReason",
-              "notificationStatus",
-              "returnDate",
-              "devolucion",
-              "returnTurnLabel",
-              "updatedAt"
-            ]) &&
-            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
         allow delete: if canManageRequests(workspaceId);
       }
@@ -816,16 +783,7 @@ service cloud.firestore {
             resource.data.createdByUid == request.auth.uid &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
           );
-        allow create: if canManageRequests(workspaceId) ||
-          (
-            signedIn() &&
-            request.resource.data.createdByUid == request.auth.uid &&
-            request.resource.data.workspaceId == workspaceId &&
-            request.resource.data.source == "worker_app" &&
-            request.resource.data.status == "open" &&
-            request.resource.data.ownDate is string &&
-            exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
-          );
+        allow create: if canManageRequests(workspaceId);
         allow update: if canManageRequests(workspaceId) &&
           (
             resource.data.status != "canceled" ||
