@@ -16,6 +16,7 @@ import {
 } from "./profileDraft.js";
 import { requiresRotationStart, requiresRotationFirstTurn } from "./rotationUtils.js";
 import { getRutValidationMessage } from "./rutUtils.js";
+import { getEmailValidationMessage } from "./emailUtils.js";
 import { compareISODate } from "./dateUtils.js";
 import { getProfiles } from "./storage.js";
 
@@ -33,6 +34,8 @@ export function validateProfileDraft() {
         requiresRotationStart(profileDraft.rotationType);
     const rutMessage =
         getRutValidationMessage(profileDraft.rut);
+    const emailMessage =
+        getEmailValidationMessage(profileDraft.email);
 
     if (!profileDraft.name.trim()) missing.push("nombre");
     if (!profileDraft.estamento) missing.push("estamento");
@@ -200,6 +203,14 @@ export function validateProfileDraft() {
             ok: false,
             message: rutMessage,
             focusRut: true
+        };
+    }
+
+    if (emailMessage) {
+        return {
+            ok: false,
+            message: emailMessage,
+            focusEmail: true
         };
     }
 

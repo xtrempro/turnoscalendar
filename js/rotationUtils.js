@@ -10,6 +10,40 @@
 
 import { stripAccents } from "./stringUtils.js";
 
+const POSITION_ORDINALS_MASC = [
+    "Primer", "Segundo", "Tercer", "Cuarto",
+    "Quinto", "Sexto", "Séptimo"
+];
+const POSITION_ORDINALS_FEM = [
+    "Primera", "Segunda", "Tercera", "Cuarta",
+    "Quinta", "Sexta", "Séptima"
+];
+// Codigos crudos de turno -> palabra y genero para la etiqueta de posicion.
+// Solo se cuentan turnos de tercer/cuarto turno (larga, noche, libre); el diurno
+// no lleva posicion.
+const POSITION_TURN_INFO = {
+    1: { word: "larga", fem: true },   // LARGA
+    2: { word: "noche", fem: true },   // NOCHE
+    0: { word: "libre", fem: false }   // LIBRE
+};
+
+// Etiqueta ordinal segun la posicion (1-based) dentro del bloque consecutivo del
+// mismo turno: "Primer libre", "Segunda larga", "Primera noche", etc.
+export function rotationPositionLabel(turno, position) {
+    const info = POSITION_TURN_INFO[turno];
+
+    if (!info || !(position >= 1)) {
+        return "";
+    }
+
+    const ordinals = info.fem
+        ? POSITION_ORDINALS_FEM
+        : POSITION_ORDINALS_MASC;
+    const ordinal = ordinals[position - 1] || `${position}°`;
+
+    return `${ordinal} ${info.word}`;
+}
+
 /**
  * Mes que debe conservarse al pasar desde "Modificar rotativa" al modo de
  * seleccion de fecha. Recibe la fecha visible del calendario, no la fecha

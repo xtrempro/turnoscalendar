@@ -13,6 +13,7 @@ export const DOM = {
     /* formulario perfil */
     profileNameInput: document.getElementById("profileNameField"),
     profileEmailInput: document.getElementById("profileEmailField"),
+    profileEmailHint: document.getElementById("profileEmailHint"),
     profileRutInput: document.getElementById("profileRutField"),
     profilePhoneInput: document.getElementById("profilePhoneField"),
     profileBirthDateInput: document.getElementById("profileBirthDateField"),

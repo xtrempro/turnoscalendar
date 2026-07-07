@@ -114,6 +114,7 @@ import {
     hourReturnCalendarLabel
 } from "./hourReturns.js";
 import { withBusyState } from "./busy.js";
+import { rotationPositionLabel } from "./rotationUtils.js";
 import {
     TURNO,
     TURNO_CLASS
@@ -2038,6 +2039,50 @@ function getActualState(profileName, keyDay) {
     );
 }
 
+// Etiqueta de posicion del candidato dentro del bloque consecutivo del mismo
+// turno (p.ej. "Primer libre", "Segunda larga"). Cuenta hacia atras cuantos dias
+// seguidos tiene el mismo estado que el dia objetivo. Solo aplica a rotativas de
+// tercer y cuarto turno; en otras (diurno, etc.) devuelve "" para caer en la
+// etiqueta previa.
+function candidatePositionLabel(profileName, keyDay, currentState) {
+    const rotationType = getRotativa(profileName).type;
+
+    if (rotationType !== "3turno" && rotationType !== "4turno") {
+        return "";
+    }
+
+    const parts = keyDay.split("-");
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    const day = Number(parts[2]);
+    let position = 1;
+
+    for (let back = 1; back <= 10; back++) {
+        const previous = new Date(year, month, day - back);
+        const previousKey =
+            `${previous.getFullYear()}-${previous.getMonth()}-${previous.getDate()}`;
+
+        if (getActualState(profileName, previousKey) !== currentState) {
+            break;
+        }
+
+        position++;
+    }
+
+    return rotationPositionLabel(currentState, position);
+}
+
+// Texto de estado del candidato en la lista de reemplazos. Prioriza la posicion
+// en la rotativa (3er/4to turno); el diurno se muestra como "Diurno" sin prefijo.
+function candidateStateLabel(candidate, pendingRequest) {
+    if (pendingRequest) return "Solicitud pendiente";
+    if (candidate.positionLabel) return candidate.positionLabel;
+    if (candidate.currentState === TURNO.DIURNO) return "Diurno";
+    if (candidate.isFree) return "Libre ese dia";
+
+    return `Turno actual: ${turnoReplacementLabel(candidate.currentState)}`;
+}
+
 function isHalfAdminValue(value) {
     return (
         value === "0.5M" ||
@@ -2336,6 +2381,11 @@ async function getReplacementCandidates(
                 profile,
                 currentState,
                 isFree: currentState === 0,
+                positionLabel: candidatePositionLabel(
+                    profile.name,
+                    keyDay,
+                    currentState
+                ),
                 isDiurnoLongCoverage,
                 overtimeHours,
                 isForced:
@@ -2460,7 +2510,7 @@ function replacementDialogHTML({
                         <strong>${escapeHTML(candidate.profile.name)}</strong>
                         <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
                         ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
-                        <small>${pendingRequest ? "Solicitud pendiente" : candidate.isFree ? "Libre ese dia" : `Turno actual: ${escapeHTML(turnoReplacementLabel(candidate.currentState))}`}</small>
+                        <small>${escapeHTML(candidateStateLabel(candidate, pendingRequest))}</small>
                         ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                     </span>
                     <span>
@@ -2503,7 +2553,7 @@ function replacementDialogHTML({
                     <strong>${escapeHTML(candidate.profile.name)}</strong>
                     <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
                     ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
-                    <small>${pendingRequest ? "Solicitud pendiente" : candidate.isFree ? "Libre ese dia" : `Turno actual: ${escapeHTML(turnoReplacementLabel(candidate.currentState))}`}</small>
+                    <small>${escapeHTML(candidateStateLabel(candidate, pendingRequest))}</small>
                     ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                 </span>
                 <span>

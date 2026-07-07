@@ -144,7 +144,12 @@
 
                             <label class="metric-row metric-row--field">
                                 <span class="metric-label">Correo electronico:</span>
-                                <input id="profileEmailField" type="email" placeholder="correo@ejemplo.cl">
+                                <span class="profile-email-cell">
+                                    <input id="profileEmailField" type="email" placeholder="correo@ejemplo.cl" autocomplete="email">
+                                    <span id="profileEmailHint" class="profile-email-hint" role="status" hidden>
+                                        <span>Se enviará un enlace de invitación a esta dirección de correo electrónico</span>
+                                    </span>
+                                </span>
                             </label>
 
                             <label class="metric-row metric-row--field">

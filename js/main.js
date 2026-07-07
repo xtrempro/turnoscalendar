@@ -19,6 +19,7 @@ import {
 import { normalizeText, stripAccents, sanitizeDigits } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { formatRut, getRutValidationMessage } from "./rutUtils.js";
+import { getEmailValidationMessage } from "./emailUtils.js";
 import {
     getRotativaLabel,
     requiresRotationFirstTurn,
@@ -886,6 +887,36 @@ function syncRutValidity(showMessage = false) {
     }
 
     return !message;
+}
+
+function syncEmailValidity(showMessage = false) {
+    const message = getEmailValidationMessage(
+        DOM.profileEmailInput.value
+    );
+
+    DOM.profileEmailInput.setCustomValidity(message);
+
+    if (message && showMessage) {
+        DOM.profileEmailInput.reportValidity();
+    }
+
+    return !message;
+}
+
+// Muestra la "nube" de aviso mientras se escribe el correo; se oculta si el
+// campo esta vacio o no se esta editando.
+function updateProfileEmailHint() {
+    if (!DOM.profileEmailHint) return;
+
+    DOM.profileEmailHint.hidden =
+        !isProfileEditing() ||
+        !DOM.profileEmailInput.value.trim();
+}
+
+function hideProfileEmailHint() {
+    if (DOM.profileEmailHint) {
+        DOM.profileEmailHint.hidden = true;
+    }
 }
 
 async function openAttachment(doc) {
@@ -3648,6 +3679,8 @@ function renderDashboardState() {
 
     DOM.profileNameInput.value = data.name || "";
     DOM.profileEmailInput.value = data.email || "";
+    syncEmailValidity(false);
+    hideProfileEmailHint();
     DOM.profileRutInput.value = data.rut || "";
     syncRutValidity(false);
     DOM.profilePhoneInput.value = data.phone || "";
@@ -6359,6 +6392,12 @@ function validateDraft() {
         syncRutValidity(true);
     }
 
+    if (result.focusEmail) {
+        DOM.profileEmailInput.focus();
+        DOM.profileEmailInput.select();
+        syncEmailValidity(true);
+    }
+
     return false;
 }
 
@@ -8196,6 +8235,19 @@ function bindProfileForm() {
     DOM.profileEmailInput.oninput = () => {
         if (!isProfileEditing()) return;
         profileDraft.email = DOM.profileEmailInput.value.trim();
+        updateProfileEmailHint();
+        syncEmailValidity(false);
+    };
+
+    DOM.profileEmailInput.onfocus = () => {
+        if (!isProfileEditing()) return;
+        updateProfileEmailHint();
+    };
+
+    DOM.profileEmailInput.onblur = () => {
+        if (!isProfileEditing()) return;
+        hideProfileEmailHint();
+        syncEmailValidity(true);
     };
 
     DOM.profileRutInput.oninput = () => {

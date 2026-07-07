@@ -34,7 +34,10 @@ import {
     getTurnoBase,
     getTurnoProgramado
 } from "./turnEngine.js";
-import { getRotationSequence } from "./rotationUtils.js";
+import {
+    getRotationSequence,
+    rotationPositionLabel
+} from "./rotationUtils.js";
 import { freezePriorRotationSchedule } from "./rotationFreeze.js";
 import {
     aplicarLegal,
@@ -58,6 +61,7 @@ import {
     getShiftMoves,
     registerShiftMove
 } from "./shiftMoves.js";
+import { getEmailValidationMessage } from "./emailUtils.js";
 
 const FAKE_PROFILE = "__selftest__";
 const FAKE_SWAP_RECEIVER = "__receiver___selftest__";
@@ -294,6 +298,68 @@ const TESTS = [
             assert(
                 !futuro,
                 "el turno movido futuro deberia eliminarse"
+            );
+        }
+    },
+    {
+        name: "Validador de formato de correo del perfil",
+        run() {
+            assertEqual(
+                getEmailValidationMessage(""),
+                "",
+                "correo vacio es valido (opcional)"
+            );
+            assertEqual(
+                getEmailValidationMessage("ana@clinica.cl"),
+                "",
+                "correo bien formado deberia aceptarse"
+            );
+            assert(
+                getEmailValidationMessage("ana@clinica") !== "",
+                "sin dominio .xx deberia rechazarse"
+            );
+            assert(
+                getEmailValidationMessage("anaclinica.cl") !== "",
+                "sin @ deberia rechazarse"
+            );
+            assert(
+                getEmailValidationMessage("ana @clinica.cl") !== "",
+                "con espacio deberia rechazarse"
+            );
+        }
+    },
+    {
+        name: "Etiqueta de posicion del reemplazo (primer/segundo libre, etc.)",
+        run() {
+            assertEqual(
+                rotationPositionLabel(TURNO.LIBRE, 1),
+                "Primer libre",
+                "primer libre"
+            );
+            assertEqual(
+                rotationPositionLabel(TURNO.LIBRE, 2),
+                "Segundo libre",
+                "segundo libre"
+            );
+            assertEqual(
+                rotationPositionLabel(TURNO.LARGA, 1),
+                "Primera larga",
+                "primera larga"
+            );
+            assertEqual(
+                rotationPositionLabel(TURNO.LARGA, 2),
+                "Segunda larga",
+                "segunda larga"
+            );
+            assertEqual(
+                rotationPositionLabel(TURNO.NOCHE, 1),
+                "Primera noche",
+                "primera noche"
+            );
+            assertEqual(
+                rotationPositionLabel(TURNO.NOCHE, 2),
+                "Segunda noche",
+                "segunda noche"
             );
         }
     },

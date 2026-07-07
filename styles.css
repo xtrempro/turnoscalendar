@@ -2289,6 +2289,56 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     font-weight: 600;
 }
 
+.profile-email-cell {
+    position: relative;
+    display: block;
+    min-width: 0;
+}
+
+.profile-email-cell input {
+    width: 100%;
+}
+
+.profile-email-cell input:invalid {
+    border-color: #e5484d;
+    box-shadow: 0 0 0 2px rgba(229, 72, 77, 0.18);
+}
+
+.profile-email-hint {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 300px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: #fff;
+    color: #1f2430;
+    font-size: 0.8rem;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+    border: 1px solid rgba(15, 23, 42, 0.14);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+    pointer-events: none;
+}
+
+.profile-email-hint[hidden] {
+    display: none;
+}
+
+.profile-email-hint::before {
+    content: "";
+    position: absolute;
+    bottom: 100%;
+    left: 18px;
+    border: 6px solid transparent;
+    border-bottom-color: #fff;
+}
+
 .metric-input input {
     max-width: none;
     padding: 10px 12px;
