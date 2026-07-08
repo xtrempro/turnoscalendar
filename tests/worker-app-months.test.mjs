@@ -58,6 +58,21 @@ test("la sincronizacion cliente no contiene una ruta de publicacion fria global"
     assert.match(source, /writeWorkerAppMonths/);
 });
 
+test("la PWA reutiliza resumenes HH.EE y los refresca en segundo plano", async () => {
+    const source = await readFile(
+        new URL("../js/workerAppDataSync.js", import.meta.url),
+        "utf8"
+    );
+
+    assert.match(source, /OVERTIME_SUMMARY_CACHE_VERSION/);
+    assert.match(source, /function buildOvertimeSummarySignature\(profile, schedule\)/);
+    assert.match(source, /previousPayload\?\.overtimeSummaries/);
+    assert.match(source, /source: "stale-cache"/);
+    assert.match(source, /scheduleColdOvertimeSummaryRefresh/);
+    assert.match(source, /refreshWorkerOvertimeSummariesCold/);
+    assert.match(source, /overtimeSummariesStatus: "fresh"/);
+});
+
 test("Perfil y Timeline limitan la primera pagina", async () => {
     const [mainSource, timelineSource] = await Promise.all([
         readFile(new URL("../js/main.js", import.meta.url), "utf8"),

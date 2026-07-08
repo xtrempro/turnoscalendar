@@ -56,6 +56,8 @@ const INITIAL_PUBLISH_DELAY_MS = 2500;
 // Los resumenes HH.EE son caros: se mantienen acotados (no crecen con la
 // ventana del calendario).
 const OVERTIME_SUMMARY_MONTHS_BACK = 2;
+const OVERTIME_SUMMARY_CACHE_VERSION = 1;
+const COLD_OVERTIME_REFRESH_DELAY_MS = 4500;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
 
 // Claves de localStorage por-perfil que afectan lo que ve el trabajador. El
@@ -105,6 +107,8 @@ let syncGeneration = 0;
 // Solo se publican perfiles/UID marcados de forma explicita.
 let dirtyProfileNames = new Set();
 let dirtyWorkerUids = new Set();
+const coldOvertimeRefreshTimers = new Map();
+const coldOvertimeRefreshInFlight = new Set();
 
 function normalizeRut(value) {
     return String(value || "")
@@ -440,6 +444,113 @@ function computeProfileSchedule(profile) {
     };
 }
 
+function stableStringify(value) {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableStringify).join(",")}]`;
+    }
+
+    if (value && typeof value === "object") {
+        return `{${Object.keys(value).sort().map(key =>
+            `${JSON.stringify(key)}:${stableStringify(value[key])}`
+        ).join(",")}}`;
+    }
+
+    return JSON.stringify(value);
+}
+
+function hashText(value) {
+    let hash = 2166136261;
+    const text = String(value || "");
+
+    for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(36);
+}
+
+function rawLocalStorageValue(key) {
+    try {
+        return window.localStorage.getItem(key);
+    } catch (_error) {
+        return null;
+    }
+}
+
+function rawLocalStorageEntriesByPrefix(prefix) {
+    try {
+        return Object.keys(window.localStorage)
+            .filter(key => key.startsWith(prefix))
+            .sort()
+            .map(key => [key, window.localStorage.getItem(key)]);
+    } catch (_error) {
+        return [];
+    }
+}
+
+function buildOvertimeSummarySignature(profile, schedule) {
+    const profileName = profile?.name || "";
+    const today = new Date();
+    const exactKeys = [
+        "replacements",
+        "swaps",
+        "manualHolidays",
+        "gradeHourConfig",
+        "profiles",
+        `data_${profileName}`,
+        `baseData_${profileName}`,
+        `admin_${profileName}`,
+        `legal_${profileName}`,
+        `comp_${profileName}`,
+        `absences_${profileName}`,
+        `rotativa_${profileName}`,
+        `shift_${profileName}`,
+        `shiftAssignmentHistory_${profileName}`,
+        `leaveBalances_${profileName}`,
+        `hourReturns_${profileName}`,
+        `hheeReturnTransfers_${profileName}`,
+        `clockMarks_${profileName}`,
+        `gradeHistory_${profileName}`,
+        `contractHistory_${profileName}`
+    ];
+    const manualExtraDays = Object.values(schedule?.days || {})
+        .filter(day => day?.isManualExtra)
+        .map(day => [
+            day.iso || "",
+            Number(day.turno) || 0,
+            Number(day.baseTurn) || 0,
+            Number(day.programmedTurn) || 0
+        ])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    const payload = {
+        version: OVERTIME_SUMMARY_CACHE_VERSION,
+        window: {
+            year: today.getFullYear(),
+            month: today.getMonth(),
+            monthsBack: OVERTIME_SUMMARY_MONTHS_BACK
+        },
+        profile: {
+            name: profileName,
+            rut: profile?.rut || "",
+            role: profile?.estamento || "",
+            profession: profile?.profession || "",
+            active: isProfileActive(profile)
+        },
+        shiftAssigned: Boolean(getShiftAssigned(profileName)),
+        rotativa: getRotativa(profileName),
+        schedule: {
+            start: schedule?.start || "",
+            end: schedule?.end || "",
+            manualExtraDays
+        },
+        storage: exactKeys.map(key => [key, rawLocalStorageValue(key)]),
+        carry: rawLocalStorageEntriesByPrefix(`carry_${profileName}_`)
+    };
+
+    return hashText(stableStringify(payload));
+}
+
 // ───────── Excepciones (rediseno de sincronizacion) ─────────
 // La PWA calcula la rotativa base para cualquier mes con la MISMA secuencia
 // (rotationBase.js / rotationEngine.js). Aqui solo publicamos el mapa disperso
@@ -685,7 +796,7 @@ function buildSupervisorReminders(profile) {
         }));
 }
 
-async function buildOvertimeSummaries(profile, schedule) {
+async function computeOvertimeSummaries(profile, schedule) {
     try {
         const baseSummaries = await buildWorkerHheeSummaries(
             profile,
@@ -729,6 +840,63 @@ async function buildOvertimeSummaries(profile, schedule) {
         );
         return [];
     }
+}
+
+function normalizeOvertimeSummaries(value) {
+    return Array.isArray(value)
+        ? value.filter(item =>
+            item &&
+            Number.isFinite(Number(item.year)) &&
+            Number.isFinite(Number(item.month))
+        )
+        : [];
+}
+
+async function buildOvertimeSummaries(profile, schedule, previousPayload = null) {
+    const signature = buildOvertimeSummarySignature(profile, schedule);
+    const cachedSummaries = normalizeOvertimeSummaries(
+        previousPayload?.overtimeSummaries
+    );
+    const previousSignature =
+        previousPayload?.overtimeSummariesSignature || "";
+
+    if (
+        cachedSummaries.length &&
+        previousSignature === signature &&
+        Number(previousPayload?.overtimeSummariesCacheVersion || 0) ===
+            OVERTIME_SUMMARY_CACHE_VERSION
+    ) {
+        return {
+            summaries: cachedSummaries,
+            signature,
+            targetSignature: "",
+            status: "fresh",
+            source: "cache",
+            refreshNeeded: false
+        };
+    }
+
+    if (cachedSummaries.length) {
+        return {
+            summaries: cachedSummaries,
+            signature: previousSignature,
+            targetSignature: signature,
+            status: "refreshing",
+            source: "stale-cache",
+            refreshNeeded: true
+        };
+    }
+
+    const summaries = await computeOvertimeSummaries(profile, schedule);
+
+    return {
+        summaries,
+        signature,
+        targetSignature: "",
+        status: "fresh",
+        source: "computed",
+        refreshNeeded: false
+    };
 }
 
 // Reporte imprimible (HTML) por mes para la app del trabajador. Para no inflar
@@ -787,7 +955,8 @@ function buildSwapLimit(profileName) {
 async function buildWorkerAppPayload(
     link,
     profile,
-    workspace
+    workspace,
+    previousPayload = null
 ) {
     const schedule = computeProfileSchedule(profile);
     const leaveBalancesByYear = await leaveBalancesByScheduleYear(
@@ -796,13 +965,24 @@ async function buildWorkerAppPayload(
     );
     const currentYear = String(new Date().getFullYear());
     const leaveBalances = leaveBalancesByYear[currentYear];
-    const overtimeSummaries = await buildOvertimeSummaries(
+    const overtimePayload = await buildOvertimeSummaries(
         profile,
-        schedule
+        schedule,
+        previousPayload
     );
     const reportsByMonth = await buildWorkerReports(profile);
     const { exceptions, exceptionsStart, exceptionsEnd } =
         computeProfileExceptions(profile);
+
+    if (overtimePayload.refreshNeeded) {
+        scheduleColdOvertimeSummaryRefresh({
+            link,
+            profile,
+            workspace,
+            schedule,
+            targetSignature: overtimePayload.targetSignature
+        });
+    }
 
     return {
         uid: link.uid,
@@ -838,7 +1018,16 @@ async function buildWorkerAppPayload(
         scheduleEnd: schedule.end,
         days: schedule.days,
         supervisorReminders: buildSupervisorReminders(profile),
-        overtimeSummaries,
+        overtimeSummaries: overtimePayload.summaries,
+        overtimeSummariesSignature: overtimePayload.signature,
+        overtimeSummariesTargetSignature: overtimePayload.targetSignature,
+        overtimeSummariesCacheVersion: OVERTIME_SUMMARY_CACHE_VERSION,
+        overtimeSummariesStatus: overtimePayload.status,
+        overtimeSummariesSource: overtimePayload.source,
+        overtimeSummariesUpdatedAtISO:
+            overtimePayload.status === "fresh"
+                ? new Date().toISOString()
+                : previousPayload?.overtimeSummariesUpdatedAtISO || "",
         reportsByMonth,
         swapLimit: buildSwapLimit(profile.name),
         updatedAtISO: new Date().toISOString()
@@ -931,6 +1120,28 @@ function buildSwapCandidatePayload(
     };
 }
 
+async function readWorkerAppData(workspaceId, uid) {
+    if (!workspaceId || !uid) return null;
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+        const snap = await firestoreModule.getDoc(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspaceId,
+                "workerAppData",
+                uid
+            )
+        );
+
+        return snap.exists() ? snap.data() : null;
+    } catch (error) {
+        console.warn("No se pudo leer cache workerAppData previa.", error);
+        return null;
+    }
+}
+
 function buildWorkerMessageDirectoryPayload(link, profile, workspace) {
     const active = profile ? isProfileActive(profile) : false;
 
@@ -972,6 +1183,99 @@ async function writeWorkerAppData(payload, workspaceId, uid) {
         },
         { merge: true }
     );
+}
+
+function coldOvertimeRefreshKey(workspaceId, uid) {
+    return `${workspaceId}:${uid}`;
+}
+
+function scheduleColdOvertimeSummaryRefresh({
+    link,
+    profile,
+    workspace,
+    schedule,
+    targetSignature
+}) {
+    if (!link?.uid || !workspace?.id || !profile?.name || !targetSignature) {
+        return;
+    }
+
+    const key = coldOvertimeRefreshKey(workspace.id, link.uid);
+
+    clearTimeout(coldOvertimeRefreshTimers.get(key));
+    coldOvertimeRefreshTimers.set(
+        key,
+        setTimeout(() => {
+            coldOvertimeRefreshTimers.delete(key);
+            void refreshWorkerOvertimeSummariesCold({
+                link,
+                profile,
+                workspace,
+                schedule,
+                targetSignature
+            });
+        }, COLD_OVERTIME_REFRESH_DELAY_MS)
+    );
+}
+
+async function refreshWorkerOvertimeSummariesCold({
+    link,
+    profile,
+    workspace,
+    schedule,
+    targetSignature
+}) {
+    const key = coldOvertimeRefreshKey(workspace.id, link.uid);
+
+    if (coldOvertimeRefreshInFlight.has(key)) return;
+
+    coldOvertimeRefreshInFlight.add(key);
+
+    try {
+        const freshSchedule = computeProfileSchedule(profile);
+        const currentSignature = buildOvertimeSummarySignature(
+            profile,
+            freshSchedule
+        );
+
+        if (currentSignature !== targetSignature) {
+            scheduleColdOvertimeSummaryRefresh({
+                link,
+                profile,
+                workspace,
+                schedule: freshSchedule,
+                targetSignature: currentSignature
+            });
+            return;
+        }
+
+        const summaries = await computeOvertimeSummaries(profile, freshSchedule);
+        const { db, firestoreModule } = await getFirebaseServices();
+
+        await firestoreModule.setDoc(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspace.id,
+                "workerAppData",
+                link.uid
+            ),
+            {
+                overtimeSummaries: summaries,
+                overtimeSummariesSignature: currentSignature,
+                overtimeSummariesTargetSignature: "",
+                overtimeSummariesCacheVersion: OVERTIME_SUMMARY_CACHE_VERSION,
+                overtimeSummariesStatus: "fresh",
+                overtimeSummariesUpdatedAtISO: new Date().toISOString(),
+                updatedAt: firestoreModule.serverTimestamp()
+            },
+            { merge: true }
+        );
+    } catch (error) {
+        console.warn("No se pudo refrescar HHEE en segundo plano.", error);
+    } finally {
+        coldOvertimeRefreshInFlight.delete(key);
+    }
 }
 
 async function writeWorkerAppMonths(payload, workspaceId, uid) {
@@ -1199,11 +1503,15 @@ async function publishHotNow() {
 
     try {
         await runCooperativeQueue(targets, async item => {
+            const previousPayload = item.profile
+                ? await readWorkerAppData(workspace.id, item.link.uid)
+                : null;
             const payload = item.profile
                 ? await buildWorkerAppPayload(
                     item.link,
                     item.profile,
-                    workspace
+                    workspace,
+                    previousPayload
                 )
                 : buildMissingProfilePayload(item.link, workspace);
             const writes = [
