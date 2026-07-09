@@ -66,10 +66,18 @@ const STAFFING_REPORT_CACHE_VERSION = 1;
 const STAFFING_REPORT_CACHE_PREFIX = "proturnos_ui_cache_staffing_report_";
 const STAFFING_REPORT_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const STAFFING_REPORT_CACHE_MAX_ENTRIES = 18;
+const STAFFING_WEEKLY_CACHE_VERSION = 1;
+const STAFFING_WEEKLY_CACHE_PREFIX = "proturnos_ui_cache_staffing_weekly_";
+const STAFFING_WEEKLY_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const STAFFING_WEEKLY_CACHE_MAX_ENTRIES = 24;
+const STAFFING_WEEKLY_PRELOAD_OFFSETS = [0, 1, -1, 2, 3];
 
 let staffingViewBound = false;
 let staffingWeekDate = null;
 let staffingAnalysisRequest = 0;
+let staffingWeeklyRenderRequest = 0;
+let staffingWeeklyPreloadTimer = 0;
+let staffingWeeklyPreloadRequest = 0;
 let staffingWeeklyStickyCleanup = null;
 let lastInlineStaffingReport = null;
 
@@ -151,6 +159,158 @@ function writeStaffingReportCache(year, month, data) {
 
 function clearStaffingReportCache() {
     listKeys(STAFFING_REPORT_CACHE_PREFIX).forEach(removeKey);
+}
+
+function localDateISO(date) {
+    return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0"),
+        String(date.getDate()).padStart(2, "0")
+    ].join("-");
+}
+
+function addLocalDays(date, days) {
+    const next = new Date(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+
+    next.setDate(next.getDate() + days);
+    return next;
+}
+
+function staffingCacheHash(value) {
+    let hash = 2166136261;
+    const text = String(value || "");
+
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(36);
+}
+
+function staffingWeeklyStartISO(date) {
+    return localDateISO(weekStartMonday(date));
+}
+
+function staffingWeeklyCacheSignature({
+    weekStartISO,
+    roleFilter,
+    professionFilter,
+    typeFilter
+}) {
+    return [
+        weekStartISO,
+        roleFilter || "Todos",
+        professionFilter || "Todas",
+        typeFilter || "Todos"
+    ].join("\u001f");
+}
+
+function staffingWeeklyCacheKey(signature) {
+    return (
+        STAFFING_WEEKLY_CACHE_PREFIX +
+        `${STAFFING_WEEKLY_CACHE_VERSION}_` +
+        staffingCacheHash(signature)
+    );
+}
+
+function parseStaffingWeeklyCache(raw) {
+    if (!raw) return null;
+
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function readStaffingWeeklyCache(signature) {
+    const key = staffingWeeklyCacheKey(signature);
+    const payload = parseStaffingWeeklyCache(getRaw(key, null));
+
+    if (
+        !payload ||
+        payload.version !== STAFFING_WEEKLY_CACHE_VERSION ||
+        payload.signature !== signature ||
+        typeof payload.html !== "string" ||
+        Date.now() - Number(payload.savedAt || 0) >
+            STAFFING_WEEKLY_CACHE_MAX_AGE_MS
+    ) {
+        return null;
+    }
+
+    return payload;
+}
+
+function staffingWeeklyRetentionRange() {
+    const currentStart = weekStartMonday(currentDate);
+
+    return {
+        min: localDateISO(addLocalDays(currentStart, -7)),
+        max: localDateISO(addLocalDays(currentStart, 21))
+    };
+}
+
+function pruneStaffingWeeklyCache() {
+    const keys = listKeys(STAFFING_WEEKLY_CACHE_PREFIX);
+    const { min, max } = staffingWeeklyRetentionRange();
+    const entries = keys
+        .map(key => ({
+            key,
+            payload: parseStaffingWeeklyCache(getRaw(key, null))
+        }))
+        .filter(entry => entry.payload);
+
+    entries
+        .filter(entry =>
+            entry.payload.weekStartISO < min ||
+            entry.payload.weekStartISO > max
+        )
+        .forEach(entry => removeKey(entry.key));
+
+    entries
+        .filter(entry =>
+            entry.payload.weekStartISO >= min &&
+            entry.payload.weekStartISO <= max
+        )
+        .sort((a, b) =>
+            Number(b.payload.savedAt || 0) -
+            Number(a.payload.savedAt || 0)
+        )
+        .slice(STAFFING_WEEKLY_CACHE_MAX_ENTRIES)
+        .forEach(entry => removeKey(entry.key));
+}
+
+function writeStaffingWeeklyCache({
+    signature,
+    weekStartISO,
+    html
+}) {
+    if (!signature || !weekStartISO || typeof html !== "string") return;
+
+    try {
+        setRaw(
+            staffingWeeklyCacheKey(signature),
+            JSON.stringify({
+                version: STAFFING_WEEKLY_CACHE_VERSION,
+                signature,
+                weekStartISO,
+                savedAt: Date.now(),
+                html
+            })
+        );
+        pruneStaffingWeeklyCache();
+    } catch {
+        // El cache semanal es oportunista; si no cabe, se recalcula normal.
+    }
+}
+
+function clearStaffingWeeklyCache() {
+    listKeys(STAFFING_WEEKLY_CACHE_PREFIX).forEach(removeKey);
 }
 
 function staffingMonthLabel(year, month) {
@@ -2869,15 +3029,12 @@ function bindStaffingWeeklyMobileSticky(target) {
     requestUpdate();
 }
 
-export async function renderStaffingWeeklyCalendar() {
-    const target = document.getElementById("staffingWeeklyCalendar");
-    if (!target) return;
-
-    const roleFilter =
-        target.querySelector("#staffingWeeklyFilterRole")?.value ||
+function staffingWeeklyFilterState(target, overrides = {}) {
+    const roleFilter = overrides.roleFilter ||
+        target?.querySelector("#staffingWeeklyFilterRole")?.value ||
         "Todos";
-    const currentProfessionFilter =
-        target.querySelector("#staffingWeeklyFilterProfession")?.value ||
+    const currentProfessionFilter = overrides.professionFilter ||
+        target?.querySelector("#staffingWeeklyFilterProfession")?.value ||
         "Todas";
     const availableProfessions =
         weeklyAvailableProfessions(roleFilter);
@@ -2885,7 +3042,32 @@ export async function renderStaffingWeeklyCalendar() {
         availableProfessions.includes(currentProfessionFilter)
             ? currentProfessionFilter
             : "Todas";
-    const days = staffingWeekDays(getStaffingWeekDate());
+    const typeFilterValue = overrides.typeFilter ||
+        target?.querySelector("#staffingWeeklyFilterType")?.value ||
+        "Todos";
+
+    return {
+        roleFilter,
+        currentProfessionFilter,
+        availableProfessions,
+        professionFilter,
+        typeFilterValue
+    };
+}
+
+async function buildStaffingWeeklyCalendarView({
+    weekDate = getStaffingWeekDate(),
+    roleFilter = "Todos",
+    currentProfessionFilter = "Todas",
+    typeFilterValue = "Todos"
+} = {}) {
+    const availableProfessions =
+        weeklyAvailableProfessions(roleFilter);
+    const professionFilter =
+        availableProfessions.includes(currentProfessionFilter)
+            ? currentProfessionFilter
+            : "Todas";
+    const days = staffingWeekDays(weekDate);
     const holidays = await weeklyHolidayMap(days);
     const absenceCache = new Map();
     const allLeaveRows = weeklyLeaveRows(
@@ -2896,8 +3078,7 @@ export async function renderStaffingWeeklyCalendar() {
     );
     const typeOptions = weeklyTypeFilterOptions(allLeaveRows);
     const typeFilter = normalizeWeeklyTypeFilter(
-        target.querySelector("#staffingWeeklyFilterType")?.value ||
-        "Todos",
+        typeFilterValue,
         typeOptions
     );
     const selectedShiftKey = typeFilter.startsWith("shift:")
@@ -2949,51 +3130,73 @@ export async function renderStaffingWeeklyCalendar() {
             <strong>${escapeHTML(formatFullWeekday(day))} ${escapeHTML(formatShortDate(day))}</strong>
         </div>
     `).join("");
-
-    target.innerHTML = `
-        <div class="staffing-weekly-sticky">
-            <div class="staffing-weekly-filters">
-                <label>
-                    <span>Filtrar estamento</span>
-                    <select id="staffingWeeklyFilterRole">
-                        <option value="Todos" ${roleFilter === "Todos" ? "selected" : ""}>Todos</option>
-                        ${renderWeeklyRoleFilterOptions(roleFilter)}
-                    </select>
-                </label>
-                <label>
-                    <span>Filtrar profesi&oacute;n</span>
-                    <select id="staffingWeeklyFilterProfession">
-                        <option value="Todas" ${professionFilter === "Todas" ? "selected" : ""}>Todas</option>
-                        ${renderWeeklyProfessionFilterOptions(availableProfessions, professionFilter)}
-                    </select>
-                </label>
-                <label>
-                    <span>Filtrar tipo</span>
-                    <select id="staffingWeeklyFilterType">
-                        ${renderWeeklyTypeFilterOptions(typeFilter, typeOptions)}
-                    </select>
-                </label>
-                <span class="staffing-weekly-nav">
-                    <button class="secondary-button secondary-button--small" type="button" data-staffing-week-prev>
-                        Anterior
-                    </button>
-                    <button class="secondary-button secondary-button--small" type="button" data-staffing-week-next>
-                        Siguiente
-                    </button>
-                </span>
+    const html = `
+            <div class="staffing-weekly-sticky">
+                <div class="staffing-weekly-filters">
+                    <label>
+                        <span>Filtrar estamento</span>
+                        <select id="staffingWeeklyFilterRole">
+                            <option value="Todos" ${roleFilter === "Todos" ? "selected" : ""}>Todos</option>
+                            ${renderWeeklyRoleFilterOptions(roleFilter)}
+                        </select>
+                    </label>
+                    <label>
+                        <span>Filtrar profesi&oacute;n</span>
+                        <select id="staffingWeeklyFilterProfession">
+                            <option value="Todas" ${professionFilter === "Todas" ? "selected" : ""}>Todas</option>
+                            ${renderWeeklyProfessionFilterOptions(availableProfessions, professionFilter)}
+                        </select>
+                    </label>
+                    <label>
+                        <span>Filtrar tipo</span>
+                        <select id="staffingWeeklyFilterType">
+                            ${renderWeeklyTypeFilterOptions(typeFilter, typeOptions)}
+                        </select>
+                    </label>
+                    <span class="staffing-weekly-nav">
+                        <button class="secondary-button secondary-button--small" type="button" data-staffing-week-prev>
+                            Anterior
+                        </button>
+                        <button class="secondary-button secondary-button--small" type="button" data-staffing-week-next>
+                            Siguiente
+                        </button>
+                    </span>
+                </div>
+                <div class="staffing-weekly-days">
+                    ${dayHeadersHTML}
+                </div>
             </div>
-            <div class="staffing-weekly-days">
+            <div class="staffing-weekly-mobile-days">
                 ${dayHeadersHTML}
             </div>
-        </div>
-        <div class="staffing-weekly-mobile-days">
-            ${dayHeadersHTML}
-        </div>
-        <div class="staffing-weekly-grid">
-            ${weeklyRowsHTML.trim() || weeklyEmptyHTML}
-        </div>
-    `;
+            <div class="staffing-weekly-grid">
+                ${weeklyRowsHTML.trim() || weeklyEmptyHTML}
+            </div>
+        `;
+    const weekStartISO = staffingWeeklyStartISO(weekDate);
+    const signature = staffingWeeklyCacheSignature({
+        weekStartISO,
+        roleFilter,
+        professionFilter,
+        typeFilter
+    });
 
+    return {
+        html,
+        signature,
+        weekStartISO,
+        roleFilter,
+        professionFilter,
+        typeFilter
+    };
+}
+
+function activateStaffingWeeklyCalendar(target, view, options = {}) {
+    target.innerHTML = view.html;
+    target.dataset.staffingWeeklyWeekStart = view.weekStartISO || "";
+    target.dataset.staffingWeeklySignature = view.signature || "";
+    target.dataset.staffingWeeklyState = options.state || "ready";
+    target.setAttribute("aria-busy", options.busy ? "true" : "false");
     bindStaffingWeeklyScrollSync(target);
     bindStaffingWeeklyMobileSticky(target);
 
@@ -3028,6 +3231,142 @@ export async function renderStaffingWeeklyCalendar() {
                 );
             });
         });
+}
+
+function staffingWeeklyPendingHTML(weekDate) {
+    const days = staffingWeekDays(weekDate);
+    const label = `${formatShortDate(days[0])} - ${formatShortDate(days[6])}`;
+
+    return `
+        <div class="staffing-weekly-empty-state">
+            Actualizando calendario semanal ${escapeHTML(label)}...
+        </div>
+    `;
+}
+
+export async function renderStaffingWeeklyCalendar(options = {}) {
+    const target = document.getElementById("staffingWeeklyCalendar");
+    if (!target) return;
+
+    const requestId = ++staffingWeeklyRenderRequest;
+    const weekDate = options.weekDate || getStaffingWeekDate();
+    const filters = staffingWeeklyFilterState(target, options);
+    const weekStartISO = staffingWeeklyStartISO(weekDate);
+    const quickSignature = staffingWeeklyCacheSignature({
+        weekStartISO,
+        roleFilter: filters.roleFilter,
+        professionFilter: filters.professionFilter,
+        typeFilter: filters.typeFilterValue
+    });
+    const cached = options.skipCache
+        ? null
+        : readStaffingWeeklyCache(quickSignature);
+
+    if (cached) {
+        activateStaffingWeeklyCalendar(
+            target,
+            {
+                html: cached.html,
+                weekStartISO
+            },
+            {
+                state: "cached",
+                busy: true
+            }
+        );
+    } else if (
+        target.dataset.staffingWeeklySignature &&
+        target.dataset.staffingWeeklySignature !== quickSignature
+    ) {
+        target.dataset.staffingWeeklyWeekStart = weekStartISO;
+        target.dataset.staffingWeeklySignature = quickSignature;
+        target.dataset.staffingWeeklyState = "pending";
+        target.setAttribute("aria-busy", "true");
+        target.innerHTML = staffingWeeklyPendingHTML(weekDate);
+    }
+
+    const fresh = await buildStaffingWeeklyCalendarView({
+        weekDate,
+        roleFilter: filters.roleFilter,
+        currentProfessionFilter: filters.currentProfessionFilter,
+        typeFilterValue: filters.typeFilterValue
+    });
+
+    if (requestId !== staffingWeeklyRenderRequest) return;
+
+    writeStaffingWeeklyCache(fresh);
+    activateStaffingWeeklyCalendar(target, fresh);
+    scheduleStaffingWeeklyPreload({ delay: 900 });
+}
+
+function staffingWeeklyPreloadDelay(ms = 0) {
+    return new Promise(resolve => {
+        window.setTimeout(resolve, ms);
+    });
+}
+
+async function preloadStaffingWeeklyCache({
+    baseDate = currentDate
+} = {}) {
+    if (!getProfiles().length) return;
+
+    const requestId = ++staffingWeeklyPreloadRequest;
+    const baseStart = weekStartMonday(baseDate);
+
+    for (
+        let index = 0;
+        index < STAFFING_WEEKLY_PRELOAD_OFFSETS.length;
+        index++
+    ) {
+        if (requestId !== staffingWeeklyPreloadRequest) return;
+
+        const offset = STAFFING_WEEKLY_PRELOAD_OFFSETS[index];
+        const weekDate = addLocalDays(baseStart, offset * 7);
+        const weekStartISO = staffingWeeklyStartISO(weekDate);
+        const signature = staffingWeeklyCacheSignature({
+            weekStartISO,
+            roleFilter: "Todos",
+            professionFilter: "Todas",
+            typeFilter: "Todos"
+        });
+
+        if (!readStaffingWeeklyCache(signature)) {
+            const view = await buildStaffingWeeklyCalendarView({
+                weekDate,
+                roleFilter: "Todos",
+                currentProfessionFilter: "Todas",
+                typeFilterValue: "Todos"
+            });
+
+            if (requestId !== staffingWeeklyPreloadRequest) return;
+
+            writeStaffingWeeklyCache(view);
+        }
+
+        await staffingWeeklyPreloadDelay(index < 1 ? 0 : 120);
+    }
+}
+
+export function scheduleStaffingWeeklyPreload(options = {}) {
+    if (typeof window === "undefined") return;
+
+    const delay = Number.isFinite(Number(options.delay))
+        ? Number(options.delay)
+        : 800;
+    const sourceDate = options.baseDate instanceof Date
+        ? options.baseDate
+        : currentDate;
+    const baseDate = new Date(
+        sourceDate.getFullYear(),
+        sourceDate.getMonth(),
+        sourceDate.getDate()
+    );
+
+    clearTimeout(staffingWeeklyPreloadTimer);
+    staffingWeeklyPreloadTimer = window.setTimeout(() => {
+        staffingWeeklyPreloadTimer = 0;
+        void preloadStaffingWeeklyCache({ baseDate });
+    }, Math.max(0, delay));
 }
 
 function uniqueAbsences(absences) {
@@ -3191,22 +3530,32 @@ function clearAnalizarMesCache(event = null) {
             String(key || "").startsWith("proturnos_ui_cache_")
         )
     ) {
-        return;
+        return false;
     }
 
     ANALIZAR_MES_CACHE.clear();
     analizarMesCacheVersion++;
+    staffingWeeklyPreloadRequest++;
+    clearTimeout(staffingWeeklyPreloadTimer);
+    staffingWeeklyPreloadTimer = 0;
     clearStaffingReportCache();
+    clearStaffingWeeklyCache();
+    return true;
 }
 
 if (typeof window !== "undefined") {
     window.addEventListener(
         "proturnos:persistenceChanged",
-        clearAnalizarMesCache
+        event => {
+            if (clearAnalizarMesCache(event)) {
+                scheduleStaffingWeeklyPreload({ delay: 1400 });
+            }
+        }
     );
     window.addEventListener("proturnos:firebaseAppState", event => {
         if (event.detail?.type === "app-state-applied") {
             clearAnalizarMesCache();
+            scheduleStaffingWeeklyPreload({ delay: 1200 });
         }
     });
 }
@@ -3944,6 +4293,7 @@ export async function renderInlineStaffingAnalysis(){
     const month = currentDate.getMonth();
 
     showInlineStaffingPendingMonth(year, month);
+    scheduleStaffingWeeklyPreload({ delay: 700 });
 
     return await analizarStaffingMes(
         year,
@@ -4029,6 +4379,7 @@ export async function renderStaffingAnalysis(){
     renderStaffingWeeklyCalendar();
     renderReplacementContractsLog();
     renderStaffingMedicalChart();
+    scheduleStaffingWeeklyPreload({ delay: 900 });
 
     return await analizarStaffingMes(
         currentDate.getFullYear(),
@@ -4045,6 +4396,8 @@ window.renderInlineStaffingAnalysis =
     renderInlineStaffingAnalysis;
 window.showInlineStaffingPendingMonth =
     showInlineStaffingPendingMonth;
+window.scheduleStaffingWeeklyPreload =
+    scheduleStaffingWeeklyPreload;
 window.updateInlineStaffingDays =
     updateInlineStaffingDays;
 window.renderStaffingPanel = renderStaffingPanel;

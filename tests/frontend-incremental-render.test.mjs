@@ -206,8 +206,13 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     assert.match(timelineSource, /event\.target\.closest\("\[data-timeline-load-more\]"\)/);
     assert.match(timelineSource, /renderTimeline\(\{\s*revealRowIndex:\s*previousLimit\s*\}\)/);
     assert.match(timelineSource, /TIMELINE_CACHE_PREFIX/);
+    assert.match(timelineSource, /TIMELINE_PRELOAD_PLAN/);
+    assert.match(timelineSource, /\{\s*offset:\s*-1,\s*tier:\s*"strong"/);
+    assert.match(timelineSource, /\{\s*offset:\s*4,\s*tier:\s*"soft"/);
     assert.match(timelineSource, /readTimelineCache/);
     assert.match(timelineSource, /writeTimelineCache/);
+    assert.match(timelineSource, /export function scheduleTimelinePreload/);
+    assert.match(calendarSource, /scheduleTimelinePreload\(/);
     assert.match(calendarSource, /showInlineStaffingPendingMonth\?\.\(/);
     assert.match(staffingSource, /export function showInlineStaffingPendingMonth\(/);
     assert.match(staffingSource, /staffingAnalysisRequest\+\+/);
@@ -215,6 +220,12 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     assert.match(staffingSource, /STAFFING_REPORT_CACHE_PREFIX/);
     assert.match(staffingSource, /readStaffingReportCache/);
     assert.match(staffingSource, /writeStaffingReportCache/);
+    assert.match(staffingSource, /STAFFING_WEEKLY_CACHE_PREFIX/);
+    assert.match(staffingSource, /STAFFING_WEEKLY_PRELOAD_OFFSETS\s*=\s*\[0,\s*1,\s*-1,\s*2,\s*3\]/);
+    assert.match(staffingSource, /readStaffingWeeklyCache/);
+    assert.match(staffingSource, /writeStaffingWeeklyCache/);
+    assert.match(staffingSource, /scheduleStaffingWeeklyPreload/);
+    assert.match(calendarSource, /scheduleStaffingWeeklyPreload\?\.\(/);
     assert.match(persistenceSource, /"proturnos_ui_cache_"/);
     assert.match(
         calendarSource,

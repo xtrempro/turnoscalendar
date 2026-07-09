@@ -81,6 +81,7 @@ test("Perfil y Timeline limitan la primera pagina", async () => {
 
     assert.match(mainSource, /PROFILE_LIST_PAGE_SIZE\s*=\s*30/);
     assert.match(mainSource, /visibles\.slice\(0, profileListLimit\)/);
-    assert.match(timelineSource, /TIMELINE_PAGE_SIZE\s*=\s*20/);
-    assert.match(timelineSource, /orderedGroup\.slice\(0, timelineRowLimit\)/);
+    assert.match(timelineSource, /TIMELINE_PAGINATION_THRESHOLD\s*=\s*45/);
+    assert.match(timelineSource, /TIMELINE_PAGE_SIZE\s*=\s*45/);
+    assert.match(timelineSource, /context\.orderedGroup\.slice\(0, context\.rowLimit\)/);
 });
