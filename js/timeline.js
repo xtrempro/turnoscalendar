@@ -67,24 +67,14 @@ const timelineFilterState = {
 };
 let timelineOutsideClickController = null;
 let timelineRenderRequest = 0;
-const TIMELINE_PAGINATION_THRESHOLD = 45;
-const TIMELINE_PAGE_SIZE = 45;
+const TIMELINE_DISABLED_FOR_SPEED_TEST = false;
+const TIMELINE_PAGE_SIZE = 20;
 const TIMELINE_CACHE_VERSION = 1;
 const TIMELINE_CACHE_PREFIX = "proturnos_ui_cache_timeline_";
 const TIMELINE_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const TIMELINE_CACHE_MAX_ENTRIES = 36;
-const TIMELINE_PRELOAD_PLAN = [
-    { offset: 0, tier: "strong", delay: 0 },
-    { offset: -1, tier: "strong", delay: 0 },
-    { offset: 1, tier: "strong", delay: 0 },
-    { offset: 2, tier: "medium", delay: 350 },
-    { offset: 3, tier: "medium", delay: 700 },
-    { offset: 4, tier: "soft", delay: 1400 }
-];
-let timelineRowLimit = TIMELINE_PAGINATION_THRESHOLD;
+const TIMELINE_CACHE_MAX_ENTRIES = 18;
+let timelineRowLimit = TIMELINE_PAGE_SIZE;
 let timelinePageSignature = "";
-let timelinePreloadTimer = 0;
-let timelinePreloadRequest = 0;
 const timelineMemoryCache = new Map();
 // Contexto del ultimo render (mes visible) para actualizar casillas sueltas
 // sin reconstruir todo el timeline.
@@ -92,26 +82,6 @@ let timelineViewState = null;
 
 function timelineMonthKey(year, month) {
     return `${Number(year)}-${Number(month)}`;
-}
-
-function timelineMonthDate(year, month) {
-    return new Date(Number(year), Number(month), 1);
-}
-
-function addTimelineMonths(date, offset) {
-    return new Date(
-        date.getFullYear(),
-        date.getMonth() + Number(offset || 0),
-        1
-    );
-}
-
-function timelineDefaultRowLimit(totalRows) {
-    const total = Number(totalRows) || 0;
-
-    return total > TIMELINE_PAGINATION_THRESHOLD
-        ? TIMELINE_PAGINATION_THRESHOLD
-        : total;
 }
 
 function timelineCacheHash(value) {
@@ -211,9 +181,6 @@ function writeTimelineCache(cacheKey, payload) {
 }
 
 function clearTimelineCache() {
-    timelinePreloadRequest++;
-    clearTimeout(timelinePreloadTimer);
-    timelinePreloadTimer = 0;
     timelineMemoryCache.clear();
     listKeys(TIMELINE_CACHE_PREFIX).forEach(removeKey);
 }
@@ -240,10 +207,36 @@ function timelinePendingHTML(year, month) {
     `;
 }
 
+function timelineDisabledHTML(year, month) {
+    return `
+        <div class="empty-state empty-state--compact">
+            Timeline desactivado temporalmente para prueba de velocidad
+            <br>
+            <small>${escapeHtml(timelineMonthLabel(year, month))}</small>
+        </div>
+    `;
+}
+
+function renderTimelineDisabledState(div, year, month) {
+    if (!div) return false;
+
+    stopTimelineOutsideClickListener();
+    timelineViewState = null;
+    div.dataset.timelineMonthKey = timelineMonthKey(year, month);
+    div.dataset.timelineState = "disabled";
+    div.setAttribute("aria-busy", "false");
+    div.innerHTML = timelineDisabledHTML(year, month);
+    return true;
+}
+
 export function showTimelinePendingMonth(year, month) {
     const div = document.getElementById("teamTimeline");
 
     if (!div || !timelineIsVisibleView()) return false;
+
+    if (TIMELINE_DISABLED_FOR_SPEED_TEST) {
+        return renderTimelineDisabledState(div, year, month);
+    }
 
     const key = timelineMonthKey(year, month);
 
@@ -374,6 +367,8 @@ function revealTimelineRow(container, rowIndex) {
 // el timeline no esta renderizado o el trabajador no esta en la vista actual.
 // Si no se pasan claves, refresca toda la fila del trabajador en el mes visible.
 export function updateTimelineCells(profileName, keys = null) {
+    if (TIMELINE_DISABLED_FOR_SPEED_TEST) return false;
+
     const container = document.getElementById("teamTimeline");
 
     if (!container || !timelineViewState || !profileName) return false;
@@ -1235,15 +1230,45 @@ function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
     bindTimelineOutsideClickListener(div);
 }
 
-function timelineContextForMonth(year, month, options = {}) {
+export async function renderTimeline(options = {}){
+    const div = document.getElementById("teamTimeline");
+    const requestId = ++timelineRenderRequest;
+
+    if (!div) return;
+
+    const year = calendar.currentDate.getFullYear();
+    const month = calendar.currentDate.getMonth();
+    const targetMonthKey = timelineMonthKey(year, month);
+
+    if (TIMELINE_DISABLED_FOR_SPEED_TEST) {
+        renderTimelineDisabledState(div, year, month);
+        return;
+    }
+
+    if (
+        div.dataset.timelineMonthKey &&
+        div.dataset.timelineMonthKey !== targetMonthKey
+    ) {
+        showTimelinePendingMonth(year, month);
+    }
+
     const profiles = getProfiles();
     const actual = getCurrentProfile();
-    const perfilActual = profiles.find(x => x.name === actual);
+
+    const perfilActual =
+        profiles.find(x => x.name === actual);
 
     if (!perfilActual) {
-        return {
-            empty: "Selecciona un colaborador para ver el reporte mensual."
-        };
+        stopTimelineOutsideClickListener();
+        div.innerHTML = `
+            <div class="empty-state empty-state--compact">
+                Selecciona un colaborador para ver el reporte mensual.
+            </div>
+        `;
+        div.dataset.timelineMonthKey = targetMonthKey;
+        div.dataset.timelineState = "empty";
+        div.setAttribute("aria-busy", "false");
+        return;
     }
 
     const groups = timelineFilterGroups(profiles);
@@ -1256,9 +1281,16 @@ function timelineContextForMonth(year, month, options = {}) {
         );
 
     if (!grupo.length) {
-        return {
-            empty: "No hay colaboradores compatibles para comparar este mes."
-        };
+        stopTimelineOutsideClickListener();
+        div.innerHTML = `
+            <div class="empty-state empty-state--compact">
+                No hay colaboradores compatibles para comparar este mes.
+            </div>
+        `;
+        div.dataset.timelineMonthKey = targetMonthKey;
+        div.dataset.timelineState = "empty";
+        div.setAttribute("aria-busy", "false");
+        return;
     }
 
     const diasMes =
@@ -1269,65 +1301,73 @@ function timelineContextForMonth(year, month, options = {}) {
             .filter(profile => profile.name !== actual)
             .sort((a, b) => a.name.localeCompare(b.name))
     ];
-    const viewSignature = [
+    const nextPageSignature = [
         actual,
         year,
         month,
         [...selectedKeys].sort().join("|"),
         orderedGroup.map(profile => profile.name).join("\u001f")
     ].join("\u001e");
-    let rowLimit = Number.isFinite(Number(options.rowLimit))
-        ? Number(options.rowLimit)
-        : timelineDefaultRowLimit(orderedGroup.length);
 
-    if (options.updatePagination) {
-        if (viewSignature !== timelinePageSignature) {
-            timelinePageSignature = viewSignature;
-            timelineRowLimit = timelineDefaultRowLimit(
-                orderedGroup.length
-            );
-        }
-
-        rowLimit = timelineRowLimit;
+    if (nextPageSignature !== timelinePageSignature) {
+        timelinePageSignature = nextPageSignature;
+        timelineRowLimit = TIMELINE_PAGE_SIZE;
     }
 
-    rowLimit = Math.max(
-        0,
-        Math.min(rowLimit, orderedGroup.length)
+    const cacheKey = timelineCacheKey(
+        nextPageSignature,
+        timelineRowLimit
+    );
+    const cached = options.skipCache
+        ? null
+        : readTimelineCache(cacheKey, {
+            viewSignature: nextPageSignature,
+            rowLimit: timelineRowLimit,
+            monthKey: targetMonthKey
+        });
+
+    if (cached) {
+        activateTimelineHTML(div, cached.html, targetMonthKey, {
+            ...options,
+            state: "cached",
+            busy: true
+        });
+    }
+
+    const visibleGroup = orderedGroup.slice(0, timelineRowLimit);
+    const holidays = await fetchHolidays(year);
+    timelineViewState = { year, month, diasMes, holidays };
+
+    if (
+        requestId !== timelineRenderRequest ||
+        !["turnos", "timeline"].includes(
+            document.body.dataset.activeView
+        )
+    ) {
+        return;
+    }
+
+    const timelineRows = await buildTimelineRows(
+        visibleGroup,
+        actual,
+        year,
+        month,
+        diasMes,
+        holidays,
+        () => !timelineRenderIsCurrent(
+            requestId,
+            year,
+            month
+        )
     );
 
-    if (options.updatePagination) {
-        timelineRowLimit = rowLimit;
+    if (
+        !timelineRows ||
+        !timelineRenderIsCurrent(requestId, year, month)
+    ) {
+        return;
     }
 
-    return {
-        actual,
-        groups,
-        baseGroup,
-        selectedKeys,
-        diasMes,
-        orderedGroup,
-        rowLimit,
-        viewSignature
-    };
-}
-
-function timelineHTMLForRows({
-    context,
-    timelineRows,
-    year,
-    month,
-    holidays
-}) {
-    const {
-        groups,
-        selectedKeys,
-        baseGroup,
-        orderedGroup,
-        rowLimit,
-        diasMes
-    } = context;
-    const visibleGroup = orderedGroup.slice(0, rowLimit);
     let html = `
         <div class="timeline-shell">
             <table class="timeline-table">
@@ -1374,9 +1414,14 @@ function timelineHTMLForRows({
 
     for (const {
         profile,
+        data,
         stats,
         honorariaSummary
     } of timelineRows) {
+        if (!timelineRenderIsCurrent(requestId, year, month)) {
+            return;
+        }
+
         const dayHhee = honorariaSummary
             ? honorariaSummary.overtimeDay
             : stats.hheeDiurnas;
@@ -1427,6 +1472,7 @@ function timelineHTMLForRows({
         }
 
         html += `</tr>`;
+        await yieldTimelineRender();
     }
 
     html += `
@@ -1446,227 +1492,17 @@ function timelineHTMLForRows({
         `;
     }
 
-    return html;
-}
-
-async function buildTimelineViewForMonth({
-    year,
-    month,
-    context,
-    shouldCancel = () => false
-}) {
-    const visibleGroup = context.orderedGroup.slice(0, context.rowLimit);
-    const holidays = await fetchHolidays(year);
-
-    if (shouldCancel()) return null;
-
-    const timelineRows = await buildTimelineRows(
-        visibleGroup,
-        context.actual,
-        year,
-        month,
-        context.diasMes,
-        holidays,
-        shouldCancel
-    );
-
-    if (!timelineRows || shouldCancel()) return null;
-
-    return {
-        html: timelineHTMLForRows({
-            context,
-            timelineRows,
-            year,
-            month,
-            holidays
-        }),
-        holidays
-    };
-}
-
-export async function renderTimeline(options = {}){
-    const div = document.getElementById("teamTimeline");
-    const requestId = ++timelineRenderRequest;
-
-    if (!div) return;
-
-    const year = calendar.currentDate.getFullYear();
-    const month = calendar.currentDate.getMonth();
-    const targetMonthKey = timelineMonthKey(year, month);
-
-    if (
-        div.dataset.timelineMonthKey &&
-        div.dataset.timelineMonthKey !== targetMonthKey
-    ) {
-        showTimelinePendingMonth(year, month);
-    }
-
-    const context = timelineContextForMonth(year, month, {
-        updatePagination: true
-    });
-
-    if (context.empty) {
-        stopTimelineOutsideClickListener();
-        div.innerHTML = `
-            <div class="empty-state empty-state--compact">
-                ${escapeHtml(context.empty)}
-            </div>
-        `;
-        div.dataset.timelineMonthKey = targetMonthKey;
-        div.dataset.timelineState = "empty";
-        div.setAttribute("aria-busy", "false");
+    if (!timelineRenderIsCurrent(requestId, year, month)) {
         return;
     }
 
-    const cacheKey = timelineCacheKey(
-        context.viewSignature,
-        context.rowLimit
-    );
-    const cached = options.skipCache
-        ? null
-        : readTimelineCache(cacheKey, {
-            viewSignature: context.viewSignature,
-            rowLimit: context.rowLimit,
-            monthKey: targetMonthKey
-        });
-
-    if (cached) {
-        activateTimelineHTML(div, cached.html, targetMonthKey, {
-            ...options,
-            state: "cached",
-            busy: true
-        });
-    }
-
-    if (
-        requestId !== timelineRenderRequest ||
-        !["turnos", "timeline"].includes(
-            document.body.dataset.activeView
-        )
-    ) {
-        return;
-    }
-
-    const view = await buildTimelineViewForMonth({
-        year,
-        month,
-        context,
-        shouldCancel: () => !timelineRenderIsCurrent(
-            requestId,
-            year,
-            month
-        )
-    });
-
-    if (
-        !view ||
-        !timelineRenderIsCurrent(requestId, year, month)
-    ) {
-        return;
-    }
-
-    timelineViewState = {
-        year,
-        month,
-        diasMes: context.diasMes,
-        holidays: view.holidays
-    };
     writeTimelineCache(cacheKey, {
-        viewSignature: context.viewSignature,
-        rowLimit: context.rowLimit,
+        viewSignature: nextPageSignature,
+        rowLimit: timelineRowLimit,
         monthKey: targetMonthKey,
-        html: view.html
+        html
     });
-    activateTimelineHTML(div, view.html, targetMonthKey, options);
-    scheduleTimelinePreload({ delay: 900 });
-}
-
-function timelinePreloadDelay(ms = 0) {
-    return new Promise(resolve => {
-        window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
-    });
-}
-
-async function preloadTimelineCache({
-    baseDate = calendar.currentDate
-} = {}) {
-    const requestId = ++timelinePreloadRequest;
-    const base = timelineMonthDate(
-        baseDate.getFullYear(),
-        baseDate.getMonth()
-    );
-
-    for (const item of TIMELINE_PRELOAD_PLAN) {
-        if (requestId !== timelinePreloadRequest) return;
-
-        await timelinePreloadDelay(item.delay);
-
-        if (requestId !== timelinePreloadRequest) return;
-
-        const target = addTimelineMonths(base, item.offset);
-        const year = target.getFullYear();
-        const month = target.getMonth();
-        const monthKey = timelineMonthKey(year, month);
-        const context = timelineContextForMonth(year, month);
-
-        if (context.empty) continue;
-
-        const cacheKey = timelineCacheKey(
-            context.viewSignature,
-            context.rowLimit
-        );
-
-        if (readTimelineCache(cacheKey, {
-            viewSignature: context.viewSignature,
-            rowLimit: context.rowLimit,
-            monthKey
-        })) {
-            continue;
-        }
-
-        const view = await buildTimelineViewForMonth({
-            year,
-            month,
-            context,
-            shouldCancel: () => requestId !== timelinePreloadRequest
-        });
-
-        if (!view || requestId !== timelinePreloadRequest) return;
-
-        writeTimelineCache(cacheKey, {
-            viewSignature: context.viewSignature,
-            rowLimit: context.rowLimit,
-            monthKey,
-            html: view.html,
-            tier: item.tier
-        });
-
-        await timelinePreloadDelay(
-            item.tier === "strong" ? 80 :
-                item.tier === "medium" ? 220 : 420
-        );
-    }
-}
-
-export function scheduleTimelinePreload(options = {}) {
-    if (typeof window === "undefined") return;
-
-    const sourceDate = options.baseDate instanceof Date
-        ? options.baseDate
-        : calendar.currentDate;
-    const baseDate = timelineMonthDate(
-        sourceDate.getFullYear(),
-        sourceDate.getMonth()
-    );
-    const delay = Number.isFinite(Number(options.delay))
-        ? Number(options.delay)
-        : 1000;
-
-    clearTimeout(timelinePreloadTimer);
-    timelinePreloadTimer = window.setTimeout(() => {
-        timelinePreloadTimer = 0;
-        void preloadTimelineCache({ baseDate });
-    }, Math.max(0, delay));
+    activateTimelineHTML(div, html, targetMonthKey, options);
 }
 
 if (typeof window !== "undefined") {

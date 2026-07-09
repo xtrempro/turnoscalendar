@@ -60,7 +60,6 @@ import { getDayColorGradient } from "./dayColorBands.js";
 import {
     cancelTimelineRender,
     renderTimeline,
-    scheduleTimelinePreload,
     showTimelinePendingMonth,
     updateTimelineCells
 } from "./timeline.js";
@@ -409,6 +408,45 @@ function cancelCalendarHeavyUpdates() {
     cancelTimelineRender();
 }
 
+function renderDeferredPanelError(elementId, message) {
+    const div = document.getElementById(elementId);
+
+    if (!div) return;
+
+    div.setAttribute("aria-busy", "false");
+    div.innerHTML = `
+        <div class="empty-state empty-state--compact">
+            ${message}
+        </div>
+    `;
+}
+
+async function runDeferredTimelineUpdate() {
+    try {
+        await renderTimeline();
+    } catch (error) {
+        console.error("No se pudo actualizar el timeline", error);
+        renderDeferredPanelError(
+            "teamTimeline",
+            "No se pudo cargar el timeline. Intenta cambiar de mes o recargar."
+        );
+    }
+}
+
+async function runDeferredStaffingUpdate() {
+    if (typeof window.renderInlineStaffingAnalysis !== "function") return;
+
+    try {
+        await window.renderInlineStaffingAnalysis();
+    } catch (error) {
+        console.error("No se pudo actualizar el resumen RRHH", error);
+        renderDeferredPanelError(
+            "staffingReportInline",
+            "No se pudo cargar el resumen RRHH. Intenta cambiar de mes o recargar."
+        );
+    }
+}
+
 function runCalendarHeavyUpdates(options = {}, context = null) {
     if (calendarDirectEditRefreshTimer) {
         cancelTimelineRender();
@@ -430,7 +468,7 @@ function runCalendarHeavyUpdates(options = {}, context = null) {
             activeView === "turnos" ||
             activeView === "timeline"
         ) {
-            await renderTimeline();
+            void runDeferredTimelineUpdate();
         }
 
         if (requestId !== calendarHeavyUpdateRequest) {
@@ -438,7 +476,7 @@ function runCalendarHeavyUpdates(options = {}, context = null) {
         }
 
         await new Promise(resolve => {
-            window.setTimeout(resolve, 120);
+            window.setTimeout(resolve, 40);
         });
 
         if (requestId !== calendarHeavyUpdateRequest) {
@@ -477,7 +515,7 @@ function runCalendarHeavyUpdates(options = {}, context = null) {
             activeView === "turnos" &&
             typeof window.renderInlineStaffingAnalysis === "function"
         ) {
-            window.renderInlineStaffingAnalysis();
+            void runDeferredStaffingUpdate();
         }
     };
 
@@ -4509,7 +4547,6 @@ export async function goToCalendarMonth(year, month, options = {}) {
         currentDate.getFullYear(),
         currentDate.getMonth()
     );
-    scheduleTimelinePreload({ delay: 1200 });
     window.showInlineStaffingPendingMonth?.(
         currentDate.getFullYear(),
         currentDate.getMonth()

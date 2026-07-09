@@ -64,8 +64,10 @@ const APPLICANTS_KEY = "staffing_applicants";
 const REMINDERS_KEY = "staffing_custom_reminders";
 const STAFFING_REPORT_CACHE_VERSION = 1;
 const STAFFING_REPORT_CACHE_PREFIX = "proturnos_ui_cache_staffing_report_";
-const STAFFING_REPORT_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const STAFFING_REPORT_CACHE_MAX_ENTRIES = 18;
+const STAFFING_REPORT_PRELOAD_MONTHS_AHEAD = 6;
+const STAFFING_REPORT_PAST_RETENTION_MONTHS = 12;
+const STAFFING_REPORT_PRELOAD_DELAY_MS = 900;
+const STAFFING_REPORT_PRELOAD_GAP_MS = 120;
 const STAFFING_WEEKLY_CACHE_VERSION = 1;
 const STAFFING_WEEKLY_CACHE_PREFIX = "proturnos_ui_cache_staffing_weekly_";
 const STAFFING_WEEKLY_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -76,6 +78,9 @@ let staffingViewBound = false;
 let staffingWeekDate = null;
 let staffingAnalysisRequest = 0;
 let staffingWeeklyRenderRequest = 0;
+let staffingReportPreloadTimer = 0;
+let staffingReportPreloadRequest = 0;
+let staffingReportPreloadForce = false;
 let staffingWeeklyPreloadTimer = 0;
 let staffingWeeklyPreloadRequest = 0;
 let staffingWeeklyStickyCleanup = null;
@@ -83,6 +88,30 @@ let lastInlineStaffingReport = null;
 
 function staffingMonthKey(year, month) {
     return `${Number(year)}-${Number(month)}`;
+}
+
+function staffingMonthIndex(year, month) {
+    return (Number(year) * 12) + Number(month);
+}
+
+function parseStaffingMonthKey(value) {
+    const [year, month] = String(value || "")
+        .split("-")
+        .map(Number);
+
+    if (!Number.isFinite(year) || !Number.isFinite(month)) {
+        return null;
+    }
+
+    return { year, month };
+}
+
+function addStaffingMonths(date, offset) {
+    return new Date(
+        date.getFullYear(),
+        date.getMonth() + Number(offset || 0),
+        1
+    );
 }
 
 function staffingReportCacheKey(year, month) {
@@ -110,9 +139,7 @@ function readStaffingReportCache(year, month) {
         !payload ||
         payload.version !== STAFFING_REPORT_CACHE_VERSION ||
         payload.monthKey !== staffingMonthKey(year, month) ||
-        !Array.isArray(payload.data) ||
-        Date.now() - Number(payload.savedAt || 0) >
-            STAFFING_REPORT_CACHE_MAX_AGE_MS
+        !Array.isArray(payload.data)
     ) {
         return null;
     }
@@ -122,20 +149,35 @@ function readStaffingReportCache(year, month) {
 
 function pruneStaffingReportCache() {
     const keys = listKeys(STAFFING_REPORT_CACHE_PREFIX);
-
-    if (keys.length <= STAFFING_REPORT_CACHE_MAX_ENTRIES) return;
+    const now = new Date();
+    const retentionFloor = addStaffingMonths(
+        new Date(now.getFullYear(), now.getMonth(), 1),
+        -STAFFING_REPORT_PAST_RETENTION_MONTHS
+    );
+    const floorIndex = staffingMonthIndex(
+        retentionFloor.getFullYear(),
+        retentionFloor.getMonth()
+    );
 
     keys
         .map(key => ({
             key,
-            savedAt:
-                Number(
-                    parseStaffingReportCache(getRaw(key, null))?.savedAt
-                ) || 0
+            payload: parseStaffingReportCache(getRaw(key, null))
         }))
-        .sort((a, b) => b.savedAt - a.savedAt)
-        .slice(STAFFING_REPORT_CACHE_MAX_ENTRIES)
-        .forEach(entry => removeKey(entry.key));
+        .forEach(entry => {
+            const payload = entry.payload;
+            const parsed = parseStaffingMonthKey(payload?.monthKey);
+
+            if (
+                !payload ||
+                payload.version !== STAFFING_REPORT_CACHE_VERSION ||
+                !parsed ||
+                !Array.isArray(payload.data) ||
+                staffingMonthIndex(parsed.year, parsed.month) < floorIndex
+            ) {
+                removeKey(entry.key);
+            }
+        });
 }
 
 function writeStaffingReportCache(year, month, data) {
@@ -3535,10 +3577,13 @@ function clearAnalizarMesCache(event = null) {
 
     ANALIZAR_MES_CACHE.clear();
     analizarMesCacheVersion++;
+    staffingReportPreloadRequest++;
+    clearTimeout(staffingReportPreloadTimer);
+    staffingReportPreloadTimer = 0;
     staffingWeeklyPreloadRequest++;
     clearTimeout(staffingWeeklyPreloadTimer);
     staffingWeeklyPreloadTimer = 0;
-    clearStaffingReportCache();
+    pruneStaffingReportCache();
     clearStaffingWeeklyCache();
     return true;
 }
@@ -3548,6 +3593,10 @@ if (typeof window !== "undefined") {
         "proturnos:persistenceChanged",
         event => {
             if (clearAnalizarMesCache(event)) {
+                scheduleStaffingReportPreload({
+                    delay: 1400,
+                    force: true
+                });
                 scheduleStaffingWeeklyPreload({ delay: 1400 });
             }
         }
@@ -3555,6 +3604,10 @@ if (typeof window !== "undefined") {
     window.addEventListener("proturnos:firebaseAppState", event => {
         if (event.detail?.type === "app-state-applied") {
             clearAnalizarMesCache();
+            scheduleStaffingReportPreload({
+                delay: 1200,
+                force: true
+            });
             scheduleStaffingWeeklyPreload({ delay: 1200 });
         }
     });
@@ -3717,6 +3770,121 @@ async function analizarMesCooperative(
 
     ANALIZAR_MES_CACHE.set(cacheKey, salida);
     return salida;
+}
+
+function staffingReportPreloadDelay(ms = 0) {
+    return new Promise(resolve => {
+        window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+    });
+}
+
+async function cacheStaffingReportMonth({
+    year,
+    month,
+    force = false,
+    requestId
+}) {
+    if (
+        !force &&
+        readStaffingReportCache(year, month)
+    ) {
+        return true;
+    }
+
+    const holidays = await fetchHolidays(year);
+
+    if (requestId !== staffingReportPreloadRequest) {
+        return false;
+    }
+
+    const data = await analizarMesCooperative(
+        year,
+        month,
+        holidays,
+        () => requestId === staffingReportPreloadRequest
+    );
+
+    if (!data || requestId !== staffingReportPreloadRequest) {
+        return false;
+    }
+
+    writeStaffingReportCache(year, month, data);
+    return true;
+}
+
+async function preloadStaffingReportCache({
+    baseDate = currentDate,
+    force = false
+} = {}) {
+    if (!getProfiles().length) return;
+
+    const requestId = ++staffingReportPreloadRequest;
+    const base = new Date(
+        baseDate.getFullYear(),
+        baseDate.getMonth(),
+        1
+    );
+
+    pruneStaffingReportCache();
+
+    for (
+        let offset = 0;
+        offset <= STAFFING_REPORT_PRELOAD_MONTHS_AHEAD;
+        offset++
+    ) {
+        if (requestId !== staffingReportPreloadRequest) return;
+
+        if (offset > 0) {
+            await staffingReportPreloadDelay(
+                STAFFING_REPORT_PRELOAD_GAP_MS
+            );
+        }
+
+        if (requestId !== staffingReportPreloadRequest) return;
+
+        const target = addStaffingMonths(base, offset);
+        const completed = await cacheStaffingReportMonth({
+            year: target.getFullYear(),
+            month: target.getMonth(),
+            force,
+            requestId
+        });
+
+        if (!completed || requestId !== staffingReportPreloadRequest) {
+            return;
+        }
+    }
+}
+
+export function scheduleStaffingReportPreload(options = {}) {
+    if (typeof window === "undefined") return;
+
+    const delay = Number.isFinite(Number(options.delay))
+        ? Number(options.delay)
+        : STAFFING_REPORT_PRELOAD_DELAY_MS;
+    const sourceDate = options.baseDate instanceof Date
+        ? options.baseDate
+        : currentDate;
+    const baseDate = new Date(
+        sourceDate.getFullYear(),
+        sourceDate.getMonth(),
+        1
+    );
+    staffingReportPreloadForce =
+        staffingReportPreloadForce || Boolean(options.force);
+
+    staffingReportPreloadRequest++;
+    clearTimeout(staffingReportPreloadTimer);
+    staffingReportPreloadTimer = window.setTimeout(() => {
+        const force = staffingReportPreloadForce;
+
+        staffingReportPreloadForce = false;
+        staffingReportPreloadTimer = 0;
+        void preloadStaffingReportCache({
+            baseDate,
+            force
+        });
+    }, Math.max(0, delay));
 }
 
 export function renderStaffingPanel(){
@@ -4295,7 +4463,7 @@ export async function renderInlineStaffingAnalysis(){
     showInlineStaffingPendingMonth(year, month);
     scheduleStaffingWeeklyPreload({ delay: 700 });
 
-    return await analizarStaffingMes(
+    const result = await analizarStaffingMes(
         year,
         month,
         {
@@ -4304,6 +4472,9 @@ export async function renderInlineStaffingAnalysis(){
             activeView: "turnos"
         }
     );
+
+    scheduleStaffingReportPreload({ delay: 300 });
+    return result;
 }
 
 // Recalcula únicamente los días afectados. Cada día sigue usando las reglas
@@ -4381,7 +4552,7 @@ export async function renderStaffingAnalysis(){
     renderStaffingMedicalChart();
     scheduleStaffingWeeklyPreload({ delay: 900 });
 
-    return await analizarStaffingMes(
+    const result = await analizarStaffingMes(
         currentDate.getFullYear(),
         currentDate.getMonth(),
         {
@@ -4389,6 +4560,9 @@ export async function renderStaffingAnalysis(){
             activeView: "staffing"
         }
     );
+
+    scheduleStaffingReportPreload({ delay: 400 });
+    return result;
 }
 
 window.renderStaffingAnalysis = renderStaffingAnalysis;
@@ -4396,6 +4570,8 @@ window.renderInlineStaffingAnalysis =
     renderInlineStaffingAnalysis;
 window.showInlineStaffingPendingMonth =
     showInlineStaffingPendingMonth;
+window.scheduleStaffingReportPreload =
+    scheduleStaffingReportPreload;
 window.scheduleStaffingWeeklyPreload =
     scheduleStaffingWeeklyPreload;
 window.updateInlineStaffingDays =
