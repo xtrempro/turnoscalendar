@@ -15,7 +15,8 @@ const INTERNAL_KEY_PREFIXES = [
     "firebase:",
     "firebase-",
     "kanban_private_",
-    "holidaysCache_"
+    "holidaysCache_",
+    "proturnos_ui_cache_"
 ];
 
 let activeDriver = LOCAL_DRIVER;

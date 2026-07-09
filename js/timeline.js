@@ -18,7 +18,13 @@ import { getDayColorGradient } from "./dayColorBands.js";
 import { fetchHolidays } from "./holidays.js";
 import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { isBusinessDay } from "./calculations.js";
-import { getJSON } from "./persistence.js";
+import {
+    getJSON,
+    getRaw,
+    listKeys,
+    removeKey,
+    setRaw
+} from "./persistence.js";
 import {
     esAusenciaInjustificada,
     getAbsenceType,
@@ -62,11 +68,166 @@ const timelineFilterState = {
 let timelineOutsideClickController = null;
 let timelineRenderRequest = 0;
 const TIMELINE_PAGE_SIZE = 20;
+const TIMELINE_CACHE_VERSION = 1;
+const TIMELINE_CACHE_PREFIX = "proturnos_ui_cache_timeline_";
+const TIMELINE_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const TIMELINE_CACHE_MAX_ENTRIES = 18;
 let timelineRowLimit = TIMELINE_PAGE_SIZE;
 let timelinePageSignature = "";
+const timelineMemoryCache = new Map();
 // Contexto del ultimo render (mes visible) para actualizar casillas sueltas
 // sin reconstruir todo el timeline.
 let timelineViewState = null;
+
+function timelineMonthKey(year, month) {
+    return `${Number(year)}-${Number(month)}`;
+}
+
+function timelineCacheHash(value) {
+    let hash = 2166136261;
+    const text = String(value || "");
+
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(36);
+}
+
+function timelineCacheKey(viewSignature, rowLimit) {
+    return (
+        TIMELINE_CACHE_PREFIX +
+        `${TIMELINE_CACHE_VERSION}_` +
+        timelineCacheHash(`${viewSignature}\u001f${rowLimit}`)
+    );
+}
+
+function parseTimelineCache(raw) {
+    if (!raw) return null;
+
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function readTimelineCache(cacheKey, {
+    viewSignature,
+    rowLimit,
+    monthKey
+}) {
+    const fromMemory = timelineMemoryCache.get(cacheKey);
+    const payload = fromMemory ||
+        parseTimelineCache(getRaw(cacheKey, null));
+
+    if (
+        !payload ||
+        payload.version !== TIMELINE_CACHE_VERSION ||
+        payload.viewSignature !== viewSignature ||
+        payload.rowLimit !== rowLimit ||
+        payload.monthKey !== monthKey ||
+        typeof payload.html !== "string" ||
+        Date.now() - Number(payload.savedAt || 0) > TIMELINE_CACHE_MAX_AGE_MS
+    ) {
+        return null;
+    }
+
+    timelineMemoryCache.set(cacheKey, payload);
+    return payload;
+}
+
+function pruneTimelineCache() {
+    const keys = listKeys(TIMELINE_CACHE_PREFIX);
+
+    if (keys.length <= TIMELINE_CACHE_MAX_ENTRIES) return;
+
+    const entries = keys
+        .map(key => ({
+            key,
+            savedAt:
+                Number(
+                    timelineMemoryCache.get(key)?.savedAt ??
+                    parseTimelineCache(getRaw(key, null))?.savedAt
+                ) || 0
+        }))
+        .sort((a, b) => b.savedAt - a.savedAt);
+
+    entries
+        .slice(TIMELINE_CACHE_MAX_ENTRIES)
+        .forEach(entry => {
+            timelineMemoryCache.delete(entry.key);
+            removeKey(entry.key);
+        });
+}
+
+function writeTimelineCache(cacheKey, payload) {
+    const next = {
+        ...payload,
+        version: TIMELINE_CACHE_VERSION,
+        savedAt: Date.now()
+    };
+
+    timelineMemoryCache.set(cacheKey, next);
+
+    try {
+        setRaw(cacheKey, JSON.stringify(next));
+        pruneTimelineCache();
+    } catch {
+        timelineMemoryCache.delete(cacheKey);
+    }
+}
+
+function clearTimelineCache() {
+    timelineMemoryCache.clear();
+    listKeys(TIMELINE_CACHE_PREFIX).forEach(removeKey);
+}
+
+function timelineMonthLabel(year, month) {
+    return new Date(Number(year), Number(month), 1)
+        .toLocaleString("es-CL", {
+            month: "long",
+            year: "numeric"
+        });
+}
+
+function timelineIsVisibleView() {
+    const activeView = document.body.dataset.activeView || "turnos";
+
+    return ["turnos", "timeline"].includes(activeView);
+}
+
+function timelinePendingHTML(year, month) {
+    return `
+        <div class="empty-state empty-state--compact timeline-pending-state">
+            Actualizando timeline de ${escapeHtml(timelineMonthLabel(year, month))}...
+        </div>
+    `;
+}
+
+export function showTimelinePendingMonth(year, month) {
+    const div = document.getElementById("teamTimeline");
+
+    if (!div || !timelineIsVisibleView()) return false;
+
+    const key = timelineMonthKey(year, month);
+
+    if (
+        div.dataset.timelineMonthKey === key &&
+        div.dataset.timelineState === "ready"
+    ) {
+        return false;
+    }
+
+    stopTimelineOutsideClickListener();
+    timelineViewState = null;
+    div.dataset.timelineMonthKey = key;
+    div.dataset.timelineState = "pending";
+    div.setAttribute("aria-busy", "true");
+    div.innerHTML = timelinePendingHTML(year, month);
+    return true;
+}
 
 function yieldTimelineRender() {
     return new Promise(resolve => {
@@ -102,6 +263,21 @@ function ensureTimelineCellDelegation(container) {
 
     container.dataset.timelineDelegated = "1";
     container.addEventListener("click", event => {
+        const loadMore = event.target.closest("[data-timeline-load-more]");
+
+        if (loadMore && container.contains(loadMore)) {
+            event.preventDefault();
+
+            if (loadMore.disabled) return;
+
+            const previousLimit = timelineRowLimit;
+            timelineRowLimit += TIMELINE_PAGE_SIZE;
+            loadMore.disabled = true;
+            loadMore.textContent = "Cargando...";
+            void renderTimeline({ revealRowIndex: previousLimit });
+            return;
+        }
+
         const cell = event.target.closest(
             "[data-replacement-profile]," +
             "[data-extra-profile]," +
@@ -137,6 +313,25 @@ function ensureTimelineCellDelegation(container) {
         } else if (cell.dataset.honorariaLimitProfile) {
             alert(cell.dataset.honorariaLimitMessage);
         }
+    });
+}
+
+function revealTimelineRow(container, rowIndex) {
+    const rows = container.querySelectorAll(".timeline-table tbody tr");
+    const index = Math.min(
+        Math.max(Number(rowIndex) || 0, 0),
+        rows.length - 1
+    );
+    const row = rows[index];
+
+    if (!row) return;
+
+    window.requestAnimationFrame(() => {
+        row.scrollIntoView({
+            block: "start",
+            inline: "nearest",
+            behavior: "smooth"
+        });
     });
 }
 
@@ -954,11 +1149,74 @@ function renderTimelineDayCell(profile, d, {
     `;
 }
 
-export async function renderTimeline(){
+function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
+    div.innerHTML = html;
+    div.dataset.timelineMonthKey = targetMonthKey;
+    div.dataset.timelineState = options.state || "ready";
+    div.setAttribute("aria-busy", options.busy ? "true" : "false");
+    div.querySelector("[data-timeline-filter-toggle]")
+        ?.addEventListener("click", event => {
+            event.stopPropagation();
+            setTimelineFilterOpen(
+                div,
+                !timelineFilterState.open
+            );
+        });
+    div.querySelectorAll("[data-timeline-filter-key]")
+        .forEach(input => {
+            input.onchange = () => {
+                const key = input.dataset.timelineFilterKey;
+
+                if (!key || input.disabled) return;
+
+                if (input.checked) {
+                    timelineFilterState.selectedKeys.add(key);
+                } else {
+                    timelineFilterState.selectedKeys.delete(key);
+                }
+
+                timelineFilterState.open = true;
+                renderTimeline();
+            };
+        });
+    div.querySelectorAll("[data-profile-name]")
+        .forEach(button => {
+            button.onclick = () => {
+                setTimelineFilterOpen(div, false);
+                window.selectProfileByName?.(
+                    button.dataset.profileName,
+                    {
+                        openTurns: true,
+                        scrollToTop: true
+                    }
+                );
+            };
+        });
+    ensureTimelineCellDelegation(div);
+    syncTimelineStickyOffsets(div);
+    requestAnimationFrame(() => syncTimelineStickyOffsets(div));
+    if (Number.isFinite(Number(options.revealRowIndex))) {
+        revealTimelineRow(div, Number(options.revealRowIndex));
+    }
+    bindTimelineOutsideClickListener(div);
+}
+
+export async function renderTimeline(options = {}){
     const div = document.getElementById("teamTimeline");
     const requestId = ++timelineRenderRequest;
 
     if (!div) return;
+
+    const year = calendar.currentDate.getFullYear();
+    const month = calendar.currentDate.getMonth();
+    const targetMonthKey = timelineMonthKey(year, month);
+
+    if (
+        div.dataset.timelineMonthKey &&
+        div.dataset.timelineMonthKey !== targetMonthKey
+    ) {
+        showTimelinePendingMonth(year, month);
+    }
 
     const profiles = getProfiles();
     const actual = getCurrentProfile();
@@ -973,6 +1231,9 @@ export async function renderTimeline(){
                 Selecciona un colaborador para ver el reporte mensual.
             </div>
         `;
+        div.dataset.timelineMonthKey = targetMonthKey;
+        div.dataset.timelineState = "empty";
+        div.setAttribute("aria-busy", "false");
         return;
     }
 
@@ -992,11 +1253,12 @@ export async function renderTimeline(){
                 No hay colaboradores compatibles para comparar este mes.
             </div>
         `;
+        div.dataset.timelineMonthKey = targetMonthKey;
+        div.dataset.timelineState = "empty";
+        div.setAttribute("aria-busy", "false");
         return;
     }
 
-    const year = calendar.currentDate.getFullYear();
-    const month = calendar.currentDate.getMonth();
     const diasMes =
         new Date(year, month + 1, 0).getDate();
     const orderedGroup = [
@@ -1016,6 +1278,26 @@ export async function renderTimeline(){
     if (nextPageSignature !== timelinePageSignature) {
         timelinePageSignature = nextPageSignature;
         timelineRowLimit = TIMELINE_PAGE_SIZE;
+    }
+
+    const cacheKey = timelineCacheKey(
+        nextPageSignature,
+        timelineRowLimit
+    );
+    const cached = options.skipCache
+        ? null
+        : readTimelineCache(cacheKey, {
+            viewSignature: nextPageSignature,
+            rowLimit: timelineRowLimit,
+            monthKey: targetMonthKey
+        });
+
+    if (cached) {
+        activateTimelineHTML(div, cached.html, targetMonthKey, {
+            ...options,
+            state: "cached",
+            busy: true
+        });
     }
 
     const visibleGroup = orderedGroup.slice(0, timelineRowLimit);
@@ -1180,52 +1462,33 @@ export async function renderTimeline(){
         return;
     }
 
-    div.innerHTML = html;
-    div.querySelector("[data-timeline-filter-toggle]")
-        ?.addEventListener("click", event => {
-            event.stopPropagation();
-            setTimelineFilterOpen(
-                div,
-                !timelineFilterState.open
-            );
-        });
-    div.querySelectorAll("[data-timeline-filter-key]")
-        .forEach(input => {
-            input.onchange = () => {
-                const key = input.dataset.timelineFilterKey;
+    writeTimelineCache(cacheKey, {
+        viewSignature: nextPageSignature,
+        rowLimit: timelineRowLimit,
+        monthKey: targetMonthKey,
+        html
+    });
+    activateTimelineHTML(div, html, targetMonthKey, options);
+}
 
-                if (!key || input.disabled) return;
+if (typeof window !== "undefined") {
+    window.addEventListener("proturnos:persistenceChanged", event => {
+        const keys = event.detail?.keys || [];
 
-                if (input.checked) {
-                    timelineFilterState.selectedKeys.add(key);
-                } else {
-                    timelineFilterState.selectedKeys.delete(key);
-                }
+        if (
+            keys.length &&
+            keys.every(key =>
+                String(key || "").startsWith("proturnos_ui_cache_")
+            )
+        ) {
+            return;
+        }
 
-                timelineFilterState.open = true;
-                renderTimeline();
-            };
-        });
-    div.querySelector("[data-timeline-load-more]")
-        ?.addEventListener("click", () => {
-            timelineRowLimit += TIMELINE_PAGE_SIZE;
-            renderTimeline();
-        });
-    div.querySelectorAll("[data-profile-name]")
-        .forEach(button => {
-            button.onclick = () => {
-                setTimelineFilterOpen(div, false);
-                window.selectProfileByName?.(
-                    button.dataset.profileName,
-                    {
-                        openTurns: true,
-                        scrollToTop: true
-                    }
-                );
-            };
-        });
-    ensureTimelineCellDelegation(div);
-    syncTimelineStickyOffsets(div);
-    requestAnimationFrame(() => syncTimelineStickyOffsets(div));
-    bindTimelineOutsideClickListener(div);
+        clearTimelineCache();
+    });
+    window.addEventListener("proturnos:firebaseAppState", event => {
+        if (event.detail?.type === "app-state-applied") {
+            clearTimelineCache();
+        }
+    });
 }

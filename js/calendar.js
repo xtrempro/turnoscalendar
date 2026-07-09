@@ -60,6 +60,7 @@ import { getDayColorGradient } from "./dayColorBands.js";
 import {
     cancelTimelineRender,
     renderTimeline,
+    showTimelinePendingMonth,
     updateTimelineCells
 } from "./timeline.js";
 import {
@@ -4503,6 +4504,14 @@ export async function goToCalendarMonth(year, month, options = {}) {
     cancelCalendarDirectEditRefresh();
     closeCalendarMonthPicker();
     currentDate.setFullYear(Number(year), Number(month), 1);
+    showTimelinePendingMonth(
+        currentDate.getFullYear(),
+        currentDate.getMonth()
+    );
+    window.showInlineStaffingPendingMonth?.(
+        currentDate.getFullYear(),
+        currentDate.getMonth()
+    );
     await renderCalendar(renderOptions);
 
     if (navigationRequest !== calendarNavigationRequest) {

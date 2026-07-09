@@ -163,13 +163,17 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
         mainSource,
         firebaseSource,
         rotationSource,
-        timelineSource
+        timelineSource,
+        staffingSource,
+        persistenceSource
     ] = await Promise.all([
         readFile(new URL("../js/calendar.js", import.meta.url), "utf8"),
         readFile(new URL("../js/main.js", import.meta.url), "utf8"),
         readFile(new URL("../js/firebaseAppState.js", import.meta.url), "utf8"),
         readFile(new URL("../js/rotationApply.js", import.meta.url), "utf8"),
-        readFile(new URL("../js/timeline.js", import.meta.url), "utf8")
+        readFile(new URL("../js/timeline.js", import.meta.url), "utf8"),
+        readFile(new URL("../js/staffing.js", import.meta.url), "utf8"),
+        readFile(new URL("../js/persistence.js", import.meta.url), "utf8")
     ]);
 
     assert.match(calendarSource, /delegatedCalendar\.addEventListener\("click"/);
@@ -195,6 +199,23 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
         timelineSource,
         /openReplacementDialog\?\.\(\s*cell\.dataset\.replacementProfile,\s*cell\.dataset\.replacementKey/
     );
+    assert.match(calendarSource, /showTimelinePendingMonth\(/);
+    assert.match(timelineSource, /export function showTimelinePendingMonth\(/);
+    assert.match(timelineSource, /dataset\.timelineMonthKey/);
+    assert.match(timelineSource, /dataset\.timelineState = "pending"/);
+    assert.match(timelineSource, /event\.target\.closest\("\[data-timeline-load-more\]"\)/);
+    assert.match(timelineSource, /renderTimeline\(\{\s*revealRowIndex:\s*previousLimit\s*\}\)/);
+    assert.match(timelineSource, /TIMELINE_CACHE_PREFIX/);
+    assert.match(timelineSource, /readTimelineCache/);
+    assert.match(timelineSource, /writeTimelineCache/);
+    assert.match(calendarSource, /showInlineStaffingPendingMonth\?\.\(/);
+    assert.match(staffingSource, /export function showInlineStaffingPendingMonth\(/);
+    assert.match(staffingSource, /staffingAnalysisRequest\+\+/);
+    assert.match(staffingSource, /dataset\.staffingReportState = "pending"/);
+    assert.match(staffingSource, /STAFFING_REPORT_CACHE_PREFIX/);
+    assert.match(staffingSource, /readStaffingReportCache/);
+    assert.match(staffingSource, /writeStaffingReportCache/);
+    assert.match(persistenceSource, /"proturnos_ui_cache_"/);
     assert.match(
         calendarSource,
         /shouldContinue:\s*\(\)\s*=>\s*requestId === replacementCandidateRequest/
