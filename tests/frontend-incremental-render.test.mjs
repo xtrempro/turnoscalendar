@@ -200,12 +200,33 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
         /openReplacementDialog\?\.\(\s*cell\.dataset\.replacementProfile,\s*cell\.dataset\.replacementKey/
     );
     assert.match(calendarSource, /showTimelinePendingMonth\(/);
+    assert.match(calendarSource, /CALENDAR_CACHE_PREFIX/);
+    assert.match(calendarSource, /readCalendarCache/);
+    assert.match(calendarSource, /writeCalendarCache/);
+    assert.match(calendarSource, /activateCalendarCache/);
+    assert.match(calendarSource, /writeActiveCalendarCache\(cal\)/);
+    assert.match(calendarSource, /handleCalendarCellFallbackClick/);
     assert.match(timelineSource, /export function showTimelinePendingMonth\(/);
     assert.match(timelineSource, /dataset\.timelineMonthKey/);
     assert.match(timelineSource, /dataset\.timelineState = "pending"/);
     assert.match(timelineSource, /event\.target\.closest\("\[data-timeline-load-more\]"\)/);
-    assert.match(timelineSource, /renderTimeline\(\{\s*revealRowIndex:\s*previousLimit\s*\}\)/);
+    assert.match(timelineSource, /appendTimelineRows\(\{\s*startIndex:\s*previousLimit,/);
+    assert.match(timelineSource, /TIMELINE_INITIAL_BATCH_SIZE\s*=\s*5/);
+    assert.match(timelineSource, /TIMELINE_INCREMENTAL_BATCH_SIZE\s*=\s*5/);
     assert.match(timelineSource, /TIMELINE_CACHE_PREFIX/);
+    assert.match(timelineSource, /TIMELINE_ROW_CACHE_PREFIX/);
+    assert.match(timelineSource, /function orderTimelineProfiles/);
+    assert.match(timelineSource, /orderTimelineProfiles\(grupo, actual, year, month, diasMes\)/);
+    assert.doesNotMatch(
+        timelineSource,
+        /grupo\s*\.filter\(profile => profile\.name !== actual\)\s*\.sort\(\(a, b\) => a\.name\.localeCompare\(b\.name\)\)/
+    );
+    assert.match(timelineSource, /readTimelineRowCache/);
+    assert.match(timelineSource, /writeTimelineRowCache/);
+    assert.match(timelineSource, /createTimelineRow/);
+    assert.match(timelineSource, /updateTimelineRow/);
+    assert.match(timelineSource, /reconcileTimelineRows/);
+    assert.match(timelineSource, /DocumentFragment/);
     assert.match(timelineSource, /readTimelineCache/);
     assert.match(timelineSource, /writeTimelineCache/);
     assert.match(calendarSource, /showInlineStaffingPendingMonth\?\.\(/);

@@ -59,6 +59,7 @@ import {
     hourReturnTimelineMarker
 } from "./hourReturns.js";
 import { getBlockedDayForProfile } from "./workerAvailability.js";
+import { getActiveWorkspace } from "./workspaces.js";
 
 const timelineFilterState = {
     anchorProfile: "",
@@ -69,13 +70,18 @@ let timelineOutsideClickController = null;
 let timelineRenderRequest = 0;
 const TIMELINE_DISABLED_FOR_SPEED_TEST = false;
 const TIMELINE_PAGE_SIZE = 20;
-const TIMELINE_CACHE_VERSION = 1;
+const TIMELINE_INITIAL_BATCH_SIZE = 5;
+const TIMELINE_INCREMENTAL_BATCH_SIZE = 5;
+const TIMELINE_CACHE_VERSION = 2;
 const TIMELINE_CACHE_PREFIX = "proturnos_ui_cache_timeline_";
-const TIMELINE_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const TIMELINE_CACHE_MAX_ENTRIES = 18;
+const TIMELINE_ROW_CACHE_PREFIX = "proturnos_ui_cache_timeline_row_";
+const TIMELINE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const TIMELINE_CACHE_MAX_ENTRIES = 24;
+const TIMELINE_ROW_CACHE_MAX_ENTRIES = 2500;
 let timelineRowLimit = TIMELINE_PAGE_SIZE;
 let timelinePageSignature = "";
 const timelineMemoryCache = new Map();
+const timelineRowMemoryCache = new Map();
 // Contexto del ultimo render (mes visible) para actualizar casillas sueltas
 // sin reconstruir todo el timeline.
 let timelineViewState = null;
@@ -101,6 +107,44 @@ function timelineCacheKey(viewSignature, rowLimit) {
         TIMELINE_CACHE_PREFIX +
         `${TIMELINE_CACHE_VERSION}_` +
         timelineCacheHash(`${viewSignature}\u001f${rowLimit}`)
+    );
+}
+
+function timelineWorkspaceId() {
+    return String(getActiveWorkspace?.()?.id || "local");
+}
+
+function timelineWorkerId(profile) {
+    return String(
+        profile?.id ||
+        profile?.workerId ||
+        profile?.uid ||
+        profile?.name ||
+        ""
+    );
+}
+
+function timelineFiltersSignature(selectedKeys) {
+    return Array.from(selectedKeys || [])
+        .sort()
+        .join("|") || "default";
+}
+
+function timelineRowCacheKey({
+    workspaceId = timelineWorkspaceId(),
+    monthKey,
+    workerId,
+    filtersSignature
+}) {
+    return (
+        TIMELINE_ROW_CACHE_PREFIX +
+        `${TIMELINE_CACHE_VERSION}_` +
+        timelineCacheHash([
+            workspaceId,
+            monthKey,
+            workerId,
+            filtersSignature
+        ].join("\u001f"))
     );
 }
 
@@ -140,7 +184,8 @@ function readTimelineCache(cacheKey, {
 }
 
 function pruneTimelineCache() {
-    const keys = listKeys(TIMELINE_CACHE_PREFIX);
+    const keys = listKeys(TIMELINE_CACHE_PREFIX)
+        .filter(key => !key.startsWith(TIMELINE_ROW_CACHE_PREFIX));
 
     if (keys.length <= TIMELINE_CACHE_MAX_ENTRIES) return;
 
@@ -180,9 +225,154 @@ function writeTimelineCache(cacheKey, payload) {
     }
 }
 
+function parseTimelineRowCache(raw) {
+    return parseTimelineCache(raw);
+}
+
+function readTimelineRowCache(cacheKey, {
+    monthKey,
+    workerId,
+    filtersSignature
+}) {
+    const payload = timelineRowMemoryCache.get(cacheKey) ||
+        parseTimelineRowCache(getRaw(cacheKey, null));
+
+    if (
+        !payload ||
+        payload.version !== TIMELINE_CACHE_VERSION ||
+        payload.monthKey !== monthKey ||
+        payload.workerId !== workerId ||
+        payload.filtersSignature !== filtersSignature ||
+        typeof payload.innerHTML !== "string" ||
+        typeof payload.rowHash !== "string" ||
+        Date.now() - Number(payload.savedAt || 0) > TIMELINE_CACHE_MAX_AGE_MS
+    ) {
+        return null;
+    }
+
+    timelineRowMemoryCache.set(cacheKey, payload);
+    return payload;
+}
+
+function pruneTimelineRowCache() {
+    const keys = listKeys(TIMELINE_ROW_CACHE_PREFIX);
+
+    if (keys.length <= TIMELINE_ROW_CACHE_MAX_ENTRIES) return;
+
+    keys
+        .map(key => ({
+            key,
+            savedAt:
+                Number(
+                    timelineRowMemoryCache.get(key)?.savedAt ??
+                    parseTimelineRowCache(getRaw(key, null))?.savedAt
+                ) || 0
+        }))
+        .sort((a, b) => b.savedAt - a.savedAt)
+        .slice(TIMELINE_ROW_CACHE_MAX_ENTRIES)
+        .forEach(entry => {
+            timelineRowMemoryCache.delete(entry.key);
+            removeKey(entry.key);
+        });
+}
+
+function writeTimelineRowCache(cacheKey, payload) {
+    const next = {
+        ...payload,
+        version: TIMELINE_CACHE_VERSION,
+        savedAt: Date.now()
+    };
+
+    timelineRowMemoryCache.set(cacheKey, next);
+
+    try {
+        setRaw(cacheKey, JSON.stringify(next));
+        pruneTimelineRowCache();
+    } catch {
+        timelineRowMemoryCache.delete(cacheKey);
+    }
+}
+
 function clearTimelineCache() {
     timelineMemoryCache.clear();
+    timelineRowMemoryCache.clear();
     listKeys(TIMELINE_CACHE_PREFIX).forEach(removeKey);
+    listKeys(TIMELINE_ROW_CACHE_PREFIX).forEach(removeKey);
+}
+
+function clearLegacyTimelineCache() {
+    timelineMemoryCache.clear();
+    listKeys(TIMELINE_CACHE_PREFIX)
+        .filter(key => !key.startsWith(TIMELINE_ROW_CACHE_PREFIX))
+        .forEach(removeKey);
+}
+
+function timelineAffectedProfilesFromKeys(keys = []) {
+    const profiles = getProfiles();
+    const names = new Set();
+    const prefixes = [
+        "data_",
+        "admin_",
+        "legal_",
+        "comp_",
+        "absences_",
+        "blocked_",
+        "rotativa_"
+    ];
+
+    keys.forEach(key => {
+        const text = String(key || "");
+
+        prefixes.forEach(prefix => {
+            if (!text.startsWith(prefix)) return;
+
+            const rest = text.slice(prefix.length);
+            const match = profiles.find(profile =>
+                rest === profile.name ||
+                rest.startsWith(`${profile.name}_`)
+            );
+
+            if (match) names.add(match.name);
+        });
+    });
+
+    return names;
+}
+
+function clearTimelineRowCacheForProfiles(profileNames = new Set()) {
+    if (!profileNames.size) return false;
+
+    const workerIds = new Set(
+        getProfiles()
+            .filter(profile => profileNames.has(profile.name))
+            .map(timelineWorkerId)
+    );
+    const keys = listKeys(TIMELINE_ROW_CACHE_PREFIX);
+
+    keys.forEach(key => {
+        const payload = timelineRowMemoryCache.get(key) ||
+            parseTimelineRowCache(getRaw(key, null));
+
+        if (
+            profileNames.has(payload?.profileName) ||
+            workerIds.has(payload?.workerId)
+        ) {
+            timelineRowMemoryCache.delete(key);
+            removeKey(key);
+        }
+    });
+
+    Array.from(timelineRowMemoryCache.entries())
+        .forEach(([key, payload]) => {
+            if (
+                profileNames.has(payload?.profileName) ||
+                workerIds.has(payload?.workerId)
+            ) {
+                timelineRowMemoryCache.delete(key);
+            }
+        });
+
+    return true;
 }
 
 function timelineMonthLabel(year, month) {
@@ -262,6 +452,20 @@ function yieldTimelineRender() {
     });
 }
 
+function waitTimelineIdle(timeout = 180) {
+    return new Promise(resolve => {
+        if (
+            typeof window !== "undefined" &&
+            typeof window.requestIdleCallback === "function"
+        ) {
+            window.requestIdleCallback(resolve, { timeout });
+            return;
+        }
+
+        window.setTimeout(resolve, 0);
+    });
+}
+
 function timelineRenderIsCurrent(requestId, year, month) {
     return (
         requestId === timelineRenderRequest &&
@@ -300,8 +504,26 @@ function ensureTimelineCellDelegation(container) {
             const previousLimit = timelineRowLimit;
             timelineRowLimit += TIMELINE_PAGE_SIZE;
             loadMore.disabled = true;
-            loadMore.textContent = "Cargando...";
-            void renderTimeline({ revealRowIndex: previousLimit });
+            loadMore.textContent = "Cargando m\u00e1s trabajadores...";
+            void appendTimelineRows({
+                startIndex: previousLimit,
+                revealRowIndex: previousLimit
+            });
+            return;
+        }
+
+        const profileButton = event.target.closest("[data-profile-name]");
+
+        if (profileButton && container.contains(profileButton)) {
+            event.preventDefault();
+            setTimelineFilterOpen(container, false);
+            window.selectProfileByName?.(
+                profileButton.dataset.profileName,
+                {
+                    openTurns: true,
+                    scrollToTop: true
+                }
+            );
             return;
         }
 
@@ -432,6 +654,11 @@ export function updateTimelineCells(profileName, keys = null) {
             updated = true;
         }
     });
+
+    if (updated) {
+        clearLegacyTimelineCache();
+        clearTimelineRowCacheForProfiles(new Set([profileName]));
+    }
 
     return updated;
 }
@@ -888,6 +1115,100 @@ function firstLargaMatchIndex(profileName, keys) {
     return keys.findIndex(key => hasLargaBase(profileName, key));
 }
 
+function timelineSortContext(actual, year, month, diasMes) {
+    const keys = monthKeys(year, month, diasMes);
+    const nightKeys = keys.filter(key =>
+        Number(getTurnoBase(actual, key)) === TURNO.NOCHE
+    );
+    const freeKeys = keys.filter(key =>
+        Number(getTurnoBase(actual, key)) === TURNO.LIBRE
+    );
+
+    return {
+        keys,
+        nightKeys,
+        freeKeys
+    };
+}
+
+function timelineProfileSort(
+    profile,
+    actual,
+    { keys, nightKeys, freeKeys },
+    totalHhee = 0
+) {
+    const rotativa = getJSON(`rotativa_${profile.name}`, {});
+    const samePattern =
+        profile.name !== actual &&
+        sameBasePattern(profile.name, actual, keys);
+    const nightMatch =
+        firstLargaMatchIndex(profile.name, nightKeys);
+    const freeMatch =
+        firstLargaMatchIndex(profile.name, freeKeys);
+    let priority = 3;
+    let matchIndex = Number.MAX_SAFE_INTEGER;
+
+    if (profile.name === actual) {
+        priority = 0;
+    } else if (samePattern) {
+        priority = 6;
+    } else if (rotativa.type === "diurno") {
+        priority = 5;
+    } else if (rotativa.type === "3turno") {
+        priority = 4;
+    } else if (nightMatch >= 0) {
+        // Trabajadores cuyo segundo libre coincide con el primer largo
+        // del trabajador visible: son la rotativa siguiente natural.
+        priority = 1;
+        matchIndex = nightMatch;
+    } else if (freeMatch >= 0) {
+        // Luego vienen quienes tienen larga cuando el trabajador visible
+        // está libre. El primer libre queda antes por matchIndex.
+        priority = 2;
+        matchIndex = freeMatch;
+    }
+
+    return {
+        priority,
+        matchIndex,
+        totalHhee,
+        name: profile.name
+    };
+}
+
+function compareTimelineSort(a, b) {
+    if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+    }
+
+    if (a.matchIndex !== b.matchIndex) {
+        return a.matchIndex - b.matchIndex;
+    }
+
+    if (a.totalHhee !== b.totalHhee) {
+        return a.totalHhee - b.totalHhee;
+    }
+
+    return a.name.localeCompare(b.name);
+}
+
+function orderTimelineProfiles(grupo, actual, year, month, diasMes) {
+    const sortContext =
+        timelineSortContext(actual, year, month, diasMes);
+
+    return [...grupo]
+        .map(profile => ({
+            profile,
+            sort: timelineProfileSort(
+                profile,
+                actual,
+                sortContext
+            )
+        }))
+        .sort((a, b) => compareTimelineSort(a.sort, b.sort))
+        .map(item => item.profile);
+}
+
 function timelineCellBackground(color, isInhabil) {
     if (!isInhabil) return color;
 
@@ -906,6 +1227,59 @@ function timelineBlockedDayBackground(isInhabil) {
     return `linear-gradient(135deg, ${overlay}, rgba(148, 163, 184, 0.22)), var(--timeline-empty)`;
 }
 
+function buildTimelineRowData({
+    profile,
+    actual,
+    year,
+    month,
+    diasMes,
+    holidays,
+    keys,
+    nightKeys,
+    freeKeys
+}) {
+    const data = getData(profile.name);
+    const stats = calcularHorasMesPerfil(
+        profile.name,
+        year,
+        month,
+        diasMes,
+        holidays,
+        data,
+        getBlocked(profile.name),
+        getCarry(profile.name, year, month)
+    );
+    const honorariaSummary =
+        getHonorariaMonthlySummary(
+            profile.name,
+            year,
+            month,
+            holidays
+        );
+    const totalHhee =
+        (Number(stats.hheeDiurnas) || 0) +
+        (Number(stats.hheeNocturnas) || 0);
+    const sort = timelineProfileSort(
+        profile,
+        actual,
+        {
+            keys,
+            nightKeys,
+            freeKeys
+        },
+        totalHhee
+    );
+
+    return {
+        profile,
+        data,
+        stats,
+        honorariaSummary,
+        workerId: timelineWorkerId(profile),
+        sort
+    };
+}
+
 async function buildTimelineRows(
     grupo,
     actual,
@@ -915,98 +1289,35 @@ async function buildTimelineRows(
     holidays,
     isCanceled
 ) {
-    const keys = monthKeys(year, month, diasMes);
-    const nightKeys = keys.filter(key =>
-        Number(getTurnoBase(actual, key)) === TURNO.NOCHE
-    );
-    const freeKeys = keys.filter(key =>
-        Number(getTurnoBase(actual, key)) === TURNO.LIBRE
-    );
+    const {
+        keys,
+        nightKeys,
+        freeKeys
+    } = timelineSortContext(actual, year, month, diasMes);
 
     const rows = [];
 
     for (const profile of grupo) {
         if (isCanceled()) return null;
 
-        const data = getData(profile.name);
-        const stats = calcularHorasMesPerfil(
-            profile.name,
+        rows.push(buildTimelineRowData({
+            profile,
+            actual,
             year,
             month,
             diasMes,
             holidays,
-            data,
-            getBlocked(profile.name),
-            getCarry(profile.name, year, month)
-        );
-        const honorariaSummary =
-            getHonorariaMonthlySummary(
-                profile.name,
-                year,
-                month,
-                holidays
-            );
-        const rotativa = getJSON(`rotativa_${profile.name}`, {});
-        const totalHhee =
-            (Number(stats.hheeDiurnas) || 0) +
-            (Number(stats.hheeNocturnas) || 0);
-        const samePattern =
-            profile.name !== actual &&
-            sameBasePattern(profile.name, actual, keys);
-        const nightMatch =
-            firstLargaMatchIndex(profile.name, nightKeys);
-        const freeMatch =
-            firstLargaMatchIndex(profile.name, freeKeys);
-        let priority = 3;
-        let matchIndex = Number.MAX_SAFE_INTEGER;
-
-        if (profile.name === actual) {
-            priority = 0;
-        } else if (samePattern) {
-            priority = 6;
-        } else if (rotativa.type === "diurno") {
-            priority = 5;
-        } else if (rotativa.type === "3turno") {
-            priority = 4;
-        } else if (nightMatch >= 0) {
-            priority = 1;
-            matchIndex = nightMatch;
-        } else if (freeMatch >= 0) {
-            priority = 2;
-            matchIndex = freeMatch;
-        }
-
-        rows.push({
-            profile,
-            data,
-            stats,
-            honorariaSummary,
-            sort: {
-                priority,
-                matchIndex,
-                totalHhee,
-                name: profile.name
-            }
-        });
+            keys,
+            nightKeys,
+            freeKeys
+        }));
 
         await yieldTimelineRender();
     }
 
-    return rows.sort((a, b) => {
-            if (a.sort.priority !== b.sort.priority) {
-                return a.sort.priority - b.sort.priority;
-            }
-
-            if (a.sort.matchIndex !== b.sort.matchIndex) {
-                return a.sort.matchIndex - b.sort.matchIndex;
-            }
-
-            if (a.sort.totalHhee !== b.sort.totalHhee) {
-                return a.sort.totalHhee - b.sort.totalHhee;
-            }
-
-            return a.sort.name.localeCompare(b.sort.name);
-        });
+    return rows.sort((a, b) =>
+        compareTimelineSort(a.sort, b.sort)
+    );
 }
 
 // Construye una sola casilla-dia del timeline. Se reutiliza en el render
@@ -1178,6 +1489,346 @@ function renderTimelineDayCell(profile, d, {
     `;
 }
 
+function timelineRowInnerHTML(rowData, {
+    year,
+    month,
+    diasMes,
+    holidays
+}) {
+    const {
+        profile,
+        stats,
+        honorariaSummary
+    } = rowData;
+    const dayHhee = honorariaSummary
+        ? honorariaSummary.overtimeDay
+        : stats.hheeDiurnas;
+    const nightHhee = honorariaSummary
+        ? honorariaSummary.overtimeNight
+        : stats.hheeNocturnas;
+    const honorariaHheeClass =
+        honorariaSummary?.overtimeHours > 0
+            ? " honoraria-hhee-excess"
+            : "";
+    const leaveMaps = {
+        admin: getAdmin(profile.name),
+        legal: getLegal(profile.name),
+        comp: getComp(profile.name),
+        absences: getAbs(profile.name)
+    };
+    let html = `
+        <td class="namecol">
+            <button
+                class="timeline-profile-link"
+                type="button"
+                data-profile-name="${escapeHtml(profile.name)}"
+                title="Abrir perfil de ${escapeHtml(profile.name)}"
+            >
+                ${escapeHtml(profile.name)}
+            </button>
+        </td>
+        <td class="timeline-hhee timeline-hhee--day${dayExtraAlertClass(profile.name, dayHhee, new Date(year, month, 1))}${honorariaHheeClass}">
+            ${formatTimelineHours(dayHhee)}
+        </td>
+        <td class="timeline-hhee timeline-hhee--night${honorariaHheeClass}">
+            ${formatTimelineHours(nightHhee)}
+        </td>
+    `;
+
+    for (let d = 1; d <= diasMes; d++) {
+        html += renderTimelineDayCell(profile, d, {
+            year,
+            month,
+            holidays,
+            leaveMaps,
+            honorariaSummary
+        });
+    }
+
+    return html;
+}
+
+function timelineRowHash(innerHTML) {
+    return timelineCacheHash(innerHTML);
+}
+
+function timelineRowElement({
+    workerId,
+    profileName,
+    innerHTML,
+    rowHash,
+    cacheKey = ""
+}) {
+    const template = document.createElement("tbody");
+
+    template.innerHTML = `
+        <tr
+            data-timeline-row="1"
+            data-worker-id="${escapeHtml(workerId)}"
+            data-profile-name="${escapeHtml(profileName)}"
+            data-timeline-row-hash="${escapeHtml(rowHash)}"
+            data-timeline-row-cache-key="${escapeHtml(cacheKey)}"
+        >${innerHTML}</tr>
+    `;
+
+    return template.firstElementChild;
+}
+
+function createTimelineRow(rowData, renderContext) {
+    const innerHTML = timelineRowInnerHTML(rowData, renderContext);
+    const rowHash = timelineRowHash(innerHTML);
+
+    return timelineRowElement({
+        workerId: rowData.workerId,
+        profileName: rowData.profile.name,
+        innerHTML,
+        rowHash,
+        cacheKey: rowData.cacheKey || ""
+    });
+}
+
+function createTimelineRowFromCache(profile, cached) {
+    return timelineRowElement({
+        workerId: cached.workerId || timelineWorkerId(profile),
+        profileName: cached.profileName || profile.name,
+        innerHTML: cached.innerHTML,
+        rowHash: cached.rowHash,
+        cacheKey: cached.cacheKey || ""
+    });
+}
+
+function updateTimelineRow(existingRow, rowData, renderContext) {
+    const innerHTML = timelineRowInnerHTML(rowData, renderContext);
+    const rowHash = timelineRowHash(innerHTML);
+
+    if (existingRow.dataset.timelineRowHash === rowHash) {
+        return false;
+    }
+
+    existingRow.innerHTML = innerHTML;
+    existingRow.dataset.timelineRowHash = rowHash;
+    existingRow.dataset.workerId = rowData.workerId;
+    existingRow.dataset.profileName = rowData.profile.name;
+    existingRow.dataset.timelineRowCacheKey = rowData.cacheKey || "";
+    return true;
+}
+
+function updateTimelineRowFromCache(existingRow, profile, cached) {
+    if (existingRow.dataset.timelineRowHash === cached.rowHash) {
+        return false;
+    }
+
+    existingRow.innerHTML = cached.innerHTML;
+    existingRow.dataset.timelineRowHash = cached.rowHash;
+    existingRow.dataset.workerId = cached.workerId || timelineWorkerId(profile);
+    existingRow.dataset.profileName = cached.profileName || profile.name;
+    existingRow.dataset.timelineRowCacheKey = cached.cacheKey || "";
+    return true;
+}
+
+function timelineRowsTbody(container) {
+    return container?.querySelector(".timeline-table tbody") || null;
+}
+
+function timelineExistingRow(container, workerId) {
+    return container?.querySelector(
+        `[data-timeline-row][data-worker-id="${cssAttr(workerId)}"]`
+    );
+}
+
+function reconcileTimelineRows(container, allowedWorkerIds) {
+    const allowed = new Set(allowedWorkerIds);
+
+    container
+        ?.querySelectorAll("[data-timeline-row]")
+        .forEach(row => {
+            if (!allowed.has(row.dataset.workerId)) {
+                row.remove();
+            }
+        });
+}
+
+function timelineTableHeadHTML(context) {
+    const {
+        groups,
+        selectedKeys,
+        baseGroup,
+        diasMes
+    } = context;
+    let html = `
+        <tr>
+            <th class="timeline-name-head">
+                ${timelineFilterHTML(groups, selectedKeys, baseGroup.key)}
+            </th>
+            <th class="timeline-hhee-head timeline-hhee--day" title="HHEE Diurnas">
+                <span class="timeline-hhee-label" aria-label="HHEE Diurnas">
+                    <span>HHEE</span>
+                    <svg class="timeline-hhee-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="4"></circle>
+                        <path d="M12 2v2"></path>
+                        <path d="M12 20v2"></path>
+                        <path d="M4.93 4.93l1.41 1.41"></path>
+                        <path d="M17.66 17.66l1.41 1.41"></path>
+                        <path d="M2 12h2"></path>
+                        <path d="M20 12h2"></path>
+                        <path d="M6.34 17.66l-1.41 1.41"></path>
+                        <path d="M17.66 6.34l1.41-1.41"></path>
+                    </svg>
+                </span>
+            </th>
+            <th class="timeline-hhee-head timeline-hhee--night" title="HHEE Nocturnas">
+                <span class="timeline-hhee-label" aria-label="HHEE Nocturnas">
+                    <span>HHEE</span>
+                    <svg class="timeline-hhee-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3A7 7 0 0 0 21 12.79z"></path>
+                    </svg>
+                </span>
+            </th>
+    `;
+
+    for (let d = 1; d <= diasMes; d++) {
+        html += `<th>${d}</th>`;
+    }
+
+    return `${html}</tr>`;
+}
+
+function timelineShellHTML(context) {
+    return `
+        <div class="timeline-shell">
+            <table class="timeline-table">
+                <thead>${timelineTableHeadHTML(context)}</thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <div
+            class="empty-state empty-state--compact timeline-progress"
+            data-timeline-progress
+            hidden
+        ></div>
+    `;
+}
+
+function bindTimelineControls(container) {
+    container.querySelector("[data-timeline-filter-toggle]")
+        ?.addEventListener("click", event => {
+            event.stopPropagation();
+            setTimelineFilterOpen(
+                container,
+                !timelineFilterState.open
+            );
+        });
+    container.querySelectorAll("[data-timeline-filter-key]")
+        .forEach(input => {
+            input.onchange = () => {
+                const key = input.dataset.timelineFilterKey;
+
+                if (!key || input.disabled) return;
+
+                if (input.checked) {
+                    timelineFilterState.selectedKeys.add(key);
+                } else {
+                    timelineFilterState.selectedKeys.delete(key);
+                }
+
+                timelineFilterState.open = true;
+                renderTimeline();
+            };
+        });
+}
+
+function ensureTimelineShell(div, context, targetMonthKey, options = {}) {
+    const structureSignature = timelineStructureSignature(
+        context,
+        targetMonthKey
+    );
+    const hasShell = Boolean(timelineRowsTbody(div));
+
+    if (
+        !hasShell ||
+        div.dataset.timelineStructureSignature !== structureSignature
+    ) {
+        div.innerHTML = timelineShellHTML(context);
+        div.dataset.timelineStructureSignature = structureSignature;
+    } else {
+        const head = div.querySelector(".timeline-table thead");
+
+        if (head) {
+            head.innerHTML = timelineTableHeadHTML(context);
+        }
+    }
+
+    if (!div.querySelector("[data-timeline-progress]")) {
+        const progress = document.createElement("div");
+
+        progress.className =
+            "empty-state empty-state--compact timeline-progress";
+        progress.dataset.timelineProgress = "1";
+        progress.hidden = true;
+        div.appendChild(progress);
+    }
+
+    div.dataset.timelineMonthKey = targetMonthKey;
+    div.dataset.timelineState = options.state || "ready";
+    div.setAttribute("aria-busy", options.busy ? "true" : "false");
+    bindTimelineControls(div);
+    ensureTimelineCellDelegation(div);
+    syncTimelineStickyOffsets(div);
+    requestAnimationFrame(() => syncTimelineStickyOffsets(div));
+    bindTimelineOutsideClickListener(div);
+}
+
+function timelineStructureSignature(context, targetMonthKey = context.monthKey) {
+    return [
+        targetMonthKey,
+        context.diasMes,
+        context.baseGroup.key,
+        context.filtersSignature
+    ].join("\u001f");
+}
+
+function updateTimelineProgress(container, message = "") {
+    const progress = container?.querySelector("[data-timeline-progress]");
+
+    if (!progress) return;
+
+    if (!message) {
+        progress.hidden = true;
+        progress.textContent = "";
+        return;
+    }
+
+    progress.hidden = false;
+    progress.textContent = message;
+}
+
+function updateTimelineLoadMoreButton(container, visibleCount, totalCount) {
+    const total = Number(totalCount) || 0;
+    const visible = Math.min(Number(visibleCount) || 0, total);
+    let button = container?.querySelector("[data-timeline-load-more]");
+
+    if (!container) return;
+
+    if (visible >= total) {
+        button?.remove();
+        return;
+    }
+
+    if (!button) {
+        button = document.createElement("button");
+        button.className = "timeline-load-more";
+        button.type = "button";
+        button.dataset.timelineLoadMore = "1";
+        container.appendChild(button);
+    }
+
+    button.disabled = false;
+    button.textContent = `Mostrar ${Math.min(
+        TIMELINE_PAGE_SIZE,
+        total - visible
+    )} trabajadores m\u00e1s`;
+}
+
 function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
     div.innerHTML = html;
     div.dataset.timelineMonthKey = targetMonthKey;
@@ -1208,19 +1859,6 @@ function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
                 renderTimeline();
             };
         });
-    div.querySelectorAll("[data-profile-name]")
-        .forEach(button => {
-            button.onclick = () => {
-                setTimelineFilterOpen(div, false);
-                window.selectProfileByName?.(
-                    button.dataset.profileName,
-                    {
-                        openTurns: true,
-                        scrollToTop: true
-                    }
-                );
-            };
-        });
     ensureTimelineCellDelegation(div);
     syncTimelineStickyOffsets(div);
     requestAnimationFrame(() => syncTimelineStickyOffsets(div));
@@ -1228,6 +1866,463 @@ function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
         revealTimelineRow(div, Number(options.revealRowIndex));
     }
     bindTimelineOutsideClickListener(div);
+}
+
+function buildTimelineContext(year, month) {
+    const profiles = getProfiles();
+    const actual = getCurrentProfile();
+    const perfilActual =
+        profiles.find(x => x.name === actual);
+
+    if (!perfilActual) {
+        return {
+            empty: "Selecciona un colaborador para ver el reporte mensual."
+        };
+    }
+
+    const groups = timelineFilterGroups(profiles);
+    const { baseGroup, selectedKeys } =
+        ensureTimelineFilter(perfilActual, groups);
+    const grupo = profiles
+        .filter(profile =>
+            profile.name === actual ||
+            selectedKeys.has(timelineGroupForProfile(profile).key)
+        );
+
+    if (!grupo.length) {
+        return {
+            empty: "No hay colaboradores compatibles para comparar este mes."
+        };
+    }
+
+    const diasMes =
+        new Date(year, month + 1, 0).getDate();
+    const orderedGroup =
+        orderTimelineProfiles(grupo, actual, year, month, diasMes);
+    const filtersSignature = timelineFiltersSignature(selectedKeys);
+    const viewSignature = [
+        actual,
+        year,
+        month,
+        filtersSignature,
+        orderedGroup.map(profile => profile.name).join("\u001f")
+    ].join("\u001e");
+
+    return {
+        actual,
+        year,
+        month,
+        groups,
+        baseGroup,
+        selectedKeys,
+        filtersSignature,
+        diasMes,
+        orderedGroup,
+        viewSignature,
+        monthKey: timelineMonthKey(year, month),
+        workspaceId: timelineWorkspaceId()
+    };
+}
+
+function timelineRowCacheInfo(profile, context) {
+    const workerId = timelineWorkerId(profile);
+    const cacheKey = timelineRowCacheKey({
+        workspaceId: context.workspaceId,
+        monthKey: context.monthKey,
+        workerId,
+        filtersSignature: context.filtersSignature
+    });
+
+    return {
+        workerId,
+        cacheKey
+    };
+}
+
+function buildFreshTimelineRow(profile, context, holidays) {
+    const {
+        keys,
+        nightKeys,
+        freeKeys
+    } = timelineSortContext(
+        context.actual,
+        context.year,
+        context.month,
+        context.diasMes
+    );
+    const cacheInfo = timelineRowCacheInfo(profile, context);
+    const rowData = buildTimelineRowData({
+        profile,
+        actual: context.actual,
+        year: context.year,
+        month: context.month,
+        diasMes: context.diasMes,
+        holidays,
+        keys,
+        nightKeys,
+        freeKeys
+    });
+
+    rowData.workerId = cacheInfo.workerId;
+    rowData.cacheKey = cacheInfo.cacheKey;
+    return rowData;
+}
+
+function writeFreshTimelineRowCache(rowData, context, renderContext) {
+    const innerHTML = timelineRowInnerHTML(rowData, renderContext);
+    const rowHash = timelineRowHash(innerHTML);
+
+    writeTimelineRowCache(rowData.cacheKey, {
+        monthKey: context.monthKey,
+        workerId: rowData.workerId,
+        profileName: rowData.profile.name,
+        filtersSignature: context.filtersSignature,
+        rowHash,
+        innerHTML
+    });
+
+    return {
+        ...rowData,
+        rowHash,
+        innerHTML
+    };
+}
+
+function insertOrUpdateTimelineRow(container, row, beforeNode = null) {
+    const tbody = timelineRowsTbody(container);
+
+    if (!tbody || !row) return false;
+
+    const existing = timelineExistingRow(container, row.dataset.workerId);
+
+    if (existing) {
+        if (
+            existing.dataset.timelineRowHash !==
+            row.dataset.timelineRowHash
+        ) {
+            existing.innerHTML = row.innerHTML;
+            existing.dataset.timelineRowHash =
+                row.dataset.timelineRowHash;
+            existing.dataset.profileName = row.dataset.profileName || "";
+            existing.dataset.timelineRowCacheKey =
+                row.dataset.timelineRowCacheKey || "";
+        }
+        return false;
+    }
+
+    tbody.insertBefore(row, beforeNode);
+    return true;
+}
+
+async function refreshTimelineRowsInBackground({
+    profiles,
+    context,
+    holidays,
+    requestId
+}) {
+    if (!profiles.length) return;
+
+    await waitTimelineIdle(240);
+
+    const container = document.getElementById("teamTimeline");
+    const renderContext = {
+        year: context.year,
+        month: context.month,
+        diasMes: context.diasMes,
+        holidays
+    };
+
+    for (const profile of profiles) {
+        if (
+            !timelineRenderIsCurrent(
+                requestId,
+                context.year,
+                context.month
+            )
+        ) {
+            return;
+        }
+
+        const existing = timelineExistingRow(
+            container,
+            timelineWorkerId(profile)
+        );
+
+        if (!existing) continue;
+
+        const rowData = buildFreshTimelineRow(
+            profile,
+            context,
+            holidays
+        );
+        const cachedRow = writeFreshTimelineRowCache(
+            rowData,
+            context,
+            renderContext
+        );
+
+        updateTimelineRow(existing, cachedRow, renderContext);
+        await waitTimelineIdle(180);
+    }
+}
+
+async function buildTimelineBatchRows({
+    profiles,
+    context,
+    holidays,
+    requestId,
+    skipCache = false
+}) {
+    const renderContext = {
+        year: context.year,
+        month: context.month,
+        diasMes: context.diasMes,
+        holidays
+    };
+    const rows = [];
+    const cachedProfiles = [];
+
+    for (const profile of profiles) {
+        if (
+            !timelineRenderIsCurrent(
+                requestId,
+                context.year,
+                context.month
+            )
+        ) {
+            return null;
+        }
+
+        const { workerId, cacheKey } =
+            timelineRowCacheInfo(profile, context);
+        const cached = skipCache
+            ? null
+            : readTimelineRowCache(cacheKey, {
+                monthKey: context.monthKey,
+                workerId,
+                filtersSignature: context.filtersSignature
+            });
+
+        if (cached) {
+            rows.push(createTimelineRowFromCache(profile, {
+                ...cached,
+                cacheKey
+            }));
+            cachedProfiles.push(profile);
+            continue;
+        }
+
+        const rowData = buildFreshTimelineRow(
+            profile,
+            context,
+            holidays
+        );
+        const cachedRow = writeFreshTimelineRowCache(
+            rowData,
+            context,
+            renderContext
+        );
+
+        rows.push(createTimelineRow(cachedRow, renderContext));
+        await waitTimelineIdle(120);
+    }
+
+    if (cachedProfiles.length) {
+        void refreshTimelineRowsInBackground({
+            profiles: cachedProfiles,
+            context,
+            holidays,
+            requestId
+        });
+    }
+
+    return rows;
+}
+
+function appendTimelineRowElements(container, rows) {
+    const tbody = timelineRowsTbody(container);
+
+    if (!tbody || !rows.length) return 0;
+
+    const fragment = document.createDocumentFragment();
+    let appended = 0;
+
+    rows.forEach(row => {
+        const existing = timelineExistingRow(
+            container,
+            row.dataset.workerId
+        );
+
+        if (existing) {
+            updateTimelineRowFromCache(existing, {
+                name: row.dataset.profileName
+            }, {
+                workerId: row.dataset.workerId,
+                profileName: row.dataset.profileName,
+                innerHTML: row.innerHTML,
+                rowHash: row.dataset.timelineRowHash,
+                cacheKey: row.dataset.timelineRowCacheKey
+            });
+            return;
+        }
+
+        fragment.appendChild(row);
+        appended++;
+    });
+
+    tbody.appendChild(fragment);
+    return appended;
+}
+
+async function appendTimelineRows(options = {}) {
+    const container = document.getElementById("teamTimeline");
+
+    if (!container || container.dataset.timelineAppending === "1") {
+        return;
+    }
+
+    const year = calendar.currentDate.getFullYear();
+    const month = calendar.currentDate.getMonth();
+    const requestId = Number.isFinite(Number(options.requestId))
+        ? Number(options.requestId)
+        : timelineRenderRequest;
+    const context = buildTimelineContext(year, month);
+
+    if (context.empty) return;
+
+    const total = context.orderedGroup.length;
+    const startIndex = Math.max(0, Number(options.startIndex) || 0);
+    const targetLimit = Math.min(timelineRowLimit, total);
+    const holidays = timelineViewState?.year === year &&
+        timelineViewState?.month === month
+        ? timelineViewState.holidays
+        : await fetchHolidays(year);
+
+    container.dataset.timelineAppending = "1";
+    updateTimelineProgress(container, "Cargando m\u00e1s trabajadores...");
+
+    try {
+        for (
+            let index = startIndex;
+            index < targetLimit;
+            index += TIMELINE_INCREMENTAL_BATCH_SIZE
+        ) {
+            if (!timelineRenderIsCurrent(requestId, year, month)) return;
+
+            const batchProfiles = context.orderedGroup.slice(
+                index,
+                Math.min(
+                    index + TIMELINE_INCREMENTAL_BATCH_SIZE,
+                    targetLimit
+                )
+            );
+            const rows = await buildTimelineBatchRows({
+                profiles: batchProfiles,
+                context,
+                holidays,
+                requestId
+            });
+
+            if (!rows) return;
+
+            appendTimelineRowElements(container, rows);
+            updateTimelineLoadMoreButton(
+                container,
+                Math.min(
+                    index + TIMELINE_INCREMENTAL_BATCH_SIZE,
+                    targetLimit
+                ),
+                total
+            );
+            syncTimelineStickyOffsets(container);
+
+            if (
+                Number.isFinite(Number(options.revealRowIndex)) &&
+                index === startIndex
+            ) {
+                revealTimelineRow(
+                    container,
+                    Number(options.revealRowIndex)
+                );
+            }
+
+            await waitTimelineIdle(180);
+        }
+    } finally {
+        delete container.dataset.timelineAppending;
+        updateTimelineProgress(container, "");
+        updateTimelineLoadMoreButton(container, targetLimit, total);
+        syncTimelineStickyOffsets(container);
+    }
+}
+
+async function refreshVisibleTimelineRows(profileNames = new Set()) {
+    if (!profileNames.size || !timelineViewState) return false;
+
+    const container = document.getElementById("teamTimeline");
+
+    if (!container || !timelineIsVisibleView()) return false;
+
+    const { year, month, holidays } = timelineViewState;
+    const context = buildTimelineContext(year, month);
+
+    if (context.empty) return false;
+
+    const visibleProfiles = context.orderedGroup
+        .slice(0, timelineRowLimit)
+        .filter(profile => profileNames.has(profile.name));
+
+    if (!visibleProfiles.length) return false;
+
+    const requestId = timelineRenderRequest;
+    const renderContext = {
+        year,
+        month,
+        diasMes: context.diasMes,
+        holidays
+    };
+
+    for (const profile of visibleProfiles) {
+        if (!timelineRenderIsCurrent(requestId, year, month)) {
+            return false;
+        }
+
+        const existing = timelineExistingRow(
+            container,
+            timelineWorkerId(profile)
+        );
+
+        if (!existing) continue;
+
+        const rowData = buildFreshTimelineRow(
+            profile,
+            context,
+            holidays
+        );
+        const cachedRow = writeFreshTimelineRowCache(
+            rowData,
+            context,
+            renderContext
+        );
+
+        updateTimelineRow(existing, cachedRow, renderContext);
+        await waitTimelineIdle(120);
+    }
+
+    syncTimelineStickyOffsets(container);
+    return true;
+}
+
+function renderTimelineEmpty(div, message, targetMonthKey) {
+    stopTimelineOutsideClickListener();
+    div.innerHTML = `
+        <div class="empty-state empty-state--compact">
+            ${escapeHtml(message)}
+        </div>
+    `;
+    div.dataset.timelineMonthKey = targetMonthKey;
+    div.dataset.timelineState = "empty";
+    div.setAttribute("aria-busy", "false");
 }
 
 export async function renderTimeline(options = {}){
@@ -1252,76 +2347,26 @@ export async function renderTimeline(options = {}){
         showTimelinePendingMonth(year, month);
     }
 
-    const profiles = getProfiles();
-    const actual = getCurrentProfile();
+    const context = buildTimelineContext(year, month);
 
-    const perfilActual =
-        profiles.find(x => x.name === actual);
-
-    if (!perfilActual) {
-        stopTimelineOutsideClickListener();
-        div.innerHTML = `
-            <div class="empty-state empty-state--compact">
-                Selecciona un colaborador para ver el reporte mensual.
-            </div>
-        `;
-        div.dataset.timelineMonthKey = targetMonthKey;
-        div.dataset.timelineState = "empty";
-        div.setAttribute("aria-busy", "false");
+    if (context.empty) {
+        renderTimelineEmpty(div, context.empty, targetMonthKey);
         return;
     }
 
-    const groups = timelineFilterGroups(profiles);
-    const { baseGroup, selectedKeys } =
-        ensureTimelineFilter(perfilActual, groups);
-    const grupo = profiles
-        .filter(profile =>
-            profile.name === actual ||
-            selectedKeys.has(timelineGroupForProfile(profile).key)
-        );
-
-    if (!grupo.length) {
-        stopTimelineOutsideClickListener();
-        div.innerHTML = `
-            <div class="empty-state empty-state--compact">
-                No hay colaboradores compatibles para comparar este mes.
-            </div>
-        `;
-        div.dataset.timelineMonthKey = targetMonthKey;
-        div.dataset.timelineState = "empty";
-        div.setAttribute("aria-busy", "false");
-        return;
-    }
-
-    const diasMes =
-        new Date(year, month + 1, 0).getDate();
-    const orderedGroup = [
-        ...grupo.filter(profile => profile.name === actual),
-        ...grupo
-            .filter(profile => profile.name !== actual)
-            .sort((a, b) => a.name.localeCompare(b.name))
-    ];
-    const nextPageSignature = [
-        actual,
-        year,
-        month,
-        [...selectedKeys].sort().join("|"),
-        orderedGroup.map(profile => profile.name).join("\u001f")
-    ].join("\u001e");
-
-    if (nextPageSignature !== timelinePageSignature) {
-        timelinePageSignature = nextPageSignature;
+    if (context.viewSignature !== timelinePageSignature) {
+        timelinePageSignature = context.viewSignature;
         timelineRowLimit = TIMELINE_PAGE_SIZE;
     }
 
     const cacheKey = timelineCacheKey(
-        nextPageSignature,
+        context.viewSignature,
         timelineRowLimit
     );
     const cached = options.skipCache
         ? null
         : readTimelineCache(cacheKey, {
-            viewSignature: nextPageSignature,
+            viewSignature: context.viewSignature,
             rowLimit: timelineRowLimit,
             monthKey: targetMonthKey
         });
@@ -1332,11 +2377,20 @@ export async function renderTimeline(options = {}){
             state: "cached",
             busy: true
         });
+        div.dataset.timelineStructureSignature =
+            timelineStructureSignature(context, targetMonthKey);
     }
 
-    const visibleGroup = orderedGroup.slice(0, timelineRowLimit);
     const holidays = await fetchHolidays(year);
-    timelineViewState = { year, month, diasMes, holidays };
+    const visibleGroup = context.orderedGroup.slice(0, timelineRowLimit);
+    const visibleWorkerIds = visibleGroup.map(timelineWorkerId);
+
+    timelineViewState = {
+        year,
+        month,
+        diasMes: context.diasMes,
+        holidays
+    };
 
     if (
         requestId !== timelineRenderRequest ||
@@ -1347,162 +2401,88 @@ export async function renderTimeline(options = {}){
         return;
     }
 
-    const timelineRows = await buildTimelineRows(
-        visibleGroup,
-        actual,
-        year,
-        month,
-        diasMes,
-        holidays,
-        () => !timelineRenderIsCurrent(
-            requestId,
-            year,
-            month
-        )
+    ensureTimelineShell(div, context, targetMonthKey, {
+        state: cached ? "cached" : "ready",
+        busy: true
+    });
+    reconcileTimelineRows(div, visibleWorkerIds);
+    updateTimelineLoadMoreButton(
+        div,
+        Math.min(
+            div.querySelectorAll("[data-timeline-row]").length,
+            visibleGroup.length
+        ),
+        context.orderedGroup.length
+    );
+    updateTimelineProgress(
+        div,
+        cached
+            ? "Actualizando timeline..."
+            : "Cargando trabajadores..."
     );
 
-    if (
-        !timelineRows ||
-        !timelineRenderIsCurrent(requestId, year, month)
-    ) {
-        return;
-    }
-
-    let html = `
-        <div class="timeline-shell">
-            <table class="timeline-table">
-                <thead>
-                    <tr>
-                        <th class="timeline-name-head">
-                            ${timelineFilterHTML(groups, selectedKeys, baseGroup.key)}
-                        </th>
-                        <th class="timeline-hhee-head timeline-hhee--day" title="HHEE Diurnas">
-                            <span class="timeline-hhee-label" aria-label="HHEE Diurnas">
-                                <span>HHEE</span>
-                                <svg class="timeline-hhee-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <circle cx="12" cy="12" r="4"></circle>
-                                    <path d="M12 2v2"></path>
-                                    <path d="M12 20v2"></path>
-                                    <path d="M4.93 4.93l1.41 1.41"></path>
-                                    <path d="M17.66 17.66l1.41 1.41"></path>
-                                    <path d="M2 12h2"></path>
-                                    <path d="M20 12h2"></path>
-                                    <path d="M6.34 17.66l-1.41 1.41"></path>
-                                    <path d="M17.66 6.34l1.41-1.41"></path>
-                                </svg>
-                            </span>
-                        </th>
-                        <th class="timeline-hhee-head timeline-hhee--night" title="HHEE Nocturnas">
-                            <span class="timeline-hhee-label" aria-label="HHEE Nocturnas">
-                                <span>HHEE</span>
-                                <svg class="timeline-hhee-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <path d="M21 12.79A9 9 0 1 1 11.21 3A7 7 0 0 0 21 12.79z"></path>
-                                </svg>
-                            </span>
-                        </th>
-    `;
-
-    for (let d = 1; d <= diasMes; d++) {
-        html += `<th>${d}</th>`;
-    }
-
-    html += `
-                    </tr>
-                </thead>
-                <tbody>
-    `;
-
-    for (const {
-        profile,
-        data,
-        stats,
-        honorariaSummary
-    } of timelineRows) {
+    for (let index = 0; index < visibleGroup.length;) {
         if (!timelineRenderIsCurrent(requestId, year, month)) {
             return;
         }
 
-        const dayHhee = honorariaSummary
-            ? honorariaSummary.overtimeDay
-            : stats.hheeDiurnas;
-        const nightHhee = honorariaSummary
-            ? honorariaSummary.overtimeNight
-            : stats.hheeNocturnas;
-        const honorariaHheeClass =
-            honorariaSummary?.overtimeHours > 0
-                ? " honoraria-hhee-excess"
-                : "";
-        const leaveMaps = {
-            admin: getAdmin(profile.name),
-            legal: getLegal(profile.name),
-            comp: getComp(profile.name),
-            absences: getAbs(profile.name)
-        };
+        const batchSize = index === 0
+            ? TIMELINE_INITIAL_BATCH_SIZE
+            : TIMELINE_INCREMENTAL_BATCH_SIZE;
+        const batchProfiles = visibleGroup.slice(
+            index,
+            Math.min(
+                index + batchSize,
+                visibleGroup.length
+            )
+        );
+        const rows = await buildTimelineBatchRows({
+            profiles: batchProfiles,
+            context,
+            holidays,
+            requestId,
+            skipCache: options.skipCache
+        });
 
-        html += `<tr>`;
-        html += `
-            <td class="namecol">
-                <button
-                    class="timeline-profile-link"
-                    type="button"
-                    data-profile-name="${escapeHtml(profile.name)}"
-                    title="Abrir perfil de ${escapeHtml(profile.name)}"
-                >
-                    ${escapeHtml(profile.name)}
-                </button>
-            </td>
-        `;
-        html += `
-            <td class="timeline-hhee timeline-hhee--day${dayExtraAlertClass(profile.name, dayHhee, new Date(year, month, 1))}${honorariaHheeClass}">
-                ${formatTimelineHours(dayHhee)}
-            </td>
-            <td class="timeline-hhee timeline-hhee--night${honorariaHheeClass}">
-                ${formatTimelineHours(nightHhee)}
-            </td>
-        `;
+        if (!rows) return;
 
-        for (let d = 1; d <= diasMes; d++) {
-            html += renderTimelineDayCell(profile, d, {
-                year,
-                month,
-                holidays,
-                leaveMaps,
-                honorariaSummary
-            });
-        }
-
-        html += `</tr>`;
-        await yieldTimelineRender();
-    }
-
-    html += `
-                </tbody>
-            </table>
-        </div>
-    `;
-
-    if (visibleGroup.length < orderedGroup.length) {
-        html += `
-            <button class="timeline-load-more" type="button" data-timeline-load-more>
-                Mostrar ${Math.min(
-                    TIMELINE_PAGE_SIZE,
-                    orderedGroup.length - visibleGroup.length
-                )} trabajadores m&aacute;s
-            </button>
-        `;
+        appendTimelineRowElements(div, rows);
+        updateTimelineLoadMoreButton(
+            div,
+            Math.min(
+                index + batchSize,
+                visibleGroup.length
+            ),
+            context.orderedGroup.length
+        );
+        syncTimelineStickyOffsets(div);
+        await waitTimelineIdle(index === 0 ? 60 : 180);
+        index += batchSize;
     }
 
     if (!timelineRenderIsCurrent(requestId, year, month)) {
         return;
     }
 
+    updateTimelineProgress(div, "");
+    div.dataset.timelineState = "ready";
+    div.setAttribute("aria-busy", "false");
+    updateTimelineLoadMoreButton(
+        div,
+        visibleGroup.length,
+        context.orderedGroup.length
+    );
+
     writeTimelineCache(cacheKey, {
-        viewSignature: nextPageSignature,
+        viewSignature: context.viewSignature,
         rowLimit: timelineRowLimit,
         monthKey: targetMonthKey,
-        html
+        html: div.innerHTML
     });
-    activateTimelineHTML(div, html, targetMonthKey, options);
+
+    if (Number.isFinite(Number(options.revealRowIndex))) {
+        revealTimelineRow(div, Number(options.revealRowIndex));
+    }
 }
 
 if (typeof window !== "undefined") {
@@ -1518,11 +2498,24 @@ if (typeof window !== "undefined") {
             return;
         }
 
+        const affectedProfiles = timelineAffectedProfilesFromKeys(keys);
+
+        clearLegacyTimelineCache();
+
+        if (affectedProfiles.size) {
+            clearTimelineRowCacheForProfiles(affectedProfiles);
+            void refreshVisibleTimelineRows(affectedProfiles);
+            return;
+        }
+
         clearTimelineCache();
     });
     window.addEventListener("proturnos:firebaseAppState", event => {
         if (event.detail?.type === "app-state-applied") {
             clearTimelineCache();
+            if (timelineIsVisibleView()) {
+                void renderTimeline({ skipCache: true });
+            }
         }
     });
 }

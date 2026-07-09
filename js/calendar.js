@@ -121,7 +121,11 @@ import {
     TURNO_CLASS
 } from "./constants.js";
 import {
-    getJSON
+    getJSON,
+    getRaw,
+    listKeys,
+    removeKey,
+    setRaw
 } from "./persistence.js";
 import {
     getAppState,
@@ -158,6 +162,9 @@ export let currentDate = new Date();
 const CALENDAR_AUDIT_DELAY_MS = 60000;
 const CALENDAR_DIRECT_EDIT_REFRESH_DELAY_MS = 30000;
 const CALENDAR_HEAVY_UPDATE_DELAY_MS = 450;
+const CALENDAR_CACHE_VERSION = 1;
+const CALENDAR_CACHE_PREFIX = "proturnos_ui_cache_calendar_";
+const CALENDAR_CACHE_MAX_ENTRIES = 72;
 const calendarAuditTimers = new Map();
 const calendarAuditDrafts = new Map();
 let linkedReplacementStatus = "";
@@ -180,6 +187,7 @@ const pendingCalendarKeys = new Set();
 const pendingStaffingKeys = new Set();
 const calendarCellHandlers = new WeakMap();
 const calendarMapSnapshots = new Map();
+const calendarMemoryCache = new Map();
 
 const CALENDAR_MONTH_NAMES = [
     "Enero",
@@ -206,6 +214,236 @@ const PENDING_LEAVE_REQUEST_TYPES = new Set([
     "unpaid_leave"
 ]);
 
+function calendarCacheHash(value) {
+    let hash = 2166136261;
+    const text = String(value || "");
+
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(36);
+}
+
+function calendarWorkspaceId() {
+    return String(getActiveWorkspace?.()?.id || "local");
+}
+
+function calendarMonthKey(year, month) {
+    return `${Number(year)}-${Number(month)}`;
+}
+
+function calendarTodaySignature() {
+    const today = new Date();
+
+    return key(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate()
+    );
+}
+
+function calendarVisualSignature() {
+    return [
+        window.selectionMode || "",
+        window.pendingShiftMoveSourceKey || "",
+        window.pendingShiftMoveDestinationTurn || 0,
+        window.pendingShiftMoveProgrammedTurn || 0,
+        window.compCantidad || 0,
+        window.legalCantidad || 0,
+        window.licenseCantidad || 0,
+        window.licenseType || "license",
+        typeof window.getProfileDraftSelectionKey === "function"
+            ? window.getProfileDraftSelectionKey()
+            : "",
+        calendarTodaySignature()
+    ].join("\u001f");
+}
+
+function calendarViewSignature({
+    workerId,
+    profileName,
+    year,
+    month,
+    activeProfileEnabled
+}) {
+    return [
+        calendarWorkspaceId(),
+        workerId || "",
+        profileName || "",
+        year,
+        month,
+        activeProfileEnabled ? "active" : "inactive",
+        calendarVisualSignature()
+    ].join("\u001e");
+}
+
+function calendarCacheKey(viewSignature) {
+    return (
+        CALENDAR_CACHE_PREFIX +
+        `${CALENDAR_CACHE_VERSION}_` +
+        calendarCacheHash(viewSignature)
+    );
+}
+
+function parseCalendarCache(raw) {
+    if (!raw) return null;
+
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function readCalendarCache(cacheKey, {
+    viewSignature,
+    monthKey,
+    workerId
+}) {
+    const payload = calendarMemoryCache.get(cacheKey) ||
+        parseCalendarCache(getRaw(cacheKey, null));
+
+    if (
+        !payload ||
+        payload.version !== CALENDAR_CACHE_VERSION ||
+        payload.viewSignature !== viewSignature ||
+        payload.monthKey !== monthKey ||
+        payload.workerId !== workerId ||
+        typeof payload.html !== "string"
+    ) {
+        return null;
+    }
+
+    calendarMemoryCache.set(cacheKey, payload);
+    return payload;
+}
+
+function pruneCalendarCache() {
+    const keys = listKeys(CALENDAR_CACHE_PREFIX);
+
+    if (keys.length <= CALENDAR_CACHE_MAX_ENTRIES) return;
+
+    keys
+        .map(cacheKey => ({
+            key: cacheKey,
+            savedAt:
+                Number(
+                    calendarMemoryCache.get(cacheKey)?.savedAt ??
+                    parseCalendarCache(getRaw(cacheKey, null))?.savedAt
+                ) || 0
+        }))
+        .sort((a, b) => b.savedAt - a.savedAt)
+        .slice(CALENDAR_CACHE_MAX_ENTRIES)
+        .forEach(entry => {
+            calendarMemoryCache.delete(entry.key);
+            removeKey(entry.key);
+        });
+}
+
+function writeCalendarCache(cacheKey, payload) {
+    const next = {
+        ...payload,
+        version: CALENDAR_CACHE_VERSION,
+        savedAt: Date.now()
+    };
+
+    calendarMemoryCache.set(cacheKey, next);
+
+    try {
+        setRaw(cacheKey, JSON.stringify(next));
+        pruneCalendarCache();
+    } catch {
+        calendarMemoryCache.delete(cacheKey);
+    }
+}
+
+function clearCalendarCache() {
+    calendarMemoryCache.clear();
+    listKeys(CALENDAR_CACHE_PREFIX).forEach(removeKey);
+}
+
+function clearCalendarCacheForWorker(workerId) {
+    if (!workerId) return;
+
+    listKeys(CALENDAR_CACHE_PREFIX).forEach(cacheKey => {
+        const payload = calendarMemoryCache.get(cacheKey) ||
+            parseCalendarCache(getRaw(cacheKey, null));
+
+        if (payload?.workerId === workerId) {
+            calendarMemoryCache.delete(cacheKey);
+            removeKey(cacheKey);
+        }
+    });
+}
+
+function registerCalendarCellsFromDOM(calendar) {
+    clearCalendarCellRefs();
+    calendar?.querySelectorAll(".day[data-date]").forEach(cell => {
+        registerCalendarCell(
+            cell.dataset.workerId,
+            cell.dataset.keyDay,
+            cell
+        );
+    });
+}
+
+function writeActiveCalendarCache(calendar = document.getElementById("calendar")) {
+    if (!calendar || !lastCalendarView?.cacheKey) return;
+
+    writeCalendarCache(lastCalendarView.cacheKey, {
+        viewSignature: lastCalendarView.viewSignature,
+        monthKey: lastCalendarView.monthKey,
+        workerId: lastCalendarView.workerId,
+        profileName: lastCalendarView.profileName,
+        year: lastCalendarView.year,
+        month: lastCalendarView.month,
+        html: calendar.innerHTML,
+        hasMultipleBadgeDays:
+            calendar.classList.contains("has-multiple-badge-days")
+    });
+}
+
+function activateCalendarCache(calendar, cached, {
+    calendarPanel,
+    workerId,
+    profileName,
+    year,
+    month,
+    days,
+    holidays = {},
+    cacheKey,
+    viewSignature,
+    monthKey
+}) {
+    calendar.innerHTML = cached.html;
+    calendar.dataset.calendarState = "cached";
+    calendar.setAttribute("aria-busy", "true");
+    registerCalendarCellsFromDOM(calendar);
+    calendar.classList.toggle(
+        "has-multiple-badge-days",
+        Boolean(cached.hasMultipleBadgeDays)
+    );
+    calendarPanel?.classList.toggle(
+        "has-multiple-badge-days",
+        Boolean(cached.hasMultipleBadgeDays)
+    );
+    lastCalendarView = {
+        calendar,
+        workerId,
+        profileName,
+        year,
+        month,
+        holidays,
+        holidaysLoaded: false,
+        days,
+        cacheKey,
+        viewSignature,
+        monthKey
+    };
+}
+
 async function handleCalendarClick(event) {
     const cell = event.target.closest(".day[data-action='calendar-day']");
 
@@ -224,7 +462,13 @@ async function handleCalendarClick(event) {
     }
 
     const handler = calendarCellHandlers.get(cell);
-    if (handler) await handler(event);
+
+    if (handler) {
+        await handler(event);
+        return;
+    }
+
+    await handleCalendarCellFallbackClick(cell, event);
 }
 
 function ensureCalendarDelegation(calendar) {
@@ -233,6 +477,175 @@ function ensureCalendarDelegation(calendar) {
     delegatedCalendar?.removeEventListener("click", handleCalendarClick);
     delegatedCalendar = calendar;
     delegatedCalendar.addEventListener("click", handleCalendarClick);
+}
+
+async function handleCalendarCellFallbackClick(cell, event) {
+    const activeProfile = getCurrentProfile();
+    const keyDay = cell?.dataset?.keyDay || "";
+
+    if (!activeProfile || !keyDay) return;
+
+    const workers = getAppState().workers?.length
+        ? getAppState().workers
+        : getProfiles();
+    const activeWorker = workers.find(worker =>
+        worker.name === activeProfile
+    ) || null;
+    const activeProfileEnabled =
+        isProfileActive(activeWorker || activeProfile);
+
+    if (!activeProfileEnabled) {
+        event.stopPropagation();
+        alert("Este perfil esta desactivado. Reactivalo desde Perfil para modificar su calendario.");
+        return;
+    }
+
+    const date = dateFromKeyDay(keyDay);
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const holidays =
+        lastCalendarView?.year === year &&
+        lastCalendarView?.month === month &&
+        lastCalendarView?.holidaysLoaded === true
+            ? lastCalendarView.holidays || {}
+            : await fetchHolidays(year);
+    const admin = getAdminDays();
+    const legal = getLegalDays();
+    const comp = getCompDays();
+    const absences = getAbsences();
+    const data = getProfileData();
+    const baseState = getTurnoBase(activeProfile, keyDay);
+    const state = aplicarCambiosTurno(
+        activeProfile,
+        keyDay,
+        getTurnoProgramado(activeProfile, keyDay)
+    );
+    const pendingLeaveRequest =
+        getPendingLeaveRequestForDay(activeProfile, keyDay);
+
+    if (
+        pendingLeaveRequest &&
+        !window.selectionMode
+    ) {
+        event.stopPropagation();
+        return openPendingLeaveRequestDialog({
+            request: pendingLeaveRequest,
+            profile: activeProfile,
+            keyDay,
+            baseState
+        });
+    }
+
+    const turnChangeMarkers =
+        getCambiosTurnoCalendario(activeProfile, keyDay);
+    const turnChangeMarker = turnChangeMarkers[0] || null;
+    const turnChange = turnChangeMarker?.swap || null;
+    const coveredReplacement =
+        getReplacementForCoveredShift(activeProfile, keyDay);
+    const replacementContractError =
+        isReplacementProfile(activeProfile) &&
+        state > 0 &&
+        !hasContractForDate(activeProfile, keyDay);
+    const honorariaSummary = getHonorariaMonthlySummary(
+        activeProfile,
+        year,
+        month,
+        holidays
+    );
+    const honorariaExcess =
+        getHonorariaExcessForKey(honorariaSummary, keyDay);
+    const severeClockIncident =
+        hasSevereClockIncident(activeProfile, keyDay);
+    const needsReplacement =
+        requiereReemplazoTurnoBase(
+            keyDay,
+            baseState,
+            admin,
+            legal,
+            comp,
+            absences
+        ) &&
+        !coveredReplacement;
+    const pendingManualExtra =
+        getPendingManualExtraTurn(
+            activeProfile,
+            keyDay,
+            data
+        );
+    const showExtraReason =
+        !needsReplacement &&
+        !turnChange &&
+        !replacementContractError &&
+        pendingManualExtra;
+    const clockExtra =
+        hasClockExtra(
+            activeProfile,
+            keyDay,
+            date,
+            state,
+            holidays
+        );
+    const showClockExtraReason =
+        clockExtra &&
+        !getClockExtraBackupForWorker(activeProfile, keyDay);
+    const badgeTarget = event.target.closest(".day-badge");
+
+    if (replacementContractError && badgeTarget) {
+        event.stopPropagation();
+        window.startReplacementContractEdit?.(
+            activeProfile,
+            keyDay
+        );
+        return;
+    }
+
+    if (
+        honorariaExcess &&
+        !replacementContractError &&
+        !severeClockIncident &&
+        !needsReplacement &&
+        badgeTarget
+    ) {
+        event.stopPropagation();
+        alert(getHonorariaLimitMessage(honorariaSummary));
+        return;
+    }
+
+    if (showExtraReason && badgeTarget) {
+        event.stopPropagation();
+        return openExtraReasonDialog(
+            activeProfile,
+            keyDay,
+            showExtraReason
+        );
+    }
+
+    if (showClockExtraReason && badgeTarget) {
+        event.stopPropagation();
+        return openClockExtraReasonDialog(
+            activeProfile,
+            keyDay,
+            state
+        );
+    }
+
+    if (turnChange || needsReplacement) {
+        event.stopPropagation();
+    }
+
+    await clickDia(
+        keyDay,
+        isBusinessDay(date, holidays),
+        admin,
+        legal,
+        comp,
+        absences,
+        {
+            cell,
+            date,
+            holidays
+        }
+    );
 }
 
 export function setCalendarSelectionHandler(handler) {
@@ -399,6 +812,25 @@ function deferAfterPaint(callback) {
     } else {
         run();
     }
+}
+
+function waitCalendarIdle(timeout = 120) {
+    return new Promise(resolve => {
+        if (typeof window === "undefined") {
+            resolve();
+            return;
+        }
+
+        if (typeof window.requestIdleCallback === "function") {
+            window.requestIdleCallback(
+                () => resolve(),
+                { timeout }
+            );
+            return;
+        }
+
+        window.setTimeout(resolve, Math.min(timeout, 80));
+    });
 }
 
 function cancelCalendarHeavyUpdates() {
@@ -981,6 +1413,15 @@ function handleCalendarPersistenceChange(event) {
         !Array.isArray(changedStorageKeys)
     ) return;
 
+    if (
+        changedStorageKeys.length &&
+        changedStorageKeys.every(storageKey =>
+            String(storageKey || "").startsWith("proturnos_ui_cache_")
+        )
+    ) {
+        return;
+    }
+
     const profileMaps = calendarStorageMaps(profileName);
     const mapKeys = new Set(Object.keys(profileMaps));
     const fullWorkerKeys = new Set([
@@ -999,6 +1440,7 @@ function handleCalendarPersistenceChange(event) {
     ]);
     const changedDayKeys = new Set();
     let refreshVisibleMonth = false;
+    let clearAllCalendarCaches = false;
 
     changedStorageKeys.forEach(storageKey => {
         if (mapKeys.has(storageKey)) {
@@ -1033,10 +1475,19 @@ function handleCalendarPersistenceChange(event) {
             sharedCalendarKeys.has(storageKey)
         ) {
             refreshVisibleMonth = true;
+            if (storageKey === "profiles") {
+                clearAllCalendarCaches = true;
+            }
         }
     });
 
     if (!changedDayKeys.size && !refreshVisibleMonth) return;
+
+    if (clearAllCalendarCaches) {
+        clearCalendarCache();
+    } else {
+        clearCalendarCacheForWorker(resolveWorkerId(profileName));
+    }
 
     syncCentralCalendarMaps(profileName);
     queueCalendarDayUpdates(
@@ -3826,6 +4277,21 @@ export async function renderCalendar(options = {}) {
         isProfileActive(activeWorker || activeProfile);
     const y = currentDate.getFullYear();
     const m = currentDate.getMonth();
+    const days =
+        new Date(y, m + 1, 0).getDate();
+    const monthKey = calendarMonthKey(y, m);
+    const viewSignature = activeProfile
+        ? calendarViewSignature({
+            workerId: activeWorkerId,
+            profileName: activeProfile,
+            year: y,
+            month: m,
+            activeProfileEnabled
+        })
+        : "";
+    const cacheKey = viewSignature
+        ? calendarCacheKey(viewSignature)
+        : "";
     const requestedKeys = new Set(
         Array.isArray(options.changedKeys)
             ? options.changedKeys
@@ -3856,15 +4322,45 @@ export async function renderCalendar(options = {}) {
         setupCalendarMonthPicker(monthYear);
     }
 
-    const holidays = await fetchHolidays(y);
     const first =
         (new Date(y, m, 1).getDay() + 6) % 7;
-    const days =
-        new Date(y, m + 1, 0).getDate();
     const draftKey =
         typeof window.getProfileDraftSelectionKey === "function"
             ? window.getProfileDraftSelectionKey()
             : "";
+    const cachedCalendar =
+        !partialRender &&
+        activeProfile &&
+        !options.skipCache
+            ? readCalendarCache(cacheKey, {
+                viewSignature,
+                monthKey,
+                workerId: activeWorkerId
+            })
+            : null;
+
+    if (cachedCalendar) {
+        activateCalendarCache(cal, cachedCalendar, {
+            calendarPanel,
+            workerId: activeWorkerId,
+            profileName: activeProfile,
+            year: y,
+            month: m,
+            days,
+            cacheKey,
+            viewSignature,
+            monthKey
+        });
+    } else if (!partialRender) {
+        cal.dataset.calendarState = "loading";
+        cal.setAttribute("aria-busy", "true");
+    }
+
+    if (cachedCalendar) {
+        await waitCalendarIdle(120);
+    }
+
+    const holidays = await fetchHolidays(y);
 
     if (renderRequest !== calendarRenderRequest) return;
 
@@ -3904,13 +4400,16 @@ export async function renderCalendar(options = {}) {
             fragment.appendChild(div);
         }
 
-        clearCalendarCellRefs();
         cal.replaceChildren(fragment);
+        registerCalendarCellsFromDOM(cal);
+        cal.dataset.calendarState = "ready";
+        cal.setAttribute("aria-busy", "false");
         lastCalendarView = {
             calendar: cal,
             workerId: "",
             year: y,
-            month: m
+            month: m,
+            holidaysLoaded: true
         };
 
         runCalendarHeavyUpdates(options);
@@ -4452,23 +4951,26 @@ export async function renderCalendar(options = {}) {
     }
 
     if (!partialRender) {
-        clearCalendarCellRefs();
-        fragment.querySelectorAll?.(".day[data-date]").forEach(cell => {
-            registerCalendarCell(
-                cell.dataset.workerId,
-                cell.dataset.keyDay,
-                cell
-            );
-        });
         cal.replaceChildren(fragment);
+        registerCalendarCellsFromDOM(cal);
+        cal.dataset.calendarState = "ready";
+        cal.setAttribute("aria-busy", "false");
         lastCalendarView = {
             calendar: cal,
             workerId: activeWorkerId,
+            profileName: activeProfile,
             year: y,
             month: m,
             holidays,
-            days
+            holidaysLoaded: true,
+            days,
+            cacheKey,
+            viewSignature,
+            monthKey
         };
+    } else {
+        cal.dataset.calendarState = "ready";
+        cal.setAttribute("aria-busy", "false");
     }
     const monthHasMultipleBadges = partialRender
         ? Boolean(cal.querySelector(".day.has-multiple-badges"))
@@ -4484,6 +4986,7 @@ export async function renderCalendar(options = {}) {
     );
 
     syncCalendarMapSnapshots(activeProfile);
+    writeActiveCalendarCache(cal);
 
     if (partialRender) {
         if (options.updateSummary === true) {
