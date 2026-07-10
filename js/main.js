@@ -187,6 +187,12 @@ import {
 } from "./history.js";
 import { refreshAll } from "./refresh.js";
 import { scheduleIdleTask } from "./mainThreadScheduler.js";
+import {
+    initPerformanceMonitor,
+    measurePerformance,
+    recordPerformanceEvent,
+    startPerformanceSpan
+} from "./performanceMonitor.js";
 import { DOM } from "./dom.js";
 import { renderSwapPanel } from "./swapUI.js";
 import {
@@ -422,6 +428,7 @@ import {
     showPrompt
 } from "./dialogs.js";
 
+initPerformanceMonitor();
 installAppDialogs();
 
 let selectionMode = null;
@@ -4202,95 +4209,107 @@ function setActiveShortcut(targetId, options = {}) {
 
     const previousView = document.body.dataset.activeView || "turnos";
     const nextView = getViewForTarget(targetId);
-
-    if (nextView === "profile" && selectionMode) {
-        clearSelectionMode(false);
-    }
-
-    setDashboardView(nextView);
-
-    if (nextView === "hours") {
-        renderDashboardState();
-    }
-
-    if (nextView === "profile") {
-        renderDashboardState();
-    }
-
-    if (nextView === "log") {
-        renderAuditLogPanel();
-    }
-
-    if (nextView === "requests") {
-        renderWorkerRequestsPanel();
-    }
-
-    if (nextView === "memos") {
-        renderMemosPanel();
-    }
-
-    if (nextView === "reports") {
-        if (previousView === "turnos") {
-            syncReportsMonthFromCurrent();
+    const finishNavigation = startPerformanceSpan(
+        "navigation:set-active-shortcut",
+        {
+            targetId,
+            previousView,
+            nextView
         }
-        renderReportsProfiles({
-            renderDetail: true
-        });
-    }
-
-    if (nextView === "dashboard") {
-        renderDashboardPanel();
-    }
-
-    if (nextView === "clockmarks") {
-        syncClockMarksMonthFromCurrent();
-        renderClockMarksPanel();
-    }
-
-    if (nextView === "swap") {
-        renderSwapPanel();
-    }
-
-    if (nextView === "weekly") {
-        renderStaffingWeeklyCalendar();
-    }
-
-    if (nextView === "timeline") {
-        renderTimeline();
-    }
-
-    if (nextView === "tasks") {
-        renderTaskAssignmentsPanel();
-    }
-
-    if (nextView === "kanban") {
-        renderKanbanBoard();
-    }
-
-    if (nextView === "agenda") {
-        renderAgendaPanel();
-    }
-
-    if (nextView === "turnos") {
-        renderDashboardState();
-        renderCalendar({ deferHeavy: true });
-        requestAnimationFrame(scrollInlineStaffingReportToToday);
-    }
-
-    document
-        .querySelectorAll(".nav-tile[data-target]")
-        .forEach(button => {
-            button.classList.toggle(
-                "is-active",
-                button.dataset.target === targetId
-            );
-        });
-
-    syncWorkspacePermissionUI({ switchIfNeeded: false });
-    syncAppNavigationHistory(
-        targetId,
-        options.historyMode || "push"
     );
+
+    try {
+        if (nextView === "profile" && selectionMode) {
+            clearSelectionMode(false);
+        }
+
+        setDashboardView(nextView);
+
+        if (nextView === "hours") {
+            renderDashboardState();
+        }
+
+        if (nextView === "profile") {
+            renderDashboardState();
+        }
+
+        if (nextView === "log") {
+            renderAuditLogPanel();
+        }
+
+        if (nextView === "requests") {
+            renderWorkerRequestsPanel();
+        }
+
+        if (nextView === "memos") {
+            renderMemosPanel();
+        }
+
+        if (nextView === "reports") {
+            if (previousView === "turnos") {
+                syncReportsMonthFromCurrent();
+            }
+            renderReportsProfiles({
+                renderDetail: true
+            });
+        }
+
+        if (nextView === "dashboard") {
+            renderDashboardPanel();
+        }
+
+        if (nextView === "clockmarks") {
+            syncClockMarksMonthFromCurrent();
+            renderClockMarksPanel();
+        }
+
+        if (nextView === "swap") {
+            renderSwapPanel();
+        }
+
+        if (nextView === "weekly") {
+            renderStaffingWeeklyCalendar();
+        }
+
+        if (nextView === "timeline") {
+            renderTimeline();
+        }
+
+        if (nextView === "tasks") {
+            renderTaskAssignmentsPanel();
+        }
+
+        if (nextView === "kanban") {
+            renderKanbanBoard();
+        }
+
+        if (nextView === "agenda") {
+            renderAgendaPanel();
+        }
+
+        if (nextView === "turnos") {
+            renderDashboardState();
+            renderCalendar({ deferHeavy: true });
+            requestAnimationFrame(scrollInlineStaffingReportToToday);
+        }
+
+        document
+            .querySelectorAll(".nav-tile[data-target]")
+            .forEach(button => {
+                button.classList.toggle(
+                    "is-active",
+                    button.dataset.target === targetId
+                );
+            });
+
+        syncWorkspacePermissionUI({ switchIfNeeded: false });
+        syncAppNavigationHistory(
+            targetId,
+            options.historyMode || "push"
+        );
+    } finally {
+        finishNavigation();
+    }
 }
 
 const PROFILE_LIST_PAGE_SIZE = 30;
@@ -5721,7 +5740,11 @@ function clearSelectionMode(shouldRefresh = true) {
     DOM.adminInfo.classList.add("hidden");
 
     if (shouldRefresh) {
-        void updateVisibleCalendarDays({ updateSummary: true });
+        void updateVisibleCalendarDays({
+            updateSummary: true,
+            cooperative: true,
+            modeRefresh: true
+        });
         // Refresca solo la fila del trabajador activo en el timeline (permisos,
         // feriados, rotativa, etc.) sin reconstruir todo el timeline.
         updateTimelineCells(getCurrentProfile());
@@ -5729,6 +5752,22 @@ function clearSelectionMode(shouldRefresh = true) {
         // F. Legal, F. Compensatorio, etc.) inmediatamente tras aplicar.
         renderLeaveActionLabels();
     }
+}
+
+function scheduleModeCalendarRefresh() {
+    const refresh = () => {
+        void updateVisibleCalendarDays({
+            cooperative: true,
+            modeRefresh: true
+        });
+    };
+
+    if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(refresh);
+        return;
+    }
+
+    window.setTimeout(refresh, 0);
 }
 
 function activarModo(modo, texto) {
@@ -5756,7 +5795,7 @@ function activarModo(modo, texto) {
         .getElementById("cancelModeBtn")
         .onclick = () => clearSelectionMode();
 
-    void updateVisibleCalendarDays();
+    scheduleModeCalendarRefresh();
 }
 
 function isStandaloneApp() {
@@ -9527,56 +9566,74 @@ function scheduleWorkspaceUiRefresh(options = {}) {
 
     clearTimeout(workspaceUiRefreshTimer);
     workspaceUiRefreshTimer = window.setTimeout(() => {
-        workspaceUiRefreshTimer = 0;
+        measurePerformance(
+            "workspace:deferred-ui-refresh",
+            () => {
+                workspaceUiRefreshTimer = 0;
 
-        const syncState = workspaceStateSyncRequested;
-        workspaceStateSyncRequested = false;
+                const syncState = workspaceStateSyncRequested;
+                workspaceStateSyncRequested = false;
 
-        if (syncState) {
-            syncWorkspaceStateViews();
-        } else {
-            // Los enlaces de la PWA solo cambian controles del perfil activo;
-            // no alteran las celdas ni justifican reconstruir el calendario.
-            renderDashboardState();
-            renderBotones();
-        }
+                if (syncState) {
+                    syncWorkspaceStateViews();
+                } else {
+                    // Los enlaces de la PWA solo cambian controles del perfil activo;
+                    // no alteran las celdas ni justifican reconstruir el calendario.
+                    renderDashboardState();
+                    renderBotones();
+                }
+            },
+            {
+                syncState: workspaceStateSyncRequested,
+                activeView: document.body.dataset.activeView || "turnos"
+            }
+        );
     }, 60);
 }
 
 function syncWorkspaceStateViews() {
-    const profiles = getProfiles();
-    const current = getCurrentProfile();
+    return measurePerformance(
+        "workspace:sync-state-views",
+        () => {
+            const profiles = getProfiles();
+            const current = getCurrentProfile();
 
-    if (
-        profiles.length &&
-        !profiles.some(profile =>
-            profile.name === current
-        )
-    ) {
-        setCurrentProfile(profiles[0].name);
-    }
+            if (
+                profiles.length &&
+                !profiles.some(profile =>
+                    profile.name === current
+                )
+            ) {
+                setCurrentProfile(profiles[0].name);
+            }
 
-    if (!profiles.length) {
-        setCurrentProfile(null);
-    }
+            if (!profiles.length) {
+                setCurrentProfile(null);
+            }
 
-    renderProfiles({ dashboard: false });
-    renderBotones();
-    if (
-        document.body.dataset.activeView ===
-        "requests"
-    ) {
-        renderWorkerRequestsPanel();
-    } else {
-        refreshWorkerRequestsNavBadge();
-    }
-    if (document.body.dataset.activeView === "tasks") {
-        renderTaskAssignmentsPanel();
-    }
-    if (document.body.dataset.activeView === "kanban") {
-        renderKanbanBoard();
-    }
-    refreshAll();
+            renderProfiles({ dashboard: false });
+            renderBotones();
+            if (
+                document.body.dataset.activeView ===
+                "requests"
+            ) {
+                renderWorkerRequestsPanel();
+            } else {
+                refreshWorkerRequestsNavBadge();
+            }
+            if (document.body.dataset.activeView === "tasks") {
+                renderTaskAssignmentsPanel();
+            }
+            if (document.body.dataset.activeView === "kanban") {
+                renderKanbanBoard();
+            }
+            refreshAll();
+        },
+        {
+            profileCount: getProfiles().length,
+            activeView: document.body.dataset.activeView || "turnos"
+        }
+    );
 }
 
 initTheme();
@@ -9654,6 +9711,11 @@ initFirebaseShell({
     },
     onWorkspaceChange: async workspace => {
         if (workspace?.id) {
+            recordPerformanceEvent("firebase:workspace-change", {
+                type: "workspace",
+                workspaceId: workspace.id,
+                workspaceName: workspace.name || ""
+            });
             // Refresca el uso/plan autoritativo para tener listo el gating.
             void refreshAccountUsage({ force: true });
 
@@ -9680,7 +9742,14 @@ initFirebaseShell({
                 throw error;
             }
 
-            startWorkerAppDataSync(workspace);
+            void measurePerformance(
+                "worker-app:start-sync",
+                () => startWorkerAppDataSync(workspace),
+                {
+                    workspaceId: workspace.id,
+                    workspaceName: workspace.name || ""
+                }
+            );
             startInterUnitLoanSync(workspace);
             let workerAvailabilityInitialized = false;
             let workerAvailabilitySnapshot = new Map();
@@ -9757,18 +9826,38 @@ initFirebaseShell({
                     );
                 }
             });
-            startFirebaseAppStateSync(workspace, {
-                onChange: (_snapshot, detail = {}) => {
-                    if (detail.partial === true) {
-                        if (detail.keys?.includes("profiles")) {
-                            renderProfiles({ dashboard: false });
-                        }
-                        renderBotones();
-                    } else {
-                        scheduleWorkspaceUiRefresh({ syncState: true });
+            void measurePerformance(
+                "firebase-app-state:start-sync",
+                () => startFirebaseAppStateSync(workspace, {
+                    onChange: (_snapshot, detail = {}) => {
+                        measurePerformance(
+                            "firebase-app-state:on-change-ui",
+                            () => {
+                                if (detail.partial === true) {
+                                    if (detail.keys?.includes("profiles")) {
+                                        renderProfiles({ dashboard: false });
+                                    }
+                                    renderBotones();
+                                } else {
+                                    scheduleWorkspaceUiRefresh({
+                                        syncState: true
+                                    });
+                                }
+                            },
+                            {
+                                partial: detail.partial === true,
+                                keyCount: Array.isArray(detail.keys)
+                                    ? detail.keys.length
+                                    : 0
+                            }
+                        );
                     }
+                }),
+                {
+                    workspaceId: workspace.id,
+                    workspaceName: workspace.name || ""
                 }
-            });
+            );
         } else {
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();

@@ -26,10 +26,17 @@ import {
     mergePartialStateEntries,
     planPartialStateEntries
 } from "./firebasePartialState.js";
+import {
+    measurePerformance,
+    recordPerformanceEvent
+} from "./performanceMonitor.js";
 
 const CLIENT_ID_KEY = "proturnos_firebase_client_id";
-const ENTRY_BATCH_SIZE = 400;
-const ENTRY_SYNC_DELAY_MS = 350;
+const ENTRY_BATCH_SIZE = 1;
+const ENTRY_SYNC_DELAY_MS = 2500;
+const ENTRY_USER_QUIET_MS = 90000;
+const ENTRY_ACTIVE_RETRY_MS = 10000;
+const ENTRY_VISIBLE_RETRY_MS = 60000;
 
 let activeWorkspaceId = "";
 let unsubscribeState = null;
@@ -37,6 +44,8 @@ let stateSyncStarting = false;
 let entrySyncTimer = null;
 let applyingRemoteState = false;
 let waitingInitialState = false;
+let entrySyncInFlight = false;
+let entryLastUserActivityAt = Date.now();
 let servicesCache = null;
 let onStateChanged = () => {};
 let syncGeneration = 0;
@@ -44,6 +53,57 @@ const lastAppliedHashes = new Map();
 const pendingStateEntries = new Map();
 const entryModulesPresent = new Set();
 let unsubscribeStateEntries = null;
+
+function waitFirebaseStateIdle(timeout = 500) {
+    return new Promise(resolve => {
+        if (
+            typeof window !== "undefined" &&
+            typeof window.requestIdleCallback === "function"
+        ) {
+            window.requestIdleCallback(resolve, {
+                timeout: Math.max(120, Number(timeout) || 500)
+            });
+            return;
+        }
+
+        setTimeout(resolve, 0);
+    });
+}
+
+function markFirebaseStateUserActivity() {
+    entryLastUserActivityAt = Date.now();
+}
+
+function firebaseStateHasPendingInput() {
+    try {
+        return Boolean(
+            typeof navigator !== "undefined" &&
+            navigator.scheduling &&
+            typeof navigator.scheduling.isInputPending === "function" &&
+            navigator.scheduling.isInputPending({ includeContinuous: true })
+        );
+    } catch (_error) {
+        return false;
+    }
+}
+
+function firebaseStateInteractiveDelay(quietMs = ENTRY_USER_QUIET_MS) {
+    if (typeof document === "undefined") return 0;
+    if (document.visibilityState !== "visible") return 0;
+
+    // Los commits de Firestore/IndexedDB pueden congelar el hilo principal
+    // incluso tras un periodo de quietud. Mientras el supervisor mira la app,
+    // se prioriza la fluidez; la cola se vacia al ocultar la pestaña.
+    const delay = Math.max(
+        ENTRY_VISIBLE_RETRY_MS,
+        ENTRY_ACTIVE_RETRY_MS,
+        Number(quietMs) || ENTRY_USER_QUIET_MS
+    );
+
+    return firebaseStateHasPendingInput()
+        ? Math.max(delay, ENTRY_ACTIVE_RETRY_MS)
+        : delay;
+}
 
 function moduleDocRef(db, firestoreModule, workspaceId, moduleId) {
     return firestoreModule.doc(
@@ -171,7 +231,23 @@ function canReadModule(moduleId) {
     return canViewMenu(permission);
 }
 
-function queuePartialStateEntries(entries = []) {
+function scheduleEntrySync(delay = ENTRY_SYNC_DELAY_MS) {
+    if (
+        !pendingStateEntries.size ||
+        !activeWorkspaceId ||
+        applyingRemoteState ||
+        waitingInitialState ||
+        entrySyncInFlight
+    ) return;
+
+    clearTimeout(entrySyncTimer);
+    entrySyncTimer = setTimeout(
+        flushPartialStateEntries,
+        Math.max(0, Number(delay) || ENTRY_SYNC_DELAY_MS)
+    );
+}
+
+function queueGroupedPartialStateEntries(entries = []) {
     entries.forEach(entry => {
         const id = [
             entry.moduleId,
@@ -181,19 +257,19 @@ function queuePartialStateEntries(entries = []) {
 
         pendingStateEntries.set(id, entry);
     });
+}
+
+function queuePartialStateEntries(entries = []) {
+    queueGroupedPartialStateEntries(entries);
 
     if (
         !pendingStateEntries.size ||
         !activeWorkspaceId ||
         applyingRemoteState ||
-        waitingInitialState
+            waitingInitialState
     ) return;
 
-    clearTimeout(entrySyncTimer);
-    entrySyncTimer = setTimeout(
-        flushPartialStateEntries,
-        ENTRY_SYNC_DELAY_MS
-    );
+    scheduleEntrySync();
 }
 
 async function flushPartialStateEntries() {
@@ -203,9 +279,24 @@ async function flushPartialStateEntries() {
         !activeWorkspaceId ||
         applyingRemoteState ||
         waitingInitialState ||
-        !pendingStateEntries.size
+        !pendingStateEntries.size ||
+        entrySyncInFlight
     ) return;
 
+    const interactiveDelay = firebaseStateInteractiveDelay();
+
+    if (interactiveDelay > 0) {
+        recordPerformanceEvent("firebase-app-state:commit-deferred", {
+            type: "firebase",
+            reason: "user-active",
+            delay: interactiveDelay,
+            pendingCount: pendingStateEntries.size
+        });
+        scheduleEntrySync(interactiveDelay);
+        return;
+    }
+
+    entrySyncInFlight = true;
     const workspaceId = activeWorkspaceId;
     const pending = [...pendingStateEntries.values()];
     pendingStateEntries.clear();
@@ -223,6 +314,20 @@ async function flushPartialStateEntries() {
             offset += ENTRY_BATCH_SIZE
         ) {
             if (workspaceId !== activeWorkspaceId) return;
+
+            const deferredDelay = firebaseStateInteractiveDelay();
+
+            if (deferredDelay > 0) {
+                queueGroupedPartialStateEntries(documents.slice(offset));
+                recordPerformanceEvent("firebase-app-state:commit-deferred", {
+                    type: "firebase",
+                    reason: "user-active-before-slice",
+                    delay: deferredDelay,
+                    pendingCount: documents.length - offset
+                });
+                scheduleEntrySync(deferredDelay);
+                return;
+            }
 
             const batch = firestoreModule.writeBatch(db);
             const slice = documents.slice(
@@ -267,7 +372,43 @@ async function flushPartialStateEntries() {
                 );
             });
 
-            await batch.commit();
+            await measurePerformance(
+                "firebase-app-state:commit-entries",
+                () => batch.commit(),
+                {
+                    documentCount: slice.length,
+                    entryCount: writable.length,
+                    moduleIds: Array.from(
+                        new Set(slice.map(entry => entry.moduleId))
+                    ).join(",")
+                },
+                {
+                    asyncThreshold: 120
+                }
+            );
+
+            if (offset + ENTRY_BATCH_SIZE < documents.length) {
+                if (
+                    typeof document !== "undefined" &&
+                    document.visibilityState === "visible"
+                ) {
+                    queueGroupedPartialStateEntries(
+                        documents.slice(offset + ENTRY_BATCH_SIZE)
+                    );
+                    recordPerformanceEvent("firebase-app-state:commit-deferred", {
+                        type: "firebase",
+                        reason: "one-visible-slice-per-flush",
+                        delay: ENTRY_ACTIVE_RETRY_MS,
+                        pendingCount:
+                            documents.length -
+                            (offset + ENTRY_BATCH_SIZE)
+                    });
+                    scheduleEntrySync(ENTRY_ACTIVE_RETRY_MS);
+                    return;
+                }
+
+                await waitFirebaseStateIdle(1200);
+            }
         }
 
         dispatchStatus({
@@ -291,6 +432,12 @@ async function flushPartialStateEntries() {
             "No se pudieron guardar los cambios parciales del estado.",
             error
         );
+    } finally {
+        entrySyncInFlight = false;
+
+        if (pendingStateEntries.size) {
+            scheduleEntrySync(firebaseStateInteractiveDelay());
+        }
     }
 }
 
@@ -403,44 +550,59 @@ async function readRemoteModuleEntries(
 }
 
 function applyRemoteStateEntries(entries = []) {
-    const patch = {};
+    return measurePerformance(
+        "firebase-app-state:apply-entries",
+        () => {
+            const patch = {};
 
-    entries.forEach(entry => {
-        const storageKey = entry.storageKey;
-        const snapshot = {
-            [storageKey]: Object.prototype.hasOwnProperty.call(patch, storageKey)
-                ? patch[storageKey]
-                : getRaw(storageKey, null)
-        };
+            entries.forEach(entry => {
+                const storageKey = entry.storageKey;
+                const snapshot = {
+                    [storageKey]: Object.prototype.hasOwnProperty.call(patch, storageKey)
+                        ? patch[storageKey]
+                        : getRaw(storageKey, null)
+                };
 
-        applyPartialStateEntry(snapshot, entry);
-        patch[storageKey] = Object.prototype.hasOwnProperty.call(
-            snapshot,
-            storageKey
-        )
-            ? snapshot[storageKey]
-            : null;
-    });
+                applyPartialStateEntry(snapshot, entry);
+                patch[storageKey] = Object.prototype.hasOwnProperty.call(
+                    snapshot,
+                    storageKey
+                )
+                    ? snapshot[storageKey]
+                    : null;
+            });
 
-    applyingRemoteState = true;
-    let changedKeys = [];
+            applyingRemoteState = true;
+            let changedKeys = [];
 
-    try {
-        changedKeys = applyLocalPatch(patch, { silent: true });
-    } finally {
-        applyingRemoteState = false;
-    }
+            try {
+                changedKeys = measurePerformance(
+                    "firebase-app-state:apply-local-patch",
+                    () => applyLocalPatch(patch, { silent: true }),
+                    {
+                        entryCount: entries.length,
+                        patchKeyCount: Object.keys(patch).length
+                    }
+                );
+            } finally {
+                applyingRemoteState = false;
+            }
 
-    if (changedKeys.length) {
-        dispatchStatus({
-            type: "app-state-entries-applied",
-            keys: changedKeys
-        });
-        onStateChanged(patch, {
-            partial: true,
-            keys: changedKeys
-        });
-    }
+            if (changedKeys.length) {
+                dispatchStatus({
+                    type: "app-state-entries-applied",
+                    keys: changedKeys
+                });
+                onStateChanged(patch, {
+                    partial: true,
+                    keys: changedKeys
+                });
+            }
+        },
+        {
+            entryCount: entries.length
+        }
+    );
 }
 
 function handleEntriesSnapshot(
@@ -465,6 +627,12 @@ function handleEntriesSnapshot(
     if (!entries.length) return;
 
     entryModulesPresent.add(moduleId);
+    recordPerformanceEvent("firebase-app-state:entries-snapshot", {
+        type: "firebase",
+        moduleId,
+        entryCount: entries.length,
+        changeCount: changes.length
+    });
     applyRemoteStateEntries(entries);
 }
 
@@ -519,10 +687,18 @@ async function applyRemoteModule(
     applyingRemoteState = true;
 
     try {
-        replaceLocalSnapshotSubset(
-            mergedSnapshot,
-            key => stateModuleForKey(key) === moduleId,
-            { silent: true }
+        measurePerformance(
+            "firebase-app-state:replace-module-subset",
+            () => replaceLocalSnapshotSubset(
+                mergedSnapshot,
+                key => stateModuleForKey(key) === moduleId,
+                { silent: true }
+            ),
+            {
+                moduleId,
+                keyCount: Object.keys(mergedSnapshot).length,
+                stateLength: stateString.length
+            }
         );
         lastAppliedHashes.set(
             moduleId,
@@ -587,7 +763,14 @@ async function applyInitialModules(
     applyingRemoteState = true;
 
     try {
-        replaceLocalSnapshot(mergedSnapshot, { silent: true });
+        measurePerformance(
+            "firebase-app-state:replace-initial-snapshot",
+            () => replaceLocalSnapshot(mergedSnapshot, { silent: true }),
+            {
+                moduleCount: manifests.length,
+                keyCount: Object.keys(mergedSnapshot).length
+            }
+        );
     } finally {
         applyingRemoteState = false;
     }
@@ -629,10 +812,16 @@ async function handleModuleSnapshot(
 
             applyingRemoteState = true;
             try {
-                replaceLocalSnapshotSubset(
-                    {},
-                    key => stateModuleForKey(key) === moduleId,
-                    { silent: true }
+                measurePerformance(
+                    "firebase-app-state:clear-module-subset",
+                    () => replaceLocalSnapshotSubset(
+                        {},
+                        key => stateModuleForKey(key) === moduleId,
+                        { silent: true }
+                    ),
+                    {
+                        moduleId
+                    }
                 );
             } finally {
                 applyingRemoteState = false;
@@ -814,6 +1003,7 @@ export function stopFirebaseAppStateSync() {
     stateSyncStarting = false;
     applyingRemoteState = false;
     waitingInitialState = false;
+    entrySyncInFlight = false;
     lastAppliedHashes.clear();
     pendingStateEntries.clear();
     entryModulesPresent.clear();
@@ -821,6 +1011,26 @@ export function stopFirebaseAppStateSync() {
 }
 
 if (typeof window !== "undefined") {
+    [
+        "pointerdown",
+        "keydown",
+        "wheel",
+        "touchstart",
+        "input"
+    ].forEach(eventName => {
+        window.addEventListener(
+            eventName,
+            markFirebaseStateUserActivity,
+            { capture: true, passive: true }
+        );
+    });
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+            scheduleEntrySync(0);
+        }
+    });
+
     window.addEventListener("proturnos:persistenceChanged", event => {
         const keys = event.detail?.keys || [];
         const stateKeys = keys.filter(key => !isInternalKey(key));

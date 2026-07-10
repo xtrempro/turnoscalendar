@@ -390,12 +390,24 @@ export function aplicarCambiosTurno(
     let turno = Number(turnoBase) || TURNO.LIBRE;
     const includeReplacements =
         options.includeReplacements !== false;
-    let replacementTurn =
-        getReplacementTurnForWorker(nombre, key);
+    const hasReplacementTurnOverride =
+        Object.prototype.hasOwnProperty.call(options, "replacementTurn");
+    let replacementTurn = hasReplacementTurnOverride
+        ? Number(options.replacementTurn) || TURNO.LIBRE
+        : TURNO.LIBRE;
+    let replacementTurnLoaded = hasReplacementTurnOverride;
+    const resolveReplacementTurn = () => {
+        if (!replacementTurnLoaded) {
+            replacementTurn = getReplacementTurnForWorker(nombre, key);
+            replacementTurnLoaded = true;
+        }
+
+        return replacementTurn;
+    };
     const entregaExtraSinAlterarBaseDiurno = entregado => {
         if (
             turno !== TURNO.DIURNO ||
-            !turnoExtraCubreTurno(replacementTurn, entregado)
+            !turnoExtraCubreTurno(resolveReplacementTurn(), entregado)
         ) {
             return false;
         }
@@ -408,9 +420,11 @@ export function aplicarCambiosTurno(
         return true;
     };
 
-    const swaps = getSwaps();
+    const swaps = Array.isArray(options.swaps)
+        ? options.swaps
+        : getSwaps();
 
-    const fechaISO = isoFromKey(key);
+    const fechaISO = options.isoDate || isoFromKey(key);
 
     for (const s of swaps) {
         if (cambioEstaAnulado(s)) {
@@ -516,7 +530,7 @@ export function aplicarCambiosTurno(
     if (includeReplacements) {
         turno = fusionarTurnos(
             turno,
-            replacementTurn
+            resolveReplacementTurn()
         );
     }
 

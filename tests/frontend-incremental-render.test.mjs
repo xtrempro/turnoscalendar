@@ -201,10 +201,25 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     );
     assert.match(calendarSource, /showTimelinePendingMonth\(/);
     assert.match(calendarSource, /CALENDAR_CACHE_PREFIX/);
+    assert.match(calendarSource, /CALENDAR_CACHE_WRITE_DELAY_MS/);
+    assert.match(calendarSource, /CALENDAR_PARTIAL_BATCH_SIZE\s*=\s*5/);
     assert.match(calendarSource, /readCalendarCache/);
     assert.match(calendarSource, /writeCalendarCache/);
     assert.match(calendarSource, /activateCalendarCache/);
-    assert.match(calendarSource, /writeActiveCalendarCache\(cal\)/);
+    assert.match(calendarSource, /backgroundFresh/);
+    assert.match(calendarSource, /scheduleCalendarBackgroundFreshRender/);
+    assert.match(calendarSource, /showCalendarBackgroundPending/);
+    assert.match(calendarSource, /const renderPromise = renderCalendar\(renderOptions\)/);
+    assert.doesNotMatch(calendarSource, /await renderCalendar\(renderOptions\);/);
+    assert.match(calendarSource, /await waitCalendarIdle\(options\.deferHeavy \? 900 : 300\)/);
+    assert.match(calendarSource, /await runDeferredTimelineUpdate\(\)/);
+    assert.match(calendarSource, /await runDeferredStaffingUpdate\(\)/);
+    assert.match(calendarSource, /scheduleActiveCalendarCacheWrite\(cal/);
+    assert.match(calendarSource, /cooperativePartialRender/);
+    assert.match(calendarSource, /calendarShiftAssignedResolver/);
+    assert.match(calendarSource, /buildCalendarReplacementIndex/);
+    assert.match(mainSource, /scheduleModeCalendarRefresh/);
+    assert.match(mainSource, /cooperative:\s*true/);
     assert.match(calendarSource, /handleCalendarCellFallbackClick/);
     assert.match(timelineSource, /export function showTimelinePendingMonth\(/);
     assert.match(timelineSource, /dataset\.timelineMonthKey/);
@@ -216,7 +231,8 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     assert.match(timelineSource, /TIMELINE_CACHE_PREFIX/);
     assert.match(timelineSource, /TIMELINE_ROW_CACHE_PREFIX/);
     assert.match(timelineSource, /function orderTimelineProfiles/);
-    assert.match(timelineSource, /orderTimelineProfiles\(grupo, actual, year, month, diasMes\)/);
+    assert.match(timelineSource, /timelineSortContext\(actual, year, month, diasMes\)/);
+    assert.match(timelineSource, /orderTimelineProfiles\(\s*grupo,\s*actual,\s*year,\s*month,\s*diasMes,\s*sortContext\s*\)/);
     assert.doesNotMatch(
         timelineSource,
         /grupo\s*\.filter\(profile => profile\.name !== actual\)\s*\.sort\(\(a, b\) => a\.name\.localeCompare\(b\.name\)\)/

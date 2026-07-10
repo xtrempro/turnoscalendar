@@ -18,6 +18,7 @@ import { fetchHolidays } from "./holidays.js";
 import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { analizarMes } from "./staffing.js";
 import { getAbsenceType } from "./rulesEngine.js";
+import { measurePerformance } from "./performanceMonitor.js";
 
 const ROLE_DEFS = [
     {
@@ -555,22 +556,38 @@ export async function renderDashboardPanel() {
     const root = document.getElementById("dashboardPanel");
     if (!root) return;
 
-    const requestId = ++renderRequest;
+    return measurePerformance(
+        "dashboard:render-panel",
+        async () => {
+            const requestId = ++renderRequest;
 
-    root.innerHTML = dashboardShell();
+            root.innerHTML = dashboardShell();
 
-    const licenseRows = buildLicenseRanking();
+            const licenseRows = measurePerformance(
+                "dashboard:build-license-ranking",
+                () => buildLicenseRanking(),
+                {
+                    profileCount: getProfiles().length,
+                    years: dashboardState.licenseYears
+                }
+            );
 
-    if (requestId !== renderRequest) return;
+            if (requestId !== renderRequest) return;
 
-    root.innerHTML = dashboardShell(`
-        ${renderCard(
-            "Ranking de licencias m\u00e9dicas",
-            `Top 15 trabajadores en los \u00faltimos ${dashboardState.licenseYears} a\u00f1o(s).`,
-            renderLicenseRanking(licenseRows),
-            renderLicenseControls()
-        )}
-    `);
+            root.innerHTML = dashboardShell(`
+                ${renderCard(
+                    "Ranking de licencias m\u00e9dicas",
+                    `Top 15 trabajadores en los \u00faltimos ${dashboardState.licenseYears} a\u00f1o(s).`,
+                    renderLicenseRanking(licenseRows),
+                    renderLicenseControls()
+                )}
+            `);
 
-    bindDashboardControls(root);
+            bindDashboardControls(root);
+        },
+        {
+            years: dashboardState.licenseYears,
+            profileCount: getProfiles().length
+        }
+    );
 }

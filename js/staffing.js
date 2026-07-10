@@ -58,6 +58,10 @@ import {
 } from "./auditLog.js";
 import { getHourReturn } from "./hourReturns.js";
 import { runCooperativeRange } from "./mainThreadScheduler.js";
+import {
+    measurePerformance,
+    startPerformanceSpan
+} from "./performanceMonitor.js";
 
 const KEY = "staffing_config";
 const APPLICANTS_KEY = "staffing_applicants";
@@ -3633,6 +3637,16 @@ function buildStaffingAnalysisContext(year, month, holidays) {
 }
 
 function analizarDiaStaffing(context, d) {
+    const finishDay = startPerformanceSpan(
+        "staffing:analizar-dia",
+        {
+            year: context?.year,
+            month: context?.month,
+            day: d,
+            profileCount: context?.profiles?.length || 0,
+            requirementCount: context?.requirements?.length || 0
+        }
+    );
     const {
         profiles,
         requirements,
@@ -3719,25 +3733,41 @@ function analizarDiaStaffing(context, d) {
         });
     });
 
-    return { dia: d, detalle };
+    const result = { dia: d, detalle };
+
+    finishDay({
+        issueCount: detalle.length
+    });
+
+    return result;
 }
 
 export function analizarMes(year, month, holidays = {}){
-    const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
-    const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
+    return measurePerformance(
+        "staffing:analizar-mes",
+        () => {
+            const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
+            const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
 
-    if (cachedResult) return cachedResult;
+            if (cachedResult) return cachedResult;
 
-    const context = buildStaffingAnalysisContext(year, month, holidays);
-    const salida = [];
+            const context = buildStaffingAnalysisContext(year, month, holidays);
+            const salida = [];
 
-    for (let d = 1; d <= context.diasMes; d++) {
-        salida.push(analizarDiaStaffing(context, d));
-    }
+            for (let d = 1; d <= context.diasMes; d++) {
+                salida.push(analizarDiaStaffing(context, d));
+            }
 
-    ANALIZAR_MES_CACHE.set(cacheKey, salida);
+            ANALIZAR_MES_CACHE.set(cacheKey, salida);
 
-    return salida;
+            return salida;
+        },
+        {
+            year,
+            month,
+            profileCount: getProfiles().filter(isProfileActive).length
+        }
+    );
 }
 
 async function analizarMesCooperative(
@@ -3746,30 +3776,43 @@ async function analizarMesCooperative(
     holidays = {},
     shouldContinue = () => true
 ) {
-    const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
-    const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
+    return measurePerformance(
+        "staffing:analizar-mes-cooperative",
+        async () => {
+            const cacheKey = `${year}|${month}|${holidaysSignature(holidays)}`;
+            const cachedResult = ANALIZAR_MES_CACHE.get(cacheKey);
 
-    if (cachedResult) return cachedResult;
+            if (cachedResult) return cachedResult;
 
-    const cacheVersion = analizarMesCacheVersion;
-    const context = buildStaffingAnalysisContext(year, month, holidays);
-    const salida = [];
-    const isCurrent = () =>
-        cacheVersion === analizarMesCacheVersion && shouldContinue();
+            const cacheVersion = analizarMesCacheVersion;
+            const context = buildStaffingAnalysisContext(year, month, holidays);
+            const salida = [];
+            const isCurrent = () =>
+                cacheVersion === analizarMesCacheVersion && shouldContinue();
 
-    const result = await runCooperativeRange(
-        1,
-        context.diasMes,
-        d => {
-            salida.push(analizarDiaStaffing(context, d));
+            const result = await runCooperativeRange(
+                1,
+                context.diasMes,
+                d => {
+                    salida.push(analizarDiaStaffing(context, d));
+                },
+                { shouldContinue: isCurrent }
+            );
+
+            if (!result.completed) return null;
+
+            ANALIZAR_MES_CACHE.set(cacheKey, salida);
+            return salida;
         },
-        { shouldContinue: isCurrent }
+        {
+            year,
+            month,
+            profileCount: getProfiles().filter(isProfileActive).length
+        },
+        {
+            asyncThreshold: 120
+        }
     );
-
-    if (!result.completed) return null;
-
-    ANALIZAR_MES_CACHE.set(cacheKey, salida);
-    return salida;
 }
 
 function staffingReportPreloadDelay(ms = 0) {
@@ -3784,32 +3827,45 @@ async function cacheStaffingReportMonth({
     force = false,
     requestId
 }) {
-    if (
-        !force &&
-        readStaffingReportCache(year, month)
-    ) {
-        return true;
-    }
+    return measurePerformance(
+        "staffing:cache-report-month",
+        async () => {
+            if (
+                !force &&
+                readStaffingReportCache(year, month)
+            ) {
+                return true;
+            }
 
-    const holidays = await fetchHolidays(year);
+            const holidays = await fetchHolidays(year);
 
-    if (requestId !== staffingReportPreloadRequest) {
-        return false;
-    }
+            if (requestId !== staffingReportPreloadRequest) {
+                return false;
+            }
 
-    const data = await analizarMesCooperative(
-        year,
-        month,
-        holidays,
-        () => requestId === staffingReportPreloadRequest
+            const data = await analizarMesCooperative(
+                year,
+                month,
+                holidays,
+                () => requestId === staffingReportPreloadRequest
+            );
+
+            if (!data || requestId !== staffingReportPreloadRequest) {
+                return false;
+            }
+
+            writeStaffingReportCache(year, month, data);
+            return true;
+        },
+        {
+            year,
+            month,
+            force
+        },
+        {
+            asyncThreshold: 160
+        }
     );
-
-    if (!data || requestId !== staffingReportPreloadRequest) {
-        return false;
-    }
-
-    writeStaffingReportCache(year, month, data);
-    return true;
 }
 
 async function preloadStaffingReportCache({
@@ -4457,24 +4513,36 @@ export async function analizarStaffingMes(
 }
 
 export async function renderInlineStaffingAnalysis(){
-    const year = currentDate.getFullYear();
-    const month = currentDate.getMonth();
+    return measurePerformance(
+        "staffing:render-inline-analysis",
+        async () => {
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
 
-    showInlineStaffingPendingMonth(year, month);
-    scheduleStaffingWeeklyPreload({ delay: 700 });
+            showInlineStaffingPendingMonth(year, month);
+            scheduleStaffingWeeklyPreload({ delay: 700 });
 
-    const result = await analizarStaffingMes(
-        year,
-        month,
+            const result = await analizarStaffingMes(
+                year,
+                month,
+                {
+                    renderPanel: false,
+                    latestOnly: true,
+                    activeView: "turnos"
+                }
+            );
+
+            scheduleStaffingReportPreload({ delay: 300 });
+            return result;
+        },
         {
-            renderPanel: false,
-            latestOnly: true,
-            activeView: "turnos"
+            year: currentDate.getFullYear(),
+            month: currentDate.getMonth()
+        },
+        {
+            asyncThreshold: 120
         }
     );
-
-    scheduleStaffingReportPreload({ delay: 300 });
-    return result;
 }
 
 // Recalcula únicamente los días afectados. Cada día sigue usando las reglas

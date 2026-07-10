@@ -49,15 +49,25 @@ import {
     splitDaysByMonth
 } from "./workerAppMonths.js";
 import { baseRenderDay } from "./rotationBase.js";
+import {
+    measurePerformance,
+    recordPerformanceEvent,
+    startPerformanceSpan
+} from "./performanceMonitor.js";
 
-// Publicacion "caliente" (mes en curso + siguiente): frecuente y barata.
-const HOT_PUBLISH_DELAY_MS = 1200;
-const INITIAL_PUBLISH_DELAY_MS = 2500;
+// Publicacion "caliente" (mes en curso + siguiente): se agenda con margen
+// para no competir con clicks/cambios de mes del calendario principal.
+const HOT_PUBLISH_DELAY_MS = 12000;
+const INITIAL_PUBLISH_DELAY_MS = 5000;
+const WORKER_APP_USER_QUIET_MS = 45000;
+const WORKER_APP_ACTIVE_RETRY_MS = 8000;
+const WORKER_APP_COLD_USER_QUIET_MS = 90000;
+const WORKER_APP_VISIBLE_RETRY_MS = 60000;
 // Los resumenes HH.EE son caros: se mantienen acotados (no crecen con la
 // ventana del calendario).
 const OVERTIME_SUMMARY_MONTHS_BACK = 2;
 const OVERTIME_SUMMARY_CACHE_VERSION = 1;
-const COLD_OVERTIME_REFRESH_DELAY_MS = 4500;
+const COLD_OVERTIME_REFRESH_DELAY_MS = 45000;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
 
 // Claves de localStorage por-perfil que afectan lo que ve el trabajador. El
@@ -103,12 +113,17 @@ let hotPublishRequested = false;
 let workerLinks = [];
 let workerLinksInitialized = false;
 let syncGeneration = 0;
+let workerAppLastUserActivityAt = Date.now();
 
 // Solo se publican perfiles/UID marcados de forma explicita.
 let dirtyProfileNames = new Set();
 let dirtyWorkerUids = new Set();
 const coldOvertimeRefreshTimers = new Map();
 const coldOvertimeRefreshInFlight = new Set();
+const coldReportsRefreshTimers = new Map();
+const coldReportsRefreshInFlight = new Set();
+const coldExceptionsRefreshTimers = new Map();
+const coldExceptionsRefreshInFlight = new Set();
 
 function normalizeRut(value) {
     return String(value || "")
@@ -120,6 +135,80 @@ function addDays(date, amount) {
     const next = new Date(date);
     next.setDate(next.getDate() + amount);
     return next;
+}
+
+function waitWorkerAppIdle(timeout = 1200) {
+    return new Promise(resolve => {
+        if (typeof window === "undefined") {
+            resolve();
+            return;
+        }
+
+        if (document.visibilityState === "hidden") {
+            window.setTimeout(resolve, Math.min(1000, Number(timeout) || 1000));
+            return;
+        }
+
+        if (typeof window.requestIdleCallback === "function") {
+            window.requestIdleCallback(
+                () => resolve(),
+                { timeout: Math.max(300, Number(timeout) || 1200) }
+            );
+            return;
+        }
+
+        window.setTimeout(resolve, 80);
+    });
+}
+
+function waitWorkerAppDelay(ms) {
+    return new Promise(resolve =>
+        setTimeout(resolve, Math.max(0, Number(ms) || 0))
+    );
+}
+
+function markWorkerAppUserActivity() {
+    workerAppLastUserActivityAt = Date.now();
+}
+
+function workerAppHasPendingInput() {
+    try {
+        return Boolean(
+            typeof navigator !== "undefined" &&
+            navigator.scheduling &&
+            typeof navigator.scheduling.isInputPending === "function" &&
+            navigator.scheduling.isInputPending({ includeContinuous: true })
+        );
+    } catch (_error) {
+        return false;
+    }
+}
+
+function workerAppInteractiveDelay(quietMs = WORKER_APP_USER_QUIET_MS) {
+    if (typeof document === "undefined") return 0;
+    if (document.visibilityState !== "visible") return 0;
+
+    // Escribir documentos PWA puede activar serializacion pesada de Firestore.
+    // En foreground solo se agenda; al ocultar la pestaña se vacia la cola.
+    const delay = Math.max(
+        WORKER_APP_VISIBLE_RETRY_MS,
+        WORKER_APP_ACTIVE_RETRY_MS,
+        Number(quietMs) || WORKER_APP_USER_QUIET_MS
+    );
+
+    return workerAppHasPendingInput()
+        ? Math.max(delay, WORKER_APP_ACTIVE_RETRY_MS)
+        : delay;
+}
+
+function recordWorkerAppPublishDeferred(delay, reason = "user-active") {
+    recordPerformanceEvent("worker-app:publish-deferred", {
+        type: "worker-app",
+        reason,
+        delay,
+        dirtyProfiles: dirtyProfileNames.size,
+        dirtyWorkers: dirtyWorkerUids.size
+    });
 }
 
 function hotScheduleRange(today = new Date()) {
@@ -797,11 +886,14 @@ function buildSupervisorReminders(profile) {
 }
 
 async function computeOvertimeSummaries(profile, schedule) {
-    try {
-        const baseSummaries = await buildWorkerHheeSummaries(
-            profile,
-            OVERTIME_SUMMARY_MONTHS_BACK
-        );
+    return measurePerformance(
+        "worker-app:compute-overtime-summaries",
+        async () => {
+            try {
+                const baseSummaries = await buildWorkerHheeSummaries(
+                    profile,
+                    OVERTIME_SUMMARY_MONTHS_BACK
+                );
         const includedMonths = new Set(
             baseSummaries.map(item =>
                 `${item.year}-${String(item.month + 1).padStart(2, "0")}`
@@ -827,19 +919,28 @@ async function computeOvertimeSummaries(profile, schedule) {
             })
         );
 
-        return [...baseSummaries, ...manualExtraSummaries]
-            .filter(Boolean)
-            .sort((a, b) =>
-                Number(a.year) - Number(b.year) ||
-                Number(a.month) - Number(b.month)
-            );
-    } catch (error) {
-        console.warn(
-            "No se pudo calcular el resumen HHEE para la app del trabajador.",
-            error
-        );
-        return [];
-    }
+                return [...baseSummaries, ...manualExtraSummaries]
+                    .filter(Boolean)
+                    .sort((a, b) =>
+                        Number(a.year) - Number(b.year) ||
+                        Number(a.month) - Number(b.month)
+                    );
+            } catch (error) {
+                console.warn(
+                    "No se pudo calcular el resumen HHEE para la app del trabajador.",
+                    error
+                );
+                return [];
+            }
+        },
+        {
+            profile: profile?.name || "",
+            dayCount: Object.keys(schedule?.days || {}).length
+        },
+        {
+            asyncThreshold: 120
+        }
+    );
 }
 
 function normalizeOvertimeSummaries(value) {
@@ -904,33 +1005,45 @@ async function buildOvertimeSummaries(profile, schedule, previousPayload = null)
 // mes actual y el anterior. Los demas meses se entregan a pedido del trabajador
 // (boton "Solicitar informe" en la PWA -> workerRequests type "report_request").
 async function buildWorkerReports(profile) {
-    const reports = {};
-    const today = new Date();
-    const months = [
-        new Date(today.getFullYear(), today.getMonth(), 1),
-        new Date(today.getFullYear(), today.getMonth() - 1, 1)
-    ];
+    return measurePerformance(
+        "worker-app:build-reports",
+        async () => {
+            const reports = {};
+            const today = new Date();
+            const months = [
+                new Date(today.getFullYear(), today.getMonth(), 1),
+                new Date(today.getFullYear(), today.getMonth() - 1, 1)
+            ];
 
-    for (const date of months) {
-        const year = date.getFullYear();
-        const month = date.getMonth();
+            for (const date of months) {
+                const year = date.getFullYear();
+                const month = date.getMonth();
 
-        try {
-            const html = await buildWorkerReportPreviewHTML(
-                profile,
-                new Date(year, month, 1)
-            );
+                try {
+                    const html = await buildWorkerReportPreviewHTML(
+                        profile,
+                        new Date(year, month, 1)
+                    );
 
-            if (html) reports[`${year}-${month}`] = html;
-        } catch (error) {
-            console.warn(
-                "No se pudo construir el reporte para la app del trabajador.",
-                error
-            );
+                    if (html) reports[`${year}-${month}`] = html;
+                } catch (error) {
+                    console.warn(
+                        "No se pudo construir el reporte para la app del trabajador.",
+                        error
+                    );
+                }
+            }
+
+            return reports;
+        },
+        {
+            profile: profile?.name || "",
+            monthCount: 2
+        },
+        {
+            asyncThreshold: 120
         }
-    }
-
-    return reports;
+    );
 }
 
 function buildSwapLimit(profileName) {
@@ -958,80 +1071,134 @@ async function buildWorkerAppPayload(
     workspace,
     previousPayload = null
 ) {
-    const schedule = computeProfileSchedule(profile);
-    const leaveBalancesByYear = await leaveBalancesByScheduleYear(
-        profile.name,
-        schedule
-    );
-    const currentYear = String(new Date().getFullYear());
-    const leaveBalances = leaveBalancesByYear[currentYear];
-    const overtimePayload = await buildOvertimeSummaries(
-        profile,
-        schedule,
-        previousPayload
-    );
-    const reportsByMonth = await buildWorkerReports(profile);
-    const { exceptions, exceptionsStart, exceptionsEnd } =
-        computeProfileExceptions(profile);
+    return measurePerformance(
+        "worker-app:build-payload",
+        async () => {
+            const schedule = measurePerformance(
+                "worker-app:compute-schedule",
+                () => computeProfileSchedule(profile),
+                {
+                    profile: profile?.name || ""
+                }
+            );
+            const leaveBalancesByYear = await leaveBalancesByScheduleYear(
+                profile.name,
+                schedule
+            );
+            const currentYear = String(new Date().getFullYear());
+            const leaveBalances = leaveBalancesByYear[currentYear];
+            const cachedOvertimeSummaries =
+                normalizeOvertimeSummaries(previousPayload?.overtimeSummaries);
+            const overtimePayload = {
+                summaries: cachedOvertimeSummaries,
+                signature:
+                    previousPayload?.overtimeSummariesSignature || "",
+                targetSignature: "pending",
+                status: cachedOvertimeSummaries.length
+                    ? "refreshing"
+                    : "pending",
+                source: cachedOvertimeSummaries.length
+                    ? "stale-cache"
+                    : "deferred",
+                updatedAtISO:
+                    previousPayload?.overtimeSummariesUpdatedAtISO || ""
+            };
+            const reportsByMonth =
+                previousPayload?.reportsByMonth &&
+                typeof previousPayload.reportsByMonth === "object"
+                    ? previousPayload.reportsByMonth
+                    : {};
+            const previousExceptionsRange = exceptionsScanRange();
+            const exceptionsJson = typeof previousPayload?.exceptionsJson === "string"
+                ? previousPayload.exceptionsJson
+                : "{}";
+            const exceptionsCount = Number.isFinite(
+                Number(previousPayload?.exceptionsCount)
+            )
+                ? Number(previousPayload.exceptionsCount)
+                : 0;
+            const exceptionsStart =
+                previousPayload?.exceptionsStart ||
+                toISODate(previousExceptionsRange.start);
+            const exceptionsEnd =
+                previousPayload?.exceptionsEnd ||
+                toISODate(previousExceptionsRange.end);
 
-    if (overtimePayload.refreshNeeded) {
-        scheduleColdOvertimeSummaryRefresh({
-            link,
-            profile,
-            workspace,
-            schedule,
-            targetSignature: overtimePayload.targetSignature
-        });
-    }
+            scheduleColdOvertimeSummaryRefresh({
+                link,
+                profile,
+                workspace,
+                schedule
+            });
+            scheduleColdWorkerReportsRefresh({
+                link,
+                profile,
+                workspace
+            });
+            scheduleColdWorkerExceptionsRefresh({
+                link,
+                profile,
+                workspace
+            });
 
-    return {
-        uid: link.uid,
-        workspaceId: workspace.id,
-        workspaceName: workspace.name || link.workspaceName || "",
-        profileName: profile.name || link.profileName || "",
-        profileRut: profile.rut || link.profileRut || "",
-        status: isProfileActive(profile) ? "active" : "inactive",
-        worker: {
-            name: profile.name || link.profileName || "",
-            email: profile.email || link.workerEmail || "",
-            phone: profile.phone || "",
-            rut: profile.rut || "",
-            role: profile.estamento || "",
-            profession: profile.profession || "",
-            unit: workspace.name || link.workspaceName || "",
-            unitEntryDate: "",
-            active: isProfileActive(profile)
+            return {
+                uid: link.uid,
+                workspaceId: workspace.id,
+                workspaceName: workspace.name || link.workspaceName || "",
+                profileName: profile.name || link.profileName || "",
+                profileRut: profile.rut || link.profileRut || "",
+                status: isProfileActive(profile) ? "active" : "inactive",
+                worker: {
+                    name: profile.name || link.profileName || "",
+                    email: profile.email || link.workerEmail || "",
+                    phone: profile.phone || "",
+                    rut: profile.rut || "",
+                    role: profile.estamento || "",
+                    profession: profile.profession || "",
+                    unit: workspace.name || link.workspaceName || "",
+                    unitEntryDate: "",
+                    active: isProfileActive(profile)
+                },
+                rotativa: getRotativa(profile.name),
+                shiftAssigned: Boolean(getShiftAssigned(profile.name)),
+                baseVersion: WORKER_APP_BASE_VERSION,
+                // Serializado a string: bajo setDoc({merge:true}) un string se reemplaza
+                // entero, mientras que un mapa haria deep-merge y dejaria pegadas claves
+                // de dias que ya dejaron de ser excepcion.
+                exceptionsJson,
+                exceptionsCount,
+                exceptionsStart,
+                exceptionsEnd,
+                exceptionsStatus: "refreshing",
+                leaveBalances,
+                leaveBalancesByYear,
+                scheduleStart: schedule.start,
+                scheduleEnd: schedule.end,
+                days: schedule.days,
+                supervisorReminders: buildSupervisorReminders(profile),
+                overtimeSummaries: overtimePayload.summaries,
+                overtimeSummariesSignature: overtimePayload.signature,
+                overtimeSummariesTargetSignature: overtimePayload.targetSignature,
+                overtimeSummariesCacheVersion: OVERTIME_SUMMARY_CACHE_VERSION,
+                overtimeSummariesStatus: overtimePayload.status,
+                overtimeSummariesSource: overtimePayload.source,
+                overtimeSummariesUpdatedAtISO:
+                    overtimePayload.updatedAtISO,
+                reportsByMonth,
+                reportsByMonthStatus: "refreshing",
+                swapLimit: buildSwapLimit(profile.name),
+                updatedAtISO: new Date().toISOString()
+            };
         },
-        rotativa: getRotativa(profile.name),
-        shiftAssigned: Boolean(getShiftAssigned(profile.name)),
-        baseVersion: WORKER_APP_BASE_VERSION,
-        // Serializado a string: bajo setDoc({merge:true}) un string se reemplaza
-        // entero, mientras que un mapa haria deep-merge y dejaria pegadas claves
-        // de dias que ya dejaron de ser excepcion.
-        exceptionsJson: JSON.stringify(exceptions),
-        exceptionsCount: Object.keys(exceptions).length,
-        exceptionsStart,
-        exceptionsEnd,
-        leaveBalances,
-        leaveBalancesByYear,
-        scheduleStart: schedule.start,
-        scheduleEnd: schedule.end,
-        days: schedule.days,
-        supervisorReminders: buildSupervisorReminders(profile),
-        overtimeSummaries: overtimePayload.summaries,
-        overtimeSummariesSignature: overtimePayload.signature,
-        overtimeSummariesTargetSignature: overtimePayload.targetSignature,
-        overtimeSummariesCacheVersion: OVERTIME_SUMMARY_CACHE_VERSION,
-        overtimeSummariesStatus: overtimePayload.status,
-        overtimeSummariesSource: overtimePayload.source,
-        overtimeSummariesUpdatedAtISO:
-            overtimePayload.status === "fresh"
-                ? new Date().toISOString()
-                : previousPayload?.overtimeSummariesUpdatedAtISO || "",
-        reportsByMonth,
-        swapLimit: buildSwapLimit(profile.name),
-        updatedAtISO: new Date().toISOString()
-    };
+        {
+            profile: profile?.name || link?.profileName || "",
+            workspaceId: workspace?.id || "",
+            hasPreviousPayload: Boolean(previousPayload)
+        },
+        {
+            asyncThreshold: 120
+        }
+    );
 }
 
 function buildMissingProfilePayload(link, workspace) {
@@ -1056,6 +1223,32 @@ function buildMissingProfilePayload(link, workspace) {
         scheduleEnd: "",
         days: {},
         updatedAtISO: new Date().toISOString()
+    };
+}
+
+function monthDaysHash(days) {
+    return hashText(stableStringify(days || {}));
+}
+
+function buildWorkerAppRootProjection(payload, availableMonths, monthHashes) {
+    const {
+        days: _days,
+        reportsByMonth: _reportsByMonth,
+        exceptionsJson: _exceptionsJson,
+        ...rootPayload
+    } = payload || {};
+
+    return {
+        ...rootPayload,
+        calendarStorageVersion: 3,
+        calendarStorageMode: "monthly",
+        hasMonthlyCalendar: true,
+        availableMonths,
+        monthHashes,
+        // Se interpreta en writeWorkerAppData con deleteField(). Mantener el
+        // calendario completo en el documento raiz obliga a Firestore/IndexedDB
+        // a reserializar un objeto grande en cada cambio pequeno.
+        removeLegacyRootDays: true
     };
 }
 
@@ -1168,24 +1361,49 @@ function buildWorkerMessageDirectoryPayload(link, profile, workspace) {
 
 async function writeWorkerAppData(payload, workspaceId, uid) {
     const { db, firestoreModule } = await getFirebaseServices();
+    const {
+        removeLegacyRootDays,
+        ...storedPayload
+    } = payload || {};
+    const data = {
+        ...storedPayload,
+        updatedAt: firestoreModule.serverTimestamp()
+    };
 
-    await firestoreModule.setDoc(
-        firestoreModule.doc(
-            db,
-            "workspaces",
-            workspaceId,
-            "workerAppData",
-            uid
+    if (removeLegacyRootDays && typeof firestoreModule.deleteField === "function") {
+        data.days = firestoreModule.deleteField();
+    }
+
+    await measurePerformance(
+        "worker-app:write-data",
+        () => firestoreModule.setDoc(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspaceId,
+                "workerAppData",
+                uid
+            ),
+            data,
+            { merge: true }
         ),
         {
-            ...payload,
-            updatedAt: firestoreModule.serverTimestamp()
+            uid,
+            profile: payload?.profileName || "",
+            dayCount: payload?.dayCount || 0,
+            compactRoot: Boolean(removeLegacyRootDays)
         },
-        { merge: true }
+        {
+            asyncThreshold: 120
+        }
     );
 }
 
 function coldOvertimeRefreshKey(workspaceId, uid) {
+    return `${workspaceId}:${uid}`;
+}
+
+function coldWorkerRefreshKey(workspaceId, uid) {
     return `${workspaceId}:${uid}`;
 }
 
@@ -1196,7 +1414,7 @@ function scheduleColdOvertimeSummaryRefresh({
     schedule,
     targetSignature
 }) {
-    if (!link?.uid || !workspace?.id || !profile?.name || !targetSignature) {
+    if (!link?.uid || !workspace?.id || !profile?.name) {
         return;
     }
 
@@ -1232,13 +1450,32 @@ async function refreshWorkerOvertimeSummariesCold({
     coldOvertimeRefreshInFlight.add(key);
 
     try {
+        await waitWorkerAppIdle(2500);
+        if (activeWorkspace?.id !== workspace.id) return;
+
+        const deferDelay = workerAppInteractiveDelay(
+            WORKER_APP_COLD_USER_QUIET_MS
+        );
+
+        if (deferDelay > 0) {
+            recordWorkerAppPublishDeferred(deferDelay, "cold-hhee-user-active");
+            scheduleColdOvertimeSummaryRefresh({
+                link,
+                profile,
+                workspace,
+                schedule,
+                targetSignature
+            });
+            return;
+        }
+
         const freshSchedule = computeProfileSchedule(profile);
         const currentSignature = buildOvertimeSummarySignature(
             profile,
             freshSchedule
         );
 
-        if (currentSignature !== targetSignature) {
+        if (targetSignature && currentSignature !== targetSignature) {
             scheduleColdOvertimeSummaryRefresh({
                 link,
                 profile,
@@ -1278,95 +1515,376 @@ async function refreshWorkerOvertimeSummariesCold({
     }
 }
 
-async function writeWorkerAppMonths(payload, workspaceId, uid) {
-    const { db, firestoreModule } = await getFirebaseServices();
-    const months = splitDaysByMonth(payload.days);
-    const batch = firestoreModule.writeBatch(db);
+function scheduleColdWorkerReportsRefresh({
+    link,
+    profile,
+    workspace
+}) {
+    if (!link?.uid || !workspace?.id || !profile?.name) return;
 
-    Object.entries(months).forEach(([month, days]) => {
-        const bounds = monthScheduleBounds(days);
+    const key = coldWorkerRefreshKey(workspace.id, link.uid);
 
-        batch.set(
+    clearTimeout(coldReportsRefreshTimers.get(key));
+    coldReportsRefreshTimers.set(
+        key,
+        setTimeout(() => {
+            coldReportsRefreshTimers.delete(key);
+            void refreshWorkerReportsCold({
+                link,
+                profile,
+                workspace
+            });
+        }, COLD_OVERTIME_REFRESH_DELAY_MS + 1800)
+    );
+}
+
+async function refreshWorkerReportsCold({
+    link,
+    profile,
+    workspace
+}) {
+    const key = coldWorkerRefreshKey(workspace.id, link.uid);
+
+    if (coldReportsRefreshInFlight.has(key)) return;
+
+    coldReportsRefreshInFlight.add(key);
+
+    try {
+        await waitWorkerAppIdle(3200);
+        if (activeWorkspace?.id !== workspace.id) return;
+
+        const deferDelay = workerAppInteractiveDelay(
+            WORKER_APP_COLD_USER_QUIET_MS
+        );
+
+        if (deferDelay > 0) {
+            recordWorkerAppPublishDeferred(deferDelay, "cold-reports-user-active");
+            scheduleColdWorkerReportsRefresh({
+                link,
+                profile,
+                workspace
+            });
+            return;
+        }
+
+        const reportsByMonth = await buildWorkerReports(profile);
+        const { db, firestoreModule } = await getFirebaseServices();
+
+        await firestoreModule.setDoc(
             firestoreModule.doc(
                 db,
                 "workspaces",
-                workspaceId,
+                workspace.id,
                 "workerAppData",
-                uid,
-                "months",
-                month
+                link.uid
             ),
             {
-                uid,
-                workspaceId,
-                month,
-                profileName: payload.profileName || "",
-                profileRut: payload.profileRut || "",
-                scheduleStart: bounds.start,
-                scheduleEnd: bounds.end,
-                days,
-                updatedAtISO: payload.updatedAtISO,
+                reportsByMonth,
+                reportsByMonthStatus: "fresh",
+                reportsByMonthUpdatedAtISO: new Date().toISOString(),
                 updatedAt: firestoreModule.serverTimestamp()
             },
             { merge: true }
         );
-    });
-
-    if (Object.keys(months).length) await batch.commit();
+    } catch (error) {
+        console.warn(
+            "No se pudieron refrescar reportes PWA en segundo plano.",
+            error
+        );
+    } finally {
+        coldReportsRefreshInFlight.delete(key);
+    }
 }
 
-async function writeWorkerAppProjection(payload, workspaceId, uid) {
-    const availableMonths = Object.keys(splitDaysByMonth(payload.days)).sort();
+function scheduleColdWorkerExceptionsRefresh({
+    link,
+    profile,
+    workspace
+}) {
+    if (!link?.uid || !workspace?.id || !profile?.name) return;
 
-    await Promise.all([
-        writeWorkerAppData(
+    const key = coldWorkerRefreshKey(workspace.id, link.uid);
+
+    clearTimeout(coldExceptionsRefreshTimers.get(key));
+    coldExceptionsRefreshTimers.set(
+        key,
+        setTimeout(() => {
+            coldExceptionsRefreshTimers.delete(key);
+            void refreshWorkerExceptionsCold({
+                link,
+                profile,
+                workspace
+            });
+        }, COLD_OVERTIME_REFRESH_DELAY_MS + 3600)
+    );
+}
+
+async function refreshWorkerExceptionsCold({
+    link,
+    profile,
+    workspace
+}) {
+    const key = coldWorkerRefreshKey(workspace.id, link.uid);
+
+    if (coldExceptionsRefreshInFlight.has(key)) return;
+
+    coldExceptionsRefreshInFlight.add(key);
+
+    try {
+        await waitWorkerAppIdle(3600);
+        if (activeWorkspace?.id !== workspace.id) return;
+
+        const deferDelay = workerAppInteractiveDelay(
+            WORKER_APP_COLD_USER_QUIET_MS
+        );
+
+        if (deferDelay > 0) {
+            recordWorkerAppPublishDeferred(deferDelay, "cold-exceptions-user-active");
+            scheduleColdWorkerExceptionsRefresh({
+                link,
+                profile,
+                workspace
+            });
+            return;
+        }
+
+        const { exceptions, exceptionsStart, exceptionsEnd } =
+            measurePerformance(
+                "worker-app:compute-exceptions",
+                () => computeProfileExceptions(profile),
+                {
+                    profile: profile?.name || ""
+                }
+            );
+        const { db, firestoreModule } = await getFirebaseServices();
+
+        await firestoreModule.setDoc(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspace.id,
+                "workerAppData",
+                link.uid
+            ),
             {
-                ...payload,
-                calendarStorageVersion: 2,
-                availableMonths
+                exceptionsJson: JSON.stringify(exceptions),
+                exceptionsCount: Object.keys(exceptions).length,
+                exceptionsStart,
+                exceptionsEnd,
+                exceptionsStatus: "fresh",
+                exceptionsUpdatedAtISO: new Date().toISOString(),
+                updatedAt: firestoreModule.serverTimestamp()
             },
-            workspaceId,
-            uid
+            { merge: true }
+        );
+    } catch (error) {
+        console.warn(
+            "No se pudieron refrescar excepciones PWA en segundo plano.",
+            error
+        );
+    } finally {
+        coldExceptionsRefreshInFlight.delete(key);
+    }
+}
+
+async function writeWorkerAppMonths(
+    payload,
+    workspaceId,
+    uid,
+    previousMonthHashes = {}
+) {
+    const { db, firestoreModule } = await getFirebaseServices();
+    const months = splitDaysByMonth(payload.days);
+    const entries = Object.entries(months);
+    const nextMonthHashes = {};
+
+    for (const [index, [month, days]] of entries.entries()) {
+        const deferDelay = workerAppInteractiveDelay();
+
+        if (deferDelay > 0) {
+            recordWorkerAppPublishDeferred(deferDelay, "month-write-user-active");
+            return {
+                monthHashes: nextMonthHashes,
+                deferred: true,
+                deferDelay
+            };
+        }
+
+        const hash = monthDaysHash(days);
+        nextMonthHashes[month] = hash;
+
+        if (previousMonthHashes?.[month] === hash) {
+            recordPerformanceEvent("worker-app:skip-month-write", {
+                type: "worker-app",
+                uid,
+                month,
+                profile: payload.profileName || "",
+                reason: "unchanged-hash"
+            });
+            continue;
+        }
+
+        const bounds = monthScheduleBounds(days);
+
+        await measurePerformance(
+            "worker-app:write-month",
+            () => firestoreModule.setDoc(
+                firestoreModule.doc(
+                    db,
+                    "workspaces",
+                    workspaceId,
+                    "workerAppData",
+                    uid,
+                    "months",
+                    month
+                ),
+                {
+                    uid,
+                    workspaceId,
+                    month,
+                    profileName: payload.profileName || "",
+                    profileRut: payload.profileRut || "",
+                    scheduleStart: bounds.start,
+                    scheduleEnd: bounds.end,
+                    days,
+                    updatedAtISO: payload.updatedAtISO,
+                    updatedAt: firestoreModule.serverTimestamp()
+                },
+                { merge: true }
+            ),
+            {
+                uid,
+                month,
+                profile: payload.profileName || "",
+                dayCount: Object.keys(days || {}).length,
+                hash
+            },
+            {
+                asyncThreshold: 120
+            }
+        );
+
+        if (index < entries.length - 1) {
+            await waitWorkerAppIdle(500);
+        }
+    }
+
+    return {
+        monthHashes: nextMonthHashes,
+        deferred: false,
+        deferDelay: 0
+    };
+}
+
+async function writeWorkerAppProjection(
+    payload,
+    workspaceId,
+    uid,
+    previousPayload = null
+) {
+    const splitMonths = splitDaysByMonth(payload.days);
+    const availableMonths = Object.keys(splitMonths).sort();
+    const previousMonthHashes =
+        previousPayload?.monthHashes &&
+        typeof previousPayload.monthHashes === "object"
+            ? previousPayload.monthHashes
+            : {};
+    const monthWriteResult = await writeWorkerAppMonths(
+        payload,
+        workspaceId,
+        uid,
+        previousMonthHashes
+    );
+
+    if (monthWriteResult.deferred) {
+        return monthWriteResult;
+    }
+
+    const deferDelay = workerAppInteractiveDelay();
+
+    if (deferDelay > 0) {
+        recordWorkerAppPublishDeferred(deferDelay, "root-write-user-active");
+        return {
+            monthHashes: monthWriteResult.monthHashes,
+            deferred: true,
+            deferDelay
+        };
+    }
+
+    await writeWorkerAppData(
+        buildWorkerAppRootProjection(
+            payload,
+            availableMonths,
+            monthWriteResult.monthHashes
         ),
-        writeWorkerAppMonths(payload, workspaceId, uid)
-    ]);
+        workspaceId,
+        uid
+    );
+
+    return {
+        monthHashes: monthWriteResult.monthHashes,
+        deferred: false,
+        deferDelay: 0
+    };
 }
 
 async function writeWorkerSwapCandidate(payload, workspaceId) {
     const { db, firestoreModule } = await getFirebaseServices();
 
-    await firestoreModule.setDoc(
-        firestoreModule.doc(
-            db,
-            "workspaces",
-            workspaceId,
-            "workerSwapCandidates",
-            payload.uid
+    await measurePerformance(
+        "worker-app:write-swap-candidate",
+        () => firestoreModule.setDoc(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspaceId,
+                "workerSwapCandidates",
+                payload.uid
+            ),
+            {
+                ...payload,
+                updatedAt: firestoreModule.serverTimestamp()
+            },
+            { merge: true }
         ),
         {
-            ...payload,
-            updatedAt: firestoreModule.serverTimestamp()
+            uid: payload?.uid || "",
+            profile: payload?.profileName || "",
+            compatibleCount:
+                payload?.compatibleWorkerUids?.length || 0
         },
-        { merge: true }
+        {
+            asyncThreshold: 120
+        }
     );
 }
 
 async function writeWorkerMessageDirectoryEntry(payload, workspaceId) {
     const { db, firestoreModule } = await getFirebaseServices();
 
-    await firestoreModule.setDoc(
-        firestoreModule.doc(
-            db,
-            "workspaces",
-            workspaceId,
-            "workerMessageDirectory",
-            payload.uid
+    await measurePerformance(
+        "worker-app:write-directory",
+        () => firestoreModule.setDoc(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspaceId,
+                "workerMessageDirectory",
+                payload.uid
+            ),
+            {
+                ...payload,
+                updatedAt: firestoreModule.serverTimestamp()
+            },
+            { merge: true }
         ),
         {
-            ...payload,
-            updatedAt: firestoreModule.serverTimestamp()
+            uid: payload?.uid || "",
+            profile: payload?.profileName || ""
         },
-        { merge: true }
+        {
+            asyncThreshold: 120
+        }
     );
 }
 
@@ -1460,10 +1978,21 @@ function linkedProfilePairs(profiles) {
 function dirtyLinkTargets(profiles) {
     const linked = linkedProfilePairs(profiles);
 
-    return linked.filter(item =>
-        dirtyWorkerUids.has(item.link.uid) ||
-        (item.profile && dirtyProfileNames.has(item.profile.name))
-    );
+    return linked
+        .map(item => {
+            const workerDirty = dirtyWorkerUids.has(item.link.uid);
+            const profileDirty = Boolean(
+                item.profile &&
+                dirtyProfileNames.has(item.profile.name)
+            );
+
+            return {
+                ...item,
+                workerDirty,
+                profileDirty
+            };
+        })
+        .filter(item => item.workerDirty || item.profileDirty);
 }
 
 function publishStillCurrent(generation, workspaceId) {
@@ -1471,17 +2000,49 @@ function publishStillCurrent(generation, workspaceId) {
         activeWorkspace?.id === workspaceId;
 }
 
+function markDirtyTargetAgain(item) {
+    if (!item) return;
+
+    if (item.workerDirty && item.link?.uid) {
+        dirtyWorkerUids.add(item.link.uid);
+    }
+
+    if (item.profileDirty && item.profile?.name) {
+        dirtyProfileNames.add(item.profile.name);
+    }
+}
+
 // ───────── Publicacion caliente (mes actual + siguiente) ─────────
 
 export function scheduleHotPublish(delay = HOT_PUBLISH_DELAY_MS) {
     if (!activeWorkspace?.id || !workerLinks.length) return;
 
+    recordPerformanceEvent("worker-app:schedule-hot-publish", {
+        type: "worker-app",
+        delay,
+        linkedCount: workerLinks.length,
+        dirtyProfiles: dirtyProfileNames.size,
+        dirtyWorkers: dirtyWorkerUids.size
+    });
     clearTimeout(hotPublishTimer);
     hotPublishTimer = setTimeout(() => publishHotNow(), delay);
 }
 
 async function publishHotNow() {
     if (!activeWorkspace?.id || !workerLinks.length) return;
+
+    if (!dirtyProfileNames.size && !dirtyWorkerUids.size) {
+        hotPublishRequested = false;
+        return;
+    }
+
+    const interactiveDelay = workerAppInteractiveDelay();
+
+    if (interactiveDelay > 0) {
+        recordWorkerAppPublishDeferred(interactiveDelay);
+        scheduleHotPublish(interactiveDelay);
+        return;
+    }
 
     if (hotPublishInFlight) {
         hotPublishRequested = true;
@@ -1497,12 +2058,37 @@ async function publishHotNow() {
     const linkedProfiles = linkedProfilePairs(profiles);
     const shouldContinue = () =>
         publishStillCurrent(generation, workspace.id);
+    const shouldKeepPublishing = () =>
+        shouldContinue() && workerAppInteractiveDelay(2500) === 0;
+    const finishPublish = startPerformanceSpan(
+        "worker-app:publish-hot",
+        {
+            workspaceId: workspace.id,
+            targetCount: targets.length,
+            linkedCount: workerLinks.length,
+            profileCount: profiles.length
+        },
+        {
+            type: "async-span",
+            threshold: 120
+        }
+    );
 
     dirtyProfileNames = new Set();
     dirtyWorkerUids = new Set();
+    let queueResult = {
+        completed: true,
+        processed: 0
+    };
 
     try {
-        await runCooperativeQueue(targets, async item => {
+        await waitWorkerAppIdle(1800);
+        if (!shouldContinue()) return;
+
+        queueResult = await runCooperativeQueue(targets, async item => {
+            await waitWorkerAppIdle(900);
+            if (!shouldContinue()) return;
+
             const previousPayload = item.profile
                 ? await readWorkerAppData(workspace.id, item.link.uid)
                 : null;
@@ -1514,24 +2100,65 @@ async function publishHotNow() {
                     previousPayload
                 )
                 : buildMissingProfilePayload(item.link, workspace);
-            const writes = [
-                writeWorkerAppProjection(
-                    payload,
-                    workspace.id,
-                    item.link.uid
-                ),
-                writeWorkerMessageDirectoryEntry(
+            const projectionResult = await writeWorkerAppProjection(
+                payload,
+                workspace.id,
+                item.link.uid,
+                previousPayload
+            );
+
+            if (projectionResult?.deferred) {
+                markDirtyTargetAgain(item);
+                hotPublishRequested = true;
+                return;
+            }
+
+            if (item.workerDirty) {
+                const directoryDelay = workerAppInteractiveDelay();
+
+                if (directoryDelay > 0) {
+                    recordWorkerAppPublishDeferred(
+                        directoryDelay,
+                        "directory-write-user-active"
+                    );
+                    markDirtyTargetAgain(item);
+                    hotPublishRequested = true;
+                    return;
+                }
+
+                await waitWorkerAppIdle(500);
+                await writeWorkerMessageDirectoryEntry(
                     buildWorkerMessageDirectoryPayload(
                         item.link,
                         item.profile,
                         workspace
                     ),
                     workspace.id
-                )
-            ];
+                );
+            } else {
+                recordPerformanceEvent("worker-app:skip-directory-write", {
+                    type: "worker-app",
+                    uid: item.link.uid,
+                    profile: item.profile?.name || item.link.profileName || "",
+                    reason: "schedule-only-change"
+                });
+            }
 
             if (item.profile) {
-                writes.push(writeWorkerSwapCandidate(
+                const swapDelay = workerAppInteractiveDelay();
+
+                if (swapDelay > 0) {
+                    recordWorkerAppPublishDeferred(
+                        swapDelay,
+                        "swap-candidate-user-active"
+                    );
+                    markDirtyTargetAgain(item);
+                    hotPublishRequested = true;
+                    return;
+                }
+
+                await waitWorkerAppIdle(500);
+                await writeWorkerSwapCandidate(
                     buildSwapCandidatePayload(
                         item.link,
                         item.profile,
@@ -1544,14 +2171,19 @@ async function publishHotNow() {
                         }
                     ),
                     workspace.id
-                ));
+                );
             }
+        }, { shouldContinue: shouldKeepPublishing });
 
-            await Promise.all(writes);
-        }, { shouldContinue });
+        if (!queueResult.completed) {
+            targets
+                .slice(queueResult.processed)
+                .forEach(markDirtyTargetAgain);
+            hotPublishRequested = true;
+        }
     } catch (error) {
         if (shouldContinue()) {
-            targets.forEach(item => dirtyWorkerUids.add(item.link.uid));
+            targets.forEach(markDirtyTargetAgain);
             hotPublishRequested = true;
         }
 
@@ -1567,6 +2199,10 @@ async function publishHotNow() {
                 scheduleHotPublish();
             }
         }
+        finishPublish({
+            requestedAgain: hotPublishRequested,
+            completed: shouldContinue()
+        });
     }
 }
 
@@ -1583,6 +2219,16 @@ export function scheduleWorkerAppDataPublish(
 
     if (!dirtyProfileNames.size && !dirtyWorkerUids.size) return;
 
+    recordPerformanceEvent("worker-app:schedule-data-publish", {
+        type: "worker-app",
+        delay,
+        requestedTargets: Array.isArray(profileTargets)
+            ? profileTargets.length
+            : 1,
+        linkedCount: workerLinks.length,
+        dirtyProfiles: dirtyProfileNames.size,
+        dirtyWorkers: dirtyWorkerUids.size
+    });
     scheduleHotPublish(Math.min(delay, HOT_PUBLISH_DELAY_MS));
 }
 
@@ -1647,6 +2293,14 @@ export async function startWorkerAppDataSync(workspace) {
 
                 workerLinks = nextLinks;
                 workerLinksInitialized = true;
+                recordPerformanceEvent("worker-app:links-snapshot", {
+                    type: "worker-app",
+                    initial,
+                    linkCount: workerLinks.length,
+                    changedCount: changedUids.length,
+                    removedCount: removedUids.length,
+                    shouldPublish
+                });
 
                 if (
                     typeof window !== "undefined" &&
@@ -1694,6 +2348,15 @@ export async function startWorkerAppDataSync(workspace) {
 export function stopWorkerAppDataSync() {
     clearTimeout(hotPublishTimer);
     hotPublishTimer = null;
+    coldOvertimeRefreshTimers.forEach(timer => clearTimeout(timer));
+    coldOvertimeRefreshTimers.clear();
+    coldOvertimeRefreshInFlight.clear();
+    coldReportsRefreshTimers.forEach(timer => clearTimeout(timer));
+    coldReportsRefreshTimers.clear();
+    coldReportsRefreshInFlight.clear();
+    coldExceptionsRefreshTimers.forEach(timer => clearTimeout(timer));
+    coldExceptionsRefreshTimers.clear();
+    coldExceptionsRefreshInFlight.clear();
 
     if (unsubscribeWorkerLinks) {
         unsubscribeWorkerLinks();
@@ -1711,6 +2374,29 @@ export function stopWorkerAppDataSync() {
 }
 
 if (typeof window !== "undefined") {
+    [
+        "pointerdown",
+        "keydown",
+        "wheel",
+        "touchstart",
+        "input"
+    ].forEach(eventName => {
+        window.addEventListener(
+            eventName,
+            markWorkerAppUserActivity,
+            { capture: true, passive: true }
+        );
+    });
+
+    document.addEventListener("visibilitychange", () => {
+        if (
+            document.visibilityState === "hidden" &&
+            (dirtyProfileNames.size || dirtyWorkerUids.size)
+        ) {
+            scheduleHotPublish(0);
+        }
+    });
+
     window.addEventListener("proturnos:persistenceChanged", event => {
         applyDirtyFromKeys(event?.detail?.keys);
     });

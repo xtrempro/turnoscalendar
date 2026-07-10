@@ -2,12 +2,15 @@ import { normalizeText } from "./stringUtils.js";
 import {
     getProfiles,
     getCurrentProfile,
-    getShiftAssigned
+    getShiftAssigned,
+    getReplacements,
+    getSwaps
 } from "./storage.js";
 
 import * as calendar from "./calendar.js";
 import {
     aplicarCambiosTurno,
+    fusionarTurnos,
     getTurnoBase,
     getTurnoProgramado,
     getTurnoReal
@@ -34,10 +37,12 @@ import {
 } from "./rulesEngine.js";
 import { getLeaveApplicationInfo } from "./auditLog.js";
 import {
+    codeToTurno,
     getBackedTurnForWorker,
     getClockExtraBackupForWorker,
     getReplacementForCoveredShift,
-    getReplacementForWorkerShift
+    getReplacementForWorkerShift,
+    replacementActive
 } from "./replacements.js";
 import {
     hasContractForDate,
@@ -49,17 +54,30 @@ import {
     getHonorariaMonthlySummary
 } from "./honoraria.js";
 import {
+    getClockMarks,
     getClockIncidentDetail,
     hasClockExtra,
     hasSevereClockIncident,
     hasSimpleClockIncident
 } from "./clockMarks.js";
 import {
+    getHourReturns,
     getHourReturn,
     hourReturnTimelineMarker
 } from "./hourReturns.js";
-import { getBlockedDayForProfile } from "./workerAvailability.js";
+import {
+    getBlockedDayForProfile,
+    getWorkerBlockedDays
+} from "./workerAvailability.js";
 import { getActiveWorkspace } from "./workspaces.js";
+import {
+    isoFromKey,
+    keyFromISO
+} from "./dateUtils.js";
+import {
+    measurePerformance,
+    startPerformanceSpan
+} from "./performanceMonitor.js";
 
 const timelineFilterState = {
     anchorProfile: "",
@@ -70,18 +88,29 @@ let timelineOutsideClickController = null;
 let timelineRenderRequest = 0;
 const TIMELINE_DISABLED_FOR_SPEED_TEST = false;
 const TIMELINE_PAGE_SIZE = 20;
+const TIMELINE_FOREGROUND_INITIAL_LIMIT = 5;
 const TIMELINE_INITIAL_BATCH_SIZE = 5;
 const TIMELINE_INCREMENTAL_BATCH_SIZE = 5;
 const TIMELINE_CACHE_VERSION = 2;
 const TIMELINE_CACHE_PREFIX = "proturnos_ui_cache_timeline_";
 const TIMELINE_ROW_CACHE_PREFIX = "proturnos_ui_cache_timeline_row_";
+const TIMELINE_METRICS_CACHE_PREFIX = "proturnos_ui_cache_timeline_metrics_";
 const TIMELINE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const TIMELINE_CACHE_MAX_ENTRIES = 24;
 const TIMELINE_ROW_CACHE_MAX_ENTRIES = 2500;
+const TIMELINE_METRICS_CACHE_MAX_ENTRIES = 2500;
+const TIMELINE_METRICS_USER_QUIET_MS = 60000;
+const TIMELINE_METRICS_RETRY_MS = 15000;
+const TIMELINE_METRICS_VISIBLE_RETRY_MS = 60000;
 let timelineRowLimit = TIMELINE_PAGE_SIZE;
 let timelinePageSignature = "";
 const timelineMemoryCache = new Map();
 const timelineRowMemoryCache = new Map();
+const timelineMetricsMemoryCache = new Map();
+const timelineVisibilityResolvers = new Set();
+const timelineMetricsRefreshTimers = new Map();
+const timelineMetricsRefreshRequests = new Map();
+let timelineLastUserActivityAt = Date.now();
 // Contexto del ultimo render (mes visible) para actualizar casillas sueltas
 // sin reconstruir todo el timeline.
 let timelineViewState = null;
@@ -148,6 +177,22 @@ function timelineRowCacheKey({
     );
 }
 
+function timelineMetricsCacheKey({
+    workspaceId = timelineWorkspaceId(),
+    monthKey,
+    workerId
+}) {
+    return (
+        TIMELINE_METRICS_CACHE_PREFIX +
+        `${TIMELINE_CACHE_VERSION}_` +
+        timelineCacheHash([
+            workspaceId,
+            monthKey,
+            workerId
+        ].join("\u001f"))
+    );
+}
+
 function parseTimelineCache(raw) {
     if (!raw) return null;
 
@@ -185,7 +230,10 @@ function readTimelineCache(cacheKey, {
 
 function pruneTimelineCache() {
     const keys = listKeys(TIMELINE_CACHE_PREFIX)
-        .filter(key => !key.startsWith(TIMELINE_ROW_CACHE_PREFIX));
+        .filter(key =>
+            !key.startsWith(TIMELINE_ROW_CACHE_PREFIX) &&
+            !key.startsWith(TIMELINE_METRICS_CACHE_PREFIX)
+        );
 
     if (keys.length <= TIMELINE_CACHE_MAX_ENTRIES) return;
 
@@ -218,8 +266,17 @@ function writeTimelineCache(cacheKey, payload) {
     timelineMemoryCache.set(cacheKey, next);
 
     try {
-        setRaw(cacheKey, JSON.stringify(next));
-        pruneTimelineCache();
+        measurePerformance(
+            "timeline:write-html-cache",
+            () => {
+                setRaw(cacheKey, JSON.stringify(next));
+                pruneTimelineCache();
+            },
+            {
+                htmlLength: String(payload?.html || "").length,
+                rowLimit: payload?.rowLimit || 0
+            }
+        );
     } catch {
         timelineMemoryCache.delete(cacheKey);
     }
@@ -286,24 +343,109 @@ function writeTimelineRowCache(cacheKey, payload) {
     timelineRowMemoryCache.set(cacheKey, next);
 
     try {
-        setRaw(cacheKey, JSON.stringify(next));
-        pruneTimelineRowCache();
+        measurePerformance(
+            "timeline:write-row-cache",
+            () => {
+                setRaw(cacheKey, JSON.stringify(next));
+                pruneTimelineRowCache();
+            },
+            {
+                htmlLength: String(payload?.innerHTML || "").length,
+                profileName: payload?.profileName || "",
+                workerId: payload?.workerId || ""
+            }
+        );
     } catch {
         timelineRowMemoryCache.delete(cacheKey);
+    }
+}
+
+function readTimelineMetricsCache(cacheKey, {
+    monthKey,
+    workerId
+}) {
+    const payload = timelineMetricsMemoryCache.get(cacheKey) ||
+        parseTimelineCache(getRaw(cacheKey, null));
+
+    if (
+        !payload ||
+        payload.version !== TIMELINE_CACHE_VERSION ||
+        payload.monthKey !== monthKey ||
+        payload.workerId !== workerId ||
+        !payload.stats ||
+        Date.now() - Number(payload.savedAt || 0) > TIMELINE_CACHE_MAX_AGE_MS
+    ) {
+        return null;
+    }
+
+    timelineMetricsMemoryCache.set(cacheKey, payload);
+    return payload;
+}
+
+function pruneTimelineMetricsCache() {
+    const keys = listKeys(TIMELINE_METRICS_CACHE_PREFIX);
+
+    if (keys.length <= TIMELINE_METRICS_CACHE_MAX_ENTRIES) return;
+
+    keys
+        .map(key => ({
+            key,
+            savedAt:
+                Number(
+                    timelineMetricsMemoryCache.get(key)?.savedAt ??
+                    parseTimelineCache(getRaw(key, null))?.savedAt
+                ) || 0
+        }))
+        .sort((a, b) => b.savedAt - a.savedAt)
+        .slice(TIMELINE_METRICS_CACHE_MAX_ENTRIES)
+        .forEach(entry => {
+            timelineMetricsMemoryCache.delete(entry.key);
+            removeKey(entry.key);
+        });
+}
+
+function writeTimelineMetricsCache(cacheKey, payload) {
+    const next = {
+        ...payload,
+        version: TIMELINE_CACHE_VERSION,
+        savedAt: Date.now()
+    };
+
+    timelineMetricsMemoryCache.set(cacheKey, next);
+
+    try {
+        measurePerformance(
+            "timeline:write-metrics-cache",
+            () => {
+                setRaw(cacheKey, JSON.stringify(next));
+                pruneTimelineMetricsCache();
+            },
+            {
+                profileName: payload?.profileName || "",
+                workerId: payload?.workerId || ""
+            }
+        );
+    } catch {
+        timelineMetricsMemoryCache.delete(cacheKey);
     }
 }
 
 function clearTimelineCache() {
     timelineMemoryCache.clear();
     timelineRowMemoryCache.clear();
+    timelineMetricsMemoryCache.clear();
     listKeys(TIMELINE_CACHE_PREFIX).forEach(removeKey);
     listKeys(TIMELINE_ROW_CACHE_PREFIX).forEach(removeKey);
+    listKeys(TIMELINE_METRICS_CACHE_PREFIX).forEach(removeKey);
 }
 
 function clearLegacyTimelineCache() {
     timelineMemoryCache.clear();
     listKeys(TIMELINE_CACHE_PREFIX)
-        .filter(key => !key.startsWith(TIMELINE_ROW_CACHE_PREFIX))
+        .filter(key =>
+            !key.startsWith(TIMELINE_ROW_CACHE_PREFIX) &&
+            !key.startsWith(TIMELINE_METRICS_CACHE_PREFIX)
+        )
         .forEach(removeKey);
 }
 
@@ -317,7 +459,10 @@ function timelineAffectedProfilesFromKeys(keys = []) {
         "comp_",
         "absences_",
         "blocked_",
-        "rotativa_"
+        "rotativa_",
+        "carry_",
+        "clockMarks_",
+        "hourReturns_"
     ];
 
     keys.forEach(key => {
@@ -369,6 +514,29 @@ function clearTimelineRowCacheForProfiles(profileNames = new Set()) {
                 workerIds.has(payload?.workerId)
             ) {
                 timelineRowMemoryCache.delete(key);
+            }
+        });
+
+    metricKeys.forEach(key => {
+        const payload = timelineMetricsMemoryCache.get(key) ||
+            parseTimelineCache(getRaw(key, null));
+
+        if (
+            profileNames.has(payload?.profileName) ||
+            workerIds.has(payload?.workerId)
+        ) {
+            timelineMetricsMemoryCache.delete(key);
+            removeKey(key);
+        }
+    });
+
+    Array.from(timelineMetricsMemoryCache.entries())
+        .forEach(([key, payload]) => {
+            if (
+                profileNames.has(payload?.profileName) ||
+                workerIds.has(payload?.workerId)
+            ) {
+                timelineMetricsMemoryCache.delete(key);
             }
         });
 
@@ -456,6 +624,15 @@ function waitTimelineIdle(timeout = 180) {
     return new Promise(resolve => {
         if (
             typeof window !== "undefined" &&
+            typeof document !== "undefined" &&
+            document.visibilityState === "hidden"
+        ) {
+            waitTimelineVisible().then(resolve);
+            return;
+        }
+
+        if (
+            typeof window !== "undefined" &&
             typeof window.requestIdleCallback === "function"
         ) {
             window.requestIdleCallback(resolve, { timeout });
@@ -464,6 +641,95 @@ function waitTimelineIdle(timeout = 180) {
 
         window.setTimeout(resolve, 0);
     });
+}
+
+function markTimelineUserActivity() {
+    timelineLastUserActivityAt = Date.now();
+}
+
+function timelineHasPendingInput() {
+    try {
+        return Boolean(
+            typeof navigator !== "undefined" &&
+            navigator.scheduling &&
+            typeof navigator.scheduling.isInputPending === "function" &&
+            navigator.scheduling.isInputPending({ includeContinuous: true })
+        );
+    } catch (_error) {
+        return false;
+    }
+}
+
+function timelineInteractiveDelay(quietMs = TIMELINE_METRICS_USER_QUIET_MS) {
+    if (typeof document === "undefined") return 0;
+    if (document.visibilityState !== "visible") return 0;
+
+    // Las metricas HHEE son utiles pero no deben competir con scroll, clicks
+    // ni cambios de mes. Mientras la pestaña esta visible se reintentan luego;
+    // al ocultarse, pueden refrescar cache en segundo plano.
+    const delay = Math.max(
+        TIMELINE_METRICS_VISIBLE_RETRY_MS,
+        TIMELINE_METRICS_RETRY_MS,
+        Number(quietMs) || TIMELINE_METRICS_USER_QUIET_MS
+    );
+
+    return timelineHasPendingInput()
+        ? Math.max(delay, TIMELINE_METRICS_RETRY_MS)
+        : delay;
+}
+
+function waitTimelineBackgroundIdle(timeout = 500) {
+    return new Promise(resolve => {
+        if (
+            typeof window !== "undefined" &&
+            typeof window.requestIdleCallback === "function"
+        ) {
+            window.requestIdleCallback(resolve, {
+                timeout: Math.max(120, Number(timeout) || 500)
+            });
+            return;
+        }
+
+        window.setTimeout(resolve, 0);
+    });
+}
+
+function waitTimelineVisible() {
+    if (
+        typeof document === "undefined" ||
+        document.visibilityState !== "hidden"
+    ) {
+        return Promise.resolve();
+    }
+
+    return new Promise(resolve => {
+        timelineVisibilityResolvers.add(resolve);
+    });
+}
+
+async function pauseTimelineIfHidden(container = null) {
+    if (
+        typeof document === "undefined" ||
+        document.visibilityState !== "hidden"
+    ) {
+        return;
+    }
+
+    if (container) {
+        updateTimelineProgress(
+            container,
+            "Timeline pausado hasta volver a la pesta\u00f1a..."
+        );
+    }
+
+    await waitTimelineVisible();
+
+    if (container) {
+        updateTimelineProgress(
+            container,
+            "Actualizando timeline..."
+        );
+    }
 }
 
 function timelineRenderIsCurrent(requestId, year, month) {
@@ -479,6 +745,9 @@ function timelineRenderIsCurrent(requestId, year, month) {
 
 export function cancelTimelineRender() {
     timelineRenderRequest++;
+    timelineMetricsRefreshTimers.forEach(timer => clearTimeout(timer));
+    timelineMetricsRefreshTimers.clear();
+    timelineMetricsRefreshRequests.clear();
 }
 
 // Escapa un valor para usarlo dentro de un selector [attr="valor"].
@@ -915,31 +1184,40 @@ function dayExtraAlertClass(nombre, value, monthDate = new Date()) {
 }
 
 function syncTimelineStickyOffsets(container) {
-    const shell = container.querySelector(".timeline-shell");
-    const headerCells = container.querySelectorAll(
-        ".timeline-table thead th"
-    );
+    return measurePerformance(
+        "timeline:sync-sticky-offsets",
+        () => {
+            const shell = container.querySelector(".timeline-shell");
+            const headerCells = container.querySelectorAll(
+                ".timeline-table thead th"
+            );
 
-    if (!shell || headerCells.length < 3) return;
+            if (!shell || headerCells.length < 3) return;
 
-    const nameWidth = Math.ceil(
-        headerCells[0].getBoundingClientRect().width
-    );
-    const dayWidth = Math.ceil(
-        headerCells[1].getBoundingClientRect().width
-    );
+            const nameWidth = Math.ceil(
+                headerCells[0].getBoundingClientRect().width
+            );
+            const dayWidth = Math.ceil(
+                headerCells[1].getBoundingClientRect().width
+            );
 
-    shell.style.setProperty(
-        "--timeline-hhee-day-left",
-        `${nameWidth}px`
-    );
-    shell.style.setProperty(
-        "--timeline-hhee-night-left",
-        `${nameWidth + dayWidth}px`
+            shell.style.setProperty(
+                "--timeline-hhee-day-left",
+                `${nameWidth}px`
+            );
+            shell.style.setProperty(
+                "--timeline-hhee-night-left",
+                `${nameWidth + dayWidth}px`
+            );
+        },
+        {
+            rowCount:
+                container?.querySelectorAll?.("[data-timeline-row]")?.length || 0
+        }
     );
 }
 
-function getColor(nombre, key, maps = null, isExtra = false){
+function getColor(nombre, key, maps = null, isExtra = false, realTurn = null){
     const admin = maps?.admin || getAdmin(nombre);
     const legal = maps?.legal || getLegal(nombre);
     const comp = maps?.comp || getComp(nombre);
@@ -957,7 +1235,9 @@ function getColor(nombre, key, maps = null, isExtra = false){
     if (admin[key] === "0.5M") return "#fbbf24";
     if (admin[key] === "0.5T") return "#facc15";
 
-    const turno = getTurnoReal(nombre, key);
+    const turno = realTurn === null || realTurn === undefined
+        ? getTurnoReal(nombre, key)
+        : Number(realTurn) || TURNO.LIBRE;
 
     return getTurnoColor(turno, isExtra) || TURNO_COLOR[turno] || TURNO_COLOR[0];
 }
@@ -1094,6 +1374,268 @@ function contractErrorMarker(nombre, key) {
     return state > 0 && !hasContractForDate(nombre, key);
 }
 
+function timelineISOInMonth(iso, year, month) {
+    const match = String(iso || "").match(/^(\d{4})-(\d{2})-\d{2}$/);
+
+    return Boolean(match) &&
+        Number(match[1]) === Number(year) &&
+        Number(match[2]) - 1 === Number(month);
+}
+
+function mergeTimelineTurn(currentTurn, nextTurn) {
+    return fusionarTurnos(
+        Number(currentTurn) || TURNO.LIBRE,
+        Number(nextTurn) || TURNO.LIBRE
+    );
+}
+
+function addReplacementTurn(index, keyDay, replacement) {
+    if (!keyDay || !replacement) return;
+
+    index.set(
+        keyDay,
+        mergeTimelineTurn(
+            index.get(keyDay) || TURNO.LIBRE,
+            codeToTurno(replacement.turno)
+        )
+    );
+}
+
+function timelineClockMarkHasSevereIncident(mark) {
+    if (!mark?.segments) return false;
+
+    return Object.values(mark.segments).some(segment =>
+        (segment?.missingEntry || segment?.missingExit) &&
+        !segment?.rrhhPayApproved
+    );
+}
+
+function timelineClockMarkHasSimpleIncident(mark) {
+    if (!mark?.segments || timelineClockMarkHasSevereIncident(mark)) {
+        return false;
+    }
+
+    return Object.values(mark.segments).some(segment =>
+        (segment?.entryTime || segment?.exitTime) &&
+        !segment?.rrhhPayApproved &&
+        !segment?.discountWaived
+    );
+}
+
+function buildTimelineRowAuxiliaryContext(
+    profileName,
+    year,
+    month,
+    diasMes,
+    leaveMaps,
+    rowData = {}
+) {
+    const finishAux = startPerformanceSpan(
+        "timeline:row-aux-context",
+        {
+            profile: profileName,
+            year,
+            month,
+            days: diasMes
+        }
+    );
+    const keys = monthKeys(year, month, diasMes);
+    const isoByKey = new Map();
+    const dateByKey = new Map();
+    const blockedByIso = new Map();
+    const replacementByIso = new Map();
+    const coveredReplacementByIso = new Map();
+    const clockExtraBackupByIso = new Map();
+    const replacementTurnByKey = new Map();
+    const backedTurnByKey = new Map();
+    const baseTurnByKey = new Map();
+    const programmedTurnByKey = new Map();
+    const realTurnByKey = new Map();
+    const baseWithSwapsByKey = new Map();
+    const actualWithoutReplacementsByKey = new Map();
+    const pendingManualExtraByKey = new Map();
+    const contractErrorByKey = new Map();
+    const needsReplacementByKey = new Map();
+    const profileKey = normalizeText(profileName);
+    const swaps = getSwaps();
+    const data = rowData?.data || getData(profileName);
+    const isReplacement = isReplacementProfile(profileName);
+
+    keys.forEach(keyDay => {
+        const iso = isoFromKey(keyDay);
+
+        isoByKey.set(keyDay, iso);
+        dateByKey.set(keyDay, new Date(year, month, Number(keyDay.split("-")[2])));
+    });
+
+    getWorkerBlockedDays().forEach(item => {
+        const itemProfileKey =
+            item?.profileKey || normalizeText(item?.profileName);
+
+        if (
+            itemProfileKey === profileKey &&
+            timelineISOInMonth(item.date, year, month)
+        ) {
+            blockedByIso.set(item.date, item);
+        }
+    });
+
+    getReplacements()
+        .filter(replacementActive)
+        .forEach(replacement => {
+            const iso = String(replacement?.date || "");
+
+            if (!timelineISOInMonth(iso, year, month)) return;
+
+            const keyDay = keyFromISO(iso);
+
+            if (replacement.worker === profileName) {
+                if (!replacementByIso.has(iso)) {
+                    replacementByIso.set(iso, replacement);
+                }
+
+                if (replacement.addsShift !== false) {
+                    addReplacementTurn(
+                        replacementTurnByKey,
+                        keyDay,
+                        replacement
+                    );
+                }
+
+                if (replacement.source !== "clock_extra") {
+                    addReplacementTurn(
+                        backedTurnByKey,
+                        keyDay,
+                        replacement
+                    );
+                }
+
+                if (
+                    replacement.source === "clock_extra" &&
+                    !clockExtraBackupByIso.has(iso)
+                ) {
+                    clockExtraBackupByIso.set(iso, replacement);
+                }
+            }
+
+            if (
+                replacement.replaced === profileName &&
+                !coveredReplacementByIso.has(iso)
+            ) {
+                coveredReplacementByIso.set(iso, replacement);
+            }
+        });
+
+    keys.forEach(keyDay => {
+        const iso = isoByKey.get(keyDay);
+        const replacementTurn =
+            replacementTurnByKey.get(keyDay) || TURNO.LIBRE;
+        const baseTurn = getTurnoBase(profileName, keyDay);
+        const programmedTurn = getTurnoProgramado(profileName, keyDay);
+        const baseWithSwaps = aplicarCambiosTurno(
+            profileName,
+            keyDay,
+            baseTurn,
+            {
+                includeReplacements: false,
+                replacementTurn,
+                swaps,
+                isoDate: iso
+            }
+        );
+        const actualWithoutReplacements = aplicarCambiosTurno(
+            profileName,
+            keyDay,
+            programmedTurn,
+            {
+                includeReplacements: false,
+                replacementTurn,
+                swaps,
+                isoDate: iso
+            }
+        );
+        const realTurn = aplicarCambiosTurno(
+            profileName,
+            keyDay,
+            programmedTurn,
+            {
+                replacementTurn,
+                swaps,
+                isoDate: iso
+            }
+        );
+        const extraTurn = getTurnoExtraAgregado(
+            baseWithSwaps,
+            actualWithoutReplacements
+        );
+
+        baseTurnByKey.set(keyDay, baseTurn);
+        programmedTurnByKey.set(keyDay, programmedTurn);
+        realTurnByKey.set(keyDay, realTurn);
+        baseWithSwapsByKey.set(keyDay, baseWithSwaps);
+        actualWithoutReplacementsByKey.set(
+            keyDay,
+            actualWithoutReplacements
+        );
+        pendingManualExtraByKey.set(
+            keyDay,
+            restarTurnoCubierto(
+                extraTurn,
+                backedTurnByKey.get(keyDay) || TURNO.LIBRE
+            )
+        );
+        needsReplacementByKey.set(
+            keyDay,
+            requiereReemplazoTurnoBase(
+                keyDay,
+                baseTurn,
+                leaveMaps.admin,
+                leaveMaps.legal,
+                leaveMaps.comp,
+                leaveMaps.absences
+            ) &&
+            !coveredReplacementByIso.has(iso)
+        );
+
+        if (isReplacement) {
+            contractErrorByKey.set(
+                keyDay,
+                realTurn > 0 && !hasContractForDate(profileName, keyDay)
+            );
+        }
+    });
+
+    const aux = {
+        data,
+        keys,
+        isoByKey,
+        dateByKey,
+        blockedByIso,
+        hourReturns: getHourReturns(profileName),
+        clockMarks: getClockMarks(profileName),
+        replacementByIso,
+        coveredReplacementByIso,
+        clockExtraBackupByIso,
+        replacementTurnByKey,
+        backedTurnByKey,
+        baseTurnByKey,
+        programmedTurnByKey,
+        realTurnByKey,
+        baseWithSwapsByKey,
+        actualWithoutReplacementsByKey,
+        pendingManualExtraByKey,
+        contractErrorByKey,
+        needsReplacementByKey
+    };
+
+    finishAux({
+        blockedCount: blockedByIso.size,
+        replacementCount: replacementByIso.size,
+        coveredReplacementCount: coveredReplacementByIso.size
+    });
+    return aux;
+}
+
 function monthKeys(year, month, days) {
     return Array.from({ length: days }, (_, index) =>
         `${year}-${month}-${index + 1}`
@@ -1104,28 +1646,74 @@ function hasLargaBase(profileName, key) {
     return Number(getTurnoBase(profileName, key)) === TURNO.LARGA;
 }
 
-function sameBasePattern(profileName, actualName, keys) {
+function timelineBaseSequence(profileName, keys, cache = null) {
+    if (cache?.has(profileName)) return cache.get(profileName);
+
+    const sequence = keys.map(key =>
+        Number(getTurnoBase(profileName, key)) || TURNO.LIBRE
+    );
+
+    cache?.set(profileName, sequence);
+    return sequence;
+}
+
+function sameBasePattern(profileName, actualName, keys, sortContext = null) {
+    if (sortContext?.baseCache && sortContext?.actualSequence) {
+        const sequence = timelineBaseSequence(
+            profileName,
+            sortContext.keys,
+            sortContext.baseCache
+        );
+
+        return sequence.every((turn, index) =>
+            turn === sortContext.actualSequence[index]
+        );
+    }
+
     return keys.every(key =>
         Number(getTurnoBase(profileName, key)) ===
         Number(getTurnoBase(actualName, key))
     );
 }
 
-function firstLargaMatchIndex(profileName, keys) {
+function firstLargaMatchIndex(profileName, keys, sortContext = null) {
+    if (sortContext?.baseCache && sortContext?.keyIndexByKey) {
+        const sequence = timelineBaseSequence(
+            profileName,
+            sortContext.keys,
+            sortContext.baseCache
+        );
+
+        return keys.findIndex(key => {
+            const sourceIndex = sortContext.keyIndexByKey.get(key);
+
+            return sequence[sourceIndex] === TURNO.LARGA;
+        });
+    }
+
     return keys.findIndex(key => hasLargaBase(profileName, key));
 }
 
 function timelineSortContext(actual, year, month, diasMes) {
     const keys = monthKeys(year, month, diasMes);
-    const nightKeys = keys.filter(key =>
-        Number(getTurnoBase(actual, key)) === TURNO.NOCHE
+    const baseCache = new Map();
+    const actualSequence =
+        timelineBaseSequence(actual, keys, baseCache);
+    const keyIndexByKey = new Map(
+        keys.map((key, index) => [key, index])
     );
-    const freeKeys = keys.filter(key =>
-        Number(getTurnoBase(actual, key)) === TURNO.LIBRE
+    const nightKeys = keys.filter((_key, index) =>
+        actualSequence[index] === TURNO.NOCHE
+    );
+    const freeKeys = keys.filter((_key, index) =>
+        actualSequence[index] === TURNO.LIBRE
     );
 
     return {
         keys,
+        baseCache,
+        actualSequence,
+        keyIndexByKey,
         nightKeys,
         freeKeys
     };
@@ -1134,17 +1722,18 @@ function timelineSortContext(actual, year, month, diasMes) {
 function timelineProfileSort(
     profile,
     actual,
-    { keys, nightKeys, freeKeys },
+    sortContext,
     totalHhee = 0
 ) {
+    const { keys, nightKeys, freeKeys } = sortContext;
     const rotativa = getJSON(`rotativa_${profile.name}`, {});
     const samePattern =
         profile.name !== actual &&
-        sameBasePattern(profile.name, actual, keys);
+        sameBasePattern(profile.name, actual, keys, sortContext);
     const nightMatch =
-        firstLargaMatchIndex(profile.name, nightKeys);
+        firstLargaMatchIndex(profile.name, nightKeys, sortContext);
     const freeMatch =
-        firstLargaMatchIndex(profile.name, freeKeys);
+        firstLargaMatchIndex(profile.name, freeKeys, sortContext);
     let priority = 3;
     let matchIndex = Number.MAX_SAFE_INTEGER;
 
@@ -1192,21 +1781,39 @@ function compareTimelineSort(a, b) {
     return a.name.localeCompare(b.name);
 }
 
-function orderTimelineProfiles(grupo, actual, year, month, diasMes) {
-    const sortContext =
-        timelineSortContext(actual, year, month, diasMes);
+function orderTimelineProfiles(
+    grupo,
+    actual,
+    year,
+    month,
+    diasMes,
+    sortContext = null
+) {
+    return measurePerformance(
+        "timeline:order-profiles",
+        () => {
+            const effectiveSortContext =
+                sortContext || timelineSortContext(actual, year, month, diasMes);
 
-    return [...grupo]
-        .map(profile => ({
-            profile,
-            sort: timelineProfileSort(
-                profile,
-                actual,
-                sortContext
-            )
-        }))
-        .sort((a, b) => compareTimelineSort(a.sort, b.sort))
-        .map(item => item.profile);
+            return [...grupo]
+                .map(profile => ({
+                    profile,
+                    sort: timelineProfileSort(
+                        profile,
+                        actual,
+                        effectiveSortContext
+                    )
+                }))
+                .sort((a, b) => compareTimelineSort(a.sort, b.sort))
+                .map(item => item.profile);
+        },
+        {
+            profileCount: grupo.length,
+            actual,
+            year,
+            month
+        }
+    );
 }
 
 function timelineCellBackground(color, isInhabil) {
@@ -1227,18 +1834,30 @@ function timelineBlockedDayBackground(isInhabil) {
     return `linear-gradient(135deg, ${overlay}, rgba(148, 163, 184, 0.22)), var(--timeline-empty)`;
 }
 
-function buildTimelineRowData({
+function emptyTimelineStats() {
+    return {
+        hheeDiurnas: 0,
+        hheeNocturnas: 0
+    };
+}
+
+function computeTimelineRowMetrics({
     profile,
-    actual,
     year,
     month,
     diasMes,
     holidays,
-    keys,
-    nightKeys,
-    freeKeys
+    data
 }) {
-    const data = getData(profile.name);
+    const finishMetrics = startPerformanceSpan(
+        "timeline:compute-row-metrics",
+        {
+            profile: profile?.name || "",
+            year,
+            month,
+            days: diasMes
+        }
+    );
     const stats = calcularHorasMesPerfil(
         profile.name,
         year,
@@ -1259,25 +1878,114 @@ function buildTimelineRowData({
     const totalHhee =
         (Number(stats.hheeDiurnas) || 0) +
         (Number(stats.hheeNocturnas) || 0);
-    const sort = timelineProfileSort(
-        profile,
-        actual,
+
+    finishMetrics({
+        totalHhee
+    });
+
+    return {
+        stats,
+        honorariaSummary,
+        totalHhee
+    };
+}
+
+function buildTimelineRowData({
+    profile,
+    actual,
+    year,
+    month,
+    diasMes,
+    holidays,
+    keys,
+    nightKeys,
+    freeKeys,
+    sortContext = null,
+    metricsCacheKey = "",
+    monthKey = timelineMonthKey(year, month),
+    workerId = timelineWorkerId(profile),
+    forceFreshMetrics = false
+}) {
+    const finishRowData = startPerformanceSpan(
+        "timeline:build-row-data",
         {
+            profile: profile?.name || "",
+            actual,
+            year,
+            month,
+            days: diasMes
+        }
+    );
+    const data = getData(profile.name);
+    const cachedMetrics = !forceFreshMetrics && metricsCacheKey
+        ? readTimelineMetricsCache(metricsCacheKey, {
+            monthKey,
+            workerId
+        })
+        : null;
+    const metrics = forceFreshMetrics
+        ? computeTimelineRowMetrics({
+            profile,
+            year,
+            month,
+            diasMes,
+            holidays,
+            data
+        })
+        : cachedMetrics
+            ? {
+                stats: cachedMetrics.stats || emptyTimelineStats(),
+                honorariaSummary: cachedMetrics.honorariaSummary || null,
+                totalHhee: Number(cachedMetrics.totalHhee) || 0
+            }
+            : {
+                stats: emptyTimelineStats(),
+                honorariaSummary: null,
+                totalHhee: 0
+            };
+    const effectiveSortContext =
+        sortContext || {
             keys,
             nightKeys,
             freeKeys
-        },
-        totalHhee
+        };
+    const sort = timelineProfileSort(
+        profile,
+        actual,
+        effectiveSortContext,
+        metrics.totalHhee
     );
 
-    return {
+    const rowData = {
         profile,
         data,
-        stats,
-        honorariaSummary,
-        workerId: timelineWorkerId(profile),
+        stats: metrics.stats,
+        honorariaSummary: metrics.honorariaSummary,
+        workerId,
+        metricsCacheKey,
+        metricsStale: !forceFreshMetrics && !cachedMetrics,
         sort
     };
+
+    if (forceFreshMetrics && metricsCacheKey) {
+        writeTimelineMetricsCache(metricsCacheKey, {
+            monthKey,
+            workerId,
+            profileName: profile.name,
+            stats: metrics.stats,
+            honorariaSummary: metrics.honorariaSummary,
+            totalHhee: metrics.totalHhee
+        });
+    }
+
+    finishRowData({
+        totalHhee: metrics.totalHhee,
+        workerId: rowData.workerId,
+        metricsCached: Boolean(cachedMetrics),
+        metricsStale: rowData.metricsStale
+    });
+
+    return rowData;
 }
 
 async function buildTimelineRows(
@@ -1328,22 +2036,35 @@ function renderTimelineDayCell(profile, d, {
     month,
     holidays,
     leaveMaps,
-    honorariaSummary
+    honorariaSummary,
+    rowAux = null
 }) {
     const key = `${year}-${month}-${d}`;
-    const replacement = replacementMarker(profile.name, key);
+    const iso = rowAux?.isoByKey?.get(key) || isoFromKey(key);
+    const date = rowAux?.dateByKey?.get(key) || new Date(year, month, d);
+    const realTurn = rowAux?.realTurnByKey?.has(key)
+        ? rowAux.realTurnByKey.get(key)
+        : getTurnoReal(profile.name, key);
+    const baseTurn = rowAux?.baseTurnByKey?.has(key)
+        ? rowAux.baseTurnByKey.get(key)
+        : getTurnoBase(profile.name, key);
+    const replacement = rowAux?.replacementByIso?.has(iso)
+        ? rowAux.replacementByIso.get(iso)
+        : replacementMarker(profile.name, key);
     const color = getColor(
         profile.name,
         key,
         leaveMaps,
-        Boolean(replacement)
+        Boolean(replacement),
+        realTurn
     );
-    const date = new Date(year, month, d);
     const isInhabil = !isBusinessDay(date, holidays);
-    const workerBlockedDay =
-        getBlockedDayForProfile(profile.name, key);
-    const hourReturn =
-        getHourReturn(profile.name, key);
+    const workerBlockedDay = rowAux?.blockedByIso?.has(iso)
+        ? rowAux.blockedByIso.get(iso)
+        : getBlockedDayForProfile(profile.name, key);
+    const hourReturn = rowAux?.hourReturns
+        ? rowAux.hourReturns[key] || null
+        : getHourReturn(profile.name, key);
     // Mismo esquema de bandas que el calendario (turnos combinados +
     // extension/reduccion de marcaje). Si devuelve gradiente, se usa.
     const dayGradient =
@@ -1351,11 +2072,11 @@ function renderTimelineDayCell(profile, d, {
             ? getDayColorGradient(
                 profile.name,
                 key,
-                getTurnoReal(profile.name, key),
+                realTurn,
                 date,
                 holidays,
-                getAdmin(profile.name)[key],
-                getTurnoBase(profile.name, key)
+                leaveMaps.admin?.[key],
+                baseTurn
             )
             : null;
     const background = workerBlockedDay
@@ -1365,43 +2086,67 @@ function renderTimelineDayCell(profile, d, {
         : dayGradient
         ? dayGradient
         : timelineCellBackground(color, isInhabil);
-    const contractError =
-        contractErrorMarker(profile.name, key);
+    const contractError = rowAux?.contractErrorByKey?.has(key)
+        ? rowAux.contractErrorByKey.get(key)
+        : contractErrorMarker(profile.name, key);
     const honorariaExcess =
         getHonorariaExcessForKey(
             honorariaSummary,
             key
         );
-    const needsReplacement =
-        needsReplacementMarker(profile.name, key);
-    const pendingManualExtra =
-        pendingManualExtraMarker(profile.name, key);
-    const severeClockIncident =
-        hasSevereClockIncident(profile.name, key);
+    const needsReplacement = rowAux?.needsReplacementByKey?.has(key)
+        ? rowAux.needsReplacementByKey.get(key)
+        : needsReplacementMarker(profile.name, key);
+    const pendingManualExtra = rowAux?.pendingManualExtraByKey?.has(key)
+        ? rowAux.pendingManualExtraByKey.get(key)
+        : pendingManualExtraMarker(profile.name, key);
+    const clockMark = rowAux?.clockMarks
+        ? rowAux.clockMarks[key] || null
+        : null;
+    const severeClockIncident = clockMark
+        ? timelineClockMarkHasSevereIncident(clockMark)
+        : hasSevereClockIncident(profile.name, key);
     const simpleClockIncident =
         !severeClockIncident &&
-        hasSimpleClockIncident(profile.name, key);
+        (
+            clockMark
+                ? timelineClockMarkHasSimpleIncident(clockMark)
+                : hasSimpleClockIncident(profile.name, key)
+        );
     const clockIncidentDetail =
         severeClockIncident || simpleClockIncident
             ? getClockIncidentDetail(
                 profile.name,
                 key,
                 date,
-                getTurnoReal(profile.name, key),
+                realTurn,
                 holidays
             )
             : "";
-    const clockExtra =
-        hasClockExtra(
+    const clockExtra = rowAux?.clockMarks
+        ? (
+            clockMark &&
+            hasClockExtra(
+                profile.name,
+                key,
+                date,
+                realTurn,
+                holidays
+            )
+        )
+        : hasClockExtra(
             profile.name,
             key,
-            new Date(year, month, d),
-            getTurnoReal(profile.name, key),
+            date,
+            realTurn,
             holidays
         );
+    const hasClockExtraBackup = rowAux?.clockExtraBackupByIso?.has(iso)
+        ? Boolean(rowAux.clockExtraBackupByIso.get(iso))
+        : Boolean(getClockExtraBackupForWorker(profile.name, key));
     const showClockExtra =
         clockExtra &&
-        !getClockExtraBackupForWorker(profile.name, key);
+        !hasClockExtraBackup;
     const showExtraReason =
         !contractError &&
         !needsReplacement &&
@@ -1482,7 +2227,7 @@ function renderTimelineDayCell(profile, d, {
             ${showHonorariaLimit ? `data-honoraria-limit-profile="${escapeHtml(profile.name)}" data-honoraria-limit-key="${escapeHtml(key)}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
             ${needsReplacement ? `data-replacement-profile="${escapeHtml(profile.name)}" data-replacement-key="${escapeHtml(key)}"` : ""}
             ${showExtraReason ? `data-extra-profile="${escapeHtml(profile.name)}" data-extra-key="${escapeHtml(key)}" data-extra-turn="${escapeHtml(showExtraReason)}"` : ""}
-            ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${escapeHtml(profile.name)}" data-clock-extra-key="${escapeHtml(key)}" data-clock-extra-turn="${escapeHtml(getTurnoReal(profile.name, key))}"` : ""}
+            ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${escapeHtml(profile.name)}" data-clock-extra-key="${escapeHtml(key)}" data-clock-extra-turn="${escapeHtml(realTurn)}"` : ""}
         >
             ${marker ? `<span class="timeline-replacement-marker">${marker}</span>` : ""}
         </td>
@@ -1495,6 +2240,15 @@ function timelineRowInnerHTML(rowData, {
     diasMes,
     holidays
 }) {
+    const finishHTML = startPerformanceSpan(
+        "timeline:row-html",
+        {
+            profile: rowData?.profile?.name || "",
+            year,
+            month,
+            days: diasMes
+        }
+    );
     const {
         profile,
         stats,
@@ -1516,6 +2270,14 @@ function timelineRowInnerHTML(rowData, {
         comp: getComp(profile.name),
         absences: getAbs(profile.name)
     };
+    const rowAux = buildTimelineRowAuxiliaryContext(
+        profile.name,
+        year,
+        month,
+        diasMes,
+        leaveMaps,
+        rowData
+    );
     let html = `
         <td class="namecol">
             <button
@@ -1541,10 +2303,12 @@ function timelineRowInnerHTML(rowData, {
             month,
             holidays,
             leaveMaps,
-            honorariaSummary
+            honorariaSummary,
+            rowAux
         });
     }
 
+    finishHTML();
     return html;
 }
 
@@ -1575,8 +2339,10 @@ function timelineRowElement({
 }
 
 function createTimelineRow(rowData, renderContext) {
-    const innerHTML = timelineRowInnerHTML(rowData, renderContext);
-    const rowHash = timelineRowHash(innerHTML);
+    const innerHTML = typeof rowData.innerHTML === "string"
+        ? rowData.innerHTML
+        : timelineRowInnerHTML(rowData, renderContext);
+    const rowHash = rowData.rowHash || timelineRowHash(innerHTML);
 
     return timelineRowElement({
         workerId: rowData.workerId,
@@ -1598,8 +2364,10 @@ function createTimelineRowFromCache(profile, cached) {
 }
 
 function updateTimelineRow(existingRow, rowData, renderContext) {
-    const innerHTML = timelineRowInnerHTML(rowData, renderContext);
-    const rowHash = timelineRowHash(innerHTML);
+    const innerHTML = typeof rowData.innerHTML === "string"
+        ? rowData.innerHTML
+        : timelineRowInnerHTML(rowData, renderContext);
+    const rowHash = rowData.rowHash || timelineRowHash(innerHTML);
 
     if (existingRow.dataset.timelineRowHash === rowHash) {
         return false;
@@ -1869,12 +2637,23 @@ function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
 }
 
 function buildTimelineContext(year, month) {
+    const finishContext = startPerformanceSpan(
+        "timeline:build-context",
+        {
+            year,
+            month
+        }
+    );
     const profiles = getProfiles();
     const actual = getCurrentProfile();
     const perfilActual =
         profiles.find(x => x.name === actual);
 
     if (!perfilActual) {
+        finishContext({
+            empty: true,
+            profileCount: profiles.length
+        });
         return {
             empty: "Selecciona un colaborador para ver el reporte mensual."
         };
@@ -1890,6 +2669,11 @@ function buildTimelineContext(year, month) {
         );
 
     if (!grupo.length) {
+        finishContext({
+            empty: true,
+            profileCount: profiles.length,
+            groupCount: 0
+        });
         return {
             empty: "No hay colaboradores compatibles para comparar este mes."
         };
@@ -1897,8 +2681,17 @@ function buildTimelineContext(year, month) {
 
     const diasMes =
         new Date(year, month + 1, 0).getDate();
+    const sortContext =
+        timelineSortContext(actual, year, month, diasMes);
     const orderedGroup =
-        orderTimelineProfiles(grupo, actual, year, month, diasMes);
+        orderTimelineProfiles(
+            grupo,
+            actual,
+            year,
+            month,
+            diasMes,
+            sortContext
+        );
     const filtersSignature = timelineFiltersSignature(selectedKeys);
     const viewSignature = [
         actual,
@@ -1907,6 +2700,13 @@ function buildTimelineContext(year, month) {
         filtersSignature,
         orderedGroup.map(profile => profile.name).join("\u001f")
     ].join("\u001e");
+
+    finishContext({
+        profileCount: profiles.length,
+        groupCount: grupo.length,
+        orderedCount: orderedGroup.length,
+        actual
+    });
 
     return {
         actual,
@@ -1917,6 +2717,7 @@ function buildTimelineContext(year, month) {
         selectedKeys,
         filtersSignature,
         diasMes,
+        sortContext,
         orderedGroup,
         viewSignature,
         monthKey: timelineMonthKey(year, month),
@@ -1939,18 +2740,43 @@ function timelineRowCacheInfo(profile, context) {
     };
 }
 
-function buildFreshTimelineRow(profile, context, holidays) {
-    const {
-        keys,
-        nightKeys,
-        freeKeys
-    } = timelineSortContext(
-        context.actual,
-        context.year,
-        context.month,
-        context.diasMes
-    );
+function timelineMetricsCacheInfo(profile, context) {
+    const workerId = timelineWorkerId(profile);
+    const cacheKey = timelineMetricsCacheKey({
+        workspaceId: context.workspaceId,
+        monthKey: context.monthKey,
+        workerId
+    });
+
+    return {
+        workerId,
+        cacheKey
+    };
+}
+
+function timelineProfilesMissingMetrics(profiles, context) {
+    return profiles.filter(profile => {
+        const { workerId, cacheKey } =
+            timelineMetricsCacheInfo(profile, context);
+
+        return !readTimelineMetricsCache(cacheKey, {
+            monthKey: context.monthKey,
+            workerId
+        });
+    });
+}
+
+function buildFreshTimelineRow(profile, context, holidays, options = {}) {
+    const sortContext = context.sortContext ||
+        timelineSortContext(
+            context.actual,
+            context.year,
+            context.month,
+            context.diasMes
+        );
     const cacheInfo = timelineRowCacheInfo(profile, context);
+    const metricsCacheKey =
+        timelineMetricsCacheInfo(profile, context).cacheKey;
     const rowData = buildTimelineRowData({
         profile,
         actual: context.actual,
@@ -1958,13 +2784,19 @@ function buildFreshTimelineRow(profile, context, holidays) {
         month: context.month,
         diasMes: context.diasMes,
         holidays,
-        keys,
-        nightKeys,
-        freeKeys
+        keys: sortContext.keys,
+        nightKeys: sortContext.nightKeys,
+        freeKeys: sortContext.freeKeys,
+        sortContext,
+        workerId: cacheInfo.workerId,
+        monthKey: context.monthKey,
+        metricsCacheKey,
+        forceFreshMetrics: options.forceFreshMetrics === true
     });
 
     rowData.workerId = cacheInfo.workerId;
     rowData.cacheKey = cacheInfo.cacheKey;
+    rowData.metricsCacheKey = metricsCacheKey;
     return rowData;
 }
 
@@ -1978,7 +2810,8 @@ function writeFreshTimelineRowCache(rowData, context, renderContext) {
         profileName: rowData.profile.name,
         filtersSignature: context.filtersSignature,
         rowHash,
-        innerHTML
+        innerHTML,
+        metricsStale: Boolean(rowData.metricsStale)
     });
 
     return {
@@ -2033,6 +2866,8 @@ async function refreshTimelineRowsInBackground({
     };
 
     for (const profile of profiles) {
+        await pauseTimelineIfHidden(container);
+
         if (
             !timelineRenderIsCurrent(
                 requestId,
@@ -2066,6 +2901,144 @@ async function refreshTimelineRowsInBackground({
     }
 }
 
+function scheduleTimelineMetricsRefresh(options = {}, delay = TIMELINE_METRICS_RETRY_MS) {
+    const context = options.context || {};
+    const key = [
+        context.year,
+        context.month,
+        options.requestId || 0
+    ].join(":");
+
+    clearTimeout(timelineMetricsRefreshTimers.get(key));
+    timelineMetricsRefreshRequests.set(key, options);
+    timelineMetricsRefreshTimers.set(
+        key,
+        setTimeout(() => {
+            timelineMetricsRefreshTimers.delete(key);
+            const queuedOptions =
+                timelineMetricsRefreshRequests.get(key) || options;
+
+            timelineMetricsRefreshRequests.delete(key);
+            void refreshTimelineMetricsInBackground(queuedOptions);
+        }, Math.max(0, Number(delay) || TIMELINE_METRICS_RETRY_MS))
+    );
+}
+
+async function refreshTimelineMetricsInBackground({
+    profiles,
+    context,
+    holidays,
+    requestId
+}) {
+    if (!profiles.length) return;
+
+    const initialDelay = timelineInteractiveDelay();
+
+    if (initialDelay > 0) {
+        scheduleTimelineMetricsRefresh(
+            {
+                profiles,
+                context,
+                holidays,
+                requestId
+            },
+            initialDelay
+        );
+        return;
+    }
+
+    await waitTimelineBackgroundIdle(900);
+
+    const missingProfiles = timelineProfilesMissingMetrics(
+        profiles,
+        context
+    );
+
+    if (!missingProfiles.length) return;
+
+    const container = document.getElementById("teamTimeline");
+    const renderContext = {
+        year: context.year,
+        month: context.month,
+        diasMes: context.diasMes,
+        holidays
+    };
+
+    updateTimelineProgress(
+        container,
+        "Actualizando HHEE del timeline en segundo plano..."
+    );
+
+    try {
+        for (let index = 0; index < missingProfiles.length; index++) {
+            const deferredDelay = timelineInteractiveDelay();
+
+            if (deferredDelay > 0) {
+                updateTimelineProgress(container, "");
+                scheduleTimelineMetricsRefresh(
+                    {
+                        profiles: missingProfiles.slice(index),
+                        context,
+                        holidays,
+                        requestId
+                    },
+                    deferredDelay
+                );
+                return;
+            }
+
+            const profile = missingProfiles[index];
+
+            if (
+                !timelineRenderIsCurrent(
+                    requestId,
+                    context.year,
+                    context.month
+                )
+            ) {
+                return;
+            }
+
+            const existing = timelineExistingRow(
+                container,
+                timelineWorkerId(profile)
+            );
+
+            if (!existing) continue;
+
+            await waitTimelineBackgroundIdle(1200);
+
+            const rowData = buildFreshTimelineRow(
+                profile,
+                context,
+                holidays,
+                {
+                    forceFreshMetrics: true
+                }
+            );
+            const cachedRow = writeFreshTimelineRowCache(
+                rowData,
+                context,
+                renderContext
+            );
+
+            updateTimelineRow(existing, cachedRow, renderContext);
+            await waitTimelineBackgroundIdle(1800);
+        }
+    } finally {
+        if (
+            timelineRenderIsCurrent(
+                requestId,
+                context.year,
+                context.month
+            )
+        ) {
+            updateTimelineProgress(container, "");
+            syncTimelineStickyOffsets(container);
+        }
+    }
+}
+
 async function buildTimelineBatchRows({
     profiles,
     context,
@@ -2081,8 +3054,23 @@ async function buildTimelineBatchRows({
     };
     const rows = [];
     const cachedProfiles = [];
+    const finishBatch = startPerformanceSpan(
+        "timeline:build-batch",
+        {
+            profileCount: profiles.length,
+            year: context.year,
+            month: context.month,
+            skipCache
+        },
+        {
+            type: "async-span",
+            threshold: 80
+        }
+    );
 
     for (const profile of profiles) {
+        await pauseTimelineIfHidden(document.getElementById("teamTimeline"));
+
         if (
             !timelineRenderIsCurrent(
                 requestId,
@@ -2090,6 +3078,11 @@ async function buildTimelineBatchRows({
                 context.month
             )
         ) {
+            finishBatch({
+                cancelled: true,
+                rowCount: rows.length,
+                cachedCount: cachedProfiles.length
+            });
             return null;
         }
 
@@ -2136,42 +3129,56 @@ async function buildTimelineBatchRows({
         });
     }
 
+    finishBatch({
+        rowCount: rows.length,
+        cachedCount: cachedProfiles.length
+    });
     return rows;
 }
 
 function appendTimelineRowElements(container, rows) {
-    const tbody = timelineRowsTbody(container);
+    return measurePerformance(
+        "timeline:append-rows-dom",
+        () => {
+            const tbody = timelineRowsTbody(container);
 
-    if (!tbody || !rows.length) return 0;
+            if (!tbody || !rows.length) return 0;
 
-    const fragment = document.createDocumentFragment();
-    let appended = 0;
+            const fragment = document.createDocumentFragment();
+            let appended = 0;
 
-    rows.forEach(row => {
-        const existing = timelineExistingRow(
-            container,
-            row.dataset.workerId
-        );
+            rows.forEach(row => {
+                const existing = timelineExistingRow(
+                    container,
+                    row.dataset.workerId
+                );
 
-        if (existing) {
-            updateTimelineRowFromCache(existing, {
-                name: row.dataset.profileName
-            }, {
-                workerId: row.dataset.workerId,
-                profileName: row.dataset.profileName,
-                innerHTML: row.innerHTML,
-                rowHash: row.dataset.timelineRowHash,
-                cacheKey: row.dataset.timelineRowCacheKey
+                if (existing) {
+                    updateTimelineRowFromCache(existing, {
+                        name: row.dataset.profileName
+                    }, {
+                        workerId: row.dataset.workerId,
+                        profileName: row.dataset.profileName,
+                        innerHTML: row.innerHTML,
+                        rowHash: row.dataset.timelineRowHash,
+                        cacheKey: row.dataset.timelineRowCacheKey
+                    });
+                    return;
+                }
+
+                fragment.appendChild(row);
+                appended++;
             });
-            return;
+
+            tbody.appendChild(fragment);
+            return appended;
+        },
+        {
+            rowCount: rows?.length || 0,
+            existingRows:
+                container?.querySelectorAll?.("[data-timeline-row]")?.length || 0
         }
-
-        fragment.appendChild(row);
-        appended++;
-    });
-
-    tbody.appendChild(fragment);
-    return appended;
+    );
 }
 
 async function appendTimelineRows(options = {}) {
@@ -2201,12 +3208,16 @@ async function appendTimelineRows(options = {}) {
     container.dataset.timelineAppending = "1";
     updateTimelineProgress(container, "Cargando m\u00e1s trabajadores...");
 
+    let completed = false;
+
     try {
         for (
             let index = startIndex;
             index < targetLimit;
             index += TIMELINE_INCREMENTAL_BATCH_SIZE
         ) {
+            await pauseTimelineIfHidden(container);
+
             if (!timelineRenderIsCurrent(requestId, year, month)) return;
 
             const batchProfiles = context.orderedGroup.slice(
@@ -2248,11 +3259,30 @@ async function appendTimelineRows(options = {}) {
 
             await waitTimelineIdle(180);
         }
+        completed = true;
     } finally {
         delete container.dataset.timelineAppending;
         updateTimelineProgress(container, "");
         updateTimelineLoadMoreButton(container, targetLimit, total);
         syncTimelineStickyOffsets(container);
+    }
+
+    if (completed) {
+        const appendedProfiles = context.orderedGroup.slice(
+            startIndex,
+            targetLimit
+        );
+        const profilesMissingMetrics =
+            timelineProfilesMissingMetrics(appendedProfiles, context);
+
+        if (profilesMissingMetrics.length) {
+            void refreshTimelineMetricsInBackground({
+                profiles: profilesMissingMetrics,
+                context,
+                holidays,
+                requestId
+            });
+        }
     }
 }
 
@@ -2283,6 +3313,8 @@ async function refreshVisibleTimelineRows(profileNames = new Set()) {
     };
 
     for (const profile of visibleProfiles) {
+        await pauseTimelineIfHidden(container);
+
         if (!timelineRenderIsCurrent(requestId, year, month)) {
             return false;
         }
@@ -2310,6 +3342,18 @@ async function refreshVisibleTimelineRows(profileNames = new Set()) {
     }
 
     syncTimelineStickyOffsets(container);
+    const profilesMissingMetrics =
+        timelineProfilesMissingMetrics(visibleProfiles, context);
+
+    if (profilesMissingMetrics.length) {
+        void refreshTimelineMetricsInBackground({
+            profiles: profilesMissingMetrics,
+            context,
+            holidays,
+            requestId
+        });
+    }
+
     return true;
 }
 
@@ -2325,7 +3369,7 @@ function renderTimelineEmpty(div, message, targetMonthKey) {
     div.setAttribute("aria-busy", "false");
 }
 
-export async function renderTimeline(options = {}){
+async function renderTimelineImpl(options = {}){
     const div = document.getElementById("teamTimeline");
     const requestId = ++timelineRenderRequest;
 
@@ -2356,7 +3400,10 @@ export async function renderTimeline(options = {}){
 
     if (context.viewSignature !== timelinePageSignature) {
         timelinePageSignature = context.viewSignature;
-        timelineRowLimit = TIMELINE_PAGE_SIZE;
+        timelineRowLimit = Math.min(
+            TIMELINE_FOREGROUND_INITIAL_LIMIT,
+            context.orderedGroup.length || TIMELINE_FOREGROUND_INITIAL_LIMIT
+        );
     }
 
     const cacheKey = timelineCacheKey(
@@ -2422,6 +3469,8 @@ export async function renderTimeline(options = {}){
     );
 
     for (let index = 0; index < visibleGroup.length;) {
+        await pauseTimelineIfHidden(div);
+
         if (!timelineRenderIsCurrent(requestId, year, month)) {
             return;
         }
@@ -2480,12 +3529,76 @@ export async function renderTimeline(options = {}){
         html: div.innerHTML
     });
 
+    const profilesMissingMetrics =
+        timelineProfilesMissingMetrics(visibleGroup, context);
+
+    if (profilesMissingMetrics.length) {
+        void refreshTimelineMetricsInBackground({
+            profiles: profilesMissingMetrics,
+            context,
+            holidays,
+            requestId
+        });
+    }
+
     if (Number.isFinite(Number(options.revealRowIndex))) {
         revealTimelineRow(div, Number(options.revealRowIndex));
     }
 }
 
+export async function renderTimeline(options = {}) {
+    return measurePerformance(
+        "timeline:render",
+        () => renderTimelineImpl(options),
+        {
+            year: calendar.currentDate.getFullYear(),
+            month: calendar.currentDate.getMonth(),
+            skipCache: options.skipCache === true,
+            revealRowIndex: options.revealRowIndex ?? ""
+        },
+        {
+            asyncThreshold: 120
+        }
+    );
+}
+
 if (typeof window !== "undefined") {
+    [
+        "pointerdown",
+        "keydown",
+        "wheel",
+        "touchstart",
+        "input"
+    ].forEach(eventName => {
+        window.addEventListener(
+            eventName,
+            markTimelineUserActivity,
+            { capture: true, passive: true }
+        );
+    });
+
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+            const queued = Array.from(
+                timelineMetricsRefreshRequests.entries()
+            );
+
+            queued.forEach(([key, options]) => {
+                clearTimeout(timelineMetricsRefreshTimers.get(key));
+                timelineMetricsRefreshTimers.delete(key);
+                timelineMetricsRefreshRequests.delete(key);
+                void refreshTimelineMetricsInBackground(options);
+            });
+            return;
+        }
+
+        if (document.visibilityState !== "visible") return;
+
+        const resolvers = Array.from(timelineVisibilityResolvers);
+
+        timelineVisibilityResolvers.clear();
+        resolvers.forEach(resolve => resolve());
+    });
     window.addEventListener("proturnos:persistenceChanged", event => {
         const keys = event.detail?.keys || [];
 
