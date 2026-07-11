@@ -13,6 +13,68 @@ function hasConfigValue(value) {
     return Boolean(String(value || "").trim());
 }
 
+function isLocalDebugHost() {
+    return Boolean(
+        typeof location !== "undefined" &&
+        ["localhost", "127.0.0.1"].includes(location.hostname)
+    );
+}
+
+async function localAppCheckDebugToken() {
+    if (!isLocalDebugHost()) return "";
+
+    const fromUrl = new URLSearchParams(location.search)
+        .get("appCheckDebugToken");
+
+    if (fromUrl) {
+        try {
+            localStorage.setItem(
+                "turnoplus_app_check_debug_token",
+                fromUrl
+            );
+        } catch {
+            // Si localStorage no esta disponible, igual se usa el token de URL.
+        }
+        return fromUrl;
+    }
+
+    try {
+        const stored = localStorage.getItem(
+            "turnoplus_app_check_debug_token"
+        );
+
+        if (stored) return stored;
+    } catch {
+        // En navegadores con storage bloqueado seguimos con el archivo local.
+    }
+
+    try {
+        const response = await fetch("/appcheck-debug-token.local.json", {
+            cache: "no-store"
+        });
+
+        if (!response.ok) return "";
+
+        const data = await response.json();
+        const token = String(data?.token || "").trim();
+
+        if (token) {
+            try {
+                localStorage.setItem(
+                    "turnoplus_app_check_debug_token",
+                    token
+                );
+            } catch {
+                // No es critico: se volvera a leer del archivo local.
+            }
+        }
+
+        return token;
+    } catch {
+        return "";
+    }
+}
+
 export function isFirebaseConfigured() {
     return Boolean(
         FIREBASE_ENABLED &&
@@ -42,7 +104,7 @@ export async function getFirebaseServices() {
             loadFirebaseModule("firebase-firestore"),
             loadFirebaseModule("firebase-storage"),
             loadFirebaseModule("firebase-functions")
-        ]).then(([
+        ]).then(async ([
             appModule,
             appCheckModule,
             authModule,
@@ -55,10 +117,10 @@ export async function getFirebaseServices() {
 
             if (hasConfigValue(FIREBASE_APP_CHECK_SITE_KEY)) {
                 if (
-                    typeof location !== "undefined" &&
-                    ["localhost", "127.0.0.1"].includes(location.hostname)
+                    isLocalDebugHost()
                 ) {
-                    self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+                    self.FIREBASE_APPCHECK_DEBUG_TOKEN =
+                        await localAppCheckDebugToken() || true;
                 }
 
                 appCheck = appCheckModule.initializeAppCheck(app, {

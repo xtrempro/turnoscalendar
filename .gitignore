@@ -4,6 +4,7 @@ firebase-debug.log
 *.map
 .env
 .env.*
+appcheck-debug-token.local.json
 node_modules/
 .tools/
 

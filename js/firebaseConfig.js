@@ -34,9 +34,21 @@ const TEST_HOSTS = new Set([
     "turnoplus-test-7c4d9.web.app",
     "turnoplus-test-7c4d9.firebaseapp.com"
 ]);
+const LOCAL_TEST_HOSTS = new Set([
+    "localhost",
+    "127.0.0.1"
+]);
+const localSource =
+    typeof location !== "undefined" &&
+    LOCAL_TEST_HOSTS.has(location.hostname)
+        ? new URLSearchParams(location.search).get("source")
+        : "";
 const useTestProject =
     typeof location !== "undefined" &&
-    TEST_HOSTS.has(location.hostname);
+    (
+        TEST_HOSTS.has(location.hostname) ||
+        localSource === "live"
+    );
 
 // TOTP queda implementado, pero apagado durante la etapa comercial inicial.
 // Solo debe activarse cuando un centro lo solicite o pase a ser requisito.
