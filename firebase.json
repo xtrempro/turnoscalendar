@@ -129,7 +129,8 @@
     ]
   },
   "functions": {
-    "source": "functions"
+    "source": "functions",
+    "predeploy": ["node build-engine.mjs"]
   },
   "firestore": {
     "rules": "firebase.rules"

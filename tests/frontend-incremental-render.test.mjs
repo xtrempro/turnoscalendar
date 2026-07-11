@@ -239,7 +239,12 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     assert.match(timelineSource, /function timelineSortContext\(year, month, diasMes, renderCache = null\)/);
     assert.match(timelineSource, /orderTimelineProfiles\(\s*grupo,\s*actual,\s*year,\s*month,\s*diasMes,\s*sortContext\s*\)/);
     assert.doesNotMatch(timelineSource, /viewSignature = \[\s*actual,/);
-    assert.match(timelineSource, /timelineRowLimit = context\.orderedGroup\.length/);
+    // El timeline pagina por viewport: solo la primera página se renderiza de
+    // entrada y el resto se carga por scroll (armTimelineLazyLoad). Antes se
+    // renderizaban las 100 filas de golpe (timelineRowLimit = orderedGroup.length).
+    assert.match(timelineSource, /visibleGroup = context\.orderedGroup\.slice\(0, timelineRowLimit\)/);
+    assert.match(timelineSource, /armTimelineLazyLoad\(container\)/);
+    assert.doesNotMatch(timelineSource, /timelineRowLimit = context\.orderedGroup\.length/);
     assert.doesNotMatch(
         timelineSource,
         /grupo\s*\.filter\(profile => profile\.name !== actual\)\s*\.sort\(\(a, b\) => a\.name\.localeCompare\(b\.name\)\)/

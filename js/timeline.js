@@ -118,6 +118,10 @@ const TIMELINE_SORT_DIURNO_TURNS = new Set([TURNO.DIURNO]);
 const TIMELINE_STRUCTURE_ANCHOR_ISO = "2026-01-01";
 let timelineRowLimit = TIMELINE_PAGE_SIZE;
 let timelinePageSignature = "";
+// Observer que carga la siguiente página de filas al hacer scroll (virtualización
+// por viewport: no renderizamos las 100 filas de golpe, solo la primera página y
+// vamos cargando el resto a medida que el usuario baja).
+let timelineLazyObserver = null;
 const timelineMemoryCache = new Map();
 const timelineRowMemoryCache = new Map();
 const timelineMetricsMemoryCache = new Map();
@@ -3661,21 +3665,34 @@ function buildFreshTimelineRow(profile, context, holidays, options = {}) {
     const cacheInfo = timelineRowCacheInfo(profile, context);
     const metricsCacheKey =
         timelineMetricsCacheInfo(profile, context).cacheKey;
-    const rowData = buildTimelineRowData({
-        profile,
-        actual: context.actual,
-        year: context.year,
-        month: context.month,
-        diasMes: context.diasMes,
-        holidays,
-        keys: sortContext.keys,
-        sortContext,
-        workerId: cacheInfo.workerId,
-        monthKey: context.monthKey,
-        metricsCacheKey,
-        forceFreshMetrics: options.forceFreshMetrics === true,
-        renderCache: context.renderCache || null
-    });
+    // Mide el costo TOTAL de construir la fila (incluye el cálculo de HHEE cuando
+    // forceFreshMetrics). Instrumentación para localizar los bloques de ~11s que
+    // no aparecían con los sub-spans row-aux-context/row-html.
+    const rowData = measurePerformance(
+        "timeline:build-fresh-row",
+        () => buildTimelineRowData({
+            profile,
+            actual: context.actual,
+            year: context.year,
+            month: context.month,
+            diasMes: context.diasMes,
+            holidays,
+            keys: sortContext.keys,
+            sortContext,
+            workerId: cacheInfo.workerId,
+            monthKey: context.monthKey,
+            metricsCacheKey,
+            forceFreshMetrics: options.forceFreshMetrics === true,
+            renderCache: context.renderCache || null
+        }),
+        {
+            profile: profile?.name || "",
+            forceFreshMetrics: options.forceFreshMetrics === true,
+            year: context.year,
+            month: context.month
+        },
+        { threshold: 400 }
+    );
 
     rowData.workerId = cacheInfo.workerId;
     rowData.cacheKey = cacheInfo.cacheKey;
@@ -4248,6 +4265,56 @@ async function refreshVisibleTimelineRows(profileNames = new Set()) {
     return true;
 }
 
+// Observa la última fila renderizada; cuando entra al viewport, carga la
+// siguiente página (TIMELINE_PAGE_SIZE) llamando a appendTimelineRows y se
+// re-arma sobre la nueva última fila. Así solo se construyen las filas que el
+// usuario realmente ve, en vez de las 100 de golpe.
+function armTimelineLazyLoad(container) {
+    timelineLazyObserver?.disconnect();
+    timelineLazyObserver = null;
+
+    if (
+        !container ||
+        typeof IntersectionObserver !== "function"
+    ) {
+        return;
+    }
+
+    const total = Number(container.dataset.timelineTotal) || 0;
+
+    if (timelineRowLimit >= total) return;
+
+    const rows = container.querySelectorAll("[data-timeline-row]");
+    const lastRow = rows[rows.length - 1];
+
+    if (!lastRow) return;
+
+    timelineLazyObserver = new IntersectionObserver(entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return;
+        if (container.dataset.timelineAppending) return;
+
+        const currentTotal = Number(container.dataset.timelineTotal) || 0;
+
+        if (timelineRowLimit >= currentTotal) {
+            timelineLazyObserver?.disconnect();
+            timelineLazyObserver = null;
+            return;
+        }
+
+        const startIndex = timelineRowLimit;
+        timelineRowLimit = Math.min(
+            timelineRowLimit + TIMELINE_PAGE_SIZE,
+            currentTotal
+        );
+
+        void appendTimelineRows({ startIndex }).then(() =>
+            armTimelineLazyLoad(container)
+        );
+    }, { rootMargin: "800px 0px" });
+
+    timelineLazyObserver.observe(lastRow);
+}
+
 async function renderTimelineRowsIncrementally({
     container,
     context,
@@ -4326,9 +4393,14 @@ async function renderTimelineRowsIncrementally({
         context.orderedGroup.length
     );
 
+    // Carga el resto de las filas a medida que el usuario baja (viewport).
+    armTimelineLazyLoad(container);
+
     syncTimelineActiveProfile(container, "");
     const neutralTimelineHTML = container.innerHTML;
     const fastSignature = timelineFastSignature(year, month);
+    const timelineComplete =
+        timelineRowLimit >= context.orderedGroup.length;
 
     writeTimelineCache(cacheKey, {
         viewSignature: context.viewSignature,
@@ -4338,7 +4410,7 @@ async function renderTimelineRowsIncrementally({
     });
     writeTimelineMonthIndexFromDOM(container, context, {
         fastSignature,
-        complete: true
+        complete: timelineComplete
     });
     const fastViewSignature =
         timelineFastCacheViewSignature(fastSignature);
@@ -4393,8 +4465,15 @@ async function hydrateTimelineCachedView({
 
     if (context.empty) return;
 
+    const timelineViewChanged =
+        timelinePageSignature !== context.viewSignature;
     timelinePageSignature = context.viewSignature;
-    timelineRowLimit = context.orderedGroup.length;
+    timelineRowLimit = timelineViewChanged
+        ? Math.min(TIMELINE_PAGE_SIZE, context.orderedGroup.length)
+        : Math.min(
+            Math.max(timelineRowLimit, TIMELINE_PAGE_SIZE),
+            context.orderedGroup.length
+        );
 
     const holidays = await fetchHolidays(year);
 
@@ -4415,7 +4494,10 @@ async function hydrateTimelineCachedView({
         busy: false
     });
 
-    const visibleWorkerIds = context.orderedGroup.map(timelineWorkerId);
+    // Solo la primera página; el resto se carga por scroll (armTimelineLazyLoad).
+    container.dataset.timelineTotal = String(context.orderedGroup.length);
+    const visiblePage = context.orderedGroup.slice(0, timelineRowLimit);
+    const visibleWorkerIds = visiblePage.map(timelineWorkerId);
 
     reconcileTimelineRows(container, visibleWorkerIds);
 
@@ -4424,7 +4506,7 @@ async function hydrateTimelineCachedView({
             .map(row => row.dataset.workerId || "")
             .filter(Boolean)
     );
-    const missingProfiles = context.orderedGroup.filter(profile =>
+    const missingProfiles = visiblePage.filter(profile =>
         !existingWorkerIds.has(timelineWorkerId(profile))
     );
 
@@ -4463,13 +4545,14 @@ async function hydrateTimelineCachedView({
     container.setAttribute("aria-busy", "false");
     syncTimelineActiveProfile(container);
     syncTimelineStickyOffsets(container);
+    armTimelineLazyLoad(container);
     writeTimelineMonthIndexFromDOM(container, context, {
         fastSignature: timelineFastSignature(year, month),
-        complete: true
+        complete: timelineRowLimit >= context.orderedGroup.length
     });
 
     const profilesMissingMetrics =
-        timelineProfilesMissingMetrics(context.orderedGroup, context);
+        timelineProfilesMissingMetrics(visiblePage, context);
 
     if (profilesMissingMetrics.length) {
         void refreshTimelineMetricsInBackground({
@@ -4653,8 +4736,18 @@ async function renderTimelineImpl(options = {}){
         return;
     }
 
+    // Solo reseteamos a la primera página cuando cambia la vista (mes, unidad,
+    // filtros). En un re-render por cambio de datos conservamos cuántas filas
+    // había cargadas el usuario para no colapsar el scroll.
+    const timelineViewChanged =
+        timelinePageSignature !== context.viewSignature;
     timelinePageSignature = context.viewSignature;
-    timelineRowLimit = context.orderedGroup.length;
+    timelineRowLimit = timelineViewChanged
+        ? Math.min(TIMELINE_PAGE_SIZE, context.orderedGroup.length)
+        : Math.min(
+            Math.max(timelineRowLimit, TIMELINE_PAGE_SIZE),
+            context.orderedGroup.length
+        );
 
     const cacheKey = timelineCacheKey(
         context.viewSignature,
@@ -4682,7 +4775,11 @@ async function renderTimelineImpl(options = {}){
     }
 
     const holidays = await fetchHolidays(year);
-    const visibleGroup = context.orderedGroup;
+    // Solo la primera página se renderiza de entrada; el resto se carga al hacer
+    // scroll (ver armTimelineLazyLoad). Antes se renderizaban las 100 filas de
+    // golpe (~300ms c/u => 30-40s de congelamiento al abrir).
+    div.dataset.timelineTotal = String(context.orderedGroup.length);
+    const visibleGroup = context.orderedGroup.slice(0, timelineRowLimit);
     const visibleWorkerIds = visibleGroup.map(timelineWorkerId);
 
     timelineViewState = {
@@ -4717,6 +4814,10 @@ async function renderTimelineImpl(options = {}){
         syncTimelineActiveProfile(div);
         syncTimelineStickyOffsets(div);
         requestAnimationFrame(() => syncTimelineStickyOffsets(div));
+
+        // Tambien en cache-hit se arma la carga por scroll (el HTML cacheado solo
+        // trae la primera pagina).
+        armTimelineLazyLoad(div);
 
         const rowRefreshDelay = timelineInteractiveDelay();
         const refreshRows = () => refreshTimelineRowsInBackground({

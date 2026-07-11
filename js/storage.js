@@ -1372,8 +1372,23 @@ export function getCarryKey(y, m){
     return `carry_${currentProfile}_${y}_${m}`;
 }
 
+// El carry se redondea a 1 decimal (la granularidad de horas de la app) ANTES de
+// guardar. Sin esto, calculateCarryOver devuelve floats con micro-variación
+// (p.ej. 1.2999999 vs 1.3) y cada recálculo produce un JSON distinto: setRaw lo
+// detecta como "cambio", se sincroniza a Firestore, vuelve por onSnapshot,
+// dispara otro re-render que recalcula y reescribe... un loop infinito que
+// mantenía el hilo principal ocupado (freezes de 9-39s). Al redondear, el valor
+// queda estable y setRaw (que compara strings) corta el loop.
+function roundCarryHour(value){
+    const rounded = Math.round((Number(value) || 0) * 10) / 10;
+    return Object.is(rounded, -0) ? 0 : rounded;
+}
+
 export function saveCarry(y, m, data){
-    setJSON(getCarryKey(y, m), data);
+    setJSON(getCarryKey(y, m), {
+        d: roundCarryHour(data?.d),
+        n: roundCarryHour(data?.n)
+    });
 }
 
 export function getCarry(y, m){

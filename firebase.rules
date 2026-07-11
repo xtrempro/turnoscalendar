@@ -930,6 +930,17 @@ service cloud.firestore {
         }
       }
 
+      // Marcador que deja el supervisor tras editar. La Cloud Function
+      // buildWorkerAppProjection (Admin SDK) reconstruye el estado, computa la
+      // proyeccion de cada trabajador y borra el marcador. Los clientes solo lo
+      // crean; no lo leen ni lo borran.
+      match /projectionRequests/{requestId} {
+        allow create: if canPublishWorkerData(workspaceId) &&
+          request.resource.data.profiles is list &&
+          request.resource.data.profiles.size() <= 500;
+        allow read, update, delete: if false;
+      }
+
       // Resumen mensual RRHH publicado por la app para el Dashboard RRHH.
       // Lectura: cualquier miembro (la Cloud Function usa Admin SDK). Escritura:
       // miembros con permiso de ver dashboard/hours/turnos/reports (o el dueño).

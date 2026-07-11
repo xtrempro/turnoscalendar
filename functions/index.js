@@ -71,6 +71,8 @@ Object.assign(exports, require("./getAccountsAndUnits"));
 // Dashboard RRHH: agregación de métricas e imputación de costo de préstamos.
 Object.assign(exports, require("./getRrhhDashboard"));
 Object.assign(exports, require("./attributeInterUnitCost"));
+// Proyección del worker-app en el servidor (reemplaza el pipeline del navegador).
+Object.assign(exports, require("./workerAppProjection"));
 
 const db = admin.firestore();
 const WORKER_APP_BASE_URL = "https://turnoplusfuncionarios.web.app/";

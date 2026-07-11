@@ -2057,6 +2057,66 @@ export function scheduleHotPublish(delay = HOT_PUBLISH_DELAY_MS) {
 async function publishHotNow() {
     if (!activeWorkspace?.id || !workerLinks.length) return;
 
+    // El cómputo de la proyección del worker-app se movió al servidor (Cloud
+    // Function buildWorkerAppProjection). El navegador ya NO calcula ni escribe
+    // workerAppData: solo deja un marcador con los perfiles afectados. El estado
+    // crudo sincronizado (stateModules) alimenta al motor server-side, lo que
+    // elimina del hilo principal los cálculos pesados que congelaban la UI.
+    const profiles = getProfiles();
+    const dirtyNames = new Set(dirtyProfileNames);
+
+    dirtyWorkerUids.forEach(uid => {
+        const link = workerLinks.find(item => item.uid === uid);
+        const profile = link ? findProfileForLink(link, profiles) : null;
+        if (profile?.name) dirtyNames.add(profile.name);
+    });
+
+    dirtyProfileNames = new Set();
+    dirtyWorkerUids = new Set();
+    hotPublishRequested = false;
+
+    if (!dirtyNames.size) return;
+
+    const requestWorkspace = currentWorkspace();
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+        const requestRef = firestoreModule.doc(
+            firestoreModule.collection(
+                db,
+                "workspaces",
+                requestWorkspace.id,
+                "projectionRequests"
+            )
+        );
+
+        await firestoreModule.setDoc(requestRef, {
+            profiles: [...dirtyNames],
+            requestedAt: firestoreModule.serverTimestamp()
+        });
+
+        recordPerformanceEvent("worker-app:request-projection", {
+            type: "worker-app",
+            workspaceId: requestWorkspace.id,
+            profileCount: dirtyNames.size,
+            linkedCount: workerLinks.length
+        });
+    } catch (error) {
+        dirtyNames.forEach(name => dirtyProfileNames.add(name));
+        hotPublishRequested = true;
+        console.warn(
+            "No se pudo solicitar la proyeccion del worker-app.",
+            error
+        );
+    }
+}
+
+// Pipeline de cómputo ANTIGUO (inactivo): lo reemplazó la Cloud Function
+// buildWorkerAppProjection. Se conserva como referencia hasta la limpieza final;
+// no lo llama nadie.
+async function publishHotNowLegacy() {
+    if (!activeWorkspace?.id || !workerLinks.length) return;
+
     if (!dirtyProfileNames.size && !dirtyWorkerUids.size) {
         hotPublishRequested = false;
         return;
