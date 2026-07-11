@@ -930,6 +930,26 @@ service cloud.firestore {
         }
       }
 
+      // Resumen mensual RRHH publicado por la app para el Dashboard RRHH.
+      // Lectura: cualquier miembro (la Cloud Function usa Admin SDK). Escritura:
+      // miembros con permiso de ver dashboard/hours/turnos/reports (o el dueño).
+      match /rrhhSummaries/{monthId} {
+        allow read: if isMember(workspaceId);
+        allow create, update: if isMember(workspaceId) &&
+          (
+            isOwner(workspaceId) ||
+            canViewMenu(workspaceId, "dashboard") ||
+            canViewMenu(workspaceId, "hours") ||
+            canViewMenu(workspaceId, "turnos") ||
+            canViewMenu(workspaceId, "reports")
+          ) &&
+          request.resource.data.month == monthId &&
+          request.resource.data.source == "app" &&
+          request.resource.data.hheeGastoClp is number &&
+          request.resource.data.sinReemplazo is number;
+        allow delete: if isOwner(workspaceId);
+      }
+
       match /{document=**} {
         allow read, write: if false;
       }

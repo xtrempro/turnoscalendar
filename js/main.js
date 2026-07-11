@@ -225,6 +225,7 @@ import {
     startFirebaseAppStateSync,
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
+import { startRrhhSummaryBackgroundPublisher } from "./rrhhSummaryPublisher.js";
 import {
     startFirebaseReplacementRequestSync,
     stopFirebaseReplacementRequestSync
@@ -9892,6 +9893,8 @@ initFirebaseShell({
                     workspaceName: workspace.name || ""
                 }
             );
+            // Publica en segundo plano el resumen RRHH del mes para el Dashboard.
+            startRrhhSummaryBackgroundPublisher();
         } else {
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
