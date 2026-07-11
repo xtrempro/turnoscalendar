@@ -9559,16 +9559,49 @@ document.addEventListener("keydown", event => {
 
 let workspaceUiRefreshTimer = 0;
 let workspaceStateSyncRequested = false;
+let workspaceUiRefreshIdleHandle = 0;
+
+function runWorkspaceRefreshWhenIdle(callback, timeout = 1800) {
+    if (
+        typeof window.requestIdleCallback === "function" &&
+        document.visibilityState === "visible"
+    ) {
+        if (
+            workspaceUiRefreshIdleHandle &&
+            typeof window.cancelIdleCallback === "function"
+        ) {
+            window.cancelIdleCallback(workspaceUiRefreshIdleHandle);
+        }
+
+        workspaceUiRefreshIdleHandle = window.requestIdleCallback(() => {
+            workspaceUiRefreshIdleHandle = 0;
+            callback();
+        }, {
+            timeout
+        });
+        return;
+    }
+
+    callback();
+}
 
 function scheduleWorkspaceUiRefresh(options = {}) {
     workspaceStateSyncRequested =
         workspaceStateSyncRequested || options.syncState === true;
 
     clearTimeout(workspaceUiRefreshTimer);
+    const activeView = document.body.dataset.activeView || "turnos";
+    const delay =
+        options.syncState === true &&
+        (activeView === "turnos" || activeView === "timeline")
+            ? 900
+            : 60;
+
     workspaceUiRefreshTimer = window.setTimeout(() => {
-        measurePerformance(
-            "workspace:deferred-ui-refresh",
-            () => {
+        runWorkspaceRefreshWhenIdle(() => {
+            measurePerformance(
+                "workspace:deferred-ui-refresh",
+                () => {
                 workspaceUiRefreshTimer = 0;
 
                 const syncState = workspaceStateSyncRequested;
@@ -9583,12 +9616,13 @@ function scheduleWorkspaceUiRefresh(options = {}) {
                     renderBotones();
                 }
             },
-            {
-                syncState: workspaceStateSyncRequested,
-                activeView: document.body.dataset.activeView || "turnos"
-            }
-        );
-    }, 60);
+                {
+                    syncState: workspaceStateSyncRequested,
+                    activeView: document.body.dataset.activeView || "turnos"
+                }
+            );
+        });
+    }, delay);
 }
 
 function syncWorkspaceStateViews() {

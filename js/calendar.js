@@ -182,6 +182,10 @@ const CALENDAR_CACHE_PREFIX = "proturnos_ui_cache_calendar_";
 const CALENDAR_CACHE_MAX_ENTRIES = 72;
 const CALENDAR_CACHE_WRITE_DELAY_MS = 700;
 const CALENDAR_PARTIAL_BATCH_SIZE = 5;
+const CALENDAR_LARGE_PARTIAL_RATIO = 0.7;
+const CALENDAR_LARGE_PARTIAL_MIN_DAYS = 21;
+const CALENDAR_SUMMARY_USER_QUIET_MS = 15000;
+const CALENDAR_SUMMARY_VISIBLE_RETRY_MS = 120000;
 const calendarAuditTimers = new Map();
 const calendarAuditDrafts = new Map();
 let linkedReplacementStatus = "";
@@ -195,6 +199,8 @@ let calendarDirectEditHistoryTimer = 0;
 let calendarDirectEditHistoryOpen = false;
 let calendarCacheWriteTimer = 0;
 let calendarCacheWriteRequest = 0;
+let calendarDashboardRefreshTimer = 0;
+let calendarDashboardRefreshUsesIdle = false;
 let replacementCandidateRequest = 0;
 let calendarPickerYear = currentDate.getFullYear();
 let calendarMonthPicker = null;
@@ -204,6 +210,7 @@ let lastCalendarView = null;
 let pendingCalendarUpdateTimer = 0;
 let pendingWorkerSummaryTimer = 0;
 let pendingWorkerSummaryRequest = 0;
+let calendarLastUserActivityAt = Date.now();
 const pendingCalendarKeys = new Set();
 const pendingStaffingKeys = new Set();
 const calendarCellHandlers = new WeakMap();
@@ -1236,6 +1243,40 @@ function deferAfterPaint(callback) {
     }
 }
 
+function deferCalendarDashboardRefresh() {
+    if (typeof window === "undefined") return;
+    if (typeof window.renderDashboardState !== "function") return;
+
+    if (calendarDashboardRefreshTimer) {
+        if (
+            calendarDashboardRefreshUsesIdle &&
+            typeof window.cancelIdleCallback === "function"
+        ) {
+            window.cancelIdleCallback(calendarDashboardRefreshTimer);
+        } else {
+            clearTimeout(calendarDashboardRefreshTimer);
+        }
+    }
+    calendarDashboardRefreshUsesIdle = false;
+
+    const run = () => {
+        calendarDashboardRefreshTimer = 0;
+
+        if (typeof window.renderDashboardState !== "function") return;
+        window.renderDashboardState();
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+        calendarDashboardRefreshUsesIdle = true;
+        calendarDashboardRefreshTimer = window.requestIdleCallback(run, {
+            timeout: 8000
+        });
+        return;
+    }
+
+    calendarDashboardRefreshTimer = window.setTimeout(run, 3000);
+}
+
 function waitCalendarIdle(timeout = 120) {
     return new Promise(resolve => {
         if (typeof window === "undefined") {
@@ -1253,6 +1294,41 @@ function waitCalendarIdle(timeout = 120) {
 
         window.setTimeout(resolve, Math.min(timeout, 80));
     });
+}
+
+function markCalendarUserActivity() {
+    calendarLastUserActivityAt = Date.now();
+}
+
+function calendarHasPendingInput() {
+    try {
+        return Boolean(
+            typeof navigator !== "undefined" &&
+            navigator.scheduling &&
+            typeof navigator.scheduling.isInputPending === "function" &&
+            navigator.scheduling.isInputPending({ includeContinuous: true })
+        );
+    } catch (_error) {
+        return false;
+    }
+}
+
+function calendarInteractiveDelay(quietMs = CALENDAR_SUMMARY_USER_QUIET_MS) {
+    if (typeof document === "undefined") return 0;
+    if (document.visibilityState !== "visible") return 0;
+
+    const activeView = document.body?.dataset?.activeView || "turnos";
+
+    if (activeView !== "turnos" && activeView !== "timeline") return 0;
+
+    if (calendarHasPendingInput()) {
+        return CALENDAR_SUMMARY_VISIBLE_RETRY_MS;
+    }
+
+    const elapsed = Date.now() - calendarLastUserActivityAt;
+    const remaining = Math.max(0, Number(quietMs) - elapsed);
+
+    return remaining > 0 ? remaining : 0;
 }
 
 function cancelCalendarHeavyUpdates() {
@@ -1590,6 +1666,17 @@ function scheduleWorkerSummaryUpdate(workerId = getCurrentProfile()) {
         await waitCalendarIdle(600);
 
         if (requestId !== pendingWorkerSummaryRequest) return;
+
+        const interactiveDelay = calendarInteractiveDelay();
+
+        if (interactiveDelay > 0) {
+            pendingWorkerSummaryTimer = window.setTimeout(() => {
+                if (requestId === pendingWorkerSummaryRequest) {
+                    scheduleWorkerSummaryUpdate(workerId);
+                }
+            }, interactiveDelay);
+            return;
+        }
 
         measurePerformance(
             "calendar:update-worker-summary",
@@ -4769,9 +4856,36 @@ async function renderCalendarImpl(options = {}) {
 
     const calendarPanel = cal.closest(".calendar-panel");
     const activeProfile = getCurrentProfile();
+    const y = currentDate.getFullYear();
+    const m = currentDate.getMonth();
+    const days =
+        new Date(y, m + 1, 0).getDate();
+    const rawRequestedKeys = new Set(
+        Array.isArray(options.changedKeys)
+            ? options.changedKeys
+            : []
+    );
+    const largePartialRefresh = Boolean(
+        rawRequestedKeys.size >= Math.max(
+            CALENDAR_LARGE_PARTIAL_MIN_DAYS,
+            Math.ceil(days * CALENDAR_LARGE_PARTIAL_RATIO)
+        ) &&
+        lastCalendarView?.calendar === cal &&
+        lastCalendarView?.workerId === resolveWorkerId(activeProfile) &&
+        lastCalendarView?.year === y &&
+        lastCalendarView?.month === m
+    );
+    const effectiveOptions = largePartialRefresh
+        ? {
+            ...options,
+            changedKeys: undefined,
+            deferHeavy: true,
+            updateSummary: false
+        }
+        : options;
     const cachedWorkers = getAppState().workers;
     const workers =
-        Array.isArray(options.changedKeys) && cachedWorkers.length
+        Array.isArray(effectiveOptions.changedKeys) && cachedWorkers.length
             ? cachedWorkers
             : getProfiles();
     const activeWorker = workers.find(worker =>
@@ -4782,10 +4896,6 @@ async function renderCalendarImpl(options = {}) {
     );
     const activeProfileEnabled =
         isProfileActive(activeWorker || activeProfile);
-    const y = currentDate.getFullYear();
-    const m = currentDate.getMonth();
-    const days =
-        new Date(y, m + 1, 0).getDate();
     const monthKey = calendarMonthKey(y, m);
     const viewSignature = activeProfile
         ? calendarViewSignature({
@@ -4800,8 +4910,8 @@ async function renderCalendarImpl(options = {}) {
         ? calendarCacheKey(viewSignature)
         : "";
     const requestedKeys = new Set(
-        Array.isArray(options.changedKeys)
-            ? options.changedKeys
+        Array.isArray(effectiveOptions.changedKeys)
+            ? effectiveOptions.changedKeys
             : []
     );
     const partialRender = Boolean(
@@ -4812,7 +4922,7 @@ async function renderCalendarImpl(options = {}) {
         lastCalendarView?.month === m
     );
 
-    if (partialRender && options.modeRefresh === true) {
+    if (partialRender && effectiveOptions.modeRefresh === true) {
         cal.dataset.calendarState = "refreshing-mode";
         cal.setAttribute("aria-busy", "true");
     }
@@ -4843,7 +4953,7 @@ async function renderCalendarImpl(options = {}) {
     const cachedCalendar =
         !partialRender &&
         activeProfile &&
-        !options.skipCache
+        !effectiveOptions.skipCache
             ? readCalendarCache(cacheKey, {
                 viewSignature,
                 monthKey,
@@ -4863,10 +4973,10 @@ async function renderCalendarImpl(options = {}) {
             viewSignature,
             monthKey
         });
-        if (options.backgroundFresh === true) {
+        if (effectiveOptions.backgroundFresh === true) {
             scheduleCalendarBackgroundFreshRender({
-                ...options,
-                navigationRequest: options.navigationRequest,
+                ...effectiveOptions,
+                navigationRequest: effectiveOptions.navigationRequest,
                 cached: true
             });
             return {
@@ -4878,7 +4988,7 @@ async function renderCalendarImpl(options = {}) {
         cal.dataset.calendarState = "loading";
         cal.setAttribute("aria-busy", "true");
 
-        if (options.backgroundFresh === true) {
+        if (effectiveOptions.backgroundFresh === true) {
             showCalendarBackgroundPending(cal, {
                 workerId: activeWorkerId,
                 profileName: activeProfile,
@@ -4890,8 +5000,8 @@ async function renderCalendarImpl(options = {}) {
                 monthKey
             });
             scheduleCalendarBackgroundFreshRender({
-                ...options,
-                navigationRequest: options.navigationRequest,
+                ...effectiveOptions,
+                navigationRequest: effectiveOptions.navigationRequest,
                 cached: false
             });
             return {
@@ -4957,7 +5067,7 @@ async function renderCalendarImpl(options = {}) {
             holidaysLoaded: true
         };
 
-        runCalendarHeavyUpdates(options);
+        runCalendarHeavyUpdates(effectiveOptions);
 
         return;
     }
@@ -5030,7 +5140,7 @@ async function renderCalendarImpl(options = {}) {
         workerId: activeWorkerId
     });
     const cooperativePartialRender =
-        partialRender && options.cooperative === true;
+        partialRender && effectiveOptions.cooperative === true;
     let partialProcessed = 0;
     const finishBuildDays = startPerformanceSpan(
         "calendar:build-day-cells",
@@ -5533,7 +5643,7 @@ async function renderCalendarImpl(options = {}) {
         if (partialRender) {
             if (!replaceCalendarCell(activeWorkerId, keyDay, div)) {
                 return renderCalendar({
-                    ...options,
+                    ...effectiveOptions,
                     changedKeys: undefined,
                     allowDuringDirectEdit: true
                 });
@@ -5611,13 +5721,13 @@ async function renderCalendarImpl(options = {}) {
     });
 
     if (partialRender) {
-        if (options.updateSummary === true) {
+        if (effectiveOptions.updateSummary === true) {
             scheduleWorkerSummaryUpdate(activeWorkerId);
         }
         return;
     }
 
-    runCalendarHeavyUpdates(options, {
+    runCalendarHeavyUpdates(effectiveOptions, {
         profile: activeProfile,
         y,
         m,
@@ -5663,8 +5773,13 @@ function syncShellPanels(options = {}) {
             window.renderSwapPanel();
         }
 
-        if (typeof window.renderDashboardState === "function") {
+        if (
+            document.body.dataset.activeView === "dashboard" &&
+            typeof window.renderDashboardState === "function"
+        ) {
             window.renderDashboardState();
+        } else {
+            deferCalendarDashboardRefresh();
         }
     };
 
@@ -5758,4 +5873,20 @@ export async function nextMonth(options = {}) {
         target.getMonth(),
         options
     );
+}
+
+if (typeof window !== "undefined") {
+    [
+        "pointerdown",
+        "keydown",
+        "wheel",
+        "touchstart",
+        "input"
+    ].forEach(eventName => {
+        window.addEventListener(
+            eventName,
+            markCalendarUserActivity,
+            { capture: true, passive: true }
+        );
+    });
 }

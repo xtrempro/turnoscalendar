@@ -63,6 +63,8 @@ const WORKER_APP_USER_QUIET_MS = 45000;
 const WORKER_APP_ACTIVE_RETRY_MS = 8000;
 const WORKER_APP_COLD_USER_QUIET_MS = 90000;
 const WORKER_APP_VISIBLE_RETRY_MS = 60000;
+const WORKER_APP_CALENDAR_VISIBLE_RETRY_MS = 120000;
+const WORKER_APP_FOREGROUND_RESUME_COOLDOWN_MS = 180000;
 // Los resumenes HH.EE son caros: se mantienen acotados (no crecen con la
 // ventana del calendario).
 const OVERTIME_SUMMARY_MONTHS_BACK = 2;
@@ -114,6 +116,7 @@ let workerLinks = [];
 let workerLinksInitialized = false;
 let syncGeneration = 0;
 let workerAppLastUserActivityAt = Date.now();
+let workerAppForegroundResumeBlockedUntil = 0;
 
 // Solo se publican perfiles/UID marcados de forma explicita.
 let dirtyProfileNames = new Set();
@@ -188,6 +191,13 @@ function workerAppInteractiveDelay(quietMs = WORKER_APP_USER_QUIET_MS) {
     if (typeof document === "undefined") return 0;
     if (document.visibilityState !== "visible") return 0;
 
+    const resumeDelay =
+        workerAppForegroundResumeBlockedUntil - Date.now();
+
+    if (resumeDelay > 0) {
+        return Math.max(resumeDelay, WORKER_APP_ACTIVE_RETRY_MS);
+    }
+
     // Escribir documentos PWA puede activar serializacion pesada de Firestore.
     // En foreground solo se agenda; al ocultar la pestaña se vacia la cola.
     const delay = Math.max(
@@ -195,6 +205,11 @@ function workerAppInteractiveDelay(quietMs = WORKER_APP_USER_QUIET_MS) {
         WORKER_APP_ACTIVE_RETRY_MS,
         Number(quietMs) || WORKER_APP_USER_QUIET_MS
     );
+    const activeView = document.body?.dataset?.activeView || "";
+
+    if (activeView === "turnos" || activeView === "timeline") {
+        return Math.max(delay, WORKER_APP_CALENDAR_VISIBLE_RETRY_MS);
+    }
 
     return workerAppHasPendingInput()
         ? Math.max(delay, WORKER_APP_ACTIVE_RETRY_MS)
@@ -2012,6 +2027,17 @@ function markDirtyTargetAgain(item) {
     }
 }
 
+function deferWorkerAppItemIfForeground(item, reason = "foreground-during-publish") {
+    const delay = workerAppInteractiveDelay();
+
+    if (delay <= 0) return false;
+
+    recordWorkerAppPublishDeferred(delay, reason);
+    markDirtyTargetAgain(item);
+    hotPublishRequested = true;
+    return true;
+}
+
 // ───────── Publicacion caliente (mes actual + siguiente) ─────────
 
 export function scheduleHotPublish(delay = HOT_PUBLISH_DELAY_MS) {
@@ -2088,10 +2114,16 @@ async function publishHotNow() {
         queueResult = await runCooperativeQueue(targets, async item => {
             await waitWorkerAppIdle(900);
             if (!shouldContinue()) return;
+            if (deferWorkerAppItemIfForeground(item, "foreground-before-read")) {
+                return;
+            }
 
             const previousPayload = item.profile
                 ? await readWorkerAppData(workspace.id, item.link.uid)
                 : null;
+            if (deferWorkerAppItemIfForeground(item, "foreground-after-read")) {
+                return;
+            }
             const payload = item.profile
                 ? await buildWorkerAppPayload(
                     item.link,
@@ -2100,6 +2132,9 @@ async function publishHotNow() {
                     previousPayload
                 )
                 : buildMissingProfilePayload(item.link, workspace);
+            if (deferWorkerAppItemIfForeground(item, "foreground-before-write")) {
+                return;
+            }
             const projectionResult = await writeWorkerAppProjection(
                 payload,
                 workspace.id,
@@ -2368,6 +2403,7 @@ export function stopWorkerAppDataSync() {
     workerLinksInitialized = false;
     hotPublishInFlight = false;
     hotPublishRequested = false;
+    workerAppForegroundResumeBlockedUntil = 0;
     dirtyProfileNames = new Set();
     dirtyWorkerUids = new Set();
     syncGeneration++;
@@ -2389,10 +2425,23 @@ if (typeof window !== "undefined") {
     });
 
     document.addEventListener("visibilitychange", () => {
-        if (
-            document.visibilityState === "hidden" &&
-            (dirtyProfileNames.size || dirtyWorkerUids.size)
-        ) {
+        if (document.visibilityState === "visible") {
+            workerAppForegroundResumeBlockedUntil =
+                Date.now() + WORKER_APP_FOREGROUND_RESUME_COOLDOWN_MS;
+
+            if (hotPublishInFlight) {
+                hotPublishRequested = true;
+                recordWorkerAppPublishDeferred(
+                    WORKER_APP_FOREGROUND_RESUME_COOLDOWN_MS,
+                    "foreground-resume"
+                );
+            }
+            return;
+        }
+
+        workerAppForegroundResumeBlockedUntil = 0;
+
+        if (dirtyProfileNames.size || dirtyWorkerUids.size) {
             scheduleHotPublish(0);
         }
     });

@@ -37,6 +37,9 @@ const ENTRY_SYNC_DELAY_MS = 2500;
 const ENTRY_USER_QUIET_MS = 90000;
 const ENTRY_ACTIVE_RETRY_MS = 10000;
 const ENTRY_VISIBLE_RETRY_MS = 60000;
+const REMOTE_APPLY_BATCH_SIZE = 4;
+const REMOTE_APPLY_ACTIVE_RETRY_MS = 30000;
+const REMOTE_APPLY_CALENDAR_RETRY_MS = 90000;
 
 let activeWorkspaceId = "";
 let unsubscribeState = null;
@@ -45,12 +48,15 @@ let entrySyncTimer = null;
 let applyingRemoteState = false;
 let waitingInitialState = false;
 let entrySyncInFlight = false;
+let remoteApplyTimer = null;
+let remoteApplyInFlight = false;
 let entryLastUserActivityAt = Date.now();
 let servicesCache = null;
 let onStateChanged = () => {};
 let syncGeneration = 0;
 const lastAppliedHashes = new Map();
 const pendingStateEntries = new Map();
+const pendingRemoteStateEntries = new Map();
 const entryModulesPresent = new Set();
 let unsubscribeStateEntries = null;
 
@@ -103,6 +109,122 @@ function firebaseStateInteractiveDelay(quietMs = ENTRY_USER_QUIET_MS) {
     return firebaseStateHasPendingInput()
         ? Math.max(delay, ENTRY_ACTIVE_RETRY_MS)
         : delay;
+}
+
+function firebaseRemoteApplyDelay() {
+    if (typeof document === "undefined") return 0;
+    if (document.visibilityState !== "visible") return 0;
+
+    const activeView = document.body?.dataset?.activeView || "";
+
+    if (activeView === "turnos" || activeView === "timeline") {
+        return REMOTE_APPLY_CALENDAR_RETRY_MS;
+    }
+
+    const quietRemaining = Math.max(
+        0,
+        ENTRY_USER_QUIET_MS - (Date.now() - entryLastUserActivityAt)
+    );
+
+    if (firebaseStateHasPendingInput() || quietRemaining > 0) {
+        return Math.max(
+            REMOTE_APPLY_ACTIVE_RETRY_MS,
+            Math.min(quietRemaining, REMOTE_APPLY_CALENDAR_RETRY_MS)
+        );
+    }
+
+    return 0;
+}
+
+function remoteEntryId(entry = {}) {
+    return [
+        entry.moduleId,
+        entry.storageKey,
+        entry.itemKey || ""
+    ].join("\u001e");
+}
+
+function queueRemoteStateEntries(entries = []) {
+    entries.forEach(entry => {
+        if (!entry?.storageKey) return;
+        pendingRemoteStateEntries.set(remoteEntryId(entry), entry);
+    });
+}
+
+function scheduleRemoteStateApply(delay = 0) {
+    if (
+        !pendingRemoteStateEntries.size ||
+        remoteApplyInFlight ||
+        !activeWorkspaceId
+    ) return;
+
+    clearTimeout(remoteApplyTimer);
+    remoteApplyTimer = setTimeout(
+        flushRemoteStateEntries,
+        Math.max(0, Number(delay) || 0)
+    );
+}
+
+async function flushRemoteStateEntries() {
+    remoteApplyTimer = null;
+
+    if (
+        remoteApplyInFlight ||
+        !activeWorkspaceId ||
+        !pendingRemoteStateEntries.size
+    ) return;
+
+    const delay = firebaseRemoteApplyDelay();
+
+    if (delay > 0) {
+        recordPerformanceEvent("firebase-app-state:apply-deferred", {
+            type: "firebase",
+            reason: "foreground-busy",
+            delay,
+            pendingCount: pendingRemoteStateEntries.size,
+            activeView: document.body?.dataset?.activeView || ""
+        });
+        scheduleRemoteStateApply(delay);
+        return;
+    }
+
+    remoteApplyInFlight = true;
+
+    try {
+        while (pendingRemoteStateEntries.size && activeWorkspaceId) {
+            const batchSize =
+                typeof document !== "undefined" &&
+                document.visibilityState === "visible"
+                    ? REMOTE_APPLY_BATCH_SIZE
+                    : pendingRemoteStateEntries.size;
+            const entries = [...pendingRemoteStateEntries.values()]
+                .slice(0, batchSize);
+
+            entries.forEach(entry =>
+                pendingRemoteStateEntries.delete(remoteEntryId(entry))
+            );
+
+            applyRemoteStateEntries(entries);
+
+            if (!pendingRemoteStateEntries.size) break;
+
+            if (
+                typeof document !== "undefined" &&
+                document.visibilityState === "visible"
+            ) {
+                scheduleRemoteStateApply(REMOTE_APPLY_ACTIVE_RETRY_MS);
+                return;
+            }
+
+            await waitFirebaseStateIdle(600);
+        }
+    } finally {
+        remoteApplyInFlight = false;
+
+        if (pendingRemoteStateEntries.size) {
+            scheduleRemoteStateApply(firebaseRemoteApplyDelay());
+        }
+    }
 }
 
 function moduleDocRef(db, firestoreModule, workspaceId, moduleId) {
@@ -633,7 +755,8 @@ function handleEntriesSnapshot(
         entryCount: entries.length,
         changeCount: changes.length
     });
-    applyRemoteStateEntries(entries);
+    queueRemoteStateEntries(entries);
+    scheduleRemoteStateApply(firebaseRemoteApplyDelay());
 }
 
 async function applyRemoteModule(
@@ -988,6 +1111,8 @@ export async function startFirebaseAppStateSync(
 export function stopFirebaseAppStateSync() {
     clearTimeout(entrySyncTimer);
     entrySyncTimer = null;
+    clearTimeout(remoteApplyTimer);
+    remoteApplyTimer = null;
 
     if (unsubscribeState) {
         unsubscribeState();
@@ -1004,8 +1129,10 @@ export function stopFirebaseAppStateSync() {
     applyingRemoteState = false;
     waitingInitialState = false;
     entrySyncInFlight = false;
+    remoteApplyInFlight = false;
     lastAppliedHashes.clear();
     pendingStateEntries.clear();
+    pendingRemoteStateEntries.clear();
     entryModulesPresent.clear();
     syncGeneration++;
 }
@@ -1028,6 +1155,7 @@ if (typeof window !== "undefined") {
     document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") {
             scheduleEntrySync(0);
+            scheduleRemoteStateApply(0);
         }
     });
 

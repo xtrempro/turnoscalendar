@@ -224,15 +224,22 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     assert.match(timelineSource, /export function showTimelinePendingMonth\(/);
     assert.match(timelineSource, /dataset\.timelineMonthKey/);
     assert.match(timelineSource, /dataset\.timelineState = "pending"/);
-    assert.match(timelineSource, /event\.target\.closest\("\[data-timeline-load-more\]"\)/);
-    assert.match(timelineSource, /appendTimelineRows\(\{\s*startIndex:\s*previousLimit,/);
+    assert.doesNotMatch(timelineSource, /event\.target\.closest\("\[data-timeline-load-more\]"\)/);
+    assert.doesNotMatch(timelineSource, /dataTimelineLoadMore/);
+    assert.match(timelineSource, /data-timeline-filter-select/);
+    assert.match(timelineSource, /function timelineCurrentProfileGroup/);
+    assert.match(timelineSource, /selectedKey !== currentGroup\.key/);
+    assert.match(timelineSource, /function syncTimelineActiveProfile/);
+    assert.match(timelineSource, /is-current-calendar-profile/);
     assert.match(timelineSource, /TIMELINE_INITIAL_BATCH_SIZE\s*=\s*5/);
     assert.match(timelineSource, /TIMELINE_INCREMENTAL_BATCH_SIZE\s*=\s*5/);
     assert.match(timelineSource, /TIMELINE_CACHE_PREFIX/);
     assert.match(timelineSource, /TIMELINE_ROW_CACHE_PREFIX/);
     assert.match(timelineSource, /function orderTimelineProfiles/);
-    assert.match(timelineSource, /timelineSortContext\(actual, year, month, diasMes\)/);
+    assert.match(timelineSource, /function timelineSortContext\(year, month, diasMes, renderCache = null\)/);
     assert.match(timelineSource, /orderTimelineProfiles\(\s*grupo,\s*actual,\s*year,\s*month,\s*diasMes,\s*sortContext\s*\)/);
+    assert.doesNotMatch(timelineSource, /viewSignature = \[\s*actual,/);
+    assert.match(timelineSource, /timelineRowLimit = context\.orderedGroup\.length/);
     assert.doesNotMatch(
         timelineSource,
         /grupo\s*\.filter\(profile => profile\.name !== actual\)\s*\.sort\(\(a, b\) => a\.name\.localeCompare\(b\.name\)\)/

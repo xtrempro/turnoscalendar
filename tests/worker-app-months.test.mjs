@@ -73,7 +73,7 @@ test("la PWA reutiliza resumenes HH.EE y los refresca en segundo plano", async (
     assert.match(source, /overtimeSummariesStatus: "fresh"/);
 });
 
-test("Perfil y Timeline limitan la primera pagina", async () => {
+test("Perfil pagina la lista y Timeline renderiza la profesion completa", async () => {
     const [mainSource, timelineSource] = await Promise.all([
         readFile(new URL("../js/main.js", import.meta.url), "utf8"),
         readFile(new URL("../js/timeline.js", import.meta.url), "utf8")
@@ -81,6 +81,7 @@ test("Perfil y Timeline limitan la primera pagina", async () => {
 
     assert.match(mainSource, /PROFILE_LIST_PAGE_SIZE\s*=\s*30/);
     assert.match(mainSource, /visibles\.slice\(0, profileListLimit\)/);
-    assert.match(timelineSource, /TIMELINE_PAGE_SIZE\s*=\s*20/);
-    assert.match(timelineSource, /orderedGroup\.slice\(0, timelineRowLimit\)/);
+    assert.match(timelineSource, /timelineRowLimit = context\.orderedGroup\.length/);
+    assert.match(timelineSource, /const visibleGroup = context\.orderedGroup;/);
+    assert.doesNotMatch(timelineSource, /orderedGroup\.slice\(0, timelineRowLimit\)/);
 });

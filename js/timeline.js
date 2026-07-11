@@ -91,22 +91,37 @@ const TIMELINE_PAGE_SIZE = 20;
 const TIMELINE_FOREGROUND_INITIAL_LIMIT = 5;
 const TIMELINE_INITIAL_BATCH_SIZE = 5;
 const TIMELINE_INCREMENTAL_BATCH_SIZE = 5;
-const TIMELINE_CACHE_VERSION = 2;
+const TIMELINE_VISIBLE_BATCH_SIZE = 1;
+const TIMELINE_CACHE_VERSION = 3;
 const TIMELINE_CACHE_PREFIX = "proturnos_ui_cache_timeline_";
 const TIMELINE_ROW_CACHE_PREFIX = "proturnos_ui_cache_timeline_row_";
 const TIMELINE_METRICS_CACHE_PREFIX = "proturnos_ui_cache_timeline_metrics_";
+const TIMELINE_MONTH_INDEX_CACHE_PREFIX =
+    "proturnos_ui_cache_timeline_month_index_";
 const TIMELINE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const TIMELINE_CACHE_MAX_ENTRIES = 24;
 const TIMELINE_ROW_CACHE_MAX_ENTRIES = 2500;
 const TIMELINE_METRICS_CACHE_MAX_ENTRIES = 2500;
+const TIMELINE_MONTH_INDEX_CACHE_MAX_ENTRIES = 72;
+const TIMELINE_MONTH_INDEX_WRITE_EVERY = 5;
 const TIMELINE_METRICS_USER_QUIET_MS = 60000;
 const TIMELINE_METRICS_RETRY_MS = 15000;
 const TIMELINE_METRICS_VISIBLE_RETRY_MS = 60000;
+const TIMELINE_SORT_LARGA_TURNS = new Set([TURNO.LARGA]);
+const TIMELINE_SORT_NIGHT_TURNS = new Set([
+    TURNO.NOCHE,
+    TURNO.TURNO18,
+    TURNO.TURNO24,
+    TURNO.DIURNO_NOCHE
+]);
+const TIMELINE_SORT_DIURNO_TURNS = new Set([TURNO.DIURNO]);
+const TIMELINE_STRUCTURE_ANCHOR_ISO = "2026-01-01";
 let timelineRowLimit = TIMELINE_PAGE_SIZE;
 let timelinePageSignature = "";
 const timelineMemoryCache = new Map();
 const timelineRowMemoryCache = new Map();
 const timelineMetricsMemoryCache = new Map();
+const timelineMonthIndexMemoryCache = new Map();
 const timelineVisibilityResolvers = new Set();
 const timelineMetricsRefreshTimers = new Map();
 const timelineMetricsRefreshRequests = new Map();
@@ -157,6 +172,68 @@ function timelineFiltersSignature(selectedKeys) {
     return Array.from(selectedKeys || [])
         .sort()
         .join("|") || "default";
+}
+
+function currentTimelineSelectedKey() {
+    return Array.from(timelineFilterState.selectedKeys || [])[0] || "";
+}
+
+function timelineCurrentProfileGroup(profiles = getProfiles()) {
+    const actual = getCurrentProfile();
+    const profile = profiles.find(item => item.name === actual);
+
+    return profile ? timelineGroupForProfile(profile) : null;
+}
+
+function timelineFastSignature(year, month) {
+    const profiles = getProfiles();
+    const selectedKey = currentTimelineSelectedKey();
+    const currentGroup = timelineCurrentProfileGroup(profiles);
+
+    if (!selectedKey) return "";
+
+    if (
+        currentGroup?.key &&
+        selectedKey !== currentGroup.key
+    ) {
+        return "";
+    }
+
+    return [
+        year,
+        month,
+        selectedKey,
+        profiles.length
+    ].join("\u001f");
+}
+
+function timelineFastCacheViewSignature(fastSignature) {
+    return fastSignature
+        ? `fast:${fastSignature}`
+        : "";
+}
+
+function timelineFastCacheKey(fastSignature) {
+    const viewSignature = timelineFastCacheViewSignature(fastSignature);
+
+    return viewSignature
+        ? timelineCacheKey(viewSignature, -1)
+        : "";
+}
+
+function syncTimelineFilterToCurrentProfile(profiles = getProfiles()) {
+    const currentGroup = timelineCurrentProfileGroup(profiles);
+
+    if (!currentGroup?.key) return "";
+
+    const selectedKey = currentTimelineSelectedKey();
+
+    if (selectedKey !== currentGroup.key) {
+        timelineFilterState.selectedKeys = new Set([currentGroup.key]);
+        timelineFilterState.open = false;
+    }
+
+    return currentGroup.key;
 }
 
 function timelineRowCacheKey({
@@ -232,7 +309,8 @@ function pruneTimelineCache() {
     const keys = listKeys(TIMELINE_CACHE_PREFIX)
         .filter(key =>
             !key.startsWith(TIMELINE_ROW_CACHE_PREFIX) &&
-            !key.startsWith(TIMELINE_METRICS_CACHE_PREFIX)
+            !key.startsWith(TIMELINE_METRICS_CACHE_PREFIX) &&
+            !key.startsWith(TIMELINE_MONTH_INDEX_CACHE_PREFIX)
         );
 
     if (keys.length <= TIMELINE_CACHE_MAX_ENTRIES) return;
@@ -430,23 +508,226 @@ function writeTimelineMetricsCache(cacheKey, payload) {
     }
 }
 
+function timelineMonthIndexCacheKey({
+    workspaceId = timelineWorkspaceId(),
+    monthKey,
+    fastSignature
+}) {
+    if (!monthKey || !fastSignature) return "";
+
+    return (
+        TIMELINE_MONTH_INDEX_CACHE_PREFIX +
+        `${TIMELINE_CACHE_VERSION}_` +
+        timelineCacheHash([
+            workspaceId,
+            monthKey,
+            fastSignature
+        ].join("\u001f"))
+    );
+}
+
+function readTimelineMonthIndex(cacheKey, {
+    monthKey,
+    fastSignature
+}) {
+    if (!cacheKey) return null;
+
+    const payload = timelineMonthIndexMemoryCache.get(cacheKey) ||
+        parseTimelineCache(getRaw(cacheKey, null));
+
+    if (
+        !payload ||
+        payload.version !== TIMELINE_CACHE_VERSION ||
+        payload.monthKey !== monthKey ||
+        payload.fastSignature !== fastSignature ||
+        typeof payload.shellHTML !== "string" ||
+        !Array.isArray(payload.rows) ||
+        Date.now() - Number(payload.savedAt || 0) > TIMELINE_CACHE_MAX_AGE_MS
+    ) {
+        return null;
+    }
+
+    timelineMonthIndexMemoryCache.set(cacheKey, payload);
+    return payload;
+}
+
+function pruneTimelineMonthIndexCache() {
+    const keys = listKeys(TIMELINE_MONTH_INDEX_CACHE_PREFIX);
+
+    if (keys.length <= TIMELINE_MONTH_INDEX_CACHE_MAX_ENTRIES) return;
+
+    keys
+        .map(key => ({
+            key,
+            savedAt:
+                Number(
+                    timelineMonthIndexMemoryCache.get(key)?.savedAt ??
+                    parseTimelineCache(getRaw(key, null))?.savedAt
+                ) || 0
+        }))
+        .sort((a, b) => b.savedAt - a.savedAt)
+        .slice(TIMELINE_MONTH_INDEX_CACHE_MAX_ENTRIES)
+        .forEach(entry => {
+            timelineMonthIndexMemoryCache.delete(entry.key);
+            removeKey(entry.key);
+        });
+}
+
+function writeTimelineMonthIndex(cacheKey, payload) {
+    if (!cacheKey) return;
+
+    const next = {
+        ...payload,
+        version: TIMELINE_CACHE_VERSION,
+        savedAt: Date.now()
+    };
+
+    timelineMonthIndexMemoryCache.set(cacheKey, next);
+
+    try {
+        measurePerformance(
+            "timeline:write-month-index",
+            () => {
+                setRaw(cacheKey, JSON.stringify(next));
+                pruneTimelineMonthIndexCache();
+            },
+            {
+                monthKey: payload?.monthKey || "",
+                rowCount: payload?.rows?.length || 0,
+                complete: payload?.complete === true
+            }
+        );
+    } catch {
+        timelineMonthIndexMemoryCache.delete(cacheKey);
+    }
+}
+
+function readTimelineRowCacheForIndex(rowRef, payload) {
+    if (!rowRef?.cacheKey) return null;
+
+    return readTimelineRowCache(rowRef.cacheKey, {
+        monthKey: payload.monthKey,
+        workerId: rowRef.workerId,
+        filtersSignature: payload.filtersSignature
+    });
+}
+
+function timelineHTMLFromMonthIndex(payload) {
+    if (
+        typeof document === "undefined" ||
+        !payload ||
+        typeof payload.shellHTML !== "string"
+    ) {
+        return "";
+    }
+
+    const template = document.createElement("div");
+
+    template.innerHTML = payload.shellHTML;
+
+    const tbody = timelineRowsTbody(template);
+
+    if (!tbody) return "";
+
+    let restored = 0;
+
+    payload.rows.forEach(rowRef => {
+        const cached = readTimelineRowCacheForIndex(rowRef, payload);
+
+        if (!cached) return;
+
+        tbody.appendChild(timelineRowElement({
+            workerId: rowRef.workerId,
+            profileName: rowRef.profileName,
+            innerHTML: cached.innerHTML,
+            rowHash: cached.rowHash,
+            cacheKey: rowRef.cacheKey
+        }));
+        restored++;
+    });
+
+    return restored ? template.innerHTML : "";
+}
+
+function writeTimelineMonthIndexFromDOM(
+    container,
+    context,
+    options = {}
+) {
+    const fastSignature =
+        options.fastSignature ||
+        timelineFastSignature(context.year, context.month);
+    const cacheKey = timelineMonthIndexCacheKey({
+        workspaceId: context.workspaceId,
+        monthKey: context.monthKey,
+        fastSignature
+    });
+
+    if (!cacheKey || !fastSignature || !container) return;
+
+    const rowsByWorkerId = new Map(
+        Array.from(container.querySelectorAll("[data-timeline-row]"))
+            .map(row => [row.dataset.workerId || "", row])
+            .filter(([workerId]) => Boolean(workerId))
+    );
+    const rows = context.orderedGroup
+        .map(profile => {
+            const workerId = timelineWorkerId(profile);
+            const row = rowsByWorkerId.get(workerId);
+            const cacheKeyForRow = row?.dataset?.timelineRowCacheKey || "";
+
+            if (!row || !cacheKeyForRow) return null;
+
+            return {
+                workerId,
+                profileName: profile.name,
+                cacheKey: cacheKeyForRow,
+                rowHash: row.dataset.timelineRowHash || ""
+            };
+        })
+        .filter(Boolean);
+
+    writeTimelineMonthIndex(cacheKey, {
+        workspaceId: context.workspaceId,
+        monthKey: context.monthKey,
+        fastSignature,
+        viewSignature: context.viewSignature,
+        structureSignature: timelineStructureSignature(
+            context,
+            context.monthKey
+        ),
+        filtersSignature: context.filtersSignature,
+        shellHTML: timelineShellHTML(context),
+        rows,
+        totalRows: context.orderedGroup.length,
+        complete:
+            options.complete === true ||
+            rows.length >= context.orderedGroup.length
+    });
+}
+
 function clearTimelineCache() {
     timelineMemoryCache.clear();
     timelineRowMemoryCache.clear();
     timelineMetricsMemoryCache.clear();
+    timelineMonthIndexMemoryCache.clear();
     listKeys(TIMELINE_CACHE_PREFIX).forEach(removeKey);
     listKeys(TIMELINE_ROW_CACHE_PREFIX).forEach(removeKey);
     listKeys(TIMELINE_METRICS_CACHE_PREFIX).forEach(removeKey);
+    listKeys(TIMELINE_MONTH_INDEX_CACHE_PREFIX).forEach(removeKey);
 }
 
 function clearLegacyTimelineCache() {
     timelineMemoryCache.clear();
+    timelineMonthIndexMemoryCache.clear();
     listKeys(TIMELINE_CACHE_PREFIX)
         .filter(key =>
             !key.startsWith(TIMELINE_ROW_CACHE_PREFIX) &&
-            !key.startsWith(TIMELINE_METRICS_CACHE_PREFIX)
+            !key.startsWith(TIMELINE_METRICS_CACHE_PREFIX) &&
+            !key.startsWith(TIMELINE_MONTH_INDEX_CACHE_PREFIX)
         )
         .forEach(removeKey);
+    listKeys(TIMELINE_MONTH_INDEX_CACHE_PREFIX).forEach(removeKey);
 }
 
 function timelineAffectedProfilesFromKeys(keys = []) {
@@ -493,6 +774,8 @@ function clearTimelineRowCacheForProfiles(profileNames = new Set()) {
             .map(timelineWorkerId)
     );
     const keys = listKeys(TIMELINE_ROW_CACHE_PREFIX);
+    const metricKeys = listKeys(TIMELINE_METRICS_CACHE_PREFIX);
+    const indexKeys = listKeys(TIMELINE_MONTH_INDEX_CACHE_PREFIX);
 
     keys.forEach(key => {
         const payload = timelineRowMemoryCache.get(key) ||
@@ -537,6 +820,34 @@ function clearTimelineRowCacheForProfiles(profileNames = new Set()) {
                 workerIds.has(payload?.workerId)
             ) {
                 timelineMetricsMemoryCache.delete(key);
+            }
+        });
+
+    indexKeys.forEach(key => {
+        const payload = timelineMonthIndexMemoryCache.get(key) ||
+            parseTimelineCache(getRaw(key, null));
+        const touchesProfile = Array.isArray(payload?.rows) &&
+            payload.rows.some(row =>
+                profileNames.has(row?.profileName) ||
+                workerIds.has(row?.workerId)
+            );
+
+        if (touchesProfile) {
+            timelineMonthIndexMemoryCache.delete(key);
+            removeKey(key);
+        }
+    });
+
+    Array.from(timelineMonthIndexMemoryCache.entries())
+        .forEach(([key, payload]) => {
+            const touchesProfile = Array.isArray(payload?.rows) &&
+                payload.rows.some(row =>
+                    profileNames.has(row?.profileName) ||
+                    workerIds.has(row?.workerId)
+                );
+
+            if (touchesProfile) {
+                timelineMonthIndexMemoryCache.delete(key);
             }
         });
 
@@ -605,11 +916,20 @@ export function showTimelinePendingMonth(year, month) {
         return false;
     }
 
-    stopTimelineOutsideClickListener();
     timelineViewState = null;
     div.dataset.timelineMonthKey = key;
     div.dataset.timelineState = "pending";
     div.setAttribute("aria-busy", "true");
+
+    if (timelineRowsTbody(div)) {
+        updateTimelineProgress(
+            div,
+            `Actualizando timeline de ${timelineMonthLabel(year, month)}...`
+        );
+        return true;
+    }
+
+    stopTimelineOutsideClickListener();
     div.innerHTML = timelinePendingHTML(year, month);
     return true;
 }
@@ -763,24 +1083,6 @@ function ensureTimelineCellDelegation(container) {
 
     container.dataset.timelineDelegated = "1";
     container.addEventListener("click", event => {
-        const loadMore = event.target.closest("[data-timeline-load-more]");
-
-        if (loadMore && container.contains(loadMore)) {
-            event.preventDefault();
-
-            if (loadMore.disabled) return;
-
-            const previousLimit = timelineRowLimit;
-            timelineRowLimit += TIMELINE_PAGE_SIZE;
-            loadMore.disabled = true;
-            loadMore.textContent = "Cargando m\u00e1s trabajadores...";
-            void appendTimelineRows({
-                startIndex: previousLimit,
-                revealRowIndex: previousLimit
-            });
-            return;
-        }
-
         const profileButton = event.target.closest("[data-profile-name]");
 
         if (profileButton && container.contains(profileButton)) {
@@ -851,6 +1153,31 @@ function revealTimelineRow(container, rowIndex) {
             behavior: "smooth"
         });
     });
+}
+
+function syncTimelineActiveProfile(container, activeProfile = getCurrentProfile()) {
+    if (!container) return;
+
+    const activeName = String(activeProfile || "");
+
+    container
+        .querySelectorAll(".timeline-profile-link[data-profile-name]")
+        .forEach(button => {
+            const isActive =
+                Boolean(activeName) &&
+                button.dataset.profileName === activeName;
+
+            button.classList.toggle(
+                "is-current-calendar-profile",
+                isActive
+            );
+
+            if (isActive) {
+                button.setAttribute("aria-current", "true");
+            } else {
+                button.removeAttribute("aria-current");
+            }
+        });
 }
 
 // Actualiza en el DOM solo las casillas indicadas de un trabajador (color,
@@ -961,6 +1288,264 @@ function getCarry(nombre, y, m){
         `carry_${nombre}_${y}_${m}`,
         { d: 0, n: 0 }
     );
+}
+
+function timelineEnsureNestedMap(map, key) {
+    let nested = map.get(key);
+
+    if (!nested) {
+        nested = new Map();
+        map.set(key, nested);
+    }
+
+    return nested;
+}
+
+function createTimelineRenderCache(year, month, diasMes) {
+    const keys = monthKeys(year, month, diasMes);
+    const isoByKey = new Map();
+    const dateByKey = new Map();
+    const blockedByProfileKey = new Map();
+    const replacementByProfileIso = new Map();
+    const coveredReplacementByProfileIso = new Map();
+    const clockExtraBackupByProfileIso = new Map();
+    const replacementTurnByProfileKey = new Map();
+    const backedTurnByProfileKey = new Map();
+
+    keys.forEach(keyDay => {
+        const iso = isoFromKey(keyDay);
+
+        isoByKey.set(keyDay, iso);
+        dateByKey.set(
+            keyDay,
+            new Date(year, month, Number(keyDay.split("-")[2]))
+        );
+    });
+
+    getWorkerBlockedDays().forEach(item => {
+        const itemProfileKey =
+            item?.profileKey || normalizeText(item?.profileName);
+
+        if (
+            !itemProfileKey ||
+            !timelineISOInMonth(item.date, year, month)
+        ) {
+            return;
+        }
+
+        timelineEnsureNestedMap(
+            blockedByProfileKey,
+            itemProfileKey
+        ).set(item.date, item);
+    });
+
+    getReplacements()
+        .filter(replacementActive)
+        .forEach(replacement => {
+            const iso = String(replacement?.date || "");
+
+            if (!timelineISOInMonth(iso, year, month)) return;
+
+            const keyDay = keyFromISO(iso);
+            const workerName = replacement.worker || "";
+            const replacedName = replacement.replaced || "";
+
+            if (workerName) {
+                const replacementMap = timelineEnsureNestedMap(
+                    replacementByProfileIso,
+                    workerName
+                );
+
+                if (!replacementMap.has(iso)) {
+                    replacementMap.set(iso, replacement);
+                }
+
+                if (replacement.addsShift !== false) {
+                    addReplacementTurn(
+                        timelineEnsureNestedMap(
+                            replacementTurnByProfileKey,
+                            workerName
+                        ),
+                        keyDay,
+                        replacement
+                    );
+                }
+
+                if (replacement.source !== "clock_extra") {
+                    addReplacementTurn(
+                        timelineEnsureNestedMap(
+                            backedTurnByProfileKey,
+                            workerName
+                        ),
+                        keyDay,
+                        replacement
+                    );
+                }
+
+                if (replacement.source === "clock_extra") {
+                    const backupMap = timelineEnsureNestedMap(
+                        clockExtraBackupByProfileIso,
+                        workerName
+                    );
+
+                    if (!backupMap.has(iso)) {
+                        backupMap.set(iso, replacement);
+                    }
+                }
+            }
+
+            if (replacedName) {
+                const coveredMap = timelineEnsureNestedMap(
+                    coveredReplacementByProfileIso,
+                    replacedName
+                );
+
+                if (!coveredMap.has(iso)) {
+                    coveredMap.set(iso, replacement);
+                }
+            }
+        });
+
+    return {
+        year,
+        month,
+        diasMes,
+        keys,
+        isoByKey,
+        dateByKey,
+        blockedByProfileKey,
+        replacementByProfileIso,
+        coveredReplacementByProfileIso,
+        clockExtraBackupByProfileIso,
+        replacementTurnByProfileKey,
+        backedTurnByProfileKey,
+        swaps: getSwaps(),
+        dataByProfile: new Map(),
+        baseDataByProfile: new Map(),
+        leaveMapsByProfile: new Map(),
+        blockedByProfile: new Map(),
+        carryByProfileMonth: new Map(),
+        rotativaByProfile: new Map(),
+        hourReturnsByProfile: new Map(),
+        clockMarksByProfile: new Map(),
+        baseSequenceByProfile: new Map()
+    };
+}
+
+function timelineCachedJSON(renderCache, mapName, cacheKey, storageKey, fallback) {
+    const map = renderCache?.[mapName];
+
+    if (!map) return getJSON(storageKey, fallback);
+
+    if (!map.has(cacheKey)) {
+        map.set(cacheKey, getJSON(storageKey, fallback));
+    }
+
+    return map.get(cacheKey);
+}
+
+function getTimelineCachedData(nombre, renderCache = null) {
+    return timelineCachedJSON(
+        renderCache,
+        "dataByProfile",
+        nombre,
+        "data_" + nombre,
+        {}
+    );
+}
+
+function getTimelineCachedBaseData(nombre, renderCache = null) {
+    return timelineCachedJSON(
+        renderCache,
+        "baseDataByProfile",
+        nombre,
+        "baseData_" + nombre,
+        {}
+    );
+}
+
+function getTimelineCachedLeaveMaps(nombre, renderCache = null) {
+    if (!renderCache?.leaveMapsByProfile) {
+        return {
+            admin: getAdmin(nombre),
+            legal: getLegal(nombre),
+            comp: getComp(nombre),
+            absences: getAbs(nombre)
+        };
+    }
+
+    if (!renderCache.leaveMapsByProfile.has(nombre)) {
+        renderCache.leaveMapsByProfile.set(nombre, {
+            admin: getAdmin(nombre),
+            legal: getLegal(nombre),
+            comp: getComp(nombre),
+            absences: getAbs(nombre)
+        });
+    }
+
+    return renderCache.leaveMapsByProfile.get(nombre);
+}
+
+function getTimelineCachedBlocked(nombre, renderCache = null) {
+    return timelineCachedJSON(
+        renderCache,
+        "blockedByProfile",
+        nombre,
+        "blocked_" + nombre,
+        {}
+    );
+}
+
+function getTimelineCachedCarry(nombre, y, m, renderCache = null) {
+    const key = `${nombre}\u001f${y}\u001f${m}`;
+
+    return timelineCachedJSON(
+        renderCache,
+        "carryByProfileMonth",
+        key,
+        `carry_${nombre}_${y}_${m}`,
+        { d: 0, n: 0 }
+    );
+}
+
+function getTimelineCachedRotativa(nombre, renderCache = null) {
+    return timelineCachedJSON(
+        renderCache,
+        "rotativaByProfile",
+        nombre,
+        `rotativa_${nombre}`,
+        {}
+    );
+}
+
+function getTimelineCachedHourReturns(nombre, renderCache = null) {
+    if (!renderCache?.hourReturnsByProfile) {
+        return getHourReturns(nombre);
+    }
+
+    if (!renderCache.hourReturnsByProfile.has(nombre)) {
+        renderCache.hourReturnsByProfile.set(
+            nombre,
+            getHourReturns(nombre)
+        );
+    }
+
+    return renderCache.hourReturnsByProfile.get(nombre);
+}
+
+function getTimelineCachedClockMarks(nombre, renderCache = null) {
+    if (!renderCache?.clockMarksByProfile) {
+        return getClockMarks(nombre);
+    }
+
+    if (!renderCache.clockMarksByProfile.has(nombre)) {
+        renderCache.clockMarksByProfile.set(
+            nombre,
+            getClockMarks(nombre)
+        );
+    }
+
+    return renderCache.clockMarksByProfile.get(nombre);
 }
 
 function formatTimelineHours(value){
@@ -1102,65 +1687,61 @@ function timelineFilterGroups(profiles = []) {
 }
 
 function ensureTimelineFilter(perfilActual, groups) {
-    const baseGroup = timelineGroupForProfile(perfilActual);
     const availableKeys = new Set(
         groups.map(group => group.key)
     );
+    const currentGroup = perfilActual
+        ? timelineGroupForProfile(perfilActual)
+        : groups[0];
+    let selectedKey =
+        Array.from(timelineFilterState.selectedKeys || [])[0] ||
+        currentGroup?.key ||
+        groups[0]?.key ||
+        "";
 
-    if (timelineFilterState.anchorProfile !== perfilActual.name) {
-        timelineFilterState.anchorProfile = perfilActual.name;
-        timelineFilterState.selectedKeys = new Set([baseGroup.key]);
+    if (
+        currentGroup?.key &&
+        availableKeys.has(currentGroup.key) &&
+        selectedKey !== currentGroup.key
+    ) {
+        selectedKey = currentGroup.key;
+        timelineFilterState.open = false;
+    } else if (!availableKeys.has(selectedKey)) {
+        selectedKey = currentGroup?.key || groups[0]?.key || "";
         timelineFilterState.open = false;
     }
 
-    const selectedKeys = new Set(
-        Array.from(timelineFilterState.selectedKeys)
-            .filter(key => availableKeys.has(key))
-    );
+    timelineFilterState.anchorProfile = "";
+    timelineFilterState.selectedKeys = selectedKey
+        ? new Set([selectedKey])
+        : new Set();
 
-    selectedKeys.add(baseGroup.key);
-    timelineFilterState.selectedKeys = selectedKeys;
+    const selectedGroup =
+        groups.find(group => group.key === selectedKey) ||
+        currentGroup ||
+        groups[0];
 
     return {
-        baseGroup,
-        selectedKeys
+        baseGroup: selectedGroup,
+        selectedKeys: timelineFilterState.selectedKeys
     };
 }
 
-function timelineFilterHTML(groups, selectedKeys, lockedKey) {
-    const selectedLabels = groups
-        .filter(group => selectedKeys.has(group.key))
-        .map(group => group.label);
-    const label = selectedLabels.length === 1
-        ? selectedLabels[0]
-        : `${selectedLabels.length} grupos`;
+function timelineFilterHTML(groups, selectedKeys) {
+    const selectedKey = Array.from(selectedKeys || [])[0] || "";
 
     return `
-        <div class="timeline-filter ${timelineFilterState.open ? "is-open" : ""}">
-            <button class="timeline-filter__trigger" type="button" data-timeline-filter-toggle>
-                <span>${escapeHtml(label)}</span>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-            </button>
-            <div class="timeline-filter__menu">
-                ${groups.map(group => {
-                    const locked = group.key === lockedKey;
-
-                    return `
-                        <label class="timeline-filter__option ${locked ? "is-locked" : ""}">
-                            <input
-                                type="checkbox"
-                                data-timeline-filter-key="${escapeHtml(group.key)}"
-                                ${selectedKeys.has(group.key) ? "checked" : ""}
-                                ${locked ? "disabled" : ""}
-                            >
-                            <span>${escapeHtml(group.label)}</span>
-                            <small>${group.count}</small>
-                        </label>
-                    `;
-                }).join("")}
-            </div>
+        <div class="timeline-filter timeline-filter--single">
+            <select class="timeline-filter__select" data-timeline-filter-select>
+                ${groups.map(group => `
+                    <option
+                        value="${escapeHtml(group.key)}"
+                        ${group.key === selectedKey ? "selected" : ""}
+                    >
+                        ${escapeHtml(`${group.label} (${group.count})`)}
+                    </option>
+                `).join("")}
+            </select>
         </div>
     `;
 }
@@ -1428,7 +2009,8 @@ function buildTimelineRowAuxiliaryContext(
     month,
     diasMes,
     leaveMaps,
-    rowData = {}
+    rowData = {},
+    renderCache = null
 ) {
     const finishAux = startPerformanceSpan(
         "timeline:row-aux-context",
@@ -1439,15 +2021,51 @@ function buildTimelineRowAuxiliaryContext(
             days: diasMes
         }
     );
-    const keys = monthKeys(year, month, diasMes);
-    const isoByKey = new Map();
-    const dateByKey = new Map();
-    const blockedByIso = new Map();
-    const replacementByIso = new Map();
-    const coveredReplacementByIso = new Map();
-    const clockExtraBackupByIso = new Map();
-    const replacementTurnByKey = new Map();
-    const backedTurnByKey = new Map();
+    const keys = renderCache?.keys || monthKeys(year, month, diasMes);
+    const isoByKey = renderCache?.isoByKey || new Map();
+    const dateByKey = renderCache?.dateByKey || new Map();
+    let blockedByIso = renderCache
+        ? (
+            renderCache.blockedByProfileKey
+                ?.get(normalizeText(profileName)) ||
+            new Map()
+        )
+        : null;
+    let replacementByIso = renderCache
+        ? (
+            renderCache.replacementByProfileIso
+                ?.get(profileName) ||
+            new Map()
+        )
+        : null;
+    let coveredReplacementByIso = renderCache
+        ? (
+            renderCache.coveredReplacementByProfileIso
+                ?.get(profileName) ||
+            new Map()
+        )
+        : null;
+    let clockExtraBackupByIso = renderCache
+        ? (
+            renderCache.clockExtraBackupByProfileIso
+                ?.get(profileName) ||
+            new Map()
+        )
+        : null;
+    let replacementTurnByKey = renderCache
+        ? (
+            renderCache.replacementTurnByProfileKey
+                ?.get(profileName) ||
+            new Map()
+        )
+        : null;
+    let backedTurnByKey = renderCache
+        ? (
+            renderCache.backedTurnByProfileKey
+                ?.get(profileName) ||
+            new Map()
+        )
+        : null;
     const baseTurnByKey = new Map();
     const programmedTurnByKey = new Map();
     const realTurnByKey = new Map();
@@ -1457,74 +2075,98 @@ function buildTimelineRowAuxiliaryContext(
     const contractErrorByKey = new Map();
     const needsReplacementByKey = new Map();
     const profileKey = normalizeText(profileName);
-    const swaps = getSwaps();
-    const data = rowData?.data || getData(profileName);
+    const swaps = renderCache?.swaps || getSwaps();
+    const data =
+        rowData?.data || getTimelineCachedData(profileName, renderCache);
     const isReplacement = isReplacementProfile(profileName);
 
-    keys.forEach(keyDay => {
-        const iso = isoFromKey(keyDay);
+    if (!renderCache) {
+        keys.forEach(keyDay => {
+            const iso = isoFromKey(keyDay);
 
-        isoByKey.set(keyDay, iso);
-        dateByKey.set(keyDay, new Date(year, month, Number(keyDay.split("-")[2])));
-    });
+            isoByKey.set(keyDay, iso);
+            dateByKey.set(
+                keyDay,
+                new Date(year, month, Number(keyDay.split("-")[2]))
+            );
+        });
+    }
 
-    getWorkerBlockedDays().forEach(item => {
-        const itemProfileKey =
-            item?.profileKey || normalizeText(item?.profileName);
+    if (!blockedByIso) {
+        blockedByIso = new Map();
 
-        if (
-            itemProfileKey === profileKey &&
-            timelineISOInMonth(item.date, year, month)
-        ) {
-            blockedByIso.set(item.date, item);
-        }
-    });
+        getWorkerBlockedDays().forEach(item => {
+            const itemProfileKey =
+                item?.profileKey || normalizeText(item?.profileName);
 
-    getReplacements()
-        .filter(replacementActive)
-        .forEach(replacement => {
-            const iso = String(replacement?.date || "");
+            if (
+                itemProfileKey === profileKey &&
+                timelineISOInMonth(item.date, year, month)
+            ) {
+                blockedByIso.set(item.date, item);
+            }
+        });
+    }
 
-            if (!timelineISOInMonth(iso, year, month)) return;
+    if (
+        !replacementByIso ||
+        !coveredReplacementByIso ||
+        !clockExtraBackupByIso ||
+        !replacementTurnByKey ||
+        !backedTurnByKey
+    ) {
+        replacementByIso = replacementByIso || new Map();
+        coveredReplacementByIso = coveredReplacementByIso || new Map();
+        clockExtraBackupByIso = clockExtraBackupByIso || new Map();
+        replacementTurnByKey = replacementTurnByKey || new Map();
+        backedTurnByKey = backedTurnByKey || new Map();
 
-            const keyDay = keyFromISO(iso);
+        getReplacements()
+            .filter(replacementActive)
+            .forEach(replacement => {
+                const iso = String(replacement?.date || "");
 
-            if (replacement.worker === profileName) {
-                if (!replacementByIso.has(iso)) {
-                    replacementByIso.set(iso, replacement);
-                }
+                if (!timelineISOInMonth(iso, year, month)) return;
 
-                if (replacement.addsShift !== false) {
-                    addReplacementTurn(
-                        replacementTurnByKey,
-                        keyDay,
-                        replacement
-                    );
-                }
+                const keyDay = keyFromISO(iso);
 
-                if (replacement.source !== "clock_extra") {
-                    addReplacementTurn(
-                        backedTurnByKey,
-                        keyDay,
-                        replacement
-                    );
+                if (replacement.worker === profileName) {
+                    if (!replacementByIso.has(iso)) {
+                        replacementByIso.set(iso, replacement);
+                    }
+
+                    if (replacement.addsShift !== false) {
+                        addReplacementTurn(
+                            replacementTurnByKey,
+                            keyDay,
+                            replacement
+                        );
+                    }
+
+                    if (replacement.source !== "clock_extra") {
+                        addReplacementTurn(
+                            backedTurnByKey,
+                            keyDay,
+                            replacement
+                        );
+                    }
+
+                    if (
+                        replacement.source === "clock_extra" &&
+                        !clockExtraBackupByIso.has(iso)
+                    ) {
+                        clockExtraBackupByIso.set(iso, replacement);
+                    }
                 }
 
                 if (
-                    replacement.source === "clock_extra" &&
-                    !clockExtraBackupByIso.has(iso)
+                    replacement.replaced === profileName &&
+                    !coveredReplacementByIso.has(iso)
                 ) {
-                    clockExtraBackupByIso.set(iso, replacement);
+                    coveredReplacementByIso.set(iso, replacement);
                 }
-            }
-
-            if (
-                replacement.replaced === profileName &&
-                !coveredReplacementByIso.has(iso)
-            ) {
-                coveredReplacementByIso.set(iso, replacement);
-            }
-        });
+            });
+    }
 
     keys.forEach(keyDay => {
         const iso = isoByKey.get(keyDay);
@@ -1611,8 +2253,8 @@ function buildTimelineRowAuxiliaryContext(
         isoByKey,
         dateByKey,
         blockedByIso,
-        hourReturns: getHourReturns(profileName),
-        clockMarks: getClockMarks(profileName),
+        hourReturns: getTimelineCachedHourReturns(profileName, renderCache),
+        clockMarks: getTimelineCachedClockMarks(profileName, renderCache),
         replacementByIso,
         coveredReplacementByIso,
         clockExtraBackupByIso,
@@ -1642,124 +2284,225 @@ function monthKeys(year, month, days) {
     );
 }
 
-function hasLargaBase(profileName, key) {
-    return Number(getTurnoBase(profileName, key)) === TURNO.LARGA;
-}
-
-function timelineBaseSequence(profileName, keys, cache = null) {
+function timelineBaseSequence(profileName, keys, cache = null, renderCache = null) {
     if (cache?.has(profileName)) return cache.get(profileName);
 
-    const sequence = keys.map(key =>
-        Number(getTurnoBase(profileName, key)) || TURNO.LIBRE
-    );
+    const baseData = getTimelineCachedBaseData(profileName, renderCache);
+    const hasBaseData = Object.keys(baseData || {}).length > 0;
+    const sequence = hasBaseData
+        ? keys.map(key =>
+            Object.prototype.hasOwnProperty.call(baseData, key)
+                ? Number(baseData[key]) || TURNO.LIBRE
+                : Number(getTurnoBase(profileName, key)) || TURNO.LIBRE
+        )
+        : keys.map(key =>
+            Number(getTurnoBase(profileName, key)) || TURNO.LIBRE
+        );
 
     cache?.set(profileName, sequence);
     return sequence;
 }
 
-function sameBasePattern(profileName, actualName, keys, sortContext = null) {
-    if (sortContext?.baseCache && sortContext?.actualSequence) {
-        const sequence = timelineBaseSequence(
-            profileName,
-            sortContext.keys,
-            sortContext.baseCache
-        );
-
-        return sequence.every((turn, index) =>
-            turn === sortContext.actualSequence[index]
-        );
-    }
-
-    return keys.every(key =>
-        Number(getTurnoBase(profileName, key)) ===
-        Number(getTurnoBase(actualName, key))
-    );
-}
-
-function firstLargaMatchIndex(profileName, keys, sortContext = null) {
-    if (sortContext?.baseCache && sortContext?.keyIndexByKey) {
-        const sequence = timelineBaseSequence(
-            profileName,
-            sortContext.keys,
-            sortContext.baseCache
-        );
-
-        return keys.findIndex(key => {
-            const sourceIndex = sortContext.keyIndexByKey.get(key);
-
-            return sequence[sourceIndex] === TURNO.LARGA;
-        });
-    }
-
-    return keys.findIndex(key => hasLargaBase(profileName, key));
-}
-
-function timelineSortContext(actual, year, month, diasMes) {
-    const keys = monthKeys(year, month, diasMes);
-    const baseCache = new Map();
-    const actualSequence =
-        timelineBaseSequence(actual, keys, baseCache);
-    const keyIndexByKey = new Map(
-        keys.map((key, index) => [key, index])
-    );
-    const nightKeys = keys.filter((_key, index) =>
-        actualSequence[index] === TURNO.NOCHE
-    );
-    const freeKeys = keys.filter((_key, index) =>
-        actualSequence[index] === TURNO.LIBRE
-    );
+function timelineSortContext(year, month, diasMes, renderCache = null) {
+    const keys = renderCache?.keys || monthKeys(year, month, diasMes);
+    const baseCache =
+        renderCache?.baseSequenceByProfile || new Map();
 
     return {
         keys,
         baseCache,
-        actualSequence,
-        keyIndexByKey,
-        nightKeys,
-        freeKeys
+        renderCache
     };
 }
 
-function timelineProfileSort(
-    profile,
-    actual,
-    sortContext,
-    totalHhee = 0
-) {
-    const { keys, nightKeys, freeKeys } = sortContext;
-    const rotativa = getJSON(`rotativa_${profile.name}`, {});
-    const samePattern =
-        profile.name !== actual &&
-        sameBasePattern(profile.name, actual, keys, sortContext);
-    const nightMatch =
-        firstLargaMatchIndex(profile.name, nightKeys, sortContext);
-    const freeMatch =
-        firstLargaMatchIndex(profile.name, freeKeys, sortContext);
-    let priority = 3;
-    let matchIndex = Number.MAX_SAFE_INTEGER;
+function timelineRotationRank(type) {
+    if (type === "4turno") return 0;
+    if (type === "3turno") return 1;
+    if (type === "diurno") return 2;
 
-    if (profile.name === actual) {
-        priority = 0;
-    } else if (samePattern) {
-        priority = 6;
-    } else if (rotativa.type === "diurno") {
-        priority = 5;
-    } else if (rotativa.type === "3turno") {
-        priority = 4;
-    } else if (nightMatch >= 0) {
+    return 3;
+}
+
+function timelineFirstTurnIndex(sequence, candidates) {
+    return sequence.findIndex(turn =>
+        candidates.has(Number(turn))
+    );
+}
+
+function timelineParseISODate(value) {
+    const match = String(value || "")
+        .match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (!match) return null;
+
+    const date = new Date(
+        Number(match[1]),
+        Number(match[2]) - 1,
+        Number(match[3])
+    );
+
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function timelineDayNumber(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+        return 0;
+    }
+
+    return Math.floor(Date.UTC(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    ) / 86400000);
+}
+
+function timelinePositiveModulo(value, modulo) {
+    const base = Number(modulo) || 1;
+
+    return ((Number(value) || 0) % base + base) % base;
+}
+
+function timelineRotationCycleLength(type) {
+    if (type === "3turno") return 6;
+    if (type === "4turno") return 4;
+
+    return 1;
+}
+
+function timelineRotationFirstTurnIndex(type, firstTurn = "larga") {
+    const normalized = normalizeText(firstTurn);
+
+    if (type === "3turno") {
+        if (normalized === "larga 2" || normalized === "larga2") return 1;
+        if (normalized === "noche") return 2;
+        if (normalized === "noche 2" || normalized === "noche2") return 3;
+        if (normalized === "libre 1" || normalized === "libre1") return 4;
+        if (normalized === "libre 2" || normalized === "libre2") return 5;
+
+        return 0;
+    }
+
+    if (type === "4turno") {
+        if (normalized === "noche") return 1;
+        if (normalized === "libre 1" || normalized === "libre1") return 2;
+        if (normalized === "libre 2" || normalized === "libre2") return 3;
+
+        return 0;
+    }
+
+    return 0;
+}
+
+function timelineStructuralPhase(profile, rotativa) {
+    const rotationType = String(rotativa?.type || "");
+
+    if (rotationType === "diurno") return 0;
+
+    const cycleLength = timelineRotationCycleLength(rotationType);
+
+    if (cycleLength <= 1) return Number.MAX_SAFE_INTEGER;
+
+    const start = timelineParseISODate(rotativa?.start);
+    const anchor = timelineParseISODate(TIMELINE_STRUCTURE_ANCHOR_ISO);
+
+    if (!start || !anchor) {
+        return Number.MAX_SAFE_INTEGER;
+    }
+
+    const firstTurnIndex = timelineRotationFirstTurnIndex(
+        rotationType,
+        rotativa?.firstTurn
+    );
+
+    return timelinePositiveModulo(
+        timelineDayNumber(anchor) -
+            timelineDayNumber(start) +
+            firstTurnIndex,
+        cycleLength
+    );
+}
+
+function timelineProfileStructuralSignature(profile, renderCache = null) {
+    const rotativa = getTimelineCachedRotativa(profile.name, renderCache);
+    const rotationType = String(rotativa?.type || "");
+
+    return [
+        timelineWorkerId(profile),
+        profile.name,
+        profile.active === false ? "inactive" : "active",
+        profile.estamento || "",
+        profile.profession || "",
+        isReplacementProfile(profile.name) ? "replacement" : "staff",
+        rotationType,
+        rotativa?.start || "",
+        rotativa?.firstTurn || ""
+    ].join("\u001f");
+}
+
+function timelineStructuralProfileSort(profile, renderCache = null) {
+    const rotativa = getTimelineCachedRotativa(profile.name, renderCache);
+    const rotationType = String(rotativa?.type || "");
+
+    return {
+        priority: timelineRotationRank(rotationType),
+        replacementRank: isReplacementProfile(profile.name) ? 1 : 0,
+        phase: timelineStructuralPhase(profile, rotativa),
+        matchIndex: timelineStructuralPhase(profile, rotativa),
+        totalHhee: 0,
+        name: profile.name,
+        workerId: timelineWorkerId(profile)
+    };
+}
+
+function timelineProfileSort(profile, sortContext, totalHhee = 0) {
+    const { keys, baseCache, renderCache } = sortContext;
+    const sequence = timelineBaseSequence(
+        profile.name,
+        keys,
+        baseCache,
+        renderCache
+    );
+    const rotativa =
+        getTimelineCachedRotativa(profile.name, renderCache);
+    const rotationType = String(rotativa?.type || "");
+    const firstLarga = timelineFirstTurnIndex(
+        sequence,
+        TIMELINE_SORT_LARGA_TURNS
+    );
+    const firstNoche = timelineFirstTurnIndex(
+        sequence,
+        TIMELINE_SORT_NIGHT_TURNS
+    );
+    const firstDiurno = timelineFirstTurnIndex(
+        sequence,
+        TIMELINE_SORT_DIURNO_TURNS
+    );
+    const firstWorked = sequence.findIndex(turn =>
+        Number(turn) > TURNO.LIBRE
+    );
+    const phaseIndex = firstLarga >= 0
+        ? firstLarga
+        : firstNoche >= 0
+            ? firstNoche + 0.5
+            : firstDiurno >= 0
+                ? firstDiurno
+                : firstWorked >= 0
+                    ? firstWorked + 0.75
+                    : Number.MAX_SAFE_INTEGER;
+
+    if (false) {
         // Trabajadores cuyo segundo libre coincide con el primer largo
         // del trabajador visible: son la rotativa siguiente natural.
-        priority = 1;
-        matchIndex = nightMatch;
-    } else if (freeMatch >= 0) {
+        return null;
+    } else if (false) {
         // Luego vienen quienes tienen larga cuando el trabajador visible
         // está libre. El primer libre queda antes por matchIndex.
-        priority = 2;
-        matchIndex = freeMatch;
+        return null;
     }
 
     return {
-        priority,
-        matchIndex,
+        priority: timelineRotationRank(rotationType),
+        matchIndex: phaseIndex,
         totalHhee,
         name: profile.name
     };
@@ -1774,11 +2517,27 @@ function compareTimelineSort(a, b) {
         return a.matchIndex - b.matchIndex;
     }
 
-    if (a.totalHhee !== b.totalHhee) {
-        return a.totalHhee - b.totalHhee;
+    return a.name.localeCompare(b.name);
+}
+
+function compareTimelineStructuralSort(a, b) {
+    if (a.priority !== b.priority) {
+        return a.priority - b.priority;
     }
 
-    return a.name.localeCompare(b.name);
+    if (a.replacementRank !== b.replacementRank) {
+        return a.replacementRank - b.replacementRank;
+    }
+
+    if (a.phase !== b.phase) {
+        return a.phase - b.phase;
+    }
+
+    const nameCompare = a.name.localeCompare(b.name);
+
+    if (nameCompare !== 0) return nameCompare;
+
+    return String(a.workerId || "").localeCompare(String(b.workerId || ""));
 }
 
 function orderTimelineProfiles(
@@ -1793,18 +2552,19 @@ function orderTimelineProfiles(
         "timeline:order-profiles",
         () => {
             const effectiveSortContext =
-                sortContext || timelineSortContext(actual, year, month, diasMes);
+                sortContext || timelineSortContext(year, month, diasMes);
 
             return [...grupo]
                 .map(profile => ({
                     profile,
-                    sort: timelineProfileSort(
+                    sort: timelineStructuralProfileSort(
                         profile,
-                        actual,
-                        effectiveSortContext
+                        effectiveSortContext.renderCache || null
                     )
                 }))
-                .sort((a, b) => compareTimelineSort(a.sort, b.sort))
+                .sort((a, b) =>
+                    compareTimelineStructuralSort(a.sort, b.sort)
+                )
                 .map(item => item.profile);
         },
         {
@@ -1847,7 +2607,8 @@ function computeTimelineRowMetrics({
     month,
     diasMes,
     holidays,
-    data
+    data,
+    renderCache = null
 }) {
     const finishMetrics = startPerformanceSpan(
         "timeline:compute-row-metrics",
@@ -1865,8 +2626,8 @@ function computeTimelineRowMetrics({
         diasMes,
         holidays,
         data,
-        getBlocked(profile.name),
-        getCarry(profile.name, year, month)
+        getTimelineCachedBlocked(profile.name, renderCache),
+        getTimelineCachedCarry(profile.name, year, month, renderCache)
     );
     const honorariaSummary =
         getHonorariaMonthlySummary(
@@ -1904,7 +2665,8 @@ function buildTimelineRowData({
     metricsCacheKey = "",
     monthKey = timelineMonthKey(year, month),
     workerId = timelineWorkerId(profile),
-    forceFreshMetrics = false
+    forceFreshMetrics = false,
+    renderCache = null
 }) {
     const finishRowData = startPerformanceSpan(
         "timeline:build-row-data",
@@ -1916,7 +2678,7 @@ function buildTimelineRowData({
             days: diasMes
         }
     );
-    const data = getData(profile.name);
+    const data = getTimelineCachedData(profile.name, renderCache);
     const cachedMetrics = !forceFreshMetrics && metricsCacheKey
         ? readTimelineMetricsCache(metricsCacheKey, {
             monthKey,
@@ -1930,7 +2692,8 @@ function buildTimelineRowData({
             month,
             diasMes,
             holidays,
-            data
+            data,
+            renderCache
         })
         : cachedMetrics
             ? {
@@ -1944,16 +2707,11 @@ function buildTimelineRowData({
                 totalHhee: 0
             };
     const effectiveSortContext =
-        sortContext || {
-            keys,
-            nightKeys,
-            freeKeys
-        };
-    const sort = timelineProfileSort(
+        sortContext ||
+        timelineSortContext(year, month, diasMes, renderCache);
+    const sort = timelineStructuralProfileSort(
         profile,
-        actual,
-        effectiveSortContext,
-        metrics.totalHhee
+        renderCache
     );
 
     const rowData = {
@@ -1964,7 +2722,8 @@ function buildTimelineRowData({
         workerId,
         metricsCacheKey,
         metricsStale: !forceFreshMetrics && !cachedMetrics,
-        sort
+        sort,
+        renderCache
     };
 
     if (forceFreshMetrics && metricsCacheKey) {
@@ -1997,11 +2756,8 @@ async function buildTimelineRows(
     holidays,
     isCanceled
 ) {
-    const {
-        keys,
-        nightKeys,
-        freeKeys
-    } = timelineSortContext(actual, year, month, diasMes);
+    const sortContext = timelineSortContext(year, month, diasMes);
+    const { keys } = sortContext;
 
     const rows = [];
 
@@ -2016,8 +2772,7 @@ async function buildTimelineRows(
             diasMes,
             holidays,
             keys,
-            nightKeys,
-            freeKeys
+            sortContext
         }));
 
         await yieldTimelineRender();
@@ -2238,7 +2993,8 @@ function timelineRowInnerHTML(rowData, {
     year,
     month,
     diasMes,
-    holidays
+    holidays,
+    renderCache = null
 }) {
     const finishHTML = startPerformanceSpan(
         "timeline:row-html",
@@ -2264,19 +3020,19 @@ function timelineRowInnerHTML(rowData, {
         honorariaSummary?.overtimeHours > 0
             ? " honoraria-hhee-excess"
             : "";
-    const leaveMaps = {
-        admin: getAdmin(profile.name),
-        legal: getLegal(profile.name),
-        comp: getComp(profile.name),
-        absences: getAbs(profile.name)
-    };
+    const effectiveRenderCache = rowData.renderCache || renderCache;
+    const leaveMaps = getTimelineCachedLeaveMaps(
+        profile.name,
+        effectiveRenderCache
+    );
     const rowAux = buildTimelineRowAuxiliaryContext(
         profile.name,
         year,
         month,
         diasMes,
         leaveMaps,
-        rowData
+        rowData,
+        effectiveRenderCache
     );
     let html = `
         <td class="namecol">
@@ -2314,6 +3070,82 @@ function timelineRowInnerHTML(rowData, {
 
 function timelineRowHash(innerHTML) {
     return timelineCacheHash(innerHTML);
+}
+
+function timelineBlankDayCell(profile, d, {
+    year,
+    month,
+    baseTurn = TURNO.LIBRE
+}) {
+    const key = `${year}-${month}-${d}`;
+    const turn = Number(baseTurn) || TURNO.LIBRE;
+    const background =
+        getTurnoColor(turn, false) || TURNO_COLOR[turn] || TURNO_COLOR[0];
+
+    return `
+        <td
+            data-timeline-profile="${escapeHtml(profile.name)}"
+            data-timeline-key="${escapeHtml(key)}"
+            class="mini timeline-cell-pending timeline-base-cell"
+            style="background:${escapeHtml(background)}"
+            title="${turn ? "Vista base de rotativa. Actualizando detalles..." : ""}"
+        ></td>
+    `;
+}
+
+function timelineRowSkeletonInnerHTML(profile, {
+    year,
+    month,
+    diasMes,
+    keys = null,
+    renderCache = null,
+    sortContext = null
+}) {
+    const monthKeyList = keys || renderCache?.keys ||
+        monthKeys(year, month, diasMes);
+    const baseSequence = timelineBaseSequence(
+        profile.name,
+        monthKeyList,
+        sortContext?.baseCache || renderCache?.baseSequenceByProfile,
+        renderCache
+    );
+    let html = `
+        <td class="namecol">
+            <button
+                class="timeline-profile-link"
+                type="button"
+                data-profile-name="${escapeHtml(profile.name)}"
+                title="Abrir perfil de ${escapeHtml(profile.name)}"
+            >
+                ${escapeHtml(profile.name)}
+            </button>
+        </td>
+        <td class="timeline-hhee timeline-hhee--day"></td>
+        <td class="timeline-hhee timeline-hhee--night"></td>
+    `;
+
+    for (let d = 1; d <= diasMes; d++) {
+        html += timelineBlankDayCell(profile, d, {
+            year,
+            month,
+            baseTurn: baseSequence[d - 1] || TURNO.LIBRE
+        });
+    }
+
+    return html;
+}
+
+function timelineSkeletonRowElement(profile, context) {
+    const workerId = timelineWorkerId(profile);
+    const innerHTML = timelineRowSkeletonInnerHTML(profile, context);
+
+    return timelineRowElement({
+        workerId,
+        profileName: profile.name,
+        innerHTML,
+        rowHash: `skeleton:${context.monthKey}:${workerId}`,
+        cacheKey: ""
+    });
 }
 
 function timelineRowElement({
@@ -2404,6 +3236,62 @@ function timelineExistingRow(container, workerId) {
     );
 }
 
+function resetTimelineRowToSkeleton(row, profile, context) {
+    if (!row || !profile) return false;
+
+    const workerId = timelineWorkerId(profile);
+
+    row.innerHTML = timelineRowSkeletonInnerHTML(profile, context);
+    row.dataset.workerId = workerId;
+    row.dataset.profileName = profile.name;
+    row.dataset.timelineRowHash = `skeleton:${context.monthKey}:${workerId}`;
+    row.dataset.timelineRowCacheKey = "";
+    return true;
+}
+
+function ensureTimelineSkeletonRows(container, context, options = {}) {
+    const tbody = timelineRowsTbody(container);
+
+    if (!tbody) return 0;
+
+    const reset = options.reset === true;
+    const existingByWorkerId = new Map(
+        Array.from(tbody.querySelectorAll("[data-timeline-row]"))
+            .map(row => [row.dataset.workerId || "", row])
+            .filter(([workerId]) => Boolean(workerId))
+    );
+    const fragment = document.createDocumentFragment();
+    let changed = 0;
+
+    context.orderedGroup.forEach(profile => {
+        const workerId = timelineWorkerId(profile);
+        const existing = existingByWorkerId.get(workerId);
+
+        if (existing) {
+            if (reset) {
+                changed += resetTimelineRowToSkeleton(
+                    existing,
+                    profile,
+                    context
+                )
+                    ? 1
+                    : 0;
+            }
+            fragment.appendChild(existing);
+            existingByWorkerId.delete(workerId);
+            return;
+        }
+
+        fragment.appendChild(timelineSkeletonRowElement(profile, context));
+        changed++;
+    });
+
+    existingByWorkerId.forEach(row => row.remove());
+    tbody.appendChild(fragment);
+    syncTimelineActiveProfile(container);
+    return changed;
+}
+
 function reconcileTimelineRows(container, allowedWorkerIds) {
     const allowed = new Set(allowedWorkerIds);
 
@@ -2426,7 +3314,7 @@ function timelineTableHeadHTML(context) {
     let html = `
         <tr>
             <th class="timeline-name-head">
-                ${timelineFilterHTML(groups, selectedKeys, baseGroup.key)}
+                ${timelineFilterHTML(groups, selectedKeys)}
             </th>
             <th class="timeline-hhee-head timeline-hhee--day" title="HHEE Diurnas">
                 <span class="timeline-hhee-label" aria-label="HHEE Diurnas">
@@ -2478,31 +3366,51 @@ function timelineShellHTML(context) {
 }
 
 function bindTimelineControls(container) {
-    container.querySelector("[data-timeline-filter-toggle]")
-        ?.addEventListener("click", event => {
-            event.stopPropagation();
-            setTimelineFilterOpen(
-                container,
-                !timelineFilterState.open
+    const select = container.querySelector("[data-timeline-filter-select]");
+
+    if (!select) return;
+
+    select.onchange = () => {
+        const key = select.value;
+
+        if (!key) return;
+
+        timelineFilterState.selectedKeys = new Set([key]);
+        timelineFilterState.open = false;
+
+        const groupProfiles = getProfiles()
+            .filter(profile =>
+                timelineGroupForProfile(profile).key === key
             );
-        });
-    container.querySelectorAll("[data-timeline-filter-key]")
-        .forEach(input => {
-            input.onchange = () => {
-                const key = input.dataset.timelineFilterKey;
+        const year = calendar.currentDate.getFullYear();
+        const month = calendar.currentDate.getMonth();
+        const diasMes = new Date(year, month + 1, 0).getDate();
+        const renderCache = createTimelineRenderCache(year, month, diasMes);
+        const sortContext =
+            timelineSortContext(year, month, diasMes, renderCache);
+        const firstProfile = orderTimelineProfiles(
+            groupProfiles,
+            getCurrentProfile(),
+            year,
+            month,
+            diasMes,
+            sortContext
+        )[0];
 
-                if (!key || input.disabled) return;
+        if (
+            firstProfile &&
+            firstProfile.name !== getCurrentProfile() &&
+            typeof window.selectProfileByName === "function"
+        ) {
+            window.selectProfileByName(firstProfile.name, {
+                openTurns: true,
+                scrollToTop: false
+            });
+            return;
+        }
 
-                if (input.checked) {
-                    timelineFilterState.selectedKeys.add(key);
-                } else {
-                    timelineFilterState.selectedKeys.delete(key);
-                }
-
-                timelineFilterState.open = true;
-                renderTimeline();
-            };
-        });
+        renderTimeline();
+    };
 }
 
 function ensureTimelineShell(div, context, targetMonthKey, options = {}) {
@@ -2537,6 +3445,9 @@ function ensureTimelineShell(div, context, targetMonthKey, options = {}) {
     }
 
     div.dataset.timelineMonthKey = targetMonthKey;
+    div.dataset.timelineViewSignature = context.viewSignature || "";
+    div.dataset.timelineFastSignature =
+        timelineFastSignature(context.year, context.month);
     div.dataset.timelineState = options.state || "ready";
     div.setAttribute("aria-busy", options.busy ? "true" : "false");
     bindTimelineControls(div);
@@ -2547,8 +3458,7 @@ function ensureTimelineShell(div, context, targetMonthKey, options = {}) {
 }
 
 function timelineStructureSignature(context, targetMonthKey = context.monthKey) {
-    return [
-        targetMonthKey,
+    return context.structureSignature || [
         context.diasMes,
         context.baseGroup.key,
         context.filtersSignature
@@ -2571,30 +3481,11 @@ function updateTimelineProgress(container, message = "") {
 }
 
 function updateTimelineLoadMoreButton(container, visibleCount, totalCount) {
-    const total = Number(totalCount) || 0;
-    const visible = Math.min(Number(visibleCount) || 0, total);
     let button = container?.querySelector("[data-timeline-load-more]");
 
     if (!container) return;
 
-    if (visible >= total) {
-        button?.remove();
-        return;
-    }
-
-    if (!button) {
-        button = document.createElement("button");
-        button.className = "timeline-load-more";
-        button.type = "button";
-        button.dataset.timelineLoadMore = "1";
-        container.appendChild(button);
-    }
-
-    button.disabled = false;
-    button.textContent = `Mostrar ${Math.min(
-        TIMELINE_PAGE_SIZE,
-        total - visible
-    )} trabajadores m\u00e1s`;
+    button?.remove();
 }
 
 function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
@@ -2602,34 +3493,11 @@ function activateTimelineHTML(div, html, targetMonthKey, options = {}) {
     div.dataset.timelineMonthKey = targetMonthKey;
     div.dataset.timelineState = options.state || "ready";
     div.setAttribute("aria-busy", options.busy ? "true" : "false");
-    div.querySelector("[data-timeline-filter-toggle]")
-        ?.addEventListener("click", event => {
-            event.stopPropagation();
-            setTimelineFilterOpen(
-                div,
-                !timelineFilterState.open
-            );
-        });
-    div.querySelectorAll("[data-timeline-filter-key]")
-        .forEach(input => {
-            input.onchange = () => {
-                const key = input.dataset.timelineFilterKey;
-
-                if (!key || input.disabled) return;
-
-                if (input.checked) {
-                    timelineFilterState.selectedKeys.add(key);
-                } else {
-                    timelineFilterState.selectedKeys.delete(key);
-                }
-
-                timelineFilterState.open = true;
-                renderTimeline();
-            };
-        });
+    bindTimelineControls(div);
     ensureTimelineCellDelegation(div);
     syncTimelineStickyOffsets(div);
     requestAnimationFrame(() => syncTimelineStickyOffsets(div));
+    syncTimelineActiveProfile(div);
     if (Number.isFinite(Number(options.revealRowIndex))) {
         revealTimelineRow(div, Number(options.revealRowIndex));
     }
@@ -2664,7 +3532,6 @@ function buildTimelineContext(year, month) {
         ensureTimelineFilter(perfilActual, groups);
     const grupo = profiles
         .filter(profile =>
-            profile.name === actual ||
             selectedKeys.has(timelineGroupForProfile(profile).key)
         );
 
@@ -2681,8 +3548,10 @@ function buildTimelineContext(year, month) {
 
     const diasMes =
         new Date(year, month + 1, 0).getDate();
+    const renderCache =
+        createTimelineRenderCache(year, month, diasMes);
     const sortContext =
-        timelineSortContext(actual, year, month, diasMes);
+        timelineSortContext(year, month, diasMes, renderCache);
     const orderedGroup =
         orderTimelineProfiles(
             grupo,
@@ -2693,10 +3562,23 @@ function buildTimelineContext(year, month) {
             sortContext
         );
     const filtersSignature = timelineFiltersSignature(selectedKeys);
+    const structureSignature = [
+        diasMes,
+        baseGroup.key,
+        filtersSignature,
+        orderedGroup
+            .map(profile =>
+                timelineProfileStructuralSignature(
+                    profile,
+                    renderCache
+                )
+            )
+            .join("\u001f")
+    ].join("\u001e");
     const viewSignature = [
-        actual,
         year,
         month,
+        structureSignature,
         filtersSignature,
         orderedGroup.map(profile => profile.name).join("\u001f")
     ].join("\u001e");
@@ -2717,8 +3599,10 @@ function buildTimelineContext(year, month) {
         selectedKeys,
         filtersSignature,
         diasMes,
+        renderCache,
         sortContext,
         orderedGroup,
+        structureSignature,
         viewSignature,
         monthKey: timelineMonthKey(year, month),
         workspaceId: timelineWorkspaceId()
@@ -2769,10 +3653,10 @@ function timelineProfilesMissingMetrics(profiles, context) {
 function buildFreshTimelineRow(profile, context, holidays, options = {}) {
     const sortContext = context.sortContext ||
         timelineSortContext(
-            context.actual,
             context.year,
             context.month,
-            context.diasMes
+            context.diasMes,
+            context.renderCache || null
         );
     const cacheInfo = timelineRowCacheInfo(profile, context);
     const metricsCacheKey =
@@ -2785,13 +3669,12 @@ function buildFreshTimelineRow(profile, context, holidays, options = {}) {
         diasMes: context.diasMes,
         holidays,
         keys: sortContext.keys,
-        nightKeys: sortContext.nightKeys,
-        freeKeys: sortContext.freeKeys,
         sortContext,
         workerId: cacheInfo.workerId,
         monthKey: context.monthKey,
         metricsCacheKey,
-        forceFreshMetrics: options.forceFreshMetrics === true
+        forceFreshMetrics: options.forceFreshMetrics === true,
+        renderCache: context.renderCache || null
     });
 
     rowData.workerId = cacheInfo.workerId;
@@ -2862,7 +3745,8 @@ async function refreshTimelineRowsInBackground({
         year: context.year,
         month: context.month,
         diasMes: context.diasMes,
-        holidays
+        holidays,
+        renderCache: context.renderCache || null
     };
 
     for (const profile of profiles) {
@@ -2897,6 +3781,7 @@ async function refreshTimelineRowsInBackground({
         );
 
         updateTimelineRow(existing, cachedRow, renderContext);
+        syncTimelineActiveProfile(container);
         await waitTimelineIdle(180);
     }
 }
@@ -2961,7 +3846,8 @@ async function refreshTimelineMetricsInBackground({
         year: context.year,
         month: context.month,
         diasMes: context.diasMes,
-        holidays
+        holidays,
+        renderCache: context.renderCache || null
     };
 
     updateTimelineProgress(
@@ -3023,6 +3909,7 @@ async function refreshTimelineMetricsInBackground({
             );
 
             updateTimelineRow(existing, cachedRow, renderContext);
+            syncTimelineActiveProfile(container);
             await waitTimelineBackgroundIdle(1800);
         }
     } finally {
@@ -3050,7 +3937,8 @@ async function buildTimelineBatchRows({
         year: context.year,
         month: context.month,
         diasMes: context.diasMes,
-        holidays
+        holidays,
+        renderCache: context.renderCache || null
     };
     const rows = [];
     const cachedProfiles = [];
@@ -3171,6 +4059,7 @@ function appendTimelineRowElements(container, rows) {
             });
 
             tbody.appendChild(fragment);
+            syncTimelineActiveProfile(container);
             return appended;
         },
         {
@@ -3309,7 +4198,8 @@ async function refreshVisibleTimelineRows(profileNames = new Set()) {
         year,
         month,
         diasMes: context.diasMes,
-        holidays
+        holidays,
+        renderCache: context.renderCache || null
     };
 
     for (const profile of visibleProfiles) {
@@ -3338,6 +4228,7 @@ async function refreshVisibleTimelineRows(profileNames = new Set()) {
         );
 
         updateTimelineRow(existing, cachedRow, renderContext);
+        syncTimelineActiveProfile(container);
         await waitTimelineIdle(120);
     }
 
@@ -3355,6 +4246,239 @@ async function refreshVisibleTimelineRows(profileNames = new Set()) {
     }
 
     return true;
+}
+
+async function renderTimelineRowsIncrementally({
+    container,
+    context,
+    holidays,
+    requestId,
+    visibleGroup,
+    targetMonthKey,
+    cacheKey,
+    options = {},
+    year,
+    month
+}) {
+    await waitTimelineIdle(350);
+
+    for (let index = 0; index < visibleGroup.length;) {
+        await pauseTimelineIfHidden(container);
+
+        if (
+            !timelineRenderIsCurrent(requestId, year, month) ||
+            !["turnos", "timeline"].includes(document.body.dataset.activeView)
+        ) {
+            return;
+        }
+
+        const batchSize = TIMELINE_VISIBLE_BATCH_SIZE;
+        const batchProfiles = visibleGroup.slice(
+            index,
+            Math.min(index + batchSize, visibleGroup.length)
+        );
+        const rows = await buildTimelineBatchRows({
+            profiles: batchProfiles,
+            context,
+            holidays,
+            requestId,
+            skipCache: options.skipCache
+        });
+
+        if (!rows) return;
+
+        appendTimelineRowElements(container, rows);
+        updateTimelineLoadMoreButton(
+            container,
+            Math.min(index + batchSize, visibleGroup.length),
+            context.orderedGroup.length
+        );
+        syncTimelineStickyOffsets(container);
+        const indexedRowCount =
+            container.querySelectorAll("[data-timeline-row]").length;
+
+        if (
+            indexedRowCount === 1 ||
+            indexedRowCount % TIMELINE_MONTH_INDEX_WRITE_EVERY === 0
+        ) {
+            writeTimelineMonthIndexFromDOM(container, context, {
+                fastSignature: timelineFastSignature(year, month),
+                complete: indexedRowCount >= context.orderedGroup.length
+            });
+        }
+        await waitTimelineIdle(260);
+        index += batchSize;
+    }
+
+    if (!timelineRenderIsCurrent(requestId, year, month)) {
+        return;
+    }
+
+    updateTimelineProgress(container, "");
+    container.dataset.timelineViewSignature = context.viewSignature;
+    container.dataset.timelineFastSignature =
+        timelineFastSignature(year, month);
+    container.dataset.timelineState = "ready";
+    container.setAttribute("aria-busy", "false");
+    updateTimelineLoadMoreButton(
+        container,
+        visibleGroup.length,
+        context.orderedGroup.length
+    );
+
+    syncTimelineActiveProfile(container, "");
+    const neutralTimelineHTML = container.innerHTML;
+    const fastSignature = timelineFastSignature(year, month);
+
+    writeTimelineCache(cacheKey, {
+        viewSignature: context.viewSignature,
+        rowLimit: timelineRowLimit,
+        monthKey: targetMonthKey,
+        html: neutralTimelineHTML
+    });
+    writeTimelineMonthIndexFromDOM(container, context, {
+        fastSignature,
+        complete: true
+    });
+    const fastViewSignature =
+        timelineFastCacheViewSignature(fastSignature);
+    const fastCacheKey = timelineFastCacheKey(fastSignature);
+
+    if (fastCacheKey && fastViewSignature) {
+        writeTimelineCache(fastCacheKey, {
+            viewSignature: fastViewSignature,
+            rowLimit: -1,
+            monthKey: targetMonthKey,
+            html: neutralTimelineHTML
+        });
+    }
+    syncTimelineActiveProfile(container);
+
+    const profilesMissingMetrics =
+        timelineProfilesMissingMetrics(visibleGroup, context);
+
+    if (profilesMissingMetrics.length) {
+        void refreshTimelineMetricsInBackground({
+            profiles: profilesMissingMetrics,
+            context,
+            holidays,
+            requestId
+        });
+    }
+
+    if (Number.isFinite(Number(options.revealRowIndex))) {
+        revealTimelineRow(container, Number(options.revealRowIndex));
+    }
+}
+
+async function hydrateTimelineCachedView({
+    container,
+    requestId,
+    year,
+    month,
+    targetMonthKey,
+    options = {}
+}) {
+    await waitTimelineIdle(900);
+
+    if (
+        !container ||
+        !timelineRenderIsCurrent(requestId, year, month) ||
+        !["turnos", "timeline"].includes(document.body.dataset.activeView)
+    ) {
+        return;
+    }
+
+    const context = buildTimelineContext(year, month);
+
+    if (context.empty) return;
+
+    timelinePageSignature = context.viewSignature;
+    timelineRowLimit = context.orderedGroup.length;
+
+    const holidays = await fetchHolidays(year);
+
+    if (!timelineRenderIsCurrent(requestId, year, month)) {
+        return;
+    }
+
+    timelineViewState = {
+        year,
+        month,
+        diasMes: context.diasMes,
+        holidays,
+        renderCache: context.renderCache || null
+    };
+
+    ensureTimelineShell(container, context, targetMonthKey, {
+        state: "cached",
+        busy: false
+    });
+
+    const visibleWorkerIds = context.orderedGroup.map(timelineWorkerId);
+
+    reconcileTimelineRows(container, visibleWorkerIds);
+
+    const existingWorkerIds = new Set(
+        Array.from(container.querySelectorAll("[data-timeline-row]"))
+            .map(row => row.dataset.workerId || "")
+            .filter(Boolean)
+    );
+    const missingProfiles = context.orderedGroup.filter(profile =>
+        !existingWorkerIds.has(timelineWorkerId(profile))
+    );
+
+    if (missingProfiles.length) {
+        updateTimelineProgress(
+            container,
+            "Completando timeline desde cach\u00e9..."
+        );
+
+        await renderTimelineRowsIncrementally({
+            container,
+            context,
+            holidays,
+            requestId,
+            visibleGroup: missingProfiles,
+            targetMonthKey,
+            cacheKey: timelineCacheKey(
+                context.viewSignature,
+                timelineRowLimit
+            ),
+            options: {
+                ...options,
+                skipCache: false
+            },
+            year,
+            month
+        });
+        return;
+    }
+
+    updateTimelineProgress(container, "");
+    container.dataset.timelineViewSignature = context.viewSignature;
+    container.dataset.timelineFastSignature =
+        timelineFastSignature(year, month);
+    container.dataset.timelineState = "ready";
+    container.setAttribute("aria-busy", "false");
+    syncTimelineActiveProfile(container);
+    syncTimelineStickyOffsets(container);
+    writeTimelineMonthIndexFromDOM(container, context, {
+        fastSignature: timelineFastSignature(year, month),
+        complete: true
+    });
+
+    const profilesMissingMetrics =
+        timelineProfilesMissingMetrics(context.orderedGroup, context);
+
+    if (profilesMissingMetrics.length) {
+        void refreshTimelineMetricsInBackground({
+            profiles: profilesMissingMetrics,
+            context,
+            holidays,
+            requestId
+        });
+    }
 }
 
 function renderTimelineEmpty(div, message, targetMonthKey) {
@@ -3378,6 +4502,9 @@ async function renderTimelineImpl(options = {}){
     const year = calendar.currentDate.getFullYear();
     const month = calendar.currentDate.getMonth();
     const targetMonthKey = timelineMonthKey(year, month);
+    const previousMonthKey = div.dataset.timelineMonthKey || "";
+    const monthChanged =
+        Boolean(previousMonthKey) && previousMonthKey !== targetMonthKey;
 
     if (TIMELINE_DISABLED_FOR_SPEED_TEST) {
         renderTimelineDisabledState(div, year, month);
@@ -3391,6 +4518,100 @@ async function renderTimelineImpl(options = {}){
         showTimelinePendingMonth(year, month);
     }
 
+    syncTimelineFilterToCurrentProfile();
+    const fastSignature = timelineFastSignature(year, month);
+
+    if (
+        !options.skipCache &&
+        !options.forceRefresh &&
+        fastSignature &&
+        div.dataset.timelineFastSignature === fastSignature &&
+        div.dataset.timelineMonthKey === targetMonthKey &&
+            div.dataset.timelineState === "ready"
+    ) {
+        div.setAttribute("aria-busy", "false");
+        syncTimelineActiveProfile(div);
+        return;
+    }
+
+    const fastCacheViewSignature =
+        timelineFastCacheViewSignature(fastSignature);
+    const fastCacheKey = timelineFastCacheKey(fastSignature);
+    const fastCached =
+        !options.skipCache &&
+        !options.forceRefresh &&
+        false &&
+        fastCacheKey
+            ? readTimelineCache(fastCacheKey, {
+                viewSignature: fastCacheViewSignature,
+                rowLimit: -1,
+                monthKey: targetMonthKey
+            })
+            : null;
+
+    if (fastCached) {
+        activateTimelineHTML(div, fastCached.html, targetMonthKey, {
+            ...options,
+            state: "cached",
+            busy: false
+        });
+        div.dataset.timelineFastSignature = fastSignature;
+        div.dataset.timelineState = "ready";
+        div.setAttribute("aria-busy", "false");
+        updateTimelineProgress(div, "");
+        syncTimelineActiveProfile(div);
+        return;
+    }
+
+    const monthIndexCacheKey = timelineMonthIndexCacheKey({
+        monthKey: targetMonthKey,
+        fastSignature
+    });
+    const monthIndexCached =
+        !options.skipCache &&
+        !options.forceRefresh &&
+        monthIndexCacheKey
+            ? readTimelineMonthIndex(monthIndexCacheKey, {
+                monthKey: targetMonthKey,
+                fastSignature
+            })
+            : null;
+    const monthIndexHTML = monthIndexCached
+        ? timelineHTMLFromMonthIndex(monthIndexCached)
+        : "";
+
+    if (monthIndexHTML) {
+        activateTimelineHTML(div, monthIndexHTML, targetMonthKey, {
+            ...options,
+            state: "cached",
+            busy: false
+        });
+        div.dataset.timelineStructureSignature =
+            monthIndexCached.structureSignature || "";
+        div.dataset.timelineViewSignature =
+            monthIndexCached.viewSignature || "";
+        div.dataset.timelineFastSignature = fastSignature;
+        div.dataset.timelineState =
+            monthIndexCached.complete ? "ready" : "cached";
+        div.setAttribute("aria-busy", "false");
+        updateTimelineProgress(
+            div,
+            monthIndexCached.complete
+                ? ""
+                : "Completando timeline en segundo plano..."
+        );
+        syncTimelineActiveProfile(div);
+        void hydrateTimelineCachedView({
+            container: div,
+            requestId,
+            year,
+            month,
+            targetMonthKey,
+            options
+        });
+        return;
+    }
+
     const context = buildTimelineContext(year, month);
 
     if (context.empty) {
@@ -3398,13 +4619,42 @@ async function renderTimelineImpl(options = {}){
         return;
     }
 
-    if (context.viewSignature !== timelinePageSignature) {
-        timelinePageSignature = context.viewSignature;
-        timelineRowLimit = Math.min(
-            TIMELINE_FOREGROUND_INITIAL_LIMIT,
-            context.orderedGroup.length || TIMELINE_FOREGROUND_INITIAL_LIMIT
-        );
+    if (
+        !options.skipCache &&
+        !options.forceRefresh &&
+        div.dataset.timelineViewSignature === context.viewSignature &&
+        div.dataset.timelineMonthKey === targetMonthKey &&
+        div.dataset.timelineState === "ready" &&
+        div.querySelectorAll("[data-timeline-row]").length >=
+            context.orderedGroup.length
+    ) {
+        div.setAttribute("aria-busy", "false");
+        syncTimelineActiveProfile(div);
+        if (
+            timelineViewState?.year === year &&
+            timelineViewState?.month === month &&
+            timelineViewState?.holidays
+        ) {
+            const profilesMissingMetrics =
+                timelineProfilesMissingMetrics(
+                    context.orderedGroup,
+                    context
+                );
+
+            if (profilesMissingMetrics.length) {
+                void refreshTimelineMetricsInBackground({
+                    profiles: profilesMissingMetrics,
+                    context,
+                    holidays: timelineViewState.holidays,
+                    requestId
+                });
+            }
+        }
+        return;
     }
+
+    timelinePageSignature = context.viewSignature;
+    timelineRowLimit = context.orderedGroup.length;
 
     const cacheKey = timelineCacheKey(
         context.viewSignature,
@@ -3426,17 +4676,21 @@ async function renderTimelineImpl(options = {}){
         });
         div.dataset.timelineStructureSignature =
             timelineStructureSignature(context, targetMonthKey);
+        div.dataset.timelineViewSignature = context.viewSignature;
+        div.dataset.timelineFastSignature =
+            timelineFastSignature(year, month);
     }
 
     const holidays = await fetchHolidays(year);
-    const visibleGroup = context.orderedGroup.slice(0, timelineRowLimit);
+    const visibleGroup = context.orderedGroup;
     const visibleWorkerIds = visibleGroup.map(timelineWorkerId);
 
     timelineViewState = {
         year,
         month,
         diasMes: context.diasMes,
-        holidays
+        holidays,
+        renderCache: context.renderCache || null
     };
 
     if (
@@ -3448,9 +4702,65 @@ async function renderTimelineImpl(options = {}){
         return;
     }
 
+    if (cached) {
+        updateTimelineProgress(div, "");
+        updateTimelineLoadMoreButton(
+            div,
+            visibleGroup.length,
+            context.orderedGroup.length
+        );
+        div.dataset.timelineViewSignature = context.viewSignature;
+        div.dataset.timelineFastSignature =
+            timelineFastSignature(year, month);
+        div.dataset.timelineState = "ready";
+        div.setAttribute("aria-busy", "false");
+        syncTimelineActiveProfile(div);
+        syncTimelineStickyOffsets(div);
+        requestAnimationFrame(() => syncTimelineStickyOffsets(div));
+
+        const rowRefreshDelay = timelineInteractiveDelay();
+        const refreshRows = () => refreshTimelineRowsInBackground({
+            profiles: visibleGroup,
+            context,
+            holidays,
+            requestId
+        });
+
+        if (rowRefreshDelay > 0) {
+            setTimeout(() => {
+                if (timelineRenderIsCurrent(requestId, year, month)) {
+                    void refreshRows();
+                }
+            }, rowRefreshDelay);
+        } else {
+            void refreshRows();
+        }
+
+        const profilesMissingMetrics =
+            timelineProfilesMissingMetrics(visibleGroup, context);
+
+        if (profilesMissingMetrics.length) {
+            void refreshTimelineMetricsInBackground({
+                profiles: profilesMissingMetrics,
+                context,
+                holidays,
+                requestId
+            });
+        }
+
+        if (Number.isFinite(Number(options.revealRowIndex))) {
+            revealTimelineRow(div, Number(options.revealRowIndex));
+        }
+
+        return;
+    }
+
     ensureTimelineShell(div, context, targetMonthKey, {
         state: cached ? "cached" : "ready",
         busy: true
+    });
+    ensureTimelineSkeletonRows(div, context, {
+        reset: monthChanged
     });
     reconcileTimelineRows(div, visibleWorkerIds);
     updateTimelineLoadMoreButton(
@@ -3468,82 +4778,20 @@ async function renderTimelineImpl(options = {}){
             : "Cargando trabajadores..."
     );
 
-    for (let index = 0; index < visibleGroup.length;) {
-        await pauseTimelineIfHidden(div);
-
-        if (!timelineRenderIsCurrent(requestId, year, month)) {
-            return;
-        }
-
-        const batchSize = index === 0
-            ? TIMELINE_INITIAL_BATCH_SIZE
-            : TIMELINE_INCREMENTAL_BATCH_SIZE;
-        const batchProfiles = visibleGroup.slice(
-            index,
-            Math.min(
-                index + batchSize,
-                visibleGroup.length
-            )
-        );
-        const rows = await buildTimelineBatchRows({
-            profiles: batchProfiles,
-            context,
-            holidays,
-            requestId,
-            skipCache: options.skipCache
-        });
-
-        if (!rows) return;
-
-        appendTimelineRowElements(div, rows);
-        updateTimelineLoadMoreButton(
-            div,
-            Math.min(
-                index + batchSize,
-                visibleGroup.length
-            ),
-            context.orderedGroup.length
-        );
-        syncTimelineStickyOffsets(div);
-        await waitTimelineIdle(index === 0 ? 60 : 180);
-        index += batchSize;
-    }
-
-    if (!timelineRenderIsCurrent(requestId, year, month)) {
-        return;
-    }
-
-    updateTimelineProgress(div, "");
-    div.dataset.timelineState = "ready";
+    div.dataset.timelineState = "loading";
     div.setAttribute("aria-busy", "false");
-    updateTimelineLoadMoreButton(
-        div,
-        visibleGroup.length,
-        context.orderedGroup.length
-    );
-
-    writeTimelineCache(cacheKey, {
-        viewSignature: context.viewSignature,
-        rowLimit: timelineRowLimit,
-        monthKey: targetMonthKey,
-        html: div.innerHTML
+    void renderTimelineRowsIncrementally({
+        container: div,
+        context,
+        holidays,
+        requestId,
+        visibleGroup,
+        targetMonthKey,
+        cacheKey,
+        options,
+        year,
+        month
     });
-
-    const profilesMissingMetrics =
-        timelineProfilesMissingMetrics(visibleGroup, context);
-
-    if (profilesMissingMetrics.length) {
-        void refreshTimelineMetricsInBackground({
-            profiles: profilesMissingMetrics,
-            context,
-            holidays,
-            requestId
-        });
-    }
-
-    if (Number.isFinite(Number(options.revealRowIndex))) {
-        revealTimelineRow(div, Number(options.revealRowIndex));
-    }
 }
 
 export async function renderTimeline(options = {}) {
