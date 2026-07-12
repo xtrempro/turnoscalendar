@@ -81,7 +81,9 @@ test("Perfil pagina la lista y Timeline renderiza la profesion completa", async 
 
     assert.match(mainSource, /PROFILE_LIST_PAGE_SIZE\s*=\s*30/);
     assert.match(mainSource, /visibles\.slice\(0, profileListLimit\)/);
-    assert.match(timelineSource, /timelineRowLimit = context\.orderedGroup\.length/);
-    assert.match(timelineSource, /const visibleGroup = context\.orderedGroup;/);
-    assert.doesNotMatch(timelineSource, /orderedGroup\.slice\(0, timelineRowLimit\)/);
+    // El timeline pagina por viewport: primera pagina + carga por scroll
+    // (armTimelineLazyLoad), en vez de renderizar las ~32 filas de golpe.
+    assert.match(timelineSource, /visibleGroup = context\.orderedGroup\.slice\(0, timelineRowLimit\)/);
+    assert.match(timelineSource, /armTimelineLazyLoad\(container\)/);
+    assert.doesNotMatch(timelineSource, /const visibleGroup = context\.orderedGroup;/);
 });
