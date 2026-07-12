@@ -40,15 +40,52 @@ function cloneFallback(fallback) {
     return fallback;
 }
 
+// Caché de parseo. getJSON re-parseaba las MISMAS cadenas de localStorage
+// millones de veces en el loop de render (datos de perfil, mapas de permisos por
+// dia/perfil): JSON.parse era ~39% del CPU. Cacheamos `cadena cruda -> valor
+// parseado` y devolvemos una COPIA SUPERFICIAL, que:
+//  - evita el parse (copiar referencias es mucho mas barato que parsear),
+//  - hace seguras las mutaciones de primer nivel (`data[k]=v; setJSON(k,data)`),
+//    porque el clon no comparte el objeto raiz con la cache.
+// El unico riesgo residual es mutar objetos ANIDADOS in-place (poco comun).
+const PARSE_CACHE = new Map();
+const PARSE_CACHE_LIMIT = 6000;
+
+function shallowCloneParsed(value) {
+    if (Array.isArray(value)) return value.slice();
+    if (value && typeof value === "object") return { ...value };
+    return value;
+}
+
 function parseJSON(raw, fallback) {
     if (raw === null || raw === undefined) {
         return cloneFallback(fallback);
     }
 
+    if (typeof raw === "string") {
+        const cached = PARSE_CACHE.get(raw);
+
+        if (cached !== undefined) {
+            return shallowCloneParsed(cached);
+        }
+    }
+
     try {
         const parsed = JSON.parse(raw);
 
-        return parsed ?? cloneFallback(fallback);
+        if (parsed == null) {
+            return cloneFallback(fallback);
+        }
+
+        if (typeof raw === "string") {
+            if (PARSE_CACHE.size >= PARSE_CACHE_LIMIT) {
+                PARSE_CACHE.clear();
+            }
+
+            PARSE_CACHE.set(raw, parsed);
+        }
+
+        return shallowCloneParsed(parsed);
     } catch {
         return cloneFallback(fallback);
     }

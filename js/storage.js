@@ -650,10 +650,22 @@ function moveStorageKey(oldKey, newKey){
     moveKey(oldKey, newKey);
 }
 
-export function getProfiles(){
-    const raw = getJSON("profiles", []);
+// Memoizacion de getProfiles: el `.map` normaliza id/estamento/profesion de los
+// ~68 perfiles y se llamaba miles de veces por render (era ~41% del CPU). Se
+// cachea por la CADENA CRUDA de "profiles" (cambia al guardar). Se devuelve una
+// copia superficial del array, asi las mutaciones de primer nivel (push, splice,
+// reasignar un perfil) no tocan la cache; el patron editar+guardar reescribe la
+// clave y regenera la cache.
+let PROFILES_CACHE = { raw: null, value: null };
 
-    return raw.map(profile => {
+export function getProfiles(){
+    const raw = getRaw("profiles", "");
+
+    if (raw && raw === PROFILES_CACHE.raw && PROFILES_CACHE.value) {
+        return PROFILES_CACHE.value.slice();
+    }
+
+    const value = getJSON("profiles", []).map(profile => {
         if (typeof profile === "string") {
             return {
                 id: createProfileId({ name: profile }),
@@ -676,6 +688,12 @@ export function getProfiles(){
             )
         };
     });
+
+    if (raw) {
+        PROFILES_CACHE = { raw, value };
+    }
+
+    return value.slice();
 }
 
 export function isProfileActive(profileOrName){
