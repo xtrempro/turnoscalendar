@@ -87,6 +87,41 @@ test("valida ausencias y ordena candidatos fuera del hilo principal", () => {
     );
 });
 
+test("ordena sugerencias preparadas por prioridad de libre antes que por HHEE", () => {
+    const replacements = searchReplacements({
+        mode: "turnoplus-prepared",
+        candidates: [
+            {
+                profile: { name: "Primer Libre Bajo HHEE" },
+                isFree: true,
+                replacementPriority: 5,
+                hhee: 0
+            },
+            {
+                profile: { name: "Segundo Libre Alto HHEE" },
+                isFree: true,
+                replacementPriority: 0,
+                hhee: 20
+            },
+            {
+                profile: { name: "Libre Sin Prioridad" },
+                isFree: true,
+                replacementPriority: 20,
+                hhee: 0
+            }
+        ]
+    });
+
+    assert.deepEqual(
+        replacements.candidates.map(item => item.profile.name),
+        [
+            "Segundo Libre Alto HHEE",
+            "Primer Libre Bajo HHEE",
+            "Libre Sin Prioridad"
+        ]
+    );
+});
+
 test("el worker permanece puro y las rutas pesadas lo consumen", async () => {
     const [workerSource, serviceSource, interUnitSource, rotationSource] =
         await Promise.all([

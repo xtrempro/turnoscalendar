@@ -3124,6 +3124,131 @@ function getActualState(profileName, keyDay) {
     );
 }
 
+function offsetCalendarKey(keyDay, offset) {
+    const parts = String(keyDay || "")
+        .split("-")
+        .map(Number);
+
+    if (parts.length !== 3 || parts.some(Number.isNaN)) return "";
+
+    const date = new Date(parts[0], parts[1], parts[2] + offset);
+
+    return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function replacementTurnIncludesDaytimeStart(turn) {
+    const value = Number(turn) || TURNO.LIBRE;
+
+    return (
+        value === TURNO.LARGA ||
+        value === TURNO.TURNO24 ||
+        value === TURNO.DIURNO ||
+        value === TURNO.DIURNO_NOCHE ||
+        value === TURNO.MEDIA_MANANA ||
+        value === TURNO.MEDIA_TARDE
+    );
+}
+
+function replacementTurnIncludesNight(turn) {
+    const value = Number(turn) || TURNO.LIBRE;
+
+    return (
+        value === TURNO.NOCHE ||
+        value === TURNO.TURNO24 ||
+        value === TURNO.DIURNO_NOCHE ||
+        value === TURNO.TURNO18
+    );
+}
+
+function candidateFreePositionKind(positionLabel = "") {
+    const normalized = String(positionLabel || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+
+    if (normalized.includes("segundo libre")) return "segundo-libre";
+    if (normalized.includes("primer libre")) return "primer-libre";
+
+    return "";
+}
+
+function preferredFreePositionKind(neededTurn) {
+    if (
+        replacementTurnIncludesNight(neededTurn) &&
+        !replacementTurnIncludesDaytimeStart(neededTurn)
+    ) {
+        return "primer-libre";
+    }
+
+    if (replacementTurnIncludesDaytimeStart(neededTurn)) {
+        return "segundo-libre";
+    }
+
+    return "";
+}
+
+function replacementPriorityForCandidate(candidate, neededTurn) {
+    const preferred = preferredFreePositionKind(neededTurn);
+    const kind = candidateFreePositionKind(candidate.positionLabel);
+
+    if (!preferred || !kind) return 20;
+
+    if (kind === preferred) return 0;
+
+    if (
+        kind === "primer-libre" ||
+        kind === "segundo-libre"
+    ) {
+        return 5;
+    }
+
+    return 20;
+}
+
+function replacementCreatesInvertedTwentyFour(
+    profileName,
+    keyDay,
+    currentState,
+    neededTurn,
+    config = getTurnChangeConfig()
+) {
+    if (
+        !profileName ||
+        !keyDay ||
+        config.allowInvertedTwentyFourHourShifts !== false
+    ) {
+        return false;
+    }
+
+    const projected = fusionarTurnos(
+        currentState,
+        neededTurn
+    );
+    // Importante: se consulta el estado real/proyectado del dia siguiente,
+    // no solo la rotativa base. Si el supervisor ya movio la Larga del dia
+    // siguiente, getActualState devolvera Libre y el Segundo libre podra cubrir
+    // Noche sin generar 24 invertido.
+    const previous = getActualState(
+        profileName,
+        offsetCalendarKey(keyDay, -1)
+    );
+    const next = getActualState(
+        profileName,
+        offsetCalendarKey(keyDay, 1)
+    );
+
+    return (
+        (
+            replacementTurnIncludesDaytimeStart(projected) &&
+            replacementTurnIncludesNight(previous)
+        ) ||
+        (
+            replacementTurnIncludesNight(projected) &&
+            replacementTurnIncludesDaytimeStart(next)
+        )
+    );
+}
+
 // Etiqueta de posicion del candidato dentro del bloque consecutivo del mismo
 // turno (p.ej. "Primer libre", "Segunda larga"). Cuenta hacia atras cuantos dias
 // seguidos tiene el mismo estado que el dia objetivo. Solo aplica a rotativas de
@@ -3431,6 +3556,11 @@ async function getReplacementCandidates(
             const profile = scopeProfiles[index];
             const currentState =
                 getActualState(profile.name, keyDay);
+            const positionLabel = candidatePositionLabel(
+                profile.name,
+                keyDay,
+                currentState
+            );
             const isDiurnoLongCoverage =
                 isDiurnoLongCoverageCandidate(
                     profile,
@@ -3466,10 +3596,10 @@ async function getReplacementCandidates(
                 profile,
                 currentState,
                 isFree: currentState === 0,
-                positionLabel: candidatePositionLabel(
-                    profile.name,
-                    keyDay,
-                    currentState
+                positionLabel,
+                replacementPriority: replacementPriorityForCandidate(
+                    { positionLabel },
+                    neededTurn
                 ),
                 isDiurnoLongCoverage,
                 overtimeHours,
@@ -3490,6 +3620,13 @@ async function getReplacementCandidates(
 
     const eligible = candidates.filter(candidate =>
             !workerHasAbsence(candidate.profile.name, keyDay) &&
+            !replacementCreatesInvertedTwentyFour(
+                candidate.profile.name,
+                keyDay,
+                candidate.currentState,
+                neededTurn,
+                getTurnChangeConfig()
+            ) &&
             !cededSwapTurnBlocks(
                 candidate.profile.name,
                 keyDay,
@@ -3595,7 +3732,7 @@ function replacementDialogHTML({
                         <strong>${escapeHTML(candidate.profile.name)}</strong>
                         <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
                         ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
-                        <small>${escapeHTML(candidateStateLabel(candidate, pendingRequest))}</small>
+                        <small class="replacement-candidate-state">${escapeHTML(candidateStateLabel(candidate, pendingRequest))}</small>
                         ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                     </span>
                     <span>
@@ -3638,7 +3775,7 @@ function replacementDialogHTML({
                     <strong>${escapeHTML(candidate.profile.name)}</strong>
                     <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
                     ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
-                    <small>${escapeHTML(candidateStateLabel(candidate, pendingRequest))}</small>
+                    <small class="replacement-candidate-state">${escapeHTML(candidateStateLabel(candidate, pendingRequest))}</small>
                     ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                 </span>
                 <span>

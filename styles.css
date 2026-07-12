@@ -5817,6 +5817,11 @@ body.auth-gate-active .app-shell {
     color: var(--text-muted);
 }
 
+.replacement-candidate-state {
+    font-weight: 750;
+    color: var(--text) !important;
+}
+
 .replacement-candidate-warning {
     max-width: 54ch;
     color: #94a3b8 !important;

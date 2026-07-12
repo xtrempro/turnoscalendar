@@ -49,6 +49,7 @@ import { TURNO } from "./constants.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
     canSwapProfiles,
+    getSwapDateBlockReason,
     getEligibleSwapReceivers,
     registrarCambio
 } from "./swaps.js";
@@ -68,6 +69,13 @@ const FAKE_SWAP_RECEIVER = "__receiver___selftest__";
 const FAKE_SWAP_SAME_TURN = "__same_turn___selftest__";
 const FAKE_SWAP_ABSENT = "__absent___selftest__";
 const FAKE_SWAP_OTHER_ROLE = "__other_role___selftest__";
+const FAKE_SWAP_PROFILES = [
+    FAKE_PROFILE,
+    FAKE_SWAP_RECEIVER,
+    FAKE_SWAP_SAME_TURN,
+    FAKE_SWAP_ABSENT,
+    FAKE_SWAP_OTHER_ROLE
+];
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -86,7 +94,13 @@ function key(year, monthIndex, day) {
 // Limpia todas las claves del perfil ficticio para aislar cada prueba.
 function resetFakeProfile() {
     listKeys().forEach(storageKey => {
-        if (storageKey.endsWith(FAKE_PROFILE)) removeKey(storageKey);
+        if (
+            FAKE_SWAP_PROFILES.some(profile =>
+                storageKey.endsWith(profile)
+            )
+        ) {
+            removeKey(storageKey);
+        }
     });
 }
 
@@ -135,6 +149,11 @@ function setupSwapSelfTest() {
     });
 
     return { changeKey, returnKey };
+}
+
+function hasEligibleSwapReceiver(giver, keyDay, receiver) {
+    return getEligibleSwapReceivers(giver, keyDay)
+        .some(profile => profile.name === receiver);
 }
 
 const TESTS = [
@@ -482,6 +501,127 @@ const TESTS = [
                 receivers[0],
                 FAKE_SWAP_RECEIVER,
                 "se habilito un receptor con turno o ausencia incompatible"
+            );
+        }
+    },
+    {
+        name: "Cambio de turno: bloquea turno 24 si la unidad lo prohibe",
+        run() {
+            const { changeKey } = setupSwapSelfTest();
+
+            saveTurnChangeConfig({
+                allowSwaps: true,
+                allowDifferentTurnTypes: true,
+                allowTwentyFourHourShifts: false,
+                allowInvertedTwentyFourHourShifts: true,
+                limitMonthlySwaps: false
+            });
+            saveBaseProfileData({
+                [changeKey]: TURNO.LARGA
+            }, FAKE_PROFILE);
+            saveBaseProfileData({
+                [changeKey]: TURNO.NOCHE
+            }, FAKE_SWAP_RECEIVER);
+
+            const reason = getSwapDateBlockReason({
+                giver: FAKE_PROFILE,
+                receiver: FAKE_SWAP_RECEIVER,
+                keyDay: changeKey
+            });
+
+            assert(
+                reason.includes("turno 24") &&
+                    !reason.includes("24 invertido"),
+                "deberia bloquear el receptor que quedaria con 24 normal"
+            );
+            assert(
+                !hasEligibleSwapReceiver(
+                    FAKE_PROFILE,
+                    changeKey,
+                    FAKE_SWAP_RECEIVER
+                ),
+                "el receptor con 24 prohibido no deberia aparecer en el combobox"
+            );
+        }
+    },
+    {
+        name: "Cambio de turno: bloquea 24 invertido si la unidad lo prohibe",
+        run() {
+            const { changeKey } = setupSwapSelfTest();
+            const nextKey = key(2026, 5, 11);
+
+            saveTurnChangeConfig({
+                allowSwaps: true,
+                allowDifferentTurnTypes: true,
+                allowTwentyFourHourShifts: true,
+                allowInvertedTwentyFourHourShifts: false,
+                limitMonthlySwaps: false
+            });
+            saveBaseProfileData({
+                [changeKey]: TURNO.NOCHE
+            }, FAKE_PROFILE);
+            saveBaseProfileData({
+                [changeKey]: TURNO.LIBRE,
+                [nextKey]: TURNO.LARGA
+            }, FAKE_SWAP_RECEIVER);
+
+            const reason = getSwapDateBlockReason({
+                giver: FAKE_PROFILE,
+                receiver: FAKE_SWAP_RECEIVER,
+                keyDay: changeKey
+            });
+
+            assert(
+                reason.includes("24 invertido"),
+                "deberia bloquear al receptor que cubriria noche antes de larga"
+            );
+            assert(
+                !hasEligibleSwapReceiver(
+                    FAKE_PROFILE,
+                    changeKey,
+                    FAKE_SWAP_RECEIVER
+                ),
+                "el receptor con 24 invertido prohibido no deberia aparecer en el combobox"
+            );
+        }
+    },
+    {
+        name: "Cambio de turno: permite noche si el dia siguiente queda libre",
+        run() {
+            const { changeKey } = setupSwapSelfTest();
+            const nextKey = key(2026, 5, 11);
+
+            saveTurnChangeConfig({
+                allowSwaps: true,
+                allowDifferentTurnTypes: true,
+                allowTwentyFourHourShifts: true,
+                allowInvertedTwentyFourHourShifts: false,
+                limitMonthlySwaps: false
+            });
+            saveBaseProfileData({
+                [changeKey]: TURNO.NOCHE
+            }, FAKE_PROFILE);
+            saveBaseProfileData({
+                [changeKey]: TURNO.LIBRE,
+                [nextKey]: TURNO.LIBRE
+            }, FAKE_SWAP_RECEIVER);
+
+            assertEqual(
+                getSwapDateBlockReason({
+                    giver: FAKE_PROFILE,
+                    receiver: FAKE_SWAP_RECEIVER,
+                    keyDay: changeKey
+                }),
+                "",
+                "si el dia siguiente queda libre no deberia bloquearse como 24 invertido"
+            );
+            assert(
+                hasEligibleSwapReceiver(
+                    FAKE_PROFILE,
+                    changeKey,
+                    FAKE_SWAP_RECEIVER
+                ),
+                "el receptor deberia aparecer si ya no tiene larga al dia siguiente"
             );
         }
     },

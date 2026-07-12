@@ -288,6 +288,20 @@ export function searchReplacements(payload = {}) {
                 if (Boolean(left.isFree) !== Boolean(right.isFree)) {
                     return left.isFree ? -1 : 1;
                 }
+                const leftPriority = Number.isFinite(
+                    Number(left.replacementPriority)
+                )
+                    ? Number(left.replacementPriority)
+                    : 20;
+                const rightPriority = Number.isFinite(
+                    Number(right.replacementPriority)
+                )
+                    ? Number(right.replacementPriority)
+                    : 20;
+
+                if (leftPriority !== rightPriority) {
+                    return leftPriority - rightPriority;
+                }
                 if (Number(left.hhee) !== Number(right.hhee)) {
                     return (Number(left.hhee) || 0) -
                         (Number(right.hhee) || 0);
