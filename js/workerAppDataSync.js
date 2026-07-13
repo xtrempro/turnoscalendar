@@ -56,6 +56,7 @@ import {
 } from "./performanceMonitor.js";
 import {
     buildCalendarChangeEventFromStorageMutation,
+    flushCalendarChangeEvents,
     registerWorkerCalendarChange
 } from "./calendarChangeEvents.js";
 
@@ -1942,6 +1943,15 @@ function classifyChangedKey(key, profiles) {
     return { ignore: true };
 }
 
+function shouldDeferDirectEditCalendarEvent(metadata) {
+    return (
+        metadata?.source === "main_calendar_manual_edit" &&
+        typeof window !== "undefined" &&
+        typeof window.calendarDirectEditEnabled === "function" &&
+        window.calendarDirectEditEnabled()
+    );
+}
+
 function applyDirtyFromKeys(keys, changes = {}) {
     if (!activeWorkspace?.id || !workerLinks.length) return;
     if (!Array.isArray(keys) || !keys.length) return;
@@ -1956,6 +1966,7 @@ function applyDirtyFromKeys(keys, changes = {}) {
     });
 
     let relevant = false;
+    let shouldPublishNow = false;
 
     for (const key of keys) {
         const result = classifyChangedKey(key, profiles);
@@ -1979,6 +1990,11 @@ function applyDirtyFromKeys(keys, changes = {}) {
                 change: changes[key] || {}
             });
 
+            if (shouldDeferDirectEditCalendarEvent(metadata)) {
+                relevant = true;
+                continue;
+            }
+
             registerCalendarEventForLinkedProfile({
                 profile: item.profile,
                 link: item.link,
@@ -1986,10 +2002,11 @@ function applyDirtyFromKeys(keys, changes = {}) {
                 entityId: key
             });
             relevant = true;
+            shouldPublishNow = true;
         }
     }
 
-    if (!relevant) return;
+    if (!relevant || !shouldPublishNow) return;
 
     // La proyeccion ahora corre en servidor y este paso solo escribe un
     // marcador liviano. Para cambios de calendario no conviene esperar el
@@ -2207,6 +2224,10 @@ export function scheduleWorkerAppDataPublish(
         dirtyWorkers: dirtyWorkerUids.size
     });
     scheduleHotPublish(Math.min(delay, HOT_PUBLISH_DELAY_MS));
+
+    if (changeMetadata && Number(delay) <= 0) {
+        void flushCalendarChangeEvents();
+    }
 }
 
 export async function publishWorkerAppDataNow(profileTargets = []) {
@@ -2404,4 +2425,6 @@ if (typeof window !== "undefined") {
             detail.metadata || null
         );
     });
+
+    window.flushCalendarChangeEvents = flushCalendarChangeEvents;
 }

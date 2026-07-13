@@ -197,6 +197,7 @@ let calendarDirectEditRefreshTimer = 0;
 let calendarDirectEditRefreshRequest = 0;
 let calendarDirectEditHistoryTimer = 0;
 let calendarDirectEditHistoryOpen = false;
+const calendarDirectEditPendingChanges = new Map();
 let calendarCacheWriteTimer = 0;
 let calendarCacheWriteRequest = 0;
 let calendarDashboardRefreshTimer = 0;
@@ -1541,6 +1542,124 @@ function closeCalendarDirectEditHistory() {
     calendarDirectEditHistoryOpen = false;
 }
 
+function recordCalendarDirectEditChange({
+    profileName,
+    keyDay,
+    previousTurn,
+    nextTurn
+} = {}) {
+    if (
+        !profileName ||
+        !keyDay ||
+        Number(previousTurn) === Number(nextTurn)
+    ) {
+        return;
+    }
+
+    const profileChanges =
+        calendarDirectEditPendingChanges.get(profileName) || new Map();
+    const previous = profileChanges.get(keyDay);
+
+    profileChanges.set(keyDay, {
+        keyDay,
+        previousTurn:
+            previous?.previousTurn ?? (Number(previousTurn) || TURNO.LIBRE),
+        nextTurn: Number(nextTurn) || TURNO.LIBRE
+    });
+    calendarDirectEditPendingChanges.set(profileName, profileChanges);
+}
+
+function calendarDirectEditMessage(label, affectedDates = []) {
+    if (!affectedDates.length) return `${label}. Revisa tu calendario actualizado.`;
+
+    if (affectedDates.length === 1) {
+        const match = String(affectedDates[0] || "")
+            .match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const displayDate = match
+            ? `${match[3]}-${match[2]}-${match[1]}`
+            : affectedDates[0];
+
+        return `${label} para el ${displayDate}.`;
+    }
+
+    return `${label} en ${affectedDates.length} dias de tu calendario.`;
+}
+
+function consumeCalendarDirectEditPendingChanges() {
+    const batches = [...calendarDirectEditPendingChanges.entries()]
+        .map(([profileName, changes]) => {
+            const affectedKeys = [...changes.keys()].sort();
+            const affectedDates = affectedKeys
+                .map(keyDay => isoFromKeyDay(keyDay))
+                .filter(Boolean);
+            const bulk = affectedDates.length > 1;
+
+            return {
+                profileName,
+                affectedKeys,
+                affectedDates,
+                changes: affectedKeys.map(keyDay => changes.get(keyDay)),
+                metadata: {
+                    changeType: bulk
+                        ? "calendar_bulk_updated"
+                        : "shift_updated",
+                    source: "main_calendar_manual_edit",
+                    title: bulk
+                        ? "Tu calendario fue actualizado"
+                        : "Tu turno fue modificado",
+                    message: calendarDirectEditMessage(
+                        bulk
+                            ? "Se actualizaron turnos manuales"
+                            : "Se modifico un turno",
+                        affectedDates
+                    ),
+                    affectedDates,
+                    entityId:
+                        `direct_edit_${profileName}_${Date.now()}`
+                }
+            };
+        })
+        .filter(batch => batch.affectedDates.length);
+
+    calendarDirectEditPendingChanges.clear();
+
+    return batches;
+}
+
+function commitCalendarDirectEditPendingChanges() {
+    const batches = consumeCalendarDirectEditPendingChanges();
+
+    if (
+        !batches.length ||
+        typeof window === "undefined"
+    ) {
+        return batches;
+    }
+
+    batches.forEach(batch => {
+        window.dispatchEvent(
+            new CustomEvent("proturnos:calendarProfilesChanged", {
+                detail: {
+                    profiles: [batch.profileName],
+                    metadata: batch.metadata,
+                    delay: 0,
+                    source: "calendar_direct_edit_commit"
+                }
+            })
+        );
+    });
+
+    window.dispatchEvent(
+        new CustomEvent("proturnos:calendarDirectEditCommitted", {
+            detail: {
+                batches
+            }
+        })
+    );
+
+    return batches;
+}
+
 function cancelCalendarDirectEditRefresh() {
     clearTimeout(calendarDirectEditRefreshTimer);
     calendarDirectEditRefreshTimer = 0;
@@ -1554,6 +1673,7 @@ async function flushCalendarDirectEditRefresh(options = {}) {
     const expectedRequest =
         Number(options.requestId) || 0;
     const force = options.force === true;
+    const refresh = options.refresh !== false;
 
     if (
         expectedRequest &&
@@ -1568,6 +1688,8 @@ async function flushCalendarDirectEditRefresh(options = {}) {
     calendarDirectEditRefreshTimer = 0;
     calendarDirectEditRefreshRequest++;
     closeCalendarDirectEditHistory();
+    commitCalendarDirectEditPendingChanges();
+    if (!refresh) return;
     await updateVisibleCalendarDays({ updateSummary: true });
 }
 
@@ -1578,6 +1700,8 @@ function scheduleCalendarDirectEditRefresh(keyDay) {
 
 window.flushCalendarDirectEditRefresh =
     flushCalendarDirectEditRefresh;
+window.commitCalendarDirectEditPendingChanges =
+    commitCalendarDirectEditPendingChanges;
 
 function key(y, m, d) {
     return `${y}-${m}-${d}`;
@@ -4932,6 +5056,12 @@ async function clickDia(
             baseTurno
         }
     );
+
+    if (Number(nuevo) === Number(currentState)) {
+        event.stopPropagation();
+        return;
+    }
+
     const effectiveBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
@@ -4970,6 +5100,12 @@ async function clickDia(
         );
     }
     saveProfileDayTurn(keyDay, nuevo, profileName);
+    recordCalendarDirectEditChange({
+        profileName,
+        keyDay,
+        previousTurn: currentState,
+        nextTurn: nuevo
+    });
     scheduleCalendarAuditLog({
         profile: profileName,
         keyDay,
@@ -5948,6 +6084,17 @@ export async function goToCalendarMonth(year, month, options = {}) {
             backgroundFresh: renderOptions.backgroundFresh
         }
     );
+
+    if (
+        typeof window !== "undefined" &&
+        typeof window.disableCalendarDirectEditMode === "function"
+    ) {
+        await window.disableCalendarDirectEditMode({
+            flush: true,
+            refresh: false,
+            reason: "month-change"
+        });
+    }
 
     cancelCalendarHeavyUpdates();
     cancelCalendarDirectEditRefresh();

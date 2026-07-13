@@ -72,6 +72,10 @@ test("el calendario relee el turno y guarda solo la fecha pulsada", async () => 
         new URL("../js/calendar.js", import.meta.url),
         "utf8"
     );
+    const mainSource = await readFile(
+        new URL("../js/main.js", import.meta.url),
+        "utf8"
+    );
 
     assert.match(
         source,
@@ -80,6 +84,26 @@ test("el calendario relee el turno y guarda solo la fecha pulsada", async () => 
     assert.match(
         source,
         /saveProfileDayTurn\(keyDay, nuevo, profileName\)/
+    );
+    assert.match(
+        source,
+        /Number\(nuevo\) === Number\(currentState\)[\s\S]{0,120}return;/
+    );
+    assert.match(
+        source,
+        /recordCalendarDirectEditChange\(\{[\s\S]{0,180}previousTurn: currentState,[\s\S]{0,80}nextTurn: nuevo/
+    );
+    assert.match(
+        source,
+        /proturnos:calendarProfilesChanged/
+    );
+    assert.match(
+        mainSource,
+        /CALENDAR_DIRECT_EDIT_IDLE_TIMEOUT_MS = 10 \* 60 \* 1000/
+    );
+    assert.match(
+        mainSource,
+        /beforeunload[\s\S]{0,120}commitBeforeExit/
     );
     assert.doesNotMatch(source, /data\[keyDay\] = nuevo/);
 });

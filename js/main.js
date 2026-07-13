@@ -450,6 +450,9 @@ let replacementContractMonthHint = "";
 let profileHoursSummaryRequest = 0;
 let clockMarksRenderRequest = 0;
 let calendarDirectEditEnabled = false;
+const CALENDAR_DIRECT_EDIT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+let calendarDirectEditIdleTimer = 0;
+let calendarDirectEditInactivityBound = false;
 let reportsDetailRequest = 0;
 let reportsMonthDate = new Date(
     currentDate.getFullYear(),
@@ -5695,6 +5698,11 @@ function selectProfileByName(profileName, options = {}) {
 
     if (!profile) return;
 
+    void disableCalendarDirectEditMode({
+        flush: true,
+        refresh: false,
+        reason: "profile-change"
+    });
     clearSelectionMode(false);
     resetProfileDraft();
     availabilityEditMode = false;
@@ -8791,12 +8799,98 @@ function isCalendarDirectEditEnabled() {
 
 window.calendarDirectEditEnabled = isCalendarDirectEditEnabled;
 
+function clearCalendarDirectEditIdleTimer() {
+    clearTimeout(calendarDirectEditIdleTimer);
+    calendarDirectEditIdleTimer = 0;
+}
+
+function scheduleCalendarDirectEditIdleTimer() {
+    clearCalendarDirectEditIdleTimer();
+
+    if (!calendarDirectEditEnabled) return;
+
+    calendarDirectEditIdleTimer = window.setTimeout(() => {
+        void disableCalendarDirectEditMode({
+            flush: true,
+            refresh: true,
+            reason: "inactivity-timeout"
+        });
+        showAppToast(
+            "El modo edicion se cerro por inactividad y se enviaron los cambios pendientes.",
+            { title: "Edicion confirmada", variant: "info" }
+        );
+    }, CALENDAR_DIRECT_EDIT_IDLE_TIMEOUT_MS);
+}
+
+function noteCalendarDirectEditActivity() {
+    if (!calendarDirectEditEnabled) return;
+
+    scheduleCalendarDirectEditIdleTimer();
+}
+
+function bindCalendarDirectEditInactivityWatcher() {
+    if (calendarDirectEditInactivityBound) return;
+
+    calendarDirectEditInactivityBound = true;
+
+    [
+        "pointerdown",
+        "keydown",
+        "wheel",
+        "touchstart",
+        "input"
+    ].forEach(eventName => {
+        window.addEventListener(
+            eventName,
+            noteCalendarDirectEditActivity,
+            { capture: true, passive: true }
+        );
+    });
+
+    const commitBeforeExit = () => {
+        if (!calendarDirectEditEnabled) return;
+
+        calendarDirectEditEnabled = false;
+        clearCalendarDirectEditIdleTimer();
+        syncCalendarDirectEditToggle();
+        window.commitCalendarDirectEditPendingChanges?.();
+        window.flushCalendarChangeEvents?.();
+    };
+
+    window.addEventListener("pagehide", commitBeforeExit);
+    window.addEventListener("beforeunload", commitBeforeExit);
+}
+
+async function disableCalendarDirectEditMode(options = {}) {
+    if (!calendarDirectEditEnabled) {
+        syncCalendarDirectEditToggle();
+        return false;
+    }
+
+    calendarDirectEditEnabled = false;
+    clearCalendarDirectEditIdleTimer();
+    syncCalendarDirectEditToggle();
+
+    if (options.flush !== false) {
+        await window.flushCalendarDirectEditRefresh?.({
+            force: true,
+            refresh: options.refresh !== false,
+            reason: options.reason || "direct-edit-disabled"
+        });
+    }
+
+    return true;
+}
+
+window.disableCalendarDirectEditMode = disableCalendarDirectEditMode;
+
 function syncCalendarDirectEditToggle() {
     if (!DOM.calendarDirectEditToggle) return;
 
     const canEditCalendar = canEditTarget("calendarPanel");
     if (!canEditCalendar) {
         calendarDirectEditEnabled = false;
+        clearCalendarDirectEditIdleTimer();
     }
 
     const enabled = canEditCalendar && isCalendarDirectEditEnabled();
@@ -8811,13 +8905,17 @@ function syncCalendarDirectEditToggle() {
 function bindCalendarDirectEditToggle() {
     if (!DOM.calendarDirectEditToggle) return;
 
+    bindCalendarDirectEditInactivityWatcher();
     syncCalendarDirectEditToggle();
     DOM.calendarDirectEditToggle.onchange = () => {
         calendarDirectEditEnabled =
             DOM.calendarDirectEditToggle.checked;
         syncCalendarDirectEditToggle();
 
-        if (!calendarDirectEditEnabled) {
+        if (calendarDirectEditEnabled) {
+            scheduleCalendarDirectEditIdleTimer();
+        } else {
+            clearCalendarDirectEditIdleTimer();
             window.flushCalendarDirectEditRefresh?.({
                 force: true
             });

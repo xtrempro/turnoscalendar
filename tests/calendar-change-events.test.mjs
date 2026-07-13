@@ -57,3 +57,18 @@ test("clasifica rotativa como evento agrupado sin recorrer dias", () => {
     assert.equal(metadata.source, "rotation_generator");
     assert.deepEqual(metadata.affectedDates, []);
 });
+
+test("la edicion directa difiere notificaciones hasta cerrar el switch", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(
+        new URL("../js/workerAppDataSync.js", import.meta.url),
+        "utf8"
+    );
+
+    assert.match(source, /function shouldDeferDirectEditCalendarEvent/);
+    assert.match(source, /window\.calendarDirectEditEnabled\(\)/);
+    assert.match(
+        source,
+        /shouldDeferDirectEditCalendarEvent\(metadata\)[\s\S]{0,120}continue;/
+    );
+});

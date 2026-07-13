@@ -130,11 +130,19 @@ function mutationKind(change = {}) {
     return "updated";
 }
 
+function formatNotificationDate(value) {
+    const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (!match) return String(value || "");
+
+    return `${match[3]}-${match[2]}-${match[1]}`;
+}
+
 function calendarMutationMessage(label, affectedDates = []) {
     if (!affectedDates.length) return `${label}. Revisa tu calendario actualizado.`;
 
     if (affectedDates.length === 1) {
-        return `${label} para el ${affectedDates[0]}.`;
+        return `${label} para el ${formatNotificationDate(affectedDates[0])}.`;
     }
 
     return `${label} en ${affectedDates.length} dias de tu calendario.`;
