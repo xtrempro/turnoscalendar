@@ -841,6 +841,10 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
         if (!include) continue;
 
         rows.push({
+            iso,
+            // Turno extra "completo" cuando la base (con cambios) del dia era
+            // LIBRE: todo el turno es extra. Si no, es una extension horaria.
+            esCompleto: Number(baseWithSwaps) === TURNO.LIBRE,
             fecha: formatDate(iso),
             diaHabil: isBusinessDay(date, holidays) ? "S\u00ed" : "No",
             tipo: kind === "extra-only"
@@ -2343,9 +2347,27 @@ export async function buildWorkerHheeMonthSummary(
         return Number.isFinite(parsed) ? parsed : 0;
     };
 
+    // Detalle por turno para la PWA (seccion "Detalle de turnos"). Reemplazo
+    // muestra TODOS sus turnos; el resto, solo los turnos extra (los que se
+    // suman sobre la rotativa base, incluidas extensiones horarias).
+    const detailKind = isReplacementReportProfile(profile.name)
+        ? "replacement"
+        : "extra-only";
+    const extraShifts = buildDayRows(profile, year, month, days, holidays, detailKind)
+        .map(row => ({
+            iso: row.iso,
+            turno: row.turnoRealizado || row.turnoExtra || "",
+            d: num(row.horasDiurnas),
+            n: num(row.horasNocturnas),
+            full: Boolean(row.esCompleto),
+            backing: String(row.respaldo || "")
+        }))
+        .filter(item => item.d + item.n > 0.001);
+
     return {
         year,
         month,
+        extraShifts,
         rawDiurnas: num(model.rawDiurnas),
         rawNocturnas: num(model.rawNocturnas),
         carryInD: num(model.carryIn?.d),

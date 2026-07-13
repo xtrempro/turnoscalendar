@@ -78,7 +78,8 @@ const WORKER_APP_FOREGROUND_RESUME_COOLDOWN_MS = 180000;
 // Los resumenes HH.EE son caros: se mantienen acotados (no crecen con la
 // ventana del calendario).
 const OVERTIME_SUMMARY_MONTHS_BACK = 2;
-const OVERTIME_SUMMARY_CACHE_VERSION = 1;
+// v2: los resumenes ahora incluyen `extraShifts` (detalle por turno para la PWA).
+const OVERTIME_SUMMARY_CACHE_VERSION = 2;
 const COLD_OVERTIME_REFRESH_DELAY_MS = 45000;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
 const HOT_CALENDAR_FUTURE_MONTH_COUNT = 6;
