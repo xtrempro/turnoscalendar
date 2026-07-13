@@ -235,6 +235,35 @@ function isReplacementRequest(request = {}) {
     return request.kind === "replacement_request";
 }
 
+const CALENDAR_REVIEW_REQUEST_TYPES = new Set([
+    "admin",
+    "half_admin_morning",
+    "half_admin_afternoon",
+    "legal",
+    "comp",
+    "union_leave",
+    "unpaid_leave"
+]);
+
+function requestCalendarDate(request = {}) {
+    return (
+        request.date ||
+        request.startDate ||
+        request.changeDate ||
+        request.returnDate ||
+        ""
+    );
+}
+
+function canViewRequestInCalendar(request = {}) {
+    return (
+        request.status === "pending" &&
+        CALENDAR_REVIEW_REQUEST_TYPES.has(request.type) &&
+        Boolean(resolveProfileName(request)) &&
+        Boolean(parseISODate(requestCalendarDate(request)))
+    );
+}
+
 function replacementRequestToPanelRequest(request = {}) {
     return {
         ...request,
@@ -1096,6 +1125,13 @@ function requestCardHTML(request) {
                         <button class="secondary-button secondary-button--small" type="button" data-worker-request-action="reject" data-request-id="${escapeHTML(request.id)}">
                             Rechazar
                         </button>
+                        ${canViewRequestInCalendar(request)
+                            ? `
+                                <button class="secondary-button secondary-button--small" type="button" data-worker-request-action="view-calendar" data-request-id="${escapeHTML(request.id)}">
+                                    Ver en calendario
+                                </button>
+                            `
+                            : ""}
                     </div>
                 `
                 : ""}
@@ -1485,10 +1521,24 @@ export async function renderWorkerRequestsPanel() {
 
             if (!request || request.status !== "pending") return;
 
+            const action = button.dataset.workerRequestAction || "";
+
+            if (action === "view-calendar") {
+                window.dispatchEvent(
+                    new CustomEvent("proturnos:viewWorkerRequestInCalendar", {
+                        detail: {
+                            requestId: request.id,
+                            profile: resolveProfileName(request),
+                            date: requestCalendarDate(request)
+                        }
+                    })
+                );
+                return;
+            }
+
             button.disabled = true;
 
-            const accepting =
-                button.dataset.workerRequestAction === "accept";
+            const accepting = action === "accept";
 
             if (isWorkspaceLinkRequest(request)) {
                 if (accepting) {

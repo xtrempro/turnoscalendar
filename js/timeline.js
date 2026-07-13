@@ -5058,6 +5058,18 @@ if (typeof window !== "undefined") {
 
         clearTimelineCache();
     });
+    window.addEventListener("proturnos:calendarDirectEditCommitted", event => {
+        const affectedProfiles = new Set(
+            (event.detail?.batches || [])
+                .map(batch => String(batch?.profileName || "").trim())
+                .filter(Boolean)
+        );
+
+        if (!affectedProfiles.size) return;
+
+        clearTimelineRowCacheForProfiles(affectedProfiles);
+        void refreshVisibleTimelineRows(affectedProfiles);
+    });
     window.addEventListener("proturnos:firebaseAppState", event => {
         if (event.detail?.type === "app-state-applied") {
             clearTimelineCache();

@@ -29,7 +29,7 @@ test("main calendar profile search supports accent-free queries", () => {
     );
 });
 
-test("main calendar datalist includes accent-free profile options", () => {
+test("main calendar datalist keeps one visible option per profile", () => {
     const options = getCalendarProfileSearchOptionValues({
         name: "José Álvarez Núñez",
         estamento: "Profesional",
@@ -41,14 +41,5 @@ test("main calendar datalist includes accent-free profile options", () => {
             value.includes("José Álvarez Núñez")
         )
     );
-    assert.ok(
-        options.some(value =>
-            value.includes("Jose Alvarez Nunez")
-        )
-    );
-    assert.ok(
-        options.some(value =>
-            value.includes("Enfermeria")
-        )
-    );
+    assert.equal(options.length, 1);
 });

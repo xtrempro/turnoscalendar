@@ -5689,6 +5689,7 @@ function handleTopProfileSearch() {
     DOM.topProfileSearchInput.value =
         getCalendarProfileSearchValue(match);
     selectProfileByName(match.name);
+    DOM.topProfileSearchInput.blur();
 }
 
 function selectProfileByName(profileName, options = {}) {
@@ -5734,6 +5735,56 @@ function selectProfileByName(profileName, options = {}) {
 }
 
 window.selectProfileByName = selectProfileByName;
+
+function parseCalendarJumpDate(value) {
+    const match = String(value || "")
+        .match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+
+    if (!match) return null;
+
+    return {
+        year: Number(match[1]),
+        month: Number(match[2]) - 1
+    };
+}
+
+window.addEventListener(
+    "proturnos:viewWorkerRequestInCalendar",
+    event => {
+        const profileName = String(event.detail?.profile || "").trim();
+        const target = parseCalendarJumpDate(event.detail?.date);
+
+        if (!profileName || !target) {
+            showAppToast(
+                "No se pudo abrir la solicitud en el calendario.",
+                { title: "Solicitud incompleta", variant: "warn" }
+            );
+            return;
+        }
+
+        if (!getProfiles().some(profile => profile.name === profileName)) {
+            showAppToast(
+                "El trabajador de esta solicitud ya no existe en el entorno.",
+                { title: "Perfil no encontrado", variant: "warn" }
+            );
+            return;
+        }
+
+        currentDate.setFullYear(target.year, target.month, 1);
+        selectProfileByName(profileName, {
+            refresh: false,
+            openTurns: false
+        });
+        setActiveShortcut("calendarPanel");
+
+        requestAnimationFrame(() => {
+            document.getElementById("calendarPanel")?.scrollIntoView({
+                behavior: "smooth",
+                block: "start"
+            });
+        });
+    }
+);
 
 function clearSelectionMode(shouldRefresh = true) {
     selectionMode = null;
