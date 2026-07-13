@@ -36,6 +36,21 @@ function normalizeShiftMove(move = {}) {
         targetKey,
         sourceTurn,
         destinationTurn,
+        hasUndoSnapshot: Boolean(move.hasUndoSnapshot),
+        combinedInto24: Boolean(move.combinedInto24),
+        combinedBaseComplement: Boolean(move.combinedBaseComplement),
+        sourceHadData: Boolean(move.sourceHadData),
+        sourcePreviousData: Number(move.sourcePreviousData) || 0,
+        sourceHadBase: Boolean(move.sourceHadBase),
+        sourcePreviousBase: Number(move.sourcePreviousBase) || 0,
+        sourceHadBlocked: Boolean(move.sourceHadBlocked),
+        sourcePreviousBlocked: Boolean(move.sourcePreviousBlocked),
+        targetHadData: Boolean(move.targetHadData),
+        targetPreviousData: Number(move.targetPreviousData) || 0,
+        targetHadBase: Boolean(move.targetHadBase),
+        targetPreviousBase: Number(move.targetPreviousBase) || 0,
+        targetHadBlocked: Boolean(move.targetHadBlocked),
+        targetPreviousBlocked: Boolean(move.targetPreviousBlocked),
         createdAt: String(
             move.createdAt || new Date().toISOString()
         )
@@ -105,6 +120,26 @@ export function registerShiftMove(move = {}) {
     ]);
 
     return normalized;
+}
+
+export function cancelShiftMoveById(moveId) {
+    const id = String(moveId || "");
+
+    if (!id) return null;
+
+    let canceled = null;
+    const remaining = getShiftMoves().filter(move => {
+        if (String(move.id || "") !== id) return true;
+
+        canceled = move;
+        return false;
+    });
+
+    if (!canceled) return null;
+
+    saveShiftMoves(remaining);
+
+    return canceled;
 }
 
 // Elimina los movimientos de turno (TTMM) del trabajador cuyo origen o destino

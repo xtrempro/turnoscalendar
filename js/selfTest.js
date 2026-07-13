@@ -46,6 +46,10 @@ import {
     aplicarAdministrativo,
     aplicarComp
 } from "./leaveEngine.js";
+import {
+    moveShiftConfigBlockReason,
+    moveShiftTargetCombina24
+} from "./rulesEngine.js";
 import { keyFromDate } from "./dateUtils.js";
 import { TURNO } from "./constants.js";
 import { escapeHTML } from "./htmlUtils.js";
@@ -319,6 +323,52 @@ const TESTS = [
             assert(
                 !futuro,
                 "el turno movido futuro deberia eliminarse"
+            );
+        }
+    },
+    {
+        name: "Mover turno: respeta bloqueos de 24 y 24 invertido",
+        run() {
+            const combines24 = moveShiftTargetCombina24(
+                TURNO.LARGA,
+                TURNO.NOCHE,
+                TURNO.NOCHE,
+                TURNO.NOCHE
+            );
+
+            assert(
+                combines24,
+                "larga movida sobre noche deberia detectarse como 24"
+            );
+            assert(
+                moveShiftConfigBlockReason({
+                    combines24,
+                    projectedTurn: TURNO.TURNO24,
+                    allowTwentyFourHourShifts: false,
+                    allowInvertedTwentyFourHourShifts: true
+                }).includes("turnos 24"),
+                "si el 24 esta deshabilitado, no deberia permitir juntar larga+noche"
+            );
+            assert(
+                moveShiftConfigBlockReason({
+                    combines24: false,
+                    projectedTurn: TURNO.NOCHE,
+                    nextTurn: TURNO.LARGA,
+                    allowTwentyFourHourShifts: true,
+                    allowInvertedTwentyFourHourShifts: false
+                }).includes("24 invertido"),
+                "si el 24 invertido esta deshabilitado, no deberia permitir noche antes de larga"
+            );
+            assertEqual(
+                moveShiftConfigBlockReason({
+                    combines24: false,
+                    projectedTurn: TURNO.NOCHE,
+                    nextTurn: TURNO.LIBRE,
+                    allowTwentyFourHourShifts: true,
+                    allowInvertedTwentyFourHourShifts: false
+                }),
+                "",
+                "noche movida antes de dia libre no deberia bloquearse por 24 invertido"
             );
         }
     },

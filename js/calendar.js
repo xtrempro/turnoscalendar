@@ -13,7 +13,11 @@ import {
 } from "./hoursEngine.js";
 import {
     getProfileData,
+    saveProfileData,
+    getBaseProfileData,
+    saveBaseProfileData,
     getBlockedDays,
+    saveBlockedDays,
     getCarry,
     saveProfileDayTurn,
     saveCarry,
@@ -74,6 +78,7 @@ import {
     swapCodeLabel
 } from "./swaps.js";
 import {
+    cancelShiftMoveById,
     getShiftMoveMarkers,
     getShiftMoves
 } from "./shiftMoves.js";
@@ -821,6 +826,40 @@ function buildCalendarBlockedDayIndex(profileName) {
     return index;
 }
 
+function calendarAdjacentTurnForMoveShift(
+    profileName,
+    keyDay,
+    offset,
+    sourceKey = ""
+) {
+    const date = dateFromKeyDay(keyDay);
+
+    if (Number.isNaN(date.getTime())) return TURNO.LIBRE;
+
+    date.setDate(date.getDate() + Number(offset || 0));
+
+    const adjacentKey = key(
+        date.getFullYear(),
+        date.getMonth(),
+        date.getDate()
+    );
+
+    if (
+        adjacentKey === sourceKey &&
+        adjacentKey !== keyDay
+    ) {
+        return TURNO.LIBRE;
+    }
+
+    return Number(
+        aplicarCambiosTurno(
+            profileName,
+            adjacentKey,
+            getTurnoProgramado(profileName, adjacentKey)
+        )
+    ) || TURNO.LIBRE;
+}
+
 function buildPendingLeaveRequestIndex(profileName, year, month, days) {
     const index = new Map();
     const requests = getWorkerRequests().filter(request =>
@@ -975,6 +1014,9 @@ async function handleCalendarCellFallbackClick(cell, event) {
         getCambiosTurnoCalendario(activeProfile, keyDay);
     const turnChangeMarker = turnChangeMarkers[0] || null;
     const turnChange = turnChangeMarker?.swap || null;
+    const shiftMoveMarkers =
+        getShiftMoveMarkers(activeProfile, keyDay);
+    const shiftMoveMarker = shiftMoveMarkers[0] || null;
     const coveredReplacement =
         getReplacementForCoveredShift(activeProfile, keyDay);
     const workerReplacement =
@@ -1066,7 +1108,12 @@ async function handleCalendarCellFallbackClick(cell, event) {
         );
     }
 
-    if (turnChange || needsReplacement || workerReplacement) {
+    if (
+        turnChange ||
+        shiftMoveMarker ||
+        needsReplacement ||
+        workerReplacement
+    ) {
         event.stopPropagation();
     }
 
@@ -3084,6 +3131,273 @@ function shiftMoveHoverTitle(marker) {
     }
 
     return detail.join("\n");
+}
+
+function shiftMoveCreatedLabel(value) {
+    const date = new Date(value || "");
+
+    if (Number.isNaN(date.getTime())) return "Sin registro";
+
+    return date.toLocaleString(
+        "es-CL",
+        {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit"
+        }
+    );
+}
+
+function restoreShiftMoveValue(
+    object,
+    keyDay,
+    hadValue,
+    previousValue
+) {
+    if (hadValue) {
+        object[keyDay] = previousValue;
+    } else {
+        delete object[keyDay];
+    }
+}
+
+function fallbackUndoShiftMoveValues(move) {
+    const complement = Number(move.destinationTurn) === TURNO.LARGA
+        ? TURNO.NOCHE
+        : TURNO.LARGA;
+
+    return {
+        sourceHadData: true,
+        sourcePreviousData: Number(move.sourceTurn) || TURNO.LIBRE,
+        sourceHadBase: true,
+        sourcePreviousBase: Number(move.sourceTurn) || TURNO.LIBRE,
+        sourceHadBlocked: true,
+        sourcePreviousBlocked: true,
+        targetHadData:
+            move.targetKey === move.sourceKey ||
+            move.combinedInto24 === true,
+        targetPreviousData:
+            move.targetKey === move.sourceKey
+                ? Number(move.sourceTurn) || TURNO.LIBRE
+                : move.combinedInto24
+                    ? complement
+                    : TURNO.LIBRE,
+        targetHadBase:
+            move.targetKey === move.sourceKey ||
+            move.combinedBaseComplement === true,
+        targetPreviousBase:
+            move.targetKey === move.sourceKey
+                ? Number(move.sourceTurn) || TURNO.LIBRE
+                : move.combinedBaseComplement
+                    ? complement
+                    : TURNO.LIBRE,
+        targetHadBlocked: true,
+        targetPreviousBlocked: true
+    };
+}
+
+function undoShiftMoveCalendarState(move) {
+    const profile = move?.profile || "";
+
+    if (!profile) return false;
+
+    const undo = move.hasUndoSnapshot
+        ? move
+        : {
+            ...move,
+            ...fallbackUndoShiftMoveValues(move)
+        };
+    const data = getProfileData(profile);
+    const baseData = getBaseProfileData(profile);
+    const blocked = getBlockedDays(profile);
+
+    restoreShiftMoveValue(
+        data,
+        move.sourceKey,
+        undo.sourceHadData,
+        Number(undo.sourcePreviousData) || TURNO.LIBRE
+    );
+    restoreShiftMoveValue(
+        baseData,
+        move.sourceKey,
+        undo.sourceHadBase,
+        Number(undo.sourcePreviousBase) || TURNO.LIBRE
+    );
+    restoreShiftMoveValue(
+        blocked,
+        move.sourceKey,
+        undo.sourceHadBlocked,
+        Boolean(undo.sourcePreviousBlocked)
+    );
+
+    if (move.targetKey !== move.sourceKey) {
+        restoreShiftMoveValue(
+            data,
+            move.targetKey,
+            undo.targetHadData,
+            Number(undo.targetPreviousData) || TURNO.LIBRE
+        );
+        restoreShiftMoveValue(
+            baseData,
+            move.targetKey,
+            undo.targetHadBase,
+            Number(undo.targetPreviousBase) || TURNO.LIBRE
+        );
+        restoreShiftMoveValue(
+            blocked,
+            move.targetKey,
+            undo.targetHadBlocked,
+            Boolean(undo.targetPreviousBlocked)
+        );
+    }
+
+    saveProfileData(data, profile);
+    saveBaseProfileData(baseData, profile);
+    saveBlockedDays(blocked, profile);
+
+    return true;
+}
+
+async function openShiftMoveDetailDialog(marker) {
+    const move = marker?.move || null;
+
+    if (!move) return false;
+
+    const details = [
+        ["Trabajador", move.profile],
+        ["Origen", formatShiftMoveDate(move.sourceKey)],
+        ["Turno origen", shiftMoveTurnLabel(move.sourceTurn)],
+        ["Destino", formatShiftMoveDate(move.targetKey)],
+        ["Turno destino", shiftMoveTurnLabel(move.destinationTurn)],
+        move.combinedInto24
+            ? [
+                "Combinacion",
+                move.combinedBaseComplement
+                    ? "Formo 24 con otro turno base"
+                    : "Formo 24 con turno extra"
+            ]
+            : null,
+        ["Registrado", shiftMoveCreatedLabel(move.createdAt)]
+    ].filter(Boolean);
+    const backdrop = document.createElement("div");
+
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.innerHTML = `
+        <section class="turn-change-dialog replacement-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="shiftMoveDetailTitle">
+            <strong id="shiftMoveDetailTitle">Turno movido</strong>
+            <p>
+                Este dia tiene un movimiento de turno aplicado.
+            </p>
+            <div class="leave-detail-rows replacement-detail-rows">
+                ${details.map(([label, value]) => `
+                    <div>
+                        <span>${escapeHTML(label)}</span>
+                        <b>${escapeHTML(value)}</b>
+                    </div>
+                `).join("")}
+            </div>
+            <p class="leave-detail-note">
+                Al anularlo se restauran el dia de origen y el dia de destino al estado previo al movimiento.
+            </p>
+            <div class="turn-change-dialog__actions">
+                <button class="secondary-button" type="button" data-action="cancel">
+                    Cancelar
+                </button>
+                <button class="leave-detail-undo" type="button" data-action="undo">
+                    Anular movimiento
+                </button>
+            </div>
+        </section>
+    `;
+
+    const close = () => {
+        document.removeEventListener("keydown", onKeydown);
+        backdrop.remove();
+    };
+
+    const onKeydown = event => {
+        if (event.key === "Escape") {
+            close();
+        }
+    };
+
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) {
+            close();
+        }
+    });
+
+    backdrop
+        .querySelector("[data-action='cancel']")
+        .onclick = close;
+
+    backdrop
+        .querySelector("[data-action='undo']")
+        .onclick = async () => {
+            const confirmed = await showConfirm(
+                `Se anulara el movimiento de turno de ${move.profile}.`,
+                {
+                    title: "Anular movimiento",
+                    tone: "danger",
+                    confirmText: "Anular movimiento",
+                    cancelText: "Volver",
+                    destructive: true
+                }
+            );
+
+            if (!confirmed) return;
+
+            await withBusyState(async () => {
+                if (typeof window.pushUndoState === "function") {
+                    window.pushUndoState("Anular movimiento de turno");
+                }
+
+                const canceled = cancelShiftMoveById(move.id);
+
+                if (!canceled) {
+                    alert("No se pudo anular el movimiento. Es posible que ya haya cambiado.");
+                    return;
+                }
+
+                undoShiftMoveCalendarState(move);
+
+                addAuditLog(
+                    AUDIT_CATEGORY.CALENDAR,
+                    "Anulo movimiento de turno",
+                    `${move.profile}: anulo el movimiento del ${formatShiftMoveDate(move.sourceKey)} al ${formatShiftMoveDate(move.targetKey)}.`,
+                    {
+                        profile: move.profile,
+                        shiftMoveId: move.id,
+                        sourceKey: move.sourceKey,
+                        targetKey: move.targetKey
+                    }
+                );
+
+                close();
+
+                await updateDayCells(
+                    move.profile,
+                    [move.sourceKey, move.targetKey],
+                    { updateSummary: true }
+                );
+                updateTimelineCells(
+                    move.profile,
+                    [move.sourceKey, move.targetKey]
+                );
+            }, {
+                label: "Anulando movimiento..."
+            });
+        };
+
+    document.addEventListener("keydown", onKeydown);
+    document.body.appendChild(backdrop);
+    backdrop
+        .querySelector("[data-action='undo']")
+        ?.focus();
+
+    return true;
 }
 
 function leaveTypeForDay(keyDay, admin, legal, comp, absences) {
@@ -5271,6 +5585,13 @@ async function clickDia(
         return handleTurnChangeDayClick(turnChange);
     }
 
+    const shiftMoveMarker =
+        getShiftMoveMarkers(profileName, keyDay)[0] || null;
+
+    if (shiftMoveMarker) {
+        return openShiftMoveDetailDialog(shiftMoveMarker);
+    }
+
     const workerReplacement =
         getReplacementForWorkerShift(profileName, keyDay);
     const directEditEnabled =
@@ -5477,6 +5798,7 @@ async function renderCalendarImpl(options = {}) {
     );
     const activeProfileEnabled =
         isProfileActive(activeWorker || activeProfile);
+    const turnChangeConfig = getTurnChangeConfig();
     const monthKey = calendarMonthKey(y, m);
     const viewSignature = activeProfile
         ? calendarViewSignature({
@@ -6122,7 +6444,25 @@ async function renderCalendarImpl(options = {}) {
                 moveShiftDestinationTurn:
                     window.pendingShiftMoveDestinationTurn || 0,
                 moveShiftProgrammedTurn:
-                    getTurnoProgramado(activeProfile, keyDay)
+                    getTurnoProgramado(activeProfile, keyDay),
+                moveShiftPreviousTurn:
+                    calendarAdjacentTurnForMoveShift(
+                        activeProfile,
+                        keyDay,
+                        -1,
+                        window.pendingShiftMoveSourceKey || ""
+                    ),
+                moveShiftNextTurn:
+                    calendarAdjacentTurnForMoveShift(
+                        activeProfile,
+                        keyDay,
+                        1,
+                        window.pendingShiftMoveSourceKey || ""
+                    ),
+                allowTwentyFourHourShifts:
+                    turnChangeConfig.allowTwentyFourHourShifts,
+                allowInvertedTwentyFourHourShifts:
+                    turnChangeConfig.allowInvertedTwentyFourHourShifts
             }
         );
 

@@ -298,7 +298,10 @@ import {
     getTurnoBase,
     getTurnoProgramado
 } from "./turnEngine.js";
-import { moveShiftTargetCombina24 } from "./rulesEngine.js";
+import {
+    moveShiftConfigBlockReason,
+    moveShiftTargetCombina24
+} from "./rulesEngine.js";
 import {
     calcularHorasMesPerfil,
     renderSummaryHTML
@@ -5925,6 +5928,37 @@ function shiftMoveTurnLabel(turn) {
         : "Larga";
 }
 
+function offsetCalendarKey(keyDay, offset) {
+    const date = parseKey(keyDay);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    date.setDate(date.getDate() + Number(offset || 0));
+
+    return keyFromDate(date);
+}
+
+function getShiftMoveAdjacentTurn(profile, targetKey, sourceKey, offset) {
+    const adjacentKey = offsetCalendarKey(targetKey, offset);
+
+    if (!adjacentKey) return TURNO.LIBRE;
+
+    if (
+        adjacentKey === sourceKey &&
+        adjacentKey !== targetKey
+    ) {
+        return TURNO.LIBRE;
+    }
+
+    return Number(
+        aplicarCambiosTurno(
+            profile,
+            adjacentKey,
+            getTurnoProgramado(profile, adjacentKey)
+        )
+    ) || TURNO.LIBRE;
+}
+
 function shiftMoveDayBlockReason(
     profile,
     keyDay,
@@ -5955,6 +5989,7 @@ function shiftMoveDayBlockReason(
     const legal = getLegalDays(profile);
     const comp = getCompDays(profile);
     const absences = getAbsences(profile);
+    const config = getTurnChangeConfig();
 
     if (
         admin[keyDay] ||
@@ -5991,8 +6026,29 @@ function shiftMoveDayBlockReason(
         return "";
     }
 
+    const previousTurn = getShiftMoveAdjacentTurn(
+        profile,
+        keyDay,
+        sourceKey,
+        -1
+    );
+    const nextTurn = getShiftMoveAdjacentTurn(
+        profile,
+        keyDay,
+        sourceKey,
+        1
+    );
+
     if (keyDay === sourceKey) {
-        return "";
+        return moveShiftConfigBlockReason({
+            projectedTurn: destinationTurn,
+            previousTurn,
+            nextTurn,
+            allowTwentyFourHourShifts:
+                config.allowTwentyFourHourShifts,
+            allowInvertedTwentyFourHourShifts:
+                config.allowInvertedTwentyFourHourShifts
+        });
     }
 
     // El destino puede tener el turno complementario (Larga<->Noche): al juntarse
@@ -6003,6 +6059,23 @@ function shiftMoveDayBlockReason(
         programmedTurn,
         actualTurn
     );
+    const projectedTurn = combina24
+        ? TURNO.TURNO24
+        : Number(destinationTurn) || TURNO.LIBRE;
+    const configBlockReason = moveShiftConfigBlockReason({
+        combines24: combina24,
+        projectedTurn,
+        previousTurn,
+        nextTurn,
+        allowTwentyFourHourShifts:
+            config.allowTwentyFourHourShifts,
+        allowInvertedTwentyFourHourShifts:
+            config.allowInvertedTwentyFourHourShifts
+    });
+
+    if (configBlockReason) {
+        return configBlockReason;
+    }
 
     if (
         !combina24 &&
@@ -6244,6 +6317,22 @@ function handleMoveShiftTargetSelection(fecha) {
     const data = getProfileData(profile);
     const baseData = getBaseProfileData(profile);
     const blocked = getBlockedDays(profile);
+    const hasOwn = (object, prop) =>
+        Object.prototype.hasOwnProperty.call(object, prop);
+    const moveUndoSnapshot = {
+        sourceHadData: hasOwn(data, move.sourceKey),
+        sourcePreviousData: Number(data[move.sourceKey]) || TURNO.LIBRE,
+        sourceHadBase: hasOwn(baseData, move.sourceKey),
+        sourcePreviousBase: Number(baseData[move.sourceKey]) || TURNO.LIBRE,
+        sourceHadBlocked: hasOwn(blocked, move.sourceKey),
+        sourcePreviousBlocked: Boolean(blocked[move.sourceKey]),
+        targetHadData: hasOwn(data, targetKey),
+        targetPreviousData: Number(data[targetKey]) || TURNO.LIBRE,
+        targetHadBase: hasOwn(baseData, targetKey),
+        targetPreviousBase: Number(baseData[targetKey]) || TURNO.LIBRE,
+        targetHadBlocked: hasOwn(blocked, targetKey),
+        targetPreviousBlocked: Boolean(blocked[targetKey])
+    };
 
     // Estado del destino ANTES de mover, para detectar si el turno se junta con
     // un turno complementario existente formando un 24.
@@ -6293,7 +6382,11 @@ function handleMoveShiftTargetSelection(fecha) {
         sourceKey: move.sourceKey,
         targetKey,
         sourceTurn: move.sourceTurn,
-        destinationTurn: move.destinationTurn
+        destinationTurn: move.destinationTurn,
+        hasUndoSnapshot: true,
+        combinedInto24: combina24,
+        combinedBaseComplement: complementoEsBase,
+        ...moveUndoSnapshot
     });
 
     const sourceDate = parseKey(move.sourceKey);

@@ -819,6 +819,76 @@ export function moveShiftTargetCombina24(
     return true;
 }
 
+function moveShiftTurnIncludesDaytimeStart(turn) {
+    const value = Number(turn) || TURNO.LIBRE;
+
+    return (
+        value === TURNO.LARGA ||
+        value === TURNO.TURNO24 ||
+        value === TURNO.DIURNO ||
+        value === TURNO.DIURNO_NOCHE ||
+        value === TURNO.MEDIA_MANANA ||
+        value === TURNO.MEDIA_TARDE
+    );
+}
+
+function moveShiftTurnIncludesNight(turn) {
+    const value = Number(turn) || TURNO.LIBRE;
+
+    return (
+        value === TURNO.NOCHE ||
+        value === TURNO.TURNO24 ||
+        value === TURNO.DIURNO_NOCHE ||
+        value === TURNO.TURNO18
+    );
+}
+
+export function moveShiftCreatesInvertedTwentyFour(
+    projectedTurn,
+    previousTurn = TURNO.LIBRE,
+    nextTurn = TURNO.LIBRE
+) {
+    return (
+        (
+            moveShiftTurnIncludesDaytimeStart(projectedTurn) &&
+            moveShiftTurnIncludesNight(previousTurn)
+        ) ||
+        (
+            moveShiftTurnIncludesNight(projectedTurn) &&
+            moveShiftTurnIncludesDaytimeStart(nextTurn)
+        )
+    );
+}
+
+export function moveShiftConfigBlockReason({
+    combines24 = false,
+    projectedTurn = TURNO.LIBRE,
+    previousTurn = TURNO.LIBRE,
+    nextTurn = TURNO.LIBRE,
+    allowTwentyFourHourShifts = true,
+    allowInvertedTwentyFourHourShifts = true
+} = {}) {
+    if (
+        combines24 &&
+        allowTwentyFourHourShifts === false
+    ) {
+        return "La unidad tiene deshabilitada la opcion de turnos 24.";
+    }
+
+    if (
+        allowInvertedTwentyFourHourShifts === false &&
+        moveShiftCreatesInvertedTwentyFour(
+            projectedTurn,
+            previousTurn,
+            nextTurn
+        )
+    ) {
+        return "La unidad tiene deshabilitada la opcion de 24 invertido.";
+    }
+
+    return "";
+}
+
 export function estaBloqueadoModo(
     selectionMode,
     keyDay,
@@ -863,7 +933,23 @@ export function estaBloqueadoModo(
             options.moveShiftSourceKey === keyDay;
 
         if (isSourceDay) {
-            return false;
+            return Boolean(
+                moveShiftConfigBlockReason({
+                    projectedTurn:
+                        Number(options.moveShiftDestinationTurn) ||
+                        TURNO.LIBRE,
+                    previousTurn:
+                        Number(options.moveShiftPreviousTurn) ||
+                        TURNO.LIBRE,
+                    nextTurn:
+                        Number(options.moveShiftNextTurn) ||
+                        TURNO.LIBRE,
+                    allowTwentyFourHourShifts:
+                        options.allowTwentyFourHourShifts !== false,
+                    allowInvertedTwentyFourHourShifts:
+                        options.allowInvertedTwentyFourHourShifts !== false
+                })
+            );
         }
 
         if (
@@ -894,14 +980,34 @@ export function estaBloqueadoModo(
 
         // Destino con turno complementario que, al juntarse con el turno que se
         // esta moviendo, forma un 24 (Larga + Noche).
+        const combines24 = moveShiftTargetCombina24(
+            options.moveShiftDestinationTurn,
+            baseTurn,
+            programmedTurn,
+            actualState
+        );
+        const projectedTurn = combines24
+            ? TURNO.TURNO24
+            : Number(options.moveShiftDestinationTurn) || TURNO.LIBRE;
+
         if (
-            moveShiftTargetCombina24(
-                options.moveShiftDestinationTurn,
-                baseTurn,
-                programmedTurn,
-                actualState
-            )
+            moveShiftConfigBlockReason({
+                combines24,
+                projectedTurn,
+                previousTurn:
+                    Number(options.moveShiftPreviousTurn) || TURNO.LIBRE,
+                nextTurn:
+                    Number(options.moveShiftNextTurn) || TURNO.LIBRE,
+                allowTwentyFourHourShifts:
+                    options.allowTwentyFourHourShifts !== false,
+                allowInvertedTwentyFourHourShifts:
+                    options.allowInvertedTwentyFourHourShifts !== false
+            })
         ) {
+            return true;
+        }
+
+        if (combines24) {
             return false;
         }
 
