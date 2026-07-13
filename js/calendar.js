@@ -3,9 +3,9 @@ import { showConfirm } from "./dialogs.js";
 import {
     aplicarCambiosTurno,
     fusionarTurnos,
+    getProtectedDirectEditTurn,
     getTurnoBase,
-    getTurnoProgramado,
-    siguienteTurnoValido
+    getTurnoProgramado
 } from "./turnEngine.js";
 import {
     calculateWorkerMonthTotals,
@@ -83,6 +83,8 @@ import {
     getClockExtraBackupForWorker,
     buildReplacementRequestWhatsAppUrl,
     cancelReplacementRequest,
+    cancelReplacementById,
+    codeToTurno,
     createReplacementRequest,
     createReplacementRequests,
     expireReplacementRequests,
@@ -153,7 +155,10 @@ import {
     replaceCalendarCell
 } from "./calendarUpdates.js";
 import { getActiveWorkspace } from "./workspaces.js";
-import { createInterUnitLoan } from "./firebaseInterUnitLoans.js";
+import {
+    cancelInterUnitLoan,
+    createInterUnitLoan
+} from "./firebaseInterUnitLoans.js";
 import {
     findCompatibleReplacementInLinkedUnits
 } from "./linkedReplacementService.js";
@@ -972,6 +977,8 @@ async function handleCalendarCellFallbackClick(cell, event) {
     const turnChange = turnChangeMarker?.swap || null;
     const coveredReplacement =
         getReplacementForCoveredShift(activeProfile, keyDay);
+    const workerReplacement =
+        getReplacementForWorkerShift(activeProfile, keyDay);
     const replacementContractError =
         isReplacementProfile(activeProfile) &&
         state > 0 &&
@@ -1059,7 +1066,7 @@ async function handleCalendarCellFallbackClick(cell, event) {
         );
     }
 
-    if (turnChange || needsReplacement) {
+    if (turnChange || needsReplacement || workerReplacement) {
         event.stopPropagation();
     }
 
@@ -2657,6 +2664,289 @@ async function handleTurnChangeDayClick(swap) {
 
     return true;
 }
+
+function replacementDetailDateLabel(value) {
+    const match = String(value || "")
+        .match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+    if (!match) return String(value || "");
+
+    return new Date(
+        Number(match[1]),
+        Number(match[2]) - 1,
+        Number(match[3])
+    ).toLocaleDateString(
+        "es-CL",
+        {
+            weekday: "long",
+            day: "2-digit",
+            month: "long",
+            year: "numeric"
+        }
+    );
+}
+
+function replacementDetailCreatedLabel(value) {
+    const date = new Date(value || "");
+
+    if (Number.isNaN(date.getTime())) return "Sin registro";
+
+    return date.toLocaleString(
+        "es-CL",
+        {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit"
+        }
+    );
+}
+
+function replacementDetailSourceLabel(replacement = {}) {
+    if (replacement.isLoan || replacement.source === "inter_unit_loan") {
+        return "Prestamo entre unidades";
+    }
+
+    const source = String(replacement.source || "");
+
+    if (source === "manual_extra") return "Turno extra manual";
+    if (source === "clock_extra") return "Horas extras por marcaje";
+    if (source === "forced_replacement") return "Reemplazo forzado";
+    if (source === "replacement_request") return "Solicitud aceptada";
+    if (source === "forced_replacement_request") {
+        return "Solicitud forzada aceptada";
+    }
+
+    return "Reemplazo de turno";
+}
+
+function replacementDetailHoursLabel(replacement = {}) {
+    const hours =
+        replacement.overtimeHours ||
+        replacement.clockHours ||
+        null;
+
+    if (!hours) return "";
+
+    if (typeof hours === "number") {
+        return `${hours} h`;
+    }
+
+    const day = Number(hours.d) || 0;
+    const night = Number(hours.n) || 0;
+
+    if (!day && !night) return "";
+
+    return `D: ${day} h · N: ${night} h`;
+}
+
+function replacementDetailTurnLabel(replacement = {}) {
+    const turno = codeToTurno(replacement.turno);
+
+    return turnoReplacementLabel(turno) ||
+        replacement.turno ||
+        "Sin turno";
+}
+
+function getReplacementDetailRecord(
+    profileName,
+    keyDay,
+    replacementId = ""
+) {
+    if (replacementId) {
+        const match = getReplacements().find(replacement =>
+            replacementActive(replacement) &&
+            String(replacement.id || "") === String(replacementId)
+        );
+
+        if (match) return match;
+    }
+
+    return getReplacementForWorkerShift(profileName, keyDay);
+}
+
+async function openReplacementDetailDialog(
+    profileName,
+    keyDay,
+    replacementId = ""
+) {
+    const replacement = getReplacementDetailRecord(
+        profileName,
+        keyDay,
+        replacementId
+    );
+
+    if (!replacement) return false;
+
+    const backdrop = document.createElement("div");
+    const title = replacement.replaced
+        ? (
+            replacement.isLoan
+                ? "Prestamo asignado"
+                : "Reemplazo asignado"
+        )
+        : "Turno extra asignado";
+    const details = [
+        ["Trabajador", replacement.worker || profileName],
+        replacement.replaced
+            ? [
+                replacement.isLoan ? "Cubre a" : "Reemplaza a",
+                replacement.replaced
+            ]
+            : null,
+        ["Fecha", replacementDetailDateLabel(replacement.date)],
+        ["Turno", replacementDetailTurnLabel(replacement)],
+        [
+            replacement.replaced ? "Ausencia" : "Motivo",
+            replacement.absenceType ||
+                replacement.reason ||
+                "Sin detalle"
+        ],
+        ["Origen", replacementDetailSourceLabel(replacement)],
+        replacement.workerWorkspaceName
+            ? ["Unidad origen", replacement.workerWorkspaceName]
+            : null,
+        replacement.hostWorkspaceName
+            ? ["Unidad destino", replacement.hostWorkspaceName]
+            : null,
+        replacementDetailHoursLabel(replacement)
+            ? ["HH.EE", replacementDetailHoursLabel(replacement)]
+            : null,
+        ["Registrado", replacementDetailCreatedLabel(replacement.createdAt)]
+    ].filter(Boolean);
+
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.innerHTML = `
+        <section class="turn-change-dialog replacement-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="replacementDetailTitle">
+            <strong id="replacementDetailTitle">${escapeHTML(title)}</strong>
+            <p>
+                Para modificar este turno extra debes anular el reemplazo aplicado.
+            </p>
+            <div class="leave-detail-rows replacement-detail-rows">
+                ${details.map(([label, value]) => `
+                    <div>
+                        <span>${escapeHTML(label)}</span>
+                        <b>${escapeHTML(value)}</b>
+                    </div>
+                `).join("")}
+            </div>
+            <p class="leave-detail-note">
+                Al anularlo, se quitara este turno extra del calendario del trabajador que cubre y se actualizara la cobertura del trabajador reemplazado.
+            </p>
+            <div class="turn-change-dialog__actions">
+                <button class="secondary-button" type="button" data-action="cancel">
+                    Cancelar
+                </button>
+                <button class="leave-detail-undo" type="button" data-action="undo">
+                    Anular reemplazo
+                </button>
+            </div>
+        </section>
+    `;
+
+    const close = () => {
+        document.removeEventListener("keydown", onKeydown);
+        backdrop.remove();
+    };
+
+    const onKeydown = event => {
+        if (event.key === "Escape") {
+            close();
+        }
+    };
+
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) {
+            close();
+        }
+    });
+
+    backdrop
+        .querySelector("[data-action='cancel']")
+        .onclick = close;
+
+    backdrop
+        .querySelector("[data-action='undo']")
+        .onclick = async () => {
+            const confirmed = await showConfirm(
+                `Se anulara el reemplazo de ${replacement.worker} para el ${replacementDetailDateLabel(replacement.date)}.`,
+                {
+                    title: "Anular reemplazo",
+                    tone: "danger",
+                    confirmText: "Anular reemplazo",
+                    cancelText: "Volver",
+                    destructive: true
+                }
+            );
+
+            if (!confirmed) return;
+
+            await withBusyState(async () => {
+                if (typeof window.pushUndoState === "function") {
+                    window.pushUndoState("Anular reemplazo");
+                }
+
+                if (replacement.isLoan && replacement.interUnitLoanId) {
+                    await cancelInterUnitLoan(
+                        replacement.interUnitLoanId,
+                        replacement.hostWorkspaceId || ""
+                    );
+                }
+
+                const canceled = cancelReplacementById(
+                    replacement.id,
+                    {
+                        reason: "supervisor_canceled",
+                        details: "Reemplazo anulado desde el calendario."
+                    }
+                );
+
+                if (!canceled) {
+                    alert("No se pudo anular el reemplazo. Es posible que ya haya cambiado.");
+                    return;
+                }
+
+                close();
+
+                await updateDayCell(
+                    canceled.worker || profileName,
+                    canceled.date || keyDay
+                );
+
+                if (canceled.replaced) {
+                    await updateDayCell(
+                        canceled.replaced,
+                        canceled.date || keyDay
+                    );
+                }
+
+                updateTimelineCells(
+                    canceled.worker || profileName,
+                    [keyDay]
+                );
+
+                if (canceled.replaced) {
+                    updateTimelineCells(
+                        canceled.replaced,
+                        [keyDay]
+                    );
+                }
+            }, {
+                label: "Anulando reemplazo..."
+            });
+        };
+
+    document.addEventListener("keydown", onKeydown);
+    document.body.appendChild(backdrop);
+    backdrop
+        .querySelector("[data-action='undo']")
+        ?.focus();
+
+    return true;
+}
+
+window.openReplacementDetailDialog = openReplacementDetailDialog;
 
 function sameRoleProfiles(profileName) {
     const profiles = getProfiles();
@@ -4981,6 +5271,21 @@ async function clickDia(
         return handleTurnChangeDayClick(turnChange);
     }
 
+    const workerReplacement =
+        getReplacementForWorkerShift(profileName, keyDay);
+    const directEditEnabled =
+        typeof window.calendarDirectEditEnabled === "function"
+            ? window.calendarDirectEditEnabled()
+            : true;
+
+    if (workerReplacement && !directEditEnabled) {
+        return openReplacementDetailDialog(
+            profileName,
+            keyDay,
+            workerReplacement.id || ""
+        );
+    }
+
     if (window.selectionMode === "halfadmin") return;
     if (window.selectionMode) return;
 
@@ -5028,11 +5333,6 @@ async function clickDia(
         return;
     }
 
-    const directEditEnabled =
-        typeof window.calendarDirectEditEnabled === "function"
-            ? window.calendarDirectEditEnabled()
-            : true;
-
     if (!directEditEnabled) {
         return;
     }
@@ -5047,33 +5347,37 @@ async function clickDia(
     const currentState = Number.isFinite(previewState)
         ? previewState
         : getActualState(profileName, keyDay);
-    const nuevo = siguienteTurnoValido(
-        profileName,
-        keyDay,
-        currentState,
-        isHab,
-        {
-            baseTurno
-        }
-    );
-
-    if (Number(nuevo) === Number(currentState)) {
-        event.stopPropagation();
-        return;
-    }
-
     const effectiveBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
         baseTurno,
         { includeReplacements: false }
     );
+    const directEditTurn = getProtectedDirectEditTurn(
+        profileName,
+        keyDay,
+        currentState,
+        isHab,
+        { effectiveBaseTurn }
+    );
+    const nuevo = directEditTurn.nextVisibleTurn;
+    const turnToStore = directEditTurn.nextStoredTurn;
+    const protectedBaseTurn = directEditTurn.protectedBaseTurn;
+
+    if (Number(nuevo) === Number(currentState)) {
+        event.stopPropagation();
+        return;
+    }
+
     const manualExtra = Boolean(
         getShiftAssigned(
             profileName,
             options.date || dateFromKeyDay(keyDay)
         ) &&
-        getTurnoExtraAgregado(effectiveBaseTurn, nuevo)
+        getTurnoExtraAgregado(
+            protectedBaseTurn || effectiveBaseTurn,
+            nuevo
+        )
     );
 
     previewDirectTurnChange(
@@ -5084,7 +5388,7 @@ async function clickDia(
         {
             profileName,
             keyDay,
-            baseTurn: effectiveBaseTurn,
+            baseTurn: protectedBaseTurn || effectiveBaseTurn,
             manualExtra
         }
     );
@@ -5099,7 +5403,7 @@ async function clickDia(
             nuevo
         );
     }
-    saveProfileDayTurn(keyDay, nuevo, profileName);
+    saveProfileDayTurn(keyDay, turnToStore, profileName);
     recordCalendarDirectEditChange({
         profileName,
         keyDay,

@@ -1104,6 +1104,7 @@ function ensureTimelineCellDelegation(container) {
 
         const cell = event.target.closest(
             "[data-replacement-profile]," +
+            "[data-worker-replacement-profile]," +
             "[data-extra-profile]," +
             "[data-clock-extra-profile]," +
             "[data-contract-error-profile]," +
@@ -1116,6 +1117,12 @@ function ensureTimelineCellDelegation(container) {
             window.openReplacementDialog?.(
                 cell.dataset.replacementProfile,
                 cell.dataset.replacementKey
+            );
+        } else if (cell.dataset.workerReplacementProfile) {
+            window.openReplacementDetailDialog?.(
+                cell.dataset.workerReplacementProfile,
+                cell.dataset.workerReplacementKey,
+                cell.dataset.workerReplacementId || ""
             );
         } else if (cell.dataset.extraProfile) {
             window.openExtraReasonDialog?.(
@@ -3065,6 +3072,7 @@ function renderTimelineDayCell(profile, d, {
             ${contractError ? `data-contract-error-profile="${escapeHtml(profile.name)}" data-contract-error-key="${escapeHtml(key)}"` : ""}
             ${showHonorariaLimit ? `data-honoraria-limit-profile="${escapeHtml(profile.name)}" data-honoraria-limit-key="${escapeHtml(key)}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
             ${needsReplacement ? `data-replacement-profile="${escapeHtml(profile.name)}" data-replacement-key="${escapeHtml(key)}"` : ""}
+            ${replacement ? `data-worker-replacement-profile="${escapeHtml(profile.name)}" data-worker-replacement-key="${escapeHtml(key)}" data-worker-replacement-id="${escapeHtml(replacement.id || "")}"` : ""}
             ${showExtraReason ? `data-extra-profile="${escapeHtml(profile.name)}" data-extra-key="${escapeHtml(key)}" data-extra-turn="${escapeHtml(showExtraReason)}"` : ""}
             ${showClockExtra && !showExtraReason ? `data-clock-extra-profile="${escapeHtml(profile.name)}" data-clock-extra-key="${escapeHtml(key)}" data-clock-extra-turn="${escapeHtml(realTurn)}"` : ""}
         >

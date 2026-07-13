@@ -83,7 +83,7 @@ test("el calendario relee el turno y guarda solo la fecha pulsada", async () => 
     );
     assert.match(
         source,
-        /saveProfileDayTurn\(keyDay, nuevo, profileName\)/
+        /saveProfileDayTurn\(keyDay, turnToStore, profileName\)/
     );
     assert.match(
         source,

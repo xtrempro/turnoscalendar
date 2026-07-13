@@ -700,6 +700,27 @@ function allowedTurnsForBase(baseTurno, isHab) {
         ];
     }
 
+    if (base === TURNO.DIURNO) {
+        return [
+            TURNO.DIURNO,
+            ...(isHab ? [TURNO.DIURNO_NOCHE] : [])
+        ];
+    }
+
+    if (
+        base === TURNO.TURNO24 ||
+        base === TURNO.DIURNO_NOCHE
+    ) {
+        return [base];
+    }
+
+    if (base === TURNO.TURNO18) {
+        return [
+            TURNO.TURNO18,
+            TURNO.TURNO24
+        ];
+    }
+
     return null;
 }
 
@@ -761,6 +782,49 @@ export function siguienteTurnoValido(
     }
 
     return candidate;
+}
+
+export function getProtectedDirectEditTurn(
+    nombre,
+    key,
+    actual,
+    isHab = true,
+    options = {}
+) {
+    const effectiveBaseTurn =
+        Number(options.effectiveBaseTurn) || TURNO.LIBRE;
+    const hasReplacementTurnOverride =
+        Object.prototype.hasOwnProperty.call(options, "replacementTurn");
+    const replacementTurn = hasReplacementTurnOverride
+        ? Number(options.replacementTurn) || TURNO.LIBRE
+        : getReplacementTurnForWorker(nombre, key);
+    const protectedBaseTurn = replacementTurn
+        ? fusionarTurnos(effectiveBaseTurn, replacementTurn)
+        : effectiveBaseTurn;
+    const nextVisibleTurn = siguienteTurnoValido(
+        nombre,
+        key,
+        actual,
+        isHab,
+        {
+            ...options,
+            baseTurno: protectedBaseTurn
+        }
+    );
+    const complementTurn = replacementTurn
+        ? restarTurnoCubierto(nextVisibleTurn, replacementTurn)
+        : TURNO.LIBRE;
+    const nextStoredTurn = replacementTurn
+        ? fusionarTurnos(effectiveBaseTurn, complementTurn)
+        : nextVisibleTurn;
+
+    return {
+        replacementTurn,
+        protectedBaseTurn,
+        nextVisibleTurn,
+        nextStoredTurn,
+        complementTurn
+    };
 }
 
 export function getTurnoBase(nombre, key) {

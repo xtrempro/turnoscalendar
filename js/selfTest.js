@@ -21,6 +21,7 @@ import {
     saveProfiles,
     saveRotativa,
     saveBaseProfileData,
+    saveProfileDayTurn,
     saveSwaps,
     saveTurnChangeConfig,
     getAdminDays,
@@ -31,6 +32,7 @@ import {
 } from "./storage.js";
 import {
     aplicarCambiosTurno,
+    getProtectedDirectEditTurn,
     getTurnoBase,
     getTurnoProgramado
 } from "./turnEngine.js";
@@ -465,6 +467,137 @@ const TESTS = [
                     { estamento: "Profesional", profession: "Enfermería" }
                 ) === false,
                 "distinto estamento no deberia ser compatible"
+            );
+        }
+    },
+    {
+        name: "Edicion directa: protege turno extra de reemplazo",
+        run() {
+            const changeKey = key(2026, 6, 6);
+
+            saveProfiles([
+                selfTestProfile(FAKE_PROFILE),
+                selfTestProfile(FAKE_SWAP_RECEIVER)
+            ]);
+            saveTurnChangeConfig({
+                allowSwaps: true,
+                allowDifferentTurnTypes: true,
+                allowTwentyFourHourShifts: true,
+                allowInvertedTwentyFourHourShifts: true,
+                limitMonthlySwaps: false
+            });
+            setJSON("replacements", []);
+            saveBaseProfileData({
+                [changeKey]: TURNO.LIBRE
+            }, FAKE_PROFILE);
+            saveReplacement({
+                worker: FAKE_PROFILE,
+                replaced: FAKE_SWAP_RECEIVER,
+                keyDay: changeKey,
+                turno: TURNO.NOCHE,
+                absenceType: "P. Administrativo",
+                source: "replacement"
+            });
+
+            const current = () => aplicarCambiosTurno(
+                FAKE_PROFILE,
+                changeKey,
+                getTurnoProgramado(FAKE_PROFILE, changeKey)
+            );
+
+            assertEqual(
+                current(),
+                TURNO.NOCHE,
+                "el reemplazo nocturno deberia mostrarse como turno protegido"
+            );
+
+            const firstClick = getProtectedDirectEditTurn(
+                FAKE_PROFILE,
+                changeKey,
+                current(),
+                true,
+                { effectiveBaseTurn: TURNO.LIBRE }
+            );
+
+            assertEqual(
+                firstClick.nextVisibleTurn,
+                TURNO.TURNO24,
+                "primer click deberia completar 24 visible"
+            );
+            assertEqual(
+                firstClick.nextStoredTurn,
+                TURNO.LARGA,
+                "solo deberia guardarse el complemento larga"
+            );
+            saveProfileDayTurn(
+                changeKey,
+                firstClick.nextStoredTurn,
+                FAKE_PROFILE
+            );
+            assertEqual(
+                current(),
+                TURNO.TURNO24,
+                "el calendario deberia fusionar larga manual + noche de reemplazo"
+            );
+
+            const secondClick = getProtectedDirectEditTurn(
+                FAKE_PROFILE,
+                changeKey,
+                current(),
+                true,
+                { effectiveBaseTurn: TURNO.LIBRE }
+            );
+
+            assertEqual(
+                secondClick.nextVisibleTurn,
+                TURNO.DIURNO_NOCHE,
+                "segundo click deberia permitir D+N en dia habil"
+            );
+            assertEqual(
+                secondClick.nextStoredTurn,
+                TURNO.DIURNO,
+                "solo deberia guardarse el complemento diurno"
+            );
+            saveProfileDayTurn(
+                changeKey,
+                secondClick.nextStoredTurn,
+                FAKE_PROFILE
+            );
+
+            const thirdClick = getProtectedDirectEditTurn(
+                FAKE_PROFILE,
+                changeKey,
+                current(),
+                true,
+                { effectiveBaseTurn: TURNO.LIBRE }
+            );
+
+            assertEqual(
+                thirdClick.nextVisibleTurn,
+                TURNO.NOCHE,
+                "el ciclo puede quitar el complemento manual, pero no el reemplazo"
+            );
+            assertEqual(
+                thirdClick.nextStoredTurn,
+                TURNO.LIBRE,
+                "al volver al reemplazo puro no debe guardarse el turno de reemplazo como manual"
+            );
+            saveProfileDayTurn(
+                changeKey,
+                thirdClick.nextStoredTurn,
+                FAKE_PROFILE
+            );
+            assertEqual(
+                current(),
+                TURNO.NOCHE,
+                "el reemplazo debe seguir visible tras quitar el complemento manual"
+            );
+            assert(
+                getReplacements().some(replacement =>
+                    replacement.worker === FAKE_PROFILE &&
+                    replacement.canceled !== true
+                ),
+                "el reemplazo no deberia quedar cancelado por la edicion directa"
             );
         }
     },

@@ -326,6 +326,96 @@ export function cancelFutureReplacementsForWorker(
     return canceled;
 }
 
+export function cancelReplacementById(
+    replacementId,
+    {
+        reason = "supervisor_canceled",
+        details = "Reemplazo anulado por el supervisor.",
+        canceledBy = "Calendario"
+    } = {}
+) {
+    const id = String(replacementId || "");
+
+    if (!id) return null;
+
+    const canceledAt = new Date().toISOString();
+    let canceled = null;
+    const replacements = getReplacements().map(replacement => {
+        if (
+            String(replacement?.id || "") !== id ||
+            !replacementActive(replacement)
+        ) {
+            return replacement;
+        }
+
+        canceled = {
+            ...replacement,
+            canceled: true,
+            canceledAt,
+            canceledBy,
+            cancelReason: reason,
+            cancellationDetails: details
+        };
+
+        return canceled;
+    });
+
+    if (!canceled) return null;
+
+    saveReplacements(replacements);
+    cancelLinkedRequestsForReplacements([canceled], {
+        canceledAt,
+        reason,
+        details
+    });
+
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(
+            new CustomEvent("proturnos:calendarProfilesChanged", {
+                detail: {
+                    profiles: [
+                        canceled.worker,
+                        canceled.replaced
+                    ].filter(Boolean),
+                    metadata: {
+                        changeType: "replacement_canceled",
+                        source: canceled.source || "replacement",
+                        title: canceled.replaced
+                            ? "Reemplazo anulado"
+                            : "Turno extra anulado",
+                        message: canceled.replaced
+                            ? `Se anulo el reemplazo del ${formatNotificationDate(canceled.date)}.`
+                            : `Se anulo un turno extra para el ${formatNotificationDate(canceled.date)}.`,
+                        affectedDates: [canceled.date].filter(Boolean),
+                        entityId: canceled.id,
+                        notifyProfiles: [canceled.worker].filter(Boolean)
+                    }
+                }
+            })
+        );
+    }
+
+    addAuditLog(
+        AUDIT_CATEGORY.OVERTIME,
+        canceled.replaced
+            ? "Anulo reemplazo de turno"
+            : "Anulo turno extra",
+        canceled.replaced
+            ? `${canceled.worker} dejo de cubrir a ${canceled.replaced} el ${canceled.date}.`
+            : `${canceled.worker}: turno extra anulado el ${canceled.date}.`,
+        {
+            profile: canceled.worker,
+            replacementId: canceled.id,
+            worker: canceled.worker,
+            replaced: canceled.replaced || "",
+            source: canceled.source || "",
+            cancelReason: reason
+        }
+    );
+
+    return canceled;
+}
+
 export function getReplacementTurnForWorker(profile, keyDay) {
     return getReplacementsForWorkerShift(profile, keyDay)
         .filter(replacementAddsShift)

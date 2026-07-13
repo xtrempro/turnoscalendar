@@ -35,6 +35,7 @@ globalThis.localStorage = new MemoryStorage();
 
 const { getJSON, setJSON } = await import("../js/persistence.js");
 const {
+    cancelReplacementById,
     cancelReplacementsForWorkerKeys,
     getActiveReplacementsForWorkerKeys
 } = await import("../js/replacements.js");
@@ -132,6 +133,30 @@ test("detecta todos los turnos extra del trabajador dentro de la licencia", () =
         conflicts.map(item => item.id).sort(),
         ["backup", "extra"]
     );
+});
+
+test("anula un reemplazo puntual por id y cancela sus solicitudes vinculadas", () => {
+    const canceled = cancelReplacementById("extra", {
+        reason: "supervisor_canceled",
+        details: "Prueba"
+    });
+    const replacements = getJSON("replacements", []);
+    const requests = getJSON("replacementRequests", []);
+    const byId = Object.fromEntries(
+        replacements.map(item => [item.id, item])
+    );
+    const requestById = Object.fromEntries(
+        requests.map(item => [item.id, item])
+    );
+
+    assert.equal(canceled.id, "extra");
+    assert.equal(byId.extra.canceled, true);
+    assert.equal(byId.extra.cancelReason, "supervisor_canceled");
+    assert.equal(byId.backup.canceled, false);
+    assert.equal(byId["covers-ana"].canceled, false);
+    assert.equal(requestById["request-1"].status, "canceled");
+    assert.equal(requestById["request-2"].status, "canceled");
+    assert.equal(requestById["request-3"].status, "pending");
 });
 
 test("anula los turnos extra y su grupo de solicitudes, sin tocar otras coberturas", () => {

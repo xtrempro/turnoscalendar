@@ -5114,6 +5114,14 @@ body.auth-gate-active .app-shell {
     cursor: default;
 }
 
+.replacement-detail-dialog {
+    width: min(500px, 100%);
+}
+
+.replacement-detail-rows {
+    margin-bottom: 12px;
+}
+
 .worker-app-invite-dialog {
     width: min(520px, 100%);
 }

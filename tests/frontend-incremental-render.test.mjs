@@ -199,6 +199,16 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
         timelineSource,
         /openReplacementDialog\?\.\(\s*cell\.dataset\.replacementProfile,\s*cell\.dataset\.replacementKey/
     );
+    assert.match(calendarSource, /openReplacementDetailDialog\(/);
+    assert.match(calendarSource, /cancelReplacementById\(/);
+    assert.match(
+        timelineSource,
+        /data-worker-replacement-profile/
+    );
+    assert.match(
+        timelineSource,
+        /openReplacementDetailDialog\?\.\(\s*cell\.dataset\.workerReplacementProfile/
+    );
     assert.match(calendarSource, /showTimelinePendingMonth\(/);
     assert.match(calendarSource, /CALENDAR_CACHE_PREFIX/);
     assert.match(calendarSource, /CALENDAR_CACHE_WRITE_DELAY_MS/);
