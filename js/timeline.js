@@ -1258,9 +1258,89 @@ export function updateTimelineCells(profileName, keys = null) {
     if (updated) {
         clearLegacyTimelineCache();
         clearTimelineRowCacheForProfiles(new Set([profileName]));
+        // Un turno extra / reemplazo cambia las HH.EE del mes: recomputa SOLO
+        // este trabajador y refresca su columna de HH.EE. Sin esto la columna
+        // quedaba con el valor previo (0 -> vacía) tras editar (regresión de la
+        // actualización incremental de casillas).
+        refreshTimelineRowHheeCells(
+            rowCell.closest("[data-timeline-row]"),
+            profile,
+            { year, month, diasMes, holidays }
+        );
     }
 
     return updated;
+}
+
+// Recalcula y actualiza SOLO las columnas de HH.EE (diurnas/nocturnas) de la
+// fila de un trabajador, sin reconstruir el resto de la fila. Reutiliza el MISMO
+// motor de horas que Reportes (calcularHorasMesPerfil vía
+// computeTimelineRowMetrics), computa un único trabajador y persiste la caché de
+// métricas para que un render completo posterior sea coherente.
+function refreshTimelineRowHheeCells(row, profile, {
+    year,
+    month,
+    diasMes,
+    holidays
+}) {
+    if (!row || !profile) return;
+
+    const dayCell = row.querySelector(".timeline-hhee--day");
+    const nightCell = row.querySelector(".timeline-hhee--night");
+
+    if (!dayCell && !nightCell) return;
+
+    const { stats, honorariaSummary, totalHhee } = computeTimelineRowMetrics({
+        profile,
+        year,
+        month,
+        diasMes,
+        holidays,
+        data: getTimelineCachedData(profile.name)
+    });
+    const dayHhee = honorariaSummary
+        ? honorariaSummary.overtimeDay
+        : stats.hheeDiurnas;
+    const nightHhee = honorariaSummary
+        ? honorariaSummary.overtimeNight
+        : stats.hheeNocturnas;
+    const honorariaHheeClass =
+        honorariaSummary?.overtimeHours > 0
+            ? " honoraria-hhee-excess"
+            : "";
+
+    if (dayCell) {
+        dayCell.className =
+            "timeline-hhee timeline-hhee--day" +
+            dayExtraAlertClass(
+                profile.name,
+                dayHhee,
+                new Date(year, month, 1)
+            ) +
+            honorariaHheeClass;
+        dayCell.textContent = formatTimelineHours(dayHhee);
+    }
+
+    if (nightCell) {
+        nightCell.className =
+            "timeline-hhee timeline-hhee--night" + honorariaHheeClass;
+        nightCell.textContent = formatTimelineHours(nightHhee);
+    }
+
+    const workerId = timelineWorkerId(profile);
+    const monthKey = timelineMonthKey(year, month);
+
+    writeTimelineMetricsCache(
+        timelineMetricsCacheKey({ monthKey, workerId }),
+        {
+            monthKey,
+            workerId,
+            profileName: profile.name,
+            stats,
+            honorariaSummary,
+            totalHhee
+        }
+    );
 }
 
 function getData(nombre){

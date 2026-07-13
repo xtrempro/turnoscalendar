@@ -4726,6 +4726,10 @@ async function openExtraReasonDialog(
 
         close();
         await updateDayCell(profileName, keyDay);
+
+        // Refresca la fila del timeline (casillas del dia + columna de HH.EE) del
+        // trabajador que tomo el turno extra, sin reconstruir todo el timeline.
+        updateTimelineCells(profileName, [keyDay]);
     };
 
     backdrop.addEventListener("click", event => {
