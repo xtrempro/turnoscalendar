@@ -1,7 +1,7 @@
 // Helpers puros para la busqueda de perfiles del buscador superior: normalizar
 // la consulta, construir el texto/llaves de busqueda y encontrar coincidencias.
 
-import { normalizeText } from "./stringUtils.js";
+import { normalizeText, stripAccents } from "./stringUtils.js";
 import { normalizeProfession, SIN_INFORMACION_PROFESSION } from "./storage.js";
 import { formatProfession } from "./professionUtils.js";
 
@@ -43,6 +43,26 @@ export function getCalendarProfileSearchValue(profile = {}) {
     if (!name) return "";
 
     return `${name}${separator}${getCalendarProfileDetail(profile)}`;
+}
+
+/**
+ * Valores que se entregan al datalist del buscador del calendario principal.
+ * El datalist del navegador puede filtrar por texto literal, por lo que una
+ * opcion "Jose" permite encontrar/seleccionar "José" aunque el perfil este
+ * guardado con tildes en nombre, profesion o estamento.
+ *
+ * @param {Object} profile
+ * @returns {string[]}
+ */
+export function getCalendarProfileSearchOptionValues(profile = {}) {
+    const value = getCalendarProfileSearchValue(profile);
+    const accentFreeValue = stripAccents(value);
+
+    return [value, accentFreeValue]
+        .filter(Boolean)
+        .filter((item, index, values) =>
+            values.indexOf(item) === index
+        );
 }
 
 /**

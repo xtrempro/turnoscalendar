@@ -40,6 +40,24 @@ const ENTRY_VISIBLE_RETRY_MS = 60000;
 const REMOTE_APPLY_BATCH_SIZE = 4;
 const REMOTE_APPLY_ACTIVE_RETRY_MS = 30000;
 const REMOTE_APPLY_CALENDAR_RETRY_MS = 90000;
+const WORKER_CALENDAR_URGENT_STATE_PREFIXES = [
+    "data_",
+    "baseData_",
+    "admin_",
+    "legal_",
+    "comp_",
+    "absences_",
+    "rotativa_",
+    "shift_",
+    "shiftAssignmentHistory_"
+];
+const WORKER_CALENDAR_URGENT_STATE_KEYS = new Set([
+    "replacements",
+    "swaps",
+    "manualHolidays",
+    "turnoColorConfig",
+    "profiles"
+]);
 
 let activeWorkspaceId = "";
 let unsubscribeState = null;
@@ -48,6 +66,7 @@ let entrySyncTimer = null;
 let applyingRemoteState = false;
 let waitingInitialState = false;
 let entrySyncInFlight = false;
+let urgentEntrySyncPending = false;
 let remoteApplyTimer = null;
 let remoteApplyInFlight = false;
 let entryLastUserActivityAt = Date.now();
@@ -109,6 +128,15 @@ function firebaseStateInteractiveDelay(quietMs = ENTRY_USER_QUIET_MS) {
     return firebaseStateHasPendingInput()
         ? Math.max(delay, ENTRY_ACTIVE_RETRY_MS)
         : delay;
+}
+
+export function isWorkerCalendarUrgentStateKey(key) {
+    const value = String(key || "");
+
+    return WORKER_CALENDAR_URGENT_STATE_KEYS.has(value) ||
+        WORKER_CALENDAR_URGENT_STATE_PREFIXES.some(prefix =>
+            value.startsWith(prefix)
+        );
 }
 
 function firebaseRemoteApplyDelay() {
@@ -353,7 +381,11 @@ function canReadModule(moduleId) {
     return canViewMenu(permission);
 }
 
-function scheduleEntrySync(delay = ENTRY_SYNC_DELAY_MS) {
+function scheduleEntrySync(delay = ENTRY_SYNC_DELAY_MS, options = {}) {
+    if (options.urgent) {
+        urgentEntrySyncPending = true;
+    }
+
     if (
         !pendingStateEntries.size ||
         !activeWorkspaceId ||
@@ -381,7 +413,7 @@ function queueGroupedPartialStateEntries(entries = []) {
     });
 }
 
-function queuePartialStateEntries(entries = []) {
+function queuePartialStateEntries(entries = [], options = {}) {
     queueGroupedPartialStateEntries(entries);
 
     if (
@@ -391,7 +423,10 @@ function queuePartialStateEntries(entries = []) {
             waitingInitialState
     ) return;
 
-    scheduleEntrySync();
+    scheduleEntrySync(
+        options.urgent ? 0 : ENTRY_SYNC_DELAY_MS,
+        { urgent: options.urgent }
+    );
 }
 
 async function flushPartialStateEntries() {
@@ -405,7 +440,9 @@ async function flushPartialStateEntries() {
         entrySyncInFlight
     ) return;
 
-    const interactiveDelay = firebaseStateInteractiveDelay();
+    const urgent = urgentEntrySyncPending;
+    urgentEntrySyncPending = false;
+    const interactiveDelay = urgent ? 0 : firebaseStateInteractiveDelay();
 
     if (interactiveDelay > 0) {
         recordPerformanceEvent("firebase-app-state:commit-deferred", {
@@ -437,7 +474,7 @@ async function flushPartialStateEntries() {
         ) {
             if (workspaceId !== activeWorkspaceId) return;
 
-            const deferredDelay = firebaseStateInteractiveDelay();
+            const deferredDelay = urgent ? 0 : firebaseStateInteractiveDelay();
 
             if (deferredDelay > 0) {
                 queueGroupedPartialStateEntries(documents.slice(offset));
@@ -558,7 +595,10 @@ async function flushPartialStateEntries() {
         entrySyncInFlight = false;
 
         if (pendingStateEntries.size) {
-            scheduleEntrySync(firebaseStateInteractiveDelay());
+            scheduleEntrySync(
+                urgentEntrySyncPending ? 0 : firebaseStateInteractiveDelay(),
+                { urgent: urgentEntrySyncPending }
+            );
         }
     }
 }
@@ -1171,7 +1211,10 @@ if (typeof window !== "undefined") {
                 changes: event.detail?.changes || {},
                 readRaw: key => getRaw(key, null),
                 moduleForKey: stateModuleForKey
-            })
+            }),
+            {
+                urgent: stateKeys.some(isWorkerCalendarUrgentStateKey)
+            }
         );
     });
 }

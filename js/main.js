@@ -98,6 +98,7 @@ import {
 import {
     normalizeProfileSearch,
     getCalendarProfileSearchValue,
+    getCalendarProfileSearchOptionValues,
     findTopProfileSearchMatch
 } from "./profileSearchUtils.js";
 import {
@@ -5639,9 +5640,18 @@ function syncTopProfileSearch() {
     DOM.topProfileOptions.innerHTML = "";
 
     profiles.forEach(profile => {
-        const option = document.createElement("option");
-        option.value = getCalendarProfileSearchValue(profile);
-        DOM.topProfileOptions.appendChild(option);
+        const searchValue = getCalendarProfileSearchValue(profile);
+        getCalendarProfileSearchOptionValues(profile)
+            .forEach(value => {
+                const option = document.createElement("option");
+                option.value = value;
+
+                if (value !== searchValue) {
+                    option.label = searchValue;
+                }
+
+                DOM.topProfileOptions.appendChild(option);
+            });
     });
 }
 

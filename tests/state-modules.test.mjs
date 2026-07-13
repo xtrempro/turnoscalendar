@@ -5,6 +5,9 @@ import {
     stateModuleForKey,
     stateModulePermission
 } from "../js/firebaseStateModules.js";
+import {
+    isWorkerCalendarUrgentStateKey
+} from "../js/firebaseAppState.js";
 
 test("clasifica las claves persistidas por modulo de seguridad", () => {
     const cases = {
@@ -57,4 +60,28 @@ test("divide un snapshot sin mezclar permisos", () => {
         Object.keys(modules.system),
         ["unknown_sensitive_setting"]
     );
+});
+
+test("marca cambios de calendario PWA como sincronizacion urgente", () => {
+    [
+        "data_Ana",
+        "baseData_Ana",
+        "admin_Ana",
+        "legal_Ana",
+        "comp_Ana",
+        "absences_Ana",
+        "rotativa_Ana",
+        "shift_Ana",
+        "shiftAssignmentHistory_Ana",
+        "replacements",
+        "swaps",
+        "manualHolidays",
+        "turnoColorConfig",
+        "profiles"
+    ].forEach(key => {
+        assert.equal(isWorkerCalendarUrgentStateKey(key), true, key);
+    });
+
+    assert.equal(isWorkerCalendarUrgentStateKey("memos"), false);
+    assert.equal(isWorkerCalendarUrgentStateKey("agenda_contacts"), false);
 });

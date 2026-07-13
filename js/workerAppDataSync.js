@@ -62,6 +62,7 @@ import {
 // Publicacion "caliente" (mes en curso + siguiente): se agenda con margen
 // para no competir con clicks/cambios de mes del calendario principal.
 const HOT_PUBLISH_DELAY_MS = 12000;
+const CALENDAR_CHANGE_PUBLISH_DELAY_MS = 3000;
 const INITIAL_PUBLISH_DELAY_MS = 5000;
 const WORKER_APP_USER_QUIET_MS = 45000;
 const WORKER_APP_ACTIVE_RETRY_MS = 8000;
@@ -1990,7 +1991,11 @@ function applyDirtyFromKeys(keys, changes = {}) {
 
     if (!relevant) return;
 
-    scheduleHotPublish();
+    // La proyeccion ahora corre en servidor y este paso solo escribe un
+    // marcador liviano. Para cambios de calendario no conviene esperar el
+    // debounce largo: la PWA puede recibir la notificacion antes de que su
+    // calendario quede actualizado.
+    scheduleHotPublish(CALENDAR_CHANGE_PUBLISH_DELAY_MS);
 }
 
 function currentWorkspace() {

@@ -2671,6 +2671,38 @@ function normalizeCalendarEvent(raw = {}, workspaceId, eventId) {
   };
 }
 
+async function requestWorkerCalendarProjection(workspaceRef, calendarEvent, eventId) {
+  const profileName = cleanCallableText(
+    calendarEvent.profileName || calendarEvent.workerId,
+    180
+  );
+
+  if (!profileName) return;
+
+  await workspaceRef
+    .collection("projectionRequests")
+    .doc(`calendar_${eventId}`)
+    .set({
+      profiles: [profileName],
+      source: "calendar_event",
+      eventId,
+      requestedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: false })
+    .catch((error) => {
+      // Si el marcador ya existe por reintento, la proyeccion ya quedo
+      // solicitada. No se debe bloquear la notificacion por este respaldo.
+      if (String(error?.code || "") !== "6" &&
+          String(error?.message || "").toLowerCase().includes("already exists") === false) {
+        logger.warn("No se pudo solicitar proyeccion PWA desde evento de calendario.", {
+          workspaceId: calendarEvent.workspaceId,
+          eventId,
+          profileName,
+          error: error?.message || String(error)
+        });
+      }
+    });
+}
+
 exports.processWorkerCalendarEvent = onDocumentCreated(
   {
     document: "workspaces/{workspaceId}/calendarEvents/{eventId}",
@@ -2717,6 +2749,8 @@ exports.processWorkerCalendarEvent = onDocumentCreated(
     const profileName = calendarEvent.profileName ||
       cleanCallableText(link.profileName, 180);
     const deepLink = calendarEventDeepLink(calendarEvent);
+
+    await requestWorkerCalendarProjection(workspaceRef, calendarEvent, eventId);
 
     let shouldSendPush = false;
 
