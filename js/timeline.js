@@ -4278,7 +4278,7 @@ async function appendTimelineRows(options = {}) {
     }
 }
 
-async function refreshVisibleTimelineRows(profileNames = new Set()) {
+async function refreshVisibleTimelineRows(profileNames = new Set(), options = {}) {
     if (!profileNames.size || !timelineViewState) return false;
 
     const container = document.getElementById("teamTimeline");
@@ -4322,7 +4322,10 @@ async function refreshVisibleTimelineRows(profileNames = new Set()) {
         const rowData = buildFreshTimelineRow(
             profile,
             context,
-            holidays
+            holidays,
+            {
+                forceFreshMetrics: options.forceFreshMetrics === true
+            }
         );
         const cachedRow = writeFreshTimelineRowCache(
             rowData,
@@ -5068,7 +5071,9 @@ if (typeof window !== "undefined") {
         if (!affectedProfiles.size) return;
 
         clearTimelineRowCacheForProfiles(affectedProfiles);
-        void refreshVisibleTimelineRows(affectedProfiles);
+        void refreshVisibleTimelineRows(affectedProfiles, {
+            forceFreshMetrics: true
+        });
     });
     window.addEventListener("proturnos:firebaseAppState", event => {
         if (event.detail?.type === "app-state-applied") {
