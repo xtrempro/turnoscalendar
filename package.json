@@ -46,6 +46,7 @@
     "test:backend-authorization": "node --test functions/test/authorization.test.js functions/test/getAccountsAndUnits.test.js functions/test/workerSwapRequests.test.js tests/backend-authorization-wiring.test.mjs",
     "test:test-security-config": "node --test tests/test-security-configuration.test.mjs",
     "test:self-test": "node --test tests/self-test.test.mjs",
+    "test:calendar-events": "node --test tests/calendar-change-events.test.mjs",
     "test:main-thread": "node --test tests/main-thread-scheduler.test.mjs",
     "test:pwa": "node --test tests/pwa-install.test.mjs",
     "test:rules": "firebase emulators:exec --project demo-proturnos --only firestore,storage \"node --test tests/security-rules.test.mjs\"",

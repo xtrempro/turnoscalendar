@@ -54,6 +54,10 @@ import {
     recordPerformanceEvent,
     startPerformanceSpan
 } from "./performanceMonitor.js";
+import {
+    buildCalendarChangeEventFromStorageMutation,
+    registerWorkerCalendarChange
+} from "./calendarChangeEvents.js";
 
 // Publicacion "caliente" (mes en curso + siguiente): se agenda con margen
 // para no competir con clicks/cambios de mes del calendario principal.
@@ -1937,16 +1941,19 @@ function classifyChangedKey(key, profiles) {
     return { ignore: true };
 }
 
-function applyDirtyFromKeys(keys) {
+function applyDirtyFromKeys(keys, changes = {}) {
     if (!activeWorkspace?.id || !workerLinks.length) return;
     if (!Array.isArray(keys) || !keys.length) return;
 
     const profiles = getProfiles();
-    const linkedNames = new Set(
-        linkedProfilePairs(profiles)
-            .map(item => item.profile?.name)
-            .filter(Boolean)
-    );
+    const linkedByName = new Map();
+
+    linkedProfilePairs(profiles).forEach(item => {
+        if (item.profile?.name && item.link?.uid) {
+            linkedByName.set(item.profile.name, item);
+        }
+    });
+
     let relevant = false;
 
     for (const key of keys) {
@@ -1961,10 +1968,22 @@ function applyDirtyFromKeys(keys) {
             continue;
         }
 
-        if (result.profileName && linkedNames.has(result.profileName)) {
+        if (result.profileName && linkedByName.has(result.profileName)) {
             // Solo se reacciona a cambios de trabajadores ENLAZADOS: si el
             // perfil no usa la PWA, no se gasta ningun recurso en publicarlo.
             dirtyProfileNames.add(result.profileName);
+            const item = linkedByName.get(result.profileName);
+            const metadata = buildCalendarChangeEventFromStorageMutation({
+                storageKey: key,
+                change: changes[key] || {}
+            });
+
+            registerCalendarEventForLinkedProfile({
+                profile: item.profile,
+                link: item.link,
+                metadata,
+                entityId: key
+            });
             relevant = true;
         }
     }
@@ -1985,6 +2004,28 @@ function linkedProfilePairs(profiles) {
         link,
         profile: findProfileForLink(link, profiles)
     }));
+}
+
+function registerCalendarEventForLinkedProfile({
+    profile,
+    link,
+    metadata,
+    entityId = ""
+}) {
+    if (!profile?.name || !link?.uid || !metadata) return false;
+
+    return registerWorkerCalendarChange({
+        workspaceId: activeWorkspace?.id || "",
+        workerId: profile.id || profile.name,
+        profileName: profile.name,
+        affectedUserId: link.uid,
+        changeType: metadata.changeType,
+        affectedDates: metadata.affectedDates || [],
+        source: metadata.source,
+        title: metadata.title,
+        message: metadata.message,
+        entityId
+    });
 }
 
 // Trabajadores enlazados afectados por los cambios pendientes. Los NO enlazados
@@ -2115,12 +2156,38 @@ async function publishHotNow() {
 
 export function scheduleWorkerAppDataPublish(
     delay = HOT_PUBLISH_DELAY_MS,
-    profileTargets = []
+    profileTargets = [],
+    changeMetadata = null
 ) {
     if (!activeWorkspace?.id || !workerLinks.length) return;
 
-    normalizeProfileTargets(profileTargets)
-        .forEach(name => dirtyProfileNames.add(name));
+    const normalizedTargets = normalizeProfileTargets(profileTargets);
+
+    normalizedTargets.forEach(name => dirtyProfileNames.add(name));
+
+    if (changeMetadata) {
+        const profiles = getProfiles();
+        const linkedByName = new Map();
+
+        linkedProfilePairs(profiles).forEach(item => {
+            if (item.profile?.name && item.link?.uid) {
+                linkedByName.set(item.profile.name, item);
+            }
+        });
+
+        normalizedTargets.forEach(name => {
+            const item = linkedByName.get(name);
+
+            if (!item) return;
+
+            registerCalendarEventForLinkedProfile({
+                profile: item.profile,
+                link: item.link,
+                metadata: changeMetadata,
+                entityId: changeMetadata.entityId || ""
+            });
+        });
+    }
 
     if (!dirtyProfileNames.size && !dirtyWorkerUids.size) return;
 
@@ -2317,6 +2384,19 @@ if (typeof window !== "undefined") {
     });
 
     window.addEventListener("proturnos:persistenceChanged", event => {
-        applyDirtyFromKeys(event?.detail?.keys);
+        applyDirtyFromKeys(
+            event?.detail?.keys,
+            event?.detail?.changes || {}
+        );
+    });
+
+    window.addEventListener("proturnos:calendarProfilesChanged", event => {
+        const detail = event?.detail || {};
+
+        scheduleWorkerAppDataPublish(
+            Number(detail.delay) || 300,
+            detail.profiles || [],
+            detail.metadata || null
+        );
     });
 }

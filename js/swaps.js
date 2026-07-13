@@ -273,6 +273,25 @@ export function registrarCambio(data) {
     });
 
     saveSwaps(swaps);
+
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(
+            new CustomEvent("proturnos:calendarProfilesChanged", {
+                detail: {
+                    profiles: [data.from, data.to].filter(Boolean),
+                    metadata: {
+                        changeType: "shift_swap_accepted",
+                        source: "shift_swap",
+                        title: "Cambio de turno registrado",
+                        message: "Se incorporo un cambio de turno a tu calendario.",
+                        affectedDates: [data.fecha, data.devolucion],
+                        entityId: String(id)
+                    }
+                }
+            })
+        );
+    }
+
     addAuditLog(
         AUDIT_CATEGORY.TURN_CHANGES,
         "Registro cambio de turno",
@@ -414,6 +433,25 @@ export function deshacerCambioTurno(swap) {
     );
 
     saveSwaps(swaps);
+
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(
+            new CustomEvent("proturnos:calendarProfilesChanged", {
+                detail: {
+                    profiles: [swap.from, swap.to].filter(Boolean),
+                    metadata: {
+                        changeType: "shift_swap_canceled",
+                        source: "shift_swap",
+                        title: "Cambio de turno anulado",
+                        message: "Se anulo un cambio de turno en tu calendario.",
+                        affectedDates: [swap.fecha, swap.devolucion],
+                        entityId: String(swap.id || "")
+                    }
+                }
+            })
+        );
+    }
+
     addAuditLog(
         AUDIT_CATEGORY.TURN_CHANGES,
         "Anul\u00f3 cambio de turno",

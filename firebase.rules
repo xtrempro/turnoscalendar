@@ -889,6 +889,35 @@ service cloud.firestore {
         }
       }
 
+      match /calendarEvents/{eventId} {
+        allow read: if canManageProfiles(workspaceId);
+        allow create: if canManageProfiles(workspaceId) &&
+          request.resource.data.workspaceId == workspaceId &&
+          request.resource.data.status == "pending" &&
+          request.resource.data.affectedUserId is string &&
+          request.resource.data.affectedUserId.size() <= 160 &&
+          request.resource.data.createdByUid == request.auth.uid &&
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.resource.data.affectedUserId));
+        allow update, delete: if false;
+      }
+
+      match /workerNotifications/{userId} {
+        allow read: if canManageProfiles(workspaceId) ||
+          isLinkedWorker(workspaceId, userId);
+        allow create, update, delete: if false;
+
+        match /items/{notificationId} {
+          allow read: if canManageProfiles(workspaceId) ||
+            isLinkedWorker(workspaceId, userId);
+          allow create, delete: if false;
+          allow update: if isLinkedWorker(workspaceId, userId) &&
+            request.resource.data.diff(resource.data).changedKeys().hasOnly([
+              "isRead",
+              "readAt"
+            ]);
+        }
+      }
+
       match /workerAppData/{userId} {
         allow get: if canReadWorkerData(workspaceId) ||
           isLinkedWorker(workspaceId, userId);

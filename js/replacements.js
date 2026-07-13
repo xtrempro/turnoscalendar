@@ -472,6 +472,34 @@ export function saveReplacement(data) {
     replacements.push(record);
 
     saveReplacements(replacements);
+
+    if (typeof window !== "undefined") {
+        window.dispatchEvent(
+            new CustomEvent("proturnos:calendarProfilesChanged", {
+                detail: {
+                    profiles: [
+                        data.worker,
+                        data.replaced
+                    ].filter(Boolean),
+                    metadata: {
+                        changeType: data.addsShift === false
+                            ? "replacement_updated"
+                            : "extra_shift_added",
+                        source: data.source || "replacement",
+                        title: data.addsShift === false
+                            ? "Reemplazo actualizado"
+                            : "Nuevo turno extra",
+                        message: data.addsShift === false
+                            ? "Se actualizo informacion de reemplazo en tu calendario."
+                            : `Se agrego un turno extra para el ${record.date}.`,
+                        affectedDates: [record.date],
+                        entityId: id
+                    }
+                }
+            })
+        );
+    }
+
     addAuditLog(
         AUDIT_CATEGORY.OVERTIME,
         data.source === "manual_extra" ||

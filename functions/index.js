@@ -75,7 +75,9 @@ Object.assign(exports, require("./attributeInterUnitCost"));
 Object.assign(exports, require("./workerAppProjection"));
 
 const db = admin.firestore();
-const WORKER_APP_BASE_URL = "https://turnoplusfuncionarios.web.app/";
+const WORKER_APP_BASE_URL = process.env.GCLOUD_PROJECT === "turnoplus-test-7c4d9"
+  ? "https://turnoplusfunc-test.web.app/"
+  : "https://turnoplusfuncionarios.web.app/";
 const DEFAULT_MAIL_FROM = "TurnoPlus <onboarding@resend.dev>";
 const APP_URL = `${WORKER_APP_BASE_URL}?screen=solicitudes`;
 const SWAPS_APP_URL = `${WORKER_APP_BASE_URL}?screen=cambios`;
@@ -2602,6 +2604,225 @@ function stringifyData(value) {
     ])
   );
 }
+
+function normalizeEventDates(value) {
+  const source = Array.isArray(value) ? value : [value];
+
+  return [...new Set(
+    source
+      .map((item) => String(item || "").trim())
+      .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item))
+      .sort()
+  )].slice(0, 120);
+}
+
+function calendarEventDeepLink(event) {
+  const params = new URLSearchParams({
+    screen: "turnos",
+    workspace: event.workspaceId || ""
+  });
+
+  if (event.affectedDates?.[0]) {
+    params.set("date", event.affectedDates[0]);
+  }
+  if (event.eventId) {
+    params.set("notification", event.eventId);
+  }
+
+  return `${WORKER_APP_BASE_URL}?${params.toString()}`;
+}
+
+function normalizeCalendarEvent(raw = {}, workspaceId, eventId) {
+  const affectedDates = normalizeEventDates(raw.affectedDates);
+  const changeType = cleanCallableText(
+    raw.changeType || "calendar_bulk_updated",
+    80
+  );
+  const title = cleanCallableText(
+    raw.title || "Tu calendario fue modificado",
+    120
+  );
+  const message = cleanCallableText(
+    raw.message || "Revisa tu calendario actualizado en TurnoPlus.",
+    300
+  );
+
+  return {
+    eventId,
+    workspaceId,
+    workerId: cleanCallableText(raw.workerId || raw.profileName, 180),
+    profileName: cleanCallableText(raw.profileName || raw.workerId, 180),
+    affectedUserId: cleanCallableText(
+      raw.affectedUserId || raw.userId || raw.uid,
+      160
+    ),
+    changeType,
+    affectedDates,
+    source: cleanCallableText(raw.source || "supervisor_action", 80),
+    title,
+    message,
+    entityId: cleanCallableText(raw.entityId, 180),
+    batchId: cleanCallableText(raw.batchId, 180),
+    operationId: cleanCallableText(raw.operationId, 180),
+    version: Number(raw.version) || 1,
+    createdByUid: cleanCallableText(raw.createdByUid || raw.createdBy?.uid, 160),
+    createdByName: cleanCallableText(raw.createdBy?.name || raw.createdByName, 160),
+    clientCreatedAtISO: cleanCallableText(raw.clientCreatedAtISO, 40)
+  };
+}
+
+exports.processWorkerCalendarEvent = onDocumentCreated(
+  {
+    document: "workspaces/{workspaceId}/calendarEvents/{eventId}",
+    timeoutSeconds: 60,
+    memory: "256MiB"
+  },
+  async (event) => {
+    const { workspaceId, eventId } = event.params;
+    const ref = event.data?.ref;
+    const raw = event.data?.data() || {};
+    const calendarEvent = normalizeCalendarEvent(raw, workspaceId, eventId);
+    const uid = calendarEvent.affectedUserId;
+
+    if (!ref || !uid) {
+      if (ref) {
+        await ref.set({
+          status: "failed",
+          processedAt: admin.firestore.FieldValue.serverTimestamp(),
+          error: "missing_affected_user"
+        }, { merge: true });
+      }
+      return;
+    }
+
+    const workspaceRef = db.collection("workspaces").doc(workspaceId);
+    const linkRef = workspaceRef.collection("workerLinks").doc(uid);
+    const notificationRef = workspaceRef
+      .collection("workerNotifications")
+      .doc(uid)
+      .collection("items")
+      .doc(eventId);
+    const linkSnap = await linkRef.get();
+
+    if (!linkSnap.exists) {
+      await ref.set({
+        status: "skipped",
+        skippedReason: "worker_not_linked",
+        processedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      return;
+    }
+
+    const link = linkSnap.data() || {};
+    const profileName = calendarEvent.profileName ||
+      cleanCallableText(link.profileName, 180);
+    const deepLink = calendarEventDeepLink(calendarEvent);
+
+    let shouldSendPush = false;
+
+    await db.runTransaction(async (transaction) => {
+      const notificationSnap = await transaction.get(notificationRef);
+
+      if (notificationSnap.exists) {
+        transaction.set(ref, {
+          status: "sent",
+          duplicateAvoided: true,
+          processedAt: admin.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+        return;
+      }
+
+      transaction.set(notificationRef, {
+        type: "calendar_change",
+        title: calendarEvent.title,
+        message: calendarEvent.message,
+        workerId: calendarEvent.workerId || profileName,
+        profileName,
+        workspaceId,
+        affectedDates: calendarEvent.affectedDates,
+        changeType: calendarEvent.changeType,
+        source: calendarEvent.source,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        clientCreatedAtISO: calendarEvent.clientCreatedAtISO || "",
+        readAt: null,
+        isRead: false,
+        eventId,
+        entityId: calendarEvent.entityId,
+        batchId: calendarEvent.batchId,
+        operationId: calendarEvent.operationId,
+        createdByUid: calendarEvent.createdByUid,
+        createdByName: calendarEvent.createdByName,
+        deepLink,
+        pushStatus: "pending"
+      }, { merge: false });
+      transaction.set(ref, {
+        status: "processing",
+        notificationPath: notificationRef.path,
+        processedAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      shouldSendPush = true;
+    });
+
+    if (!shouldSendPush) return;
+
+    let pushResult;
+
+    try {
+      pushResult = await sendWorkerPush({
+        workspaceId,
+        uid,
+        category: "calendar_changes",
+        title: calendarEvent.title,
+        body: calendarEvent.message,
+        data: {
+          type: "worker_calendar_changed",
+          category: "calendar_changes",
+          eventId,
+          workspaceId,
+          workerId: calendarEvent.workerId || profileName,
+          profileName,
+          changeType: calendarEvent.changeType,
+          affectedDate: calendarEvent.affectedDates[0] || "",
+          affectedDates: calendarEvent.affectedDates.join(","),
+          screen: "turnos",
+          url: deepLink,
+          tag: `calendar-change-${eventId}`,
+          requireInteraction: "false",
+          vibrate: "true"
+        }
+      });
+    } catch (error) {
+      logger.warn("No se pudo enviar push de cambio de calendario.", {
+        workspaceId,
+        uid,
+        eventId,
+        error: error?.message || String(error)
+      });
+      pushResult = {
+        sent: 0,
+        error: error?.message || String(error)
+      };
+    }
+
+    const pushStatus = pushResult.sent > 0 ? "push_sent" : "push_not_sent";
+
+    await Promise.all([
+      notificationRef.set({
+        pushStatus,
+        pushSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        pushSentCount: pushResult.sent,
+        pushError: pushResult.error || ""
+      }, { merge: true }),
+      ref.set({
+        status: "sent",
+        sentAt: admin.firestore.FieldValue.serverTimestamp(),
+        pushStatus,
+        pushSentCount: pushResult.sent,
+        pushError: pushResult.error || ""
+      }, { merge: true })
+    ]);
+  }
+);
 
 function escapeHtml(value) {
   return String(value ?? "")

@@ -98,3 +98,95 @@ self.addEventListener("fetch", event => {
         })
     );
 });
+
+function parsePushPayload(event) {
+    if (!event.data) return {};
+
+    try {
+        return event.data.json();
+    } catch {
+        try {
+            return JSON.parse(event.data.text() || "{}");
+        } catch {
+            return {};
+        }
+    }
+}
+
+function notificationDataFromPayload(payload = {}) {
+    return {
+        ...(payload.data || {}),
+        ...(payload.notification?.data || {}),
+        ...(payload.webpush?.notification?.data || {})
+    };
+}
+
+self.addEventListener("push", event => {
+    const payload = parsePushPayload(event);
+    const data = notificationDataFromPayload(payload);
+    const notification =
+        payload.notification ||
+        payload.webpush?.notification ||
+        {};
+    const title =
+        data.title ||
+        notification.title ||
+        "TurnoPlus";
+    const body =
+        data.body ||
+        notification.body ||
+        "Tienes una nueva notificaci\u00f3n.";
+    const vibrate = data.vibrate === "true"
+        ? [320, 120, 320, 120, 220]
+        : undefined;
+
+    event.waitUntil(
+        self.registration.showNotification(title, {
+            body,
+            icon: data.icon || notification.icon || "/img/pwa/icon-192.png",
+            badge: data.badge || notification.badge || "/img/pwa/icon-192.png",
+            tag: data.tag || notification.tag || data.eventId || "turnoplus",
+            renotify: true,
+            requireInteraction:
+                data.requireInteraction === "true" ||
+                notification.requireInteraction === true,
+            vibrate,
+            data: {
+                ...data,
+                url:
+                    data.url ||
+                    payload.fcmOptions?.link ||
+                    payload.webpush?.fcmOptions?.link ||
+                    "/"
+            }
+        })
+    );
+});
+
+self.addEventListener("notificationclick", event => {
+    event.notification.close();
+
+    const targetUrl = event.notification.data?.url || "/";
+
+    event.waitUntil((async () => {
+        const url = new URL(targetUrl, self.location.origin).href;
+        const clientList = await self.clients.matchAll({
+            type: "window",
+            includeUncontrolled: true
+        });
+
+        for (const client of clientList) {
+            if ("focus" in client) {
+                await client.focus();
+                if ("navigate" in client) {
+                    await client.navigate(url);
+                }
+                return;
+            }
+        }
+
+        if (self.clients.openWindow) {
+            await self.clients.openWindow(url);
+        }
+    })());
+});

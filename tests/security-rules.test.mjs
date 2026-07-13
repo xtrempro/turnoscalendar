@@ -155,6 +155,9 @@ test("reglas modulares de Firestore y Storage", async t => {
     const workerA = env.authenticatedContext("worker-a", {
         email: "worker-a@example.com"
     });
+    const workerB = env.authenticatedContext("worker-b", {
+        email: "worker-b@example.com"
+    });
     const legacyMember = env.authenticatedContext("legacy", {
         email: "legacy@example.com"
     });
@@ -722,6 +725,96 @@ test("reglas modulares de Firestore y Storage", async t => {
                         days: {}
                     }
                 )
+            );
+        }
+    );
+
+    await t.test(
+        "eventos y notificaciones de calendario quedan aislados por trabajador",
+        async () => {
+            const eventPath = [
+                "workspaces",
+                WORKSPACE_ID,
+                "calendarEvents",
+                "calendar-event-rules"
+            ];
+            const notificationPath = [
+                "workspaces",
+                WORKSPACE_ID,
+                "workerNotifications",
+                "worker-a",
+                "items",
+                "calendar-event-rules"
+            ];
+
+            await assertSucceeds(
+                setDoc(doc(profileEditor.firestore(), ...eventPath), {
+                    eventId: "calendar-event-rules",
+                    workspaceId: WORKSPACE_ID,
+                    affectedUserId: "worker-a",
+                    workerId: "Ana",
+                    profileName: "Ana",
+                    changeType: "shift_added",
+                    source: "main_calendar_manual_edit",
+                    affectedDates: ["2026-07-18"],
+                    title: "Nuevo turno",
+                    message: "Se agrego un turno.",
+                    status: "pending",
+                    createdByUid: "profile-editor"
+                })
+            );
+            await assertFails(
+                setDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "calendarEvents",
+                        "worker-spoof"
+                    ),
+                    {
+                        eventId: "worker-spoof",
+                        workspaceId: WORKSPACE_ID,
+                        affectedUserId: "worker-a",
+                        status: "pending",
+                        createdByUid: "worker-a"
+                    }
+                )
+            );
+
+            await env.withSecurityRulesDisabled(async context => {
+                await setDoc(doc(context.firestore(), ...notificationPath), {
+                    type: "calendar_change",
+                    title: "Nuevo turno",
+                    message: "Se agrego un turno.",
+                    workspaceId: WORKSPACE_ID,
+                    workerId: "Ana",
+                    profileName: "Ana",
+                    affectedDates: ["2026-07-18"],
+                    changeType: "shift_added",
+                    isRead: false,
+                    readAt: null,
+                    eventId: "calendar-event-rules",
+                    deepLink: "/?screen=calendario"
+                });
+            });
+
+            await assertSucceeds(
+                getDoc(doc(workerA.firestore(), ...notificationPath))
+            );
+            await assertFails(
+                getDoc(doc(workerB.firestore(), ...notificationPath))
+            );
+            await assertSucceeds(
+                updateDoc(doc(workerA.firestore(), ...notificationPath), {
+                    isRead: true,
+                    readAt: "2026-07-18T12:00:00.000Z"
+                })
+            );
+            await assertFails(
+                updateDoc(doc(workerA.firestore(), ...notificationPath), {
+                    message: "mensaje adulterado"
+                })
             );
         }
     );
