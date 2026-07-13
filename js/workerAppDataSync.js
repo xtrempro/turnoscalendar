@@ -2260,6 +2260,9 @@ export function scheduleWorkerAppDataPublish(
         hotPublishNeedsLocalStateFlush = true;
         const profiles = getProfiles();
         const linkedByName = new Map();
+        const notifyProfileNames = Array.isArray(changeMetadata.notifyProfiles)
+            ? new Set(normalizeProfileTargets(changeMetadata.notifyProfiles))
+            : null;
 
         linkedProfilePairs(profiles).forEach(item => {
             if (item.profile?.name && item.link?.uid) {
@@ -2271,6 +2274,7 @@ export function scheduleWorkerAppDataPublish(
             const item = linkedByName.get(name);
 
             if (!item) return;
+            if (notifyProfileNames && !notifyProfileNames.has(name)) return;
 
             registerCalendarEventForLinkedProfile({
                 profile: item.profile,

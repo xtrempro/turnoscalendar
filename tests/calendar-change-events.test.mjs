@@ -72,3 +72,21 @@ test("la edicion directa difiere notificaciones hasta cerrar el switch", async (
         /shouldDeferDirectEditCalendarEvent\(metadata\)[\s\S]{0,120}continue;/
     );
 });
+
+test("asignar reemplazo notifica solo al trabajador que cubre", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const [replacementsSource, workerAppSource] = await Promise.all([
+        readFile(new URL("../js/replacements.js", import.meta.url), "utf8"),
+        readFile(new URL("../js/workerAppDataSync.js", import.meta.url), "utf8")
+    ]);
+
+    assert.match(
+        replacementsSource,
+        /notifyProfiles:\s*\[data\.worker\]\.filter\(Boolean\)/
+    );
+    assert.match(workerAppSource, /changeMetadata\.notifyProfiles/);
+    assert.match(
+        workerAppSource,
+        /notifyProfileNames\s*&&\s*!notifyProfileNames\.has\(name\)/
+    );
+});

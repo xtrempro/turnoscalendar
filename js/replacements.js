@@ -501,7 +501,8 @@ export function saveReplacement(data) {
                             ? "Se actualizo informacion de reemplazo en tu calendario."
                             : `Se agrego un turno extra para el ${formatNotificationDate(record.date)}.`,
                         affectedDates: [record.date],
-                        entityId: id
+                        entityId: id,
+                        notifyProfiles: [data.worker].filter(Boolean)
                     }
                 }
             })
