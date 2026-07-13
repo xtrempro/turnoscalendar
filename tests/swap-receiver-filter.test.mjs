@@ -123,3 +123,21 @@ test("el combobox se recalcula al elegir el turno entregado", async () => {
         /getTrabajadoresDisponibles\(\s*from,\s*selectedChangeKey\s*\)/
     );
 });
+
+test("el menu usa buscador para quien entrega y no listado lateral", async () => {
+    const [html, source] = await Promise.all([
+        readFile(
+            new URL("../index.html", import.meta.url),
+            "utf8"
+        ),
+        readFile(
+            new URL("../js/swapUI.js", import.meta.url),
+            "utf8"
+        )
+    ]);
+
+    assert.doesNotMatch(html, /swap-sidebar|swapProfileSearch|swapFilterRole|swapProfiles/);
+    assert.match(source, /id="swapFromSearch"/);
+    assert.match(source, /findTopProfileSearchMatch/);
+    assert.match(source, /getCalendarProfileSearchValue/);
+});

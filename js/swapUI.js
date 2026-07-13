@@ -1,6 +1,10 @@
-import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { parseISODate as parseInputDate } from "./dateUtils.js";
+import {
+    findTopProfileSearchMatch,
+    getCalendarProfileSearchOptionValues,
+    getCalendarProfileSearchValue
+} from "./profileSearchUtils.js";
 import {
     cambiosDelMes,
     cambioEstaAnulado,
@@ -63,20 +67,6 @@ function getPerfil(nombre) {
     return getProfiles().find(
         profile => profile.name === nombre
     ) || null;
-}
-
-function normalizeSearch(value) {
-    return normalizeText(value);
-}
-
-function profileMetaLabel(profile = {}) {
-    const role = profile.estamento || "Sin estamento";
-    const profession = profile.profession &&
-        normalizeSearch(profile.profession) !== "sin informacion"
-        ? ` | ${profile.profession}`
-        : "";
-
-    return `${role}${profession}`;
 }
 
 function noPuedeIntercambiar(nombre) {
@@ -312,100 +302,157 @@ function keyFromInputDate(value) {
     return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-function bindSwapProfileFilters() {
-    ["swapProfileSearch", "swapFilterRole"]
-        .forEach(id => {
-            const element = document.getElementById(id);
-
-            if (!element || element.dataset.swapBound) return;
-
-            element.dataset.swapBound = "true";
-            element.addEventListener("input", renderSwapProfiles);
-            element.addEventListener("change", renderSwapProfiles);
-        });
+function getSwapSearchProfiles() {
+    return getProfiles()
+        .filter(profile => isProfileActive(profile))
+        .sort((a, b) =>
+            String(a.name || "").localeCompare(
+                String(b.name || ""),
+                "es",
+                { sensitivity: "base" }
+            )
+        );
 }
 
-function renderSwapProfiles() {
-    const list = document.getElementById("swapProfiles");
-    const empty = document.getElementById("swapEmptyProfiles");
+function renderSwapFromOptions() {
+    const used = new Set();
 
-    if (!list || !empty) return;
+    return getSwapSearchProfiles()
+        .flatMap(profile => {
+            const searchValue = getCalendarProfileSearchValue(profile);
 
-    const profiles = getProfiles();
-    const current = getCurrentProfile();
-    const query = normalizeSearch(
-        document.getElementById("swapProfileSearch")?.value || ""
-    );
-    const filtro =
-        document.getElementById("swapFilterRole")?.value || "Todos";
-    const visibles = profiles.filter(profile => {
-        const active = isProfileActive(profile);
-        const role = filtro === "Todos" || profile.estamento === filtro;
-        const search = !query ||
-            normalizeSearch(profile.name).includes(query) ||
-            normalizeSearch(profile.estamento).includes(query) ||
-            normalizeSearch(profile.profession).includes(query);
+            return getCalendarProfileSearchOptionValues(profile)
+                .map(value => {
+                    if (!value || used.has(value)) return "";
 
-        return active && role && search;
-    });
+                    used.add(value);
 
-    list.innerHTML = "";
+                    const label = value !== searchValue
+                        ? ` label="${escapeHTML(searchValue)}"`
+                        : "";
 
-    if (!visibles.length) {
-        empty.classList.remove("hidden");
-        empty.textContent = profiles.length
-            ? "No hay resultados con ese filtro."
-            : "Aun no hay colaboradores creados.";
+                    return `<option value="${escapeHTML(value)}"${label}></option>`;
+                });
+        })
+        .join("");
+}
+
+function renderSwapFromSearch(selectedFrom) {
+    const currentProfile = getPerfil(selectedFrom);
+    const value = currentProfile
+        ? getCalendarProfileSearchValue(currentProfile)
+        : selectedFrom || "";
+
+    return `
+        <form id="swapFromSearchForm" class="profile-viewer swap-profile-viewer" autocomplete="off">
+            <div class="profile-viewer__field">
+                <input
+                    id="swapFromSearch"
+                    type="search"
+                    list="swapFromOptions"
+                    placeholder="Selecciona colaborador"
+                    value="${escapeHTML(value)}"
+                >
+                <button class="profile-viewer__button" type="submit" aria-label="Buscar trabajador que entrega turno">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="7"></circle>
+                        <path d="M21 21l-4.35-4.35"></path>
+                    </svg>
+                </button>
+            </div>
+            <datalist id="swapFromOptions">
+                ${renderSwapFromOptions()}
+            </datalist>
+        </form>
+    `;
+}
+
+function syncSwapFromSearch() {
+    const input = document.getElementById("swapFromSearch");
+    if (!input) return;
+
+    const profile = getPerfil(getCurrentProfile());
+    input.value = profile
+        ? getCalendarProfileSearchValue(profile)
+        : getCurrentProfile() || "";
+}
+
+function handleSwapFromSearch() {
+    const input = document.getElementById("swapFromSearch");
+    if (!input) return;
+
+    const query = input.value.trim();
+
+    if (!query) {
+        syncSwapFromSearch();
         return;
     }
 
-    empty.classList.add("hidden");
+    const match = findTopProfileSearchMatch(
+        query,
+        getSwapSearchProfiles()
+    );
 
-    visibles.forEach(profile => {
-        const item = document.createElement("button");
-        item.className = "profile-item swap-profile-item";
-        item.type = "button";
+    if (!match) {
+        alert("No se encontro un colaborador con ese nombre.");
+        syncSwapFromSearch();
+        input.focus();
+        input.select();
+        return;
+    }
 
-        if (!isProfileActive(profile)) {
-            item.classList.add("is-inactive");
-        }
+    input.value = getCalendarProfileSearchValue(match);
+    input.blur();
 
-        if (profile.name === current) {
-            item.classList.add("active");
-        }
+    if (match.name === getCurrentProfile()) return;
 
-        item.innerHTML = `
-            <span class="profile-item__avatar">
-                ${escapeHTML(profile.name.trim().charAt(0).toUpperCase() || "T")}
-            </span>
-            <span class="profile-item__content">
-                <strong>${escapeHTML(profile.name)}</strong>
-                <span>${escapeHTML(profileMetaLabel(profile))}${isProfileActive(profile) ? "" : " | Desactivado"}</span>
-            </span>
-        `;
+    fechaCambioSeleccionada = "";
+    fechaDevolucionSeleccionada = "";
 
-        item.onclick = () => {
-            fechaCambioSeleccionada = "";
-            fechaDevolucionSeleccionada = "";
-            if (typeof window.selectProfileByName === "function") {
-                window.selectProfileByName(profile.name);
-            } else {
-                setCurrentProfile(profile.name);
-                renderSwapPanel();
-                refreshAll();
-            }
-        };
+    if (typeof window.selectProfileByName === "function") {
+        window.selectProfileByName(match.name);
+        return;
+    }
 
-        list.appendChild(item);
-    });
+    setCurrentProfile(match.name);
+    renderSwapPanel();
+    refreshAll();
+}
+
+function bindSwapFromSearch() {
+    const form = document.getElementById("swapFromSearchForm");
+    const input = document.getElementById("swapFromSearch");
+
+    if (!form || !input) return;
+
+    form.onsubmit = event => {
+        event.preventDefault();
+        handleSwapFromSearch();
+    };
+
+    input.onchange = handleSwapFromSearch;
+    input.onfocus = () => input.select();
+}
+
+function renderSwapSelectorEmpty(box, selectedFrom, message) {
+    box.innerHTML = `
+        <div class="swap-row swap-row--selector-only">
+            <div class="field-stack swap-from-field">
+                <span>Entrega turno</span>
+                ${renderSwapFromSearch(selectedFrom)}
+            </div>
+        </div>
+        <div class="empty-state">
+            ${escapeHTML(message)}
+        </div>
+    `;
+
+    bindSwapFromSearch();
 }
 
 export function renderSwapPanel(){
     const box = document.getElementById("swapPanel");
     if (!box) return;
-
-    renderSwapProfiles();
-    bindSwapProfileFilters();
 
     const perfiles = getProfiles();
     const selectedFrom = getCurrentProfile();
@@ -414,11 +461,11 @@ export function renderSwapPanel(){
     const perfilFrom = getPerfil(selectedFrom);
 
     if (!selectedFrom || !perfilFrom) {
-        box.innerHTML = `
-            <div class="empty-state">
-                Selecciona un trabajador para revisar cambios de turno.
-            </div>
-        `;
+        renderSwapSelectorEmpty(
+            box,
+            selectedFrom,
+            "Selecciona un trabajador para revisar cambios de turno."
+        );
         return;
     }
 
@@ -432,11 +479,11 @@ export function renderSwapPanel(){
     }
 
     if (noPuedeIntercambiar(selectedFrom)) {
-        box.innerHTML = `
-            <div class="empty-state">
-                ${escapeHTML(selectedFrom)} no puede intercambiar turnos porque el perfil esta desactivado.
-            </div>
-        `;
+        renderSwapSelectorEmpty(
+            box,
+            selectedFrom,
+            `${selectedFrom} no puede intercambiar turnos porque el perfil esta desactivado.`
+        );
         return;
     }
 
@@ -485,12 +532,10 @@ export function renderSwapPanel(){
         </div>
 
         <div class="swap-row">
-            <label class="field-stack">
+            <div class="field-stack swap-from-field">
                 <span>Entrega turno</span>
-                <div id="swapFromLabel" class="swap-readonly-worker">
-                    ${escapeHTML(selectedFrom)}
-                </div>
-            </label>
+                ${renderSwapFromSearch(selectedFrom)}
+            </div>
 
             <label class="field-stack">
                 <span>Recibe turno</span>
@@ -524,6 +569,8 @@ export function renderSwapPanel(){
         () => cambiarMesSwap(1);
 
     setupSwapMonthPicker(document.getElementById("swapMonthLabel"));
+
+    bindSwapFromSearch();
 
     document.getElementById("saveSwapBtn").onclick =
         guardarCambioTurno;
