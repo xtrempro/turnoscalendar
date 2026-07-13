@@ -39,7 +39,8 @@ import {
 } from "./hoursReport.js";
 
 const OVERTIME_SUMMARY_MONTHS_BACK = 2;
-const OVERTIME_SUMMARY_CACHE_VERSION = 1;
+// v2: los resumenes ahora incluyen extraShifts (detalle de turnos extra por mes).
+const OVERTIME_SUMMARY_CACHE_VERSION = 2;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
 const WORKER_APP_BASE_VERSION = 1;
 const EXCEPTIONS_MONTHS_BACK = 2;
