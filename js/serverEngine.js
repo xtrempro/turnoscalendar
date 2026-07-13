@@ -44,13 +44,18 @@ const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
 const WORKER_APP_BASE_VERSION = 1;
 const EXCEPTIONS_MONTHS_BACK = 2;
 const EXCEPTIONS_MONTHS_FORWARD = 12;
+const HOT_CALENDAR_FUTURE_MONTH_COUNT = 6;
 
 // ───────── Rango y meses ─────────
 
 function hotScheduleRange(today = new Date()) {
     return {
         start: new Date(today.getFullYear(), today.getMonth(), 1),
-        end: new Date(today.getFullYear(), today.getMonth() + 2, 0)
+        end: new Date(
+            today.getFullYear(),
+            today.getMonth() + HOT_CALENDAR_FUTURE_MONTH_COUNT + 1,
+            0
+        )
     };
 }
 

@@ -5,6 +5,9 @@ import {
     getCurrentFirebaseUser,
     getFirebaseServices
 } from "./firebaseClient.js";
+import {
+    flushPendingFirebaseAppStateEntries
+} from "./firebaseAppState.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { getJSON } from "./persistence.js";
 import {
@@ -60,8 +63,9 @@ import {
     registerWorkerCalendarChange
 } from "./calendarChangeEvents.js";
 
-// Publicacion "caliente" (mes en curso + siguiente): se agenda con margen
-// para no competir con clicks/cambios de mes del calendario principal.
+// Publicacion "caliente": se agenda con margen para no competir con
+// clicks/cambios de mes del calendario principal. La PWA puede navegar meses
+// futuros; por eso materializamos el mes actual + 6 meses hacia delante.
 const HOT_PUBLISH_DELAY_MS = 12000;
 const CALENDAR_CHANGE_PUBLISH_DELAY_MS = 3000;
 const INITIAL_PUBLISH_DELAY_MS = 5000;
@@ -77,6 +81,30 @@ const OVERTIME_SUMMARY_MONTHS_BACK = 2;
 const OVERTIME_SUMMARY_CACHE_VERSION = 1;
 const COLD_OVERTIME_REFRESH_DELAY_MS = 45000;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
+const HOT_CALENDAR_FUTURE_MONTH_COUNT = 6;
+const WORKER_APP_PROJECTION_PROFILE_STATE_PREFIXES = [
+    "data_",
+    "baseData_",
+    "blocked_",
+    "admin_",
+    "legal_",
+    "comp_",
+    "absences_",
+    "rotativa_",
+    "shift_",
+    "shiftAssignmentHistory_",
+    "leaveBalances_",
+    "hourReturns_",
+    "clockMarks_"
+];
+const WORKER_APP_PROJECTION_GLOBAL_STATE_KEYS = [
+    "profiles",
+    "replacements",
+    "swaps",
+    "manualHolidays",
+    "turnoColorConfig",
+    "turnChangeConfig"
+];
 
 // Claves de localStorage por-perfil que afectan lo que ve el trabajador. El
 // sufijo tras el prefijo es el nombre del perfil (salvo `carry_<nombre>_<a>_<m>`).
@@ -118,6 +146,7 @@ let unsubscribeWorkerLinks = null;
 let hotPublishTimer = null;
 let hotPublishInFlight = false;
 let hotPublishRequested = false;
+let hotPublishNeedsLocalStateFlush = false;
 let workerLinks = [];
 let workerLinksInitialized = false;
 let syncGeneration = 0;
@@ -235,7 +264,11 @@ function recordWorkerAppPublishDeferred(delay, reason = "user-active") {
 function hotScheduleRange(today = new Date()) {
     return {
         start: new Date(today.getFullYear(), today.getMonth(), 1),
-        end: new Date(today.getFullYear(), today.getMonth() + 2, 0)
+        end: new Date(
+            today.getFullYear(),
+            today.getMonth() + HOT_CALENDAR_FUTURE_MONTH_COUNT + 1,
+            0
+        )
     };
 }
 
@@ -2117,6 +2150,34 @@ export function scheduleHotPublish(delay = HOT_PUBLISH_DELAY_MS) {
     hotPublishTimer = setTimeout(() => publishHotNow(), delay);
 }
 
+function workerAppProjectionStateKeysForProfiles(profileNames = []) {
+    const names = Array.from(new Set(
+        (Array.isArray(profileNames) ? profileNames : [profileNames])
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+    ));
+    const keys = new Set(WORKER_APP_PROJECTION_GLOBAL_STATE_KEYS);
+
+    names.forEach(name => {
+        WORKER_APP_PROJECTION_PROFILE_STATE_PREFIXES.forEach(prefix => {
+            keys.add(`${prefix}${name}`);
+        });
+    });
+
+    return [...keys];
+}
+
+async function flushWorkerAppProjectionState(profileNames = []) {
+    const keys = workerAppProjectionStateKeysForProfiles(profileNames);
+
+    if (!keys.length) return null;
+
+    return flushPendingFirebaseAppStateEntries({
+        keys,
+        reason: "worker-app-projection"
+    });
+}
+
 async function publishHotNow() {
     if (!activeWorkspace?.id || !workerLinks.length) return;
 
@@ -2136,13 +2197,19 @@ async function publishHotNow() {
 
     dirtyProfileNames = new Set();
     dirtyWorkerUids = new Set();
+    const needsLocalStateFlush = hotPublishNeedsLocalStateFlush;
     hotPublishRequested = false;
+    hotPublishNeedsLocalStateFlush = false;
 
     if (!dirtyNames.size) return;
 
     const requestWorkspace = currentWorkspace();
 
     try {
+        if (needsLocalStateFlush) {
+            await flushWorkerAppProjectionState([...dirtyNames]);
+        }
+
         const { db, firestoreModule } = await getFirebaseServices();
         const requestRef = firestoreModule.doc(
             firestoreModule.collection(
@@ -2167,6 +2234,8 @@ async function publishHotNow() {
     } catch (error) {
         dirtyNames.forEach(name => dirtyProfileNames.add(name));
         hotPublishRequested = true;
+        hotPublishNeedsLocalStateFlush =
+            hotPublishNeedsLocalStateFlush || needsLocalStateFlush;
         console.warn(
             "No se pudo solicitar la proyeccion del worker-app.",
             error
@@ -2188,6 +2257,7 @@ export function scheduleWorkerAppDataPublish(
     normalizedTargets.forEach(name => dirtyProfileNames.add(name));
 
     if (changeMetadata) {
+        hotPublishNeedsLocalStateFlush = true;
         const profiles = getProfiles();
         const linkedByName = new Map();
 

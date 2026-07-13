@@ -3869,7 +3869,10 @@ async function refreshTimelineRowsInBackground({
         const rowData = buildFreshTimelineRow(
             profile,
             context,
-            holidays
+            holidays,
+            {
+                forceFreshMetrics: true
+            }
         );
         const cachedRow = writeFreshTimelineRowCache(
             rowData,
@@ -4093,7 +4096,10 @@ async function buildTimelineBatchRows({
         const rowData = buildFreshTimelineRow(
             profile,
             context,
-            holidays
+            holidays,
+            {
+                forceFreshMetrics: true
+            }
         );
         const cachedRow = writeFreshTimelineRowCache(
             rowData,

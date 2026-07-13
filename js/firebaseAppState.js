@@ -429,6 +429,148 @@ function queuePartialStateEntries(entries = [], options = {}) {
     );
 }
 
+function pendingStateEntryId(entry = {}) {
+    return [
+        entry.moduleId,
+        entry.storageKey,
+        entry.itemKey || ""
+    ].join("\u001e");
+}
+
+async function commitPartialStateDocumentsNow(
+    documents = [],
+    {
+        workspaceId = activeWorkspaceId,
+        reason = "manual-flush"
+    } = {}
+) {
+    if (!workspaceId || !documents.length) return;
+
+    const { db, firestoreModule } = await services();
+    const batch = firestoreModule.writeBatch(db);
+
+    documents.forEach(entry => {
+        const payload = {
+            moduleId: entry.moduleId,
+            storageKey: entry.storageKey,
+            clientId: getClientId(),
+            updatedAtISO: new Date().toISOString(),
+            updatedAt: firestoreModule.serverTimestamp()
+        };
+
+        if (
+            Object.keys(entry.items || {}).length ||
+            Object.keys(entry.deletedItems || {}).length
+        ) {
+            payload.items = entry.items || {};
+            payload.deletedItems = entry.deletedItems || {};
+        }
+
+        if (Object.prototype.hasOwnProperty.call(entry, "value")) {
+            payload.value = entry.value;
+            payload.deleted = entry.deleted;
+        }
+
+        batch.set(
+            firestoreModule.doc(
+                moduleEntriesCollection(
+                    db,
+                    firestoreModule,
+                    workspaceId,
+                    entry.moduleId
+                ),
+                entryDocId(entry.storageKey)
+            ),
+            payload,
+            { merge: true }
+        );
+    });
+
+    await measurePerformance(
+        "firebase-app-state:commit-entries-now",
+        () => batch.commit(),
+        {
+            reason,
+            documentCount: documents.length,
+            moduleIds: Array.from(
+                new Set(documents.map(entry => entry.moduleId))
+            ).join(",")
+        },
+        {
+            asyncThreshold: 120
+        }
+    );
+}
+
+export async function flushPendingFirebaseAppStateEntries({
+    keys = [],
+    changes = {},
+    reason = "manual-flush"
+} = {}) {
+    if (!activeWorkspaceId) {
+        return {
+            flushed: false,
+            count: 0,
+            reason: "no-workspace"
+        };
+    }
+
+    const stateKeys = Array.from(new Set(
+        (Array.isArray(keys) ? keys : [keys])
+            .map(key => String(key || "").trim())
+            .filter(key => key && !isInternalKey(key))
+    ));
+
+    if (!stateKeys.length) {
+        return {
+            flushed: false,
+            count: 0,
+            reason: "no-keys"
+        };
+    }
+
+    const planned = planPartialStateEntries({
+        keys: stateKeys,
+        changes,
+        readRaw: key => getRaw(key, null),
+        moduleForKey: stateModuleForKey
+    }).filter(entry => canWriteModule(entry.moduleId));
+
+    if (!planned.length) {
+        return {
+            flushed: false,
+            count: 0,
+            reason: "no-writable-entries"
+        };
+    }
+
+    const documents = groupPartialStateEntries(planned);
+
+    try {
+        await commitPartialStateDocumentsNow(documents, { reason });
+
+        planned.forEach(entry => {
+            pendingStateEntries.delete(pendingStateEntryId(entry));
+        });
+
+        dispatchStatus({
+            type: "app-state-entries-saved",
+            count: planned.length,
+            reason
+        });
+
+        return {
+            flushed: true,
+            count: planned.length,
+            documentCount: documents.length
+        };
+    } catch (error) {
+        queueGroupedPartialStateEntries(planned);
+        scheduleEntrySync(0, { urgent: true });
+        throw error;
+    }
+}
+
 async function flushPartialStateEntries() {
     entrySyncTimer = null;
 
