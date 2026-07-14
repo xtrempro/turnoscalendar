@@ -31,10 +31,11 @@ async function applyGeneratedSchedule(fecha, options) {
     const data = getProfileData();
     const baseData = getBaseProfileData();
     const blocked = getBlockedDays();
+    const endISO = options.endISO || `${fecha.getFullYear()}-12-31`;
     const result = await generateScheduleInWorker({
         startISO: workerISODate(fecha),
-        endISO: `${fecha.getFullYear()}-12-31`,
-        ...options
+        ...options,
+        endISO
     }, {
         channel: `rotation:${profileName}`,
         timeoutMs: 20000
@@ -64,7 +65,7 @@ async function applyGeneratedSchedule(fecha, options) {
  * dias habiles, libre en los demas.
  * @param {Date} fecha
  */
-export async function aplicarDiurnoDesde(fecha) {
+export async function aplicarDiurnoDesde(fecha, options = {}) {
     if (!getCurrentProfile()) return;
 
     const year = fecha.getFullYear();
@@ -72,7 +73,8 @@ export async function aplicarDiurnoDesde(fecha) {
 
     await applyGeneratedSchedule(fecha, {
         mode: "diurno",
-        holidays
+        holidays,
+        endISO: options.endISO
     });
 }
 
@@ -81,12 +83,17 @@ export async function aplicarDiurnoDesde(fecha) {
  * @param {Date} fecha
  * @param {number[]} secuencia codigos de turno (0 = libre)
  */
-export async function aplicarRotativaSecuencialDesde(fecha, secuencia) {
+export async function aplicarRotativaSecuencialDesde(
+    fecha,
+    secuencia,
+    options = {}
+) {
     if (!getCurrentProfile()) return;
 
     await applyGeneratedSchedule(fecha, {
         mode: "sequence",
-        sequence: secuencia
+        sequence: secuencia,
+        endISO: options.endISO
     });
 }
 
@@ -95,10 +102,15 @@ export async function aplicarRotativaSecuencialDesde(fecha, secuencia) {
  * @param {Date} fecha
  * @param {string} firstTurn
  */
-export async function aplicarCuartoTurnoDesde(fecha, firstTurn = "larga") {
+export async function aplicarCuartoTurnoDesde(
+    fecha,
+    firstTurn = "larga",
+    options = {}
+) {
     await aplicarRotativaSecuencialDesde(
         fecha,
-        getRotationSequence("4turno", firstTurn)
+        getRotationSequence("4turno", firstTurn),
+        options
     );
 }
 
@@ -107,9 +119,14 @@ export async function aplicarCuartoTurnoDesde(fecha, firstTurn = "larga") {
  * @param {Date} fecha
  * @param {string} firstTurn
  */
-export async function aplicarTercerTurnoDesde(fecha, firstTurn = "larga") {
+export async function aplicarTercerTurnoDesde(
+    fecha,
+    firstTurn = "larga",
+    options = {}
+) {
     await aplicarRotativaSecuencialDesde(
         fecha,
-        getRotationSequence("3turno", firstTurn)
+        getRotationSequence("3turno", firstTurn),
+        options
     );
 }

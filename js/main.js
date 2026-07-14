@@ -352,10 +352,12 @@ import {
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import {
+    cancelShiftMovesForWorkerRange,
     cancelFutureShiftMovesForWorker,
     registerShiftMove
 } from "./shiftMoves.js";
 import {
+    cancelReplacementsForWorkerRange,
     cancelFutureReplacementsForWorker,
     renderReplacementLogHTML
 } from "./replacements.js";
@@ -2513,52 +2515,77 @@ async function applyCalendarRotationChange(fecha) {
         return;
     }
 
+    const overlapDecision = await requestRotationOverlapDecision({
+        profileName: profile.name,
+        requestedType: type,
+        requestedStart: startISO,
+        requestedFirstTurn: firstTurn,
+        currentRotation: getRotativa(profile.name)
+    });
+
+    if (!overlapDecision) {
+        return;
+    }
+
     pendingRotationChange = null;
     clearSelectionMode(false);
 
     await withBusyState(async () => {
         pushHistory();
 
-        // Preserva el horario anterior a la fecha elegida antes de reubicar el
-        // inicio de la rotativa (evita que se borren los turnos "hacia atras").
-        freezePriorRotationSchedule(startISO);
-
-        if (type === "libre") {
-            saveRotativa({
-                type,
-                start: "",
-                firstTurn: "larga"
-            }, profile.name);
-            await applyDraftRotation(type, startISO, "larga", {
-                cleanupStart: startISO
+        if (overlapDecision.mode === "limit") {
+            await applyDraftRotation(type, startISO, firstTurn, {
+                cleanupStart: type === "libre" ? startISO : "",
+                endISO: overlapDecision.endISO
             });
         } else {
-            saveRotativa({
-                type,
-                start: startISO,
-                firstTurn
-            }, profile.name);
-            await applyDraftRotation(type, startISO, firstTurn);
+            // Preserva el horario anterior a la fecha elegida antes de reubicar el
+            // inicio de la rotativa (evita que se borren los turnos "hacia atras").
+            freezePriorRotationSchedule(startISO);
+
+            if (type === "libre") {
+                saveRotativa({
+                    type,
+                    start: "",
+                    firstTurn: "larga"
+                }, profile.name);
+                await applyDraftRotation(type, startISO, "larga", {
+                    cleanupStart: startISO
+                });
+            } else {
+                saveRotativa({
+                    type,
+                    start: startISO,
+                    firstTurn
+                }, profile.name);
+                await applyDraftRotation(type, startISO, firstTurn);
+            }
         }
 
         const rotationDateText =
-            type === "libre"
-                ? ` desde ${formatDisplayDate(startISO)}`
+            overlapDecision.mode === "limit"
+                ? ` desde ${formatDisplayDate(startISO)} hasta ${formatDisplayDate(overlapDecision.endISO)}`
                 : ` desde ${formatDisplayDate(startISO)}`;
         const firstTurnText =
             requiresRotationFirstTurn(type)
                 ? ` iniciando con ${getRotationFirstTurnLabel(firstTurn, type)}`
                 : "";
+        const actionLabel =
+            overlapDecision.mode === "limit"
+                ? "Aplic\u00f3 rotativa historica desde calendario"
+                : "Modifico rotativa desde calendario";
 
         addAuditLog(
             AUDIT_CATEGORY.CALENDAR,
-            "Modifico rotativa desde calendario",
+            actionLabel,
             `${profile.name}: ${getRotativaLabel(type)}${rotationDateText}${firstTurnText}.`,
             {
                 profile: profile.name,
                 date: startISO,
+                endDate: overlapDecision.endISO,
                 rotationType: type,
-                firstTurn
+                firstTurn,
+                mode: overlapDecision.mode
             }
         );
     }, {
@@ -6698,6 +6725,24 @@ function futureKeys(map, startDate) {
     );
 }
 
+function keyWithinScheduleWindow(key, startDate, endISO = "") {
+    if (!isDateKeyOnOrAfter(key, startDate)) return false;
+
+    if (!endISO) return true;
+
+    const iso = calendarKeyToInputDate(key);
+
+    return Boolean(iso) && compareISODate(iso, endISO) <= 0;
+}
+
+function scheduleWindowKeys(map, startDate, endISO = "") {
+    if (!endISO) return futureKeys(map, startDate);
+
+    return Object.keys(map || {}).filter(key =>
+        keyWithinScheduleWindow(key, startDate, endISO)
+    );
+}
+
 function calendarKeyToSafeISO(key) {
     const date = parseKey(key);
 
@@ -6779,6 +6824,152 @@ async function firstRotationTurnDate(
     return toISODate(date);
 }
 
+function previousISODate(value) {
+    const date = parseInputDate(value);
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    date.setDate(date.getDate() - 1);
+
+    return toISODate(date);
+}
+
+function getRotationOverlapWindow({
+    requestedStart = "",
+    currentRotation = {}
+} = {}) {
+    const startISO = normalizeStoredStart(requestedStart);
+    const currentStart = normalizeStoredStart(currentRotation?.start || "");
+
+    if (
+        !startISO ||
+        !currentStart ||
+        compareISODate(startISO, currentStart) >= 0
+    ) {
+        return null;
+    }
+
+    const endISO = previousISODate(currentStart);
+
+    if (!endISO || compareISODate(startISO, endISO) > 0) {
+        return null;
+    }
+
+    return {
+        currentStart,
+        endISO
+    };
+}
+
+function requestRotationOverlapDecision({
+    profileName = "",
+    requestedType = "",
+    requestedStart = "",
+    requestedFirstTurn = "larga",
+    currentRotation = {}
+} = {}) {
+    const overlap = getRotationOverlapWindow({
+        requestedStart,
+        currentRotation
+    });
+
+    if (!overlap) {
+        return Promise.resolve({
+            mode: "replace",
+            endISO: "",
+            currentStart: ""
+        });
+    }
+
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+        const currentType = currentRotation?.type || "";
+        const firstTurnText =
+            requiresRotationFirstTurn(requestedType)
+                ? ` iniciando con ${getRotationFirstTurnLabel(requestedFirstTurn, requestedType)}`
+                : "";
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.innerHTML = `
+            <div class="turn-change-dialog rotation-config-dialog" role="dialog" aria-modal="true">
+                <strong>Ya existe una rotativa vigente</strong>
+                <p>
+                    ${escapeHTML(profileName)} ya tiene una rotativa
+                    ${escapeHTML(getRotativaLabel(currentType))}
+                    aplicada desde el
+                    <b>${escapeHTML(formatDisplayDate(overlap.currentStart))}</b>.
+                </p>
+                <p>
+                    La nueva rotativa
+                    <b>${escapeHTML(getRotativaLabel(requestedType))}${escapeHTML(firstTurnText)}</b>
+                    fue seleccionada desde el
+                    <b>${escapeHTML(formatDisplayDate(requestedStart))}</b>.
+                </p>
+                <div class="firebase-dialog-note">
+                    Puedes reemplazar la rotativa vigente, lo que resetea el calendario del trabajador desde
+                    ${escapeHTML(formatDisplayDate(requestedStart))}, anulando turnos extras, cambios de turno,
+                    permisos y ausencias de ese tramo; o aplicarla solo hasta el
+                    ${escapeHTML(formatDisplayDate(overlap.endISO))}, sin pisar la rotativa que comienza el
+                    ${escapeHTML(formatDisplayDate(overlap.currentStart))}.
+                </div>
+                <div class="turn-change-dialog__actions">
+                    <button class="leave-detail-undo" type="button" data-action="replace">
+                        Reemplazar rotativa vigente
+                    </button>
+                    <button class="primary-button" type="button" data-action="limit">
+                        Aplicar hasta ${escapeHTML(formatDisplayDate(overlap.endISO))}
+                    </button>
+                    <button class="secondary-button" type="button" data-action="cancel">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+        `;
+
+        const close = value => {
+            document.removeEventListener("keydown", onKeydown);
+            backdrop.remove();
+            resolve(value);
+        };
+        const onKeydown = event => {
+            if (event.key === "Escape") {
+                close(null);
+            }
+        };
+
+        backdrop.addEventListener("click", event => {
+            if (event.target === backdrop) {
+                close(null);
+                return;
+            }
+
+            const action = event.target
+                ?.closest?.("[data-action]")
+                ?.dataset
+                ?.action;
+
+            if (!action) return;
+
+            if (action === "cancel") {
+                close(null);
+                return;
+            }
+
+            close({
+                mode: action === "limit" ? "limit" : "replace",
+                endISO: action === "limit" ? overlap.endISO : "",
+                currentStart: overlap.currentStart
+            });
+        });
+
+        document.addEventListener("keydown", onKeydown);
+        document.body.appendChild(backdrop);
+        backdrop
+            .querySelector("[data-action='limit']")
+            ?.focus();
+    });
+}
+
 async function inferProfileUnitEntryDate({
     profileNames = [],
     rotationType = "",
@@ -6844,7 +7035,16 @@ function returnAdminBalances(amountByYear) {
     });
 }
 
-function cleanupFutureSwaps(profileName, startISO) {
+function isoWithinScheduleWindow(iso, startISO, endISO = "") {
+    return Boolean(iso) &&
+        compareISODate(iso, startISO) >= 0 &&
+        (
+            !endISO ||
+            compareISODate(iso, endISO) <= 0
+        );
+}
+
+function cleanupFutureSwaps(profileName, startISO, endISO = "") {
     const nextSwaps = [];
 
     getSwaps().forEach(swap => {
@@ -6863,16 +7063,10 @@ function cleanupFutureSwaps(profileName, startISO) {
 
         const skipFecha =
             Boolean(swap.skipFecha) ||
-            (
-                swap.fecha &&
-                compareISODate(swap.fecha, startISO) >= 0
-            );
+            isoWithinScheduleWindow(swap.fecha, startISO, endISO);
         const skipDevolucion =
             Boolean(swap.skipDevolucion) ||
-            (
-                swap.devolucion &&
-                compareISODate(swap.devolucion, startISO) >= 0
-            );
+            isoWithinScheduleWindow(swap.devolucion, startISO, endISO);
 
         if (skipFecha && skipDevolucion) {
             return;
@@ -6888,7 +7082,7 @@ function cleanupFutureSwaps(profileName, startISO) {
     saveSwaps(nextSwaps);
 }
 
-async function cleanupFutureSchedule(startDate) {
+async function cleanupFutureSchedule(startDate, options = {}) {
     const profileName = getCurrentProfile();
 
     if (!profileName) return;
@@ -6905,30 +7099,31 @@ async function cleanupFutureSchedule(startDate) {
     const returnedComp = {};
     const returnedAdmin = {};
     const startISO = toISODate(startDate);
+    const endISO = normalizeStoredStart(options.endISO || "");
 
-    futureKeys(data, startDate).forEach(key => {
+    scheduleWindowKeys(data, startDate, endISO).forEach(key => {
         delete data[key];
     });
 
-    futureKeys(baseData, startDate).forEach(key => {
+    scheduleWindowKeys(baseData, startDate, endISO).forEach(key => {
         delete baseData[key];
     });
 
-    futureKeys(blocked, startDate).forEach(key => {
+    scheduleWindowKeys(blocked, startDate, endISO).forEach(key => {
         delete blocked[key];
     });
 
-    futureKeys(legal, startDate).forEach(key => {
+    scheduleWindowKeys(legal, startDate, endISO).forEach(key => {
         delete legal[key];
         pushReturnKey(returnedLegal, key);
     });
 
-    futureKeys(comp, startDate).forEach(key => {
+    scheduleWindowKeys(comp, startDate, endISO).forEach(key => {
         delete comp[key];
         pushReturnKey(returnedComp, key);
     });
 
-    futureKeys(admin, startDate).forEach(key => {
+    scheduleWindowKeys(admin, startDate, endISO).forEach(key => {
         const amount = admin[key] === 1 ? 1 : 0.5;
         const year = key.split("-")[0];
 
@@ -6937,21 +7132,31 @@ async function cleanupFutureSchedule(startDate) {
             (returnedAdmin[year] || 0) + amount;
     });
 
-    futureKeys(absences, startDate).forEach(key => {
+    scheduleWindowKeys(absences, startDate, endISO).forEach(key => {
         delete absences[key];
     });
 
-    futureKeys(hourReturns, startDate).forEach(key => {
+    scheduleWindowKeys(hourReturns, startDate, endISO).forEach(key => {
         delete hourReturns[key];
     });
 
-    cleanupFutureSwaps(profileName, startISO);
-    cancelFutureShiftMovesForWorker(profileName, startDate);
-    cancelFutureReplacementsForWorker(profileName, startISO, {
-        reason: "rotation_reset",
-        details:
-            "Turno extra anulado al aplicar una nueva rotativa desde esta fecha."
-    });
+    cleanupFutureSwaps(profileName, startISO, endISO);
+
+    if (endISO) {
+        cancelShiftMovesForWorkerRange(profileName, startDate, endISO);
+        cancelReplacementsForWorkerRange(profileName, startISO, endISO, {
+            reason: "rotation_reset",
+            details:
+                "Turno extra anulado al aplicar una nueva rotativa dentro de este periodo."
+        });
+    } else {
+        cancelFutureShiftMovesForWorker(profileName, startDate);
+        cancelFutureReplacementsForWorker(profileName, startISO, {
+            reason: "rotation_reset",
+            details:
+                "Turno extra anulado al aplicar una nueva rotativa desde esta fecha."
+        });
+    }
 
     await returnBusinessBalances("legal", returnedLegal);
     await returnBusinessBalances("comp", returnedComp);
@@ -6976,7 +7181,8 @@ async function applyDraftRotation(
     if (rotationType === "libre") {
         if (options.cleanupStart) {
             await cleanupFutureSchedule(
-                parseInputDate(options.cleanupStart)
+                parseInputDate(options.cleanupStart),
+                { endISO: options.endISO }
             );
         }
 
@@ -6986,7 +7192,9 @@ async function applyDraftRotation(
 
     const startDate = parseInputDate(rotationStart);
 
-    await cleanupFutureSchedule(startDate);
+    await cleanupFutureSchedule(startDate, {
+        endISO: options.endISO
+    });
 
     if (rotationType === "reemplazo") {
         refreshAll();
@@ -6994,16 +7202,22 @@ async function applyDraftRotation(
     }
 
     if (rotationType === "diurno") {
-        await aplicarDiurnoDesde(startDate);
+        await aplicarDiurnoDesde(startDate, {
+            endISO: options.endISO
+        });
         return;
     }
 
     if (rotationType === "3turno") {
-        await aplicarTercerTurnoDesde(startDate, firstTurn);
+        await aplicarTercerTurnoDesde(startDate, firstTurn, {
+            endISO: options.endISO
+        });
         return;
     }
 
-    await aplicarCuartoTurnoDesde(startDate, firstTurn);
+    await aplicarCuartoTurnoDesde(startDate, firstTurn, {
+        endISO: options.endISO
+    });
 }
 
 async function requestShiftAssignmentEffectiveMonth(assigned) {
@@ -7201,7 +7415,15 @@ async function guardarPerfil() {
     const shouldSaveReplacementContract =
         replacementContract &&
         requiresReplacementContract();
-    const nextSnapshot = {
+    let effectiveRotationType = nextRotationType;
+    let effectiveRotationStart = nextRotationStart;
+    let effectiveRotationFirstTurn = nextRotationFirstTurn;
+    let rotationOverlapDecision = {
+        mode: "replace",
+        endISO: "",
+        currentStart: ""
+    };
+    let nextSnapshot = {
         ...nextProfilePayload,
         shiftAssigned: nextShiftAssigned,
         rotativa: {
@@ -7259,6 +7481,49 @@ async function guardarPerfil() {
         )
     ) {
         return;
+    }
+
+    if (
+        shouldApplyRotation &&
+        isEditing &&
+        nextRotationStart
+    ) {
+        rotationOverlapDecision =
+            await requestRotationOverlapDecision({
+                profileName: nextName,
+                requestedType: nextRotationType,
+                requestedStart: nextRotationStart,
+                requestedFirstTurn: nextRotationFirstTurn,
+                currentRotation: previousSnapshot?.rotativa || {}
+            });
+
+        if (!rotationOverlapDecision) {
+            return;
+        }
+
+        if (rotationOverlapDecision.mode === "limit") {
+            const preservedRotation =
+                previousSnapshot?.rotativa || {};
+
+            effectiveRotationType =
+                preservedRotation.type || nextRotationType;
+            effectiveRotationStart =
+                normalizeStoredStart(preservedRotation.start || "");
+            effectiveRotationFirstTurn =
+                normalizeRotationFirstTurnForType(
+                    effectiveRotationType,
+                    preservedRotation.firstTurn ||
+                        nextRotationFirstTurn
+                );
+            nextSnapshot = {
+                ...nextSnapshot,
+                rotativa: {
+                    type: effectiveRotationType,
+                    start: effectiveRotationStart,
+                    firstTurn: effectiveRotationFirstTurn
+                }
+            };
+        }
     }
 
     let automaticInviteResult = null;
@@ -7352,9 +7617,9 @@ async function guardarPerfil() {
             setShiftAssigned(false, nextName);
         }
         saveRotativa({
-            type: nextRotationType,
-            start: nextRotationStart,
-            firstTurn: nextRotationFirstTurn
+            type: effectiveRotationType,
+            start: effectiveRotationStart,
+            firstTurn: effectiveRotationFirstTurn
         });
 
         if (isEditing) {
@@ -7395,7 +7660,7 @@ async function guardarPerfil() {
             addAuditLog(
                 AUDIT_CATEGORY.COLLABORATOR_CREATED,
                 "Creo nuevo colaborador",
-                `${nextName} (${nextEstamento}) con rotativa ${getRotativaLabel(nextRotationType)}.`,
+                `${nextName} (${nextEstamento}) con rotativa ${getRotativaLabel(effectiveRotationType)}.`,
                 { profile: nextName }
             );
         }
@@ -7480,27 +7745,39 @@ async function guardarPerfil() {
                 nextRotationStart,
                 nextRotationFirstTurn,
                 {
-                    cleanupStart: rotationCleanupStart
+                    cleanupStart: rotationCleanupStart,
+                    endISO: rotationOverlapDecision.endISO
                 }
             );
 
-            const rotationDateText = nextRotationStart
-                ? ` desde ${formatDisplayDate(nextRotationStart)}`
-                : "";
+            const rotationDateText =
+                rotationOverlapDecision.mode === "limit"
+                    ? ` desde ${formatDisplayDate(nextRotationStart)} hasta ${formatDisplayDate(rotationOverlapDecision.endISO)}`
+                    : nextRotationStart
+                        ? ` desde ${formatDisplayDate(nextRotationStart)}`
+                        : "";
             const rotationAuditSuffix =
-                nextRotationType === "libre"
-                    ? ". Calendario base libre para carga manual."
-                    : ". Se limpiaron programaciones futuras desde esa fecha.";
+                rotationOverlapDecision.mode === "limit"
+                    ? `. Se mantuvo la rotativa vigente desde ${formatDisplayDate(rotationOverlapDecision.currentStart)}.`
+                    : nextRotationType === "libre"
+                        ? ". Calendario base libre para carga manual."
+                        : ". Se limpiaron programaciones futuras desde esa fecha.";
+            const rotationAuditAction =
+                rotationOverlapDecision.mode === "limit"
+                    ? "Aplic\u00f3 rotativa historica"
+                    : "Aplic\u00f3 rotativa base";
 
             addAuditLog(
                 AUDIT_CATEGORY.CALENDAR,
-                "Aplic\u00f3 rotativa base",
+                rotationAuditAction,
                 `${nextName}: ${getRotativaLabel(nextRotationType)}${rotationDateText}${requiresRotationFirstTurn(nextRotationType) ? ` iniciando con ${getRotationFirstTurnLabel(nextRotationFirstTurn, nextRotationType)}` : ""}${rotationAuditSuffix}`,
                 {
                     profile: nextName,
                     date: nextRotationStart,
+                    endDate: rotationOverlapDecision.endISO,
                     rotationType: nextRotationType,
-                    firstTurn: nextRotationFirstTurn
+                    firstTurn: nextRotationFirstTurn,
+                    mode: rotationOverlapDecision.mode
                 }
             );
         }

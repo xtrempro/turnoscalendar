@@ -1,4 +1,9 @@
-import { isoFromKey, keyFromISO, keyToDate as parseKey } from "./dateUtils.js";
+import {
+    isoFromKey,
+    keyFromISO,
+    keyToDate as parseKey,
+    compareISODate
+} from "./dateUtils.js";
 import {
     getProfiles,
     getReplacements,
@@ -298,6 +303,64 @@ export function cancelFutureReplacementsForWorker(
             replacement.worker !== profile ||
             !replacement.date ||
             String(replacement.date) < boundary
+        ) {
+            return replacement;
+        }
+
+        const nextReplacement = {
+            ...replacement,
+            canceled: true,
+            canceledAt,
+            cancelReason: reason,
+            cancellationDetails: details
+        };
+
+        canceled.push(nextReplacement);
+        return nextReplacement;
+    });
+
+    if (!canceled.length) return [];
+
+    saveReplacements(replacements);
+    cancelLinkedRequestsForReplacements(canceled, {
+        canceledAt,
+        reason,
+        details
+    });
+
+    return canceled;
+}
+
+export function cancelReplacementsForWorkerRange(
+    profile,
+    startISO,
+    endISO = "",
+    {
+        reason = "rotation_reset",
+        details = "Turno extra anulado al aplicar una nueva rotativa."
+    } = {}
+) {
+    const start = String(startISO || "");
+    const end = String(endISO || "");
+
+    if (!profile || !start) return [];
+
+    const canceledAt = new Date().toISOString();
+    const canceled = [];
+    const replacements = getReplacements().map(replacement => {
+        const date = String(replacement.date || "");
+        const inRange =
+            date &&
+            compareISODate(date, start) >= 0 &&
+            (
+                !end ||
+                compareISODate(date, end) <= 0
+            );
+
+        if (
+            !replacementActive(replacement) ||
+            replacement.worker !== profile ||
+            !inRange
         ) {
             return replacement;
         }

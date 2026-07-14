@@ -4,7 +4,11 @@ import {
     setJSON,
     setRaw
 } from "./persistence.js";
-import { isDateKeyOnOrAfter } from "./dateUtils.js";
+import {
+    isDateKeyOnOrAfter,
+    calendarKeyToInputDate,
+    compareISODate
+} from "./dateUtils.js";
 
 const STORAGE_KEY = "shiftMoves";
 const MIGRATION_KEY = "shiftMovesAuditMigrationV1";
@@ -156,6 +160,45 @@ export function cancelFutureShiftMovesForWorker(profile, startDate) {
             isDateKeyOnOrAfter(move.targetKey, startDate);
 
         if (move.profile === profile && touchesFuture) {
+            removed.push(move);
+            return false;
+        }
+
+        return true;
+    });
+
+    if (removed.length) {
+        saveShiftMoves(remaining);
+    }
+
+    return removed;
+}
+
+function isDateKeyInRange(keyDay, startDate, endISO = "") {
+    if (!isDateKeyOnOrAfter(keyDay, startDate)) return false;
+
+    if (!endISO) return true;
+
+    const iso = calendarKeyToInputDate(keyDay);
+
+    return Boolean(iso) && compareISODate(iso, endISO) <= 0;
+}
+
+export function cancelShiftMovesForWorkerRange(
+    profile,
+    startDate,
+    endISO = ""
+) {
+    if (!profile || !(startDate instanceof Date)) return [];
+
+    const moves = getShiftMoves();
+    const removed = [];
+    const remaining = moves.filter(move => {
+        const touchesRange =
+            isDateKeyInRange(move.sourceKey, startDate, endISO) ||
+            isDateKeyInRange(move.targetKey, startDate, endISO);
+
+        if (move.profile === profile && touchesRange) {
             removed.push(move);
             return false;
         }

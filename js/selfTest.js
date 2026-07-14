@@ -60,10 +60,12 @@ import {
     registrarCambio
 } from "./swaps.js";
 import {
+    cancelReplacementsForWorkerRange,
     cancelFutureReplacementsForWorker,
     saveReplacement
 } from "./replacements.js";
 import {
+    cancelShiftMovesForWorkerRange,
     cancelFutureShiftMovesForWorker,
     getShiftMoves,
     registerShiftMove
@@ -323,6 +325,82 @@ const TESTS = [
             assert(
                 !futuro,
                 "el turno movido futuro deberia eliminarse"
+            );
+        }
+    },
+    {
+        name: "Rotativa historica limpia solo hasta la rotativa vigente",
+        run() {
+            saveReplacement({
+                worker: FAKE_PROFILE,
+                keyDay: key(2026, 5, 20),
+                turno: TURNO.LARGA,
+                reason: "Motivo dentro del tramo historico",
+                source: "manual_extra",
+                addsShift: false
+            });
+            saveReplacement({
+                worker: FAKE_PROFILE,
+                keyDay: key(2026, 6, 10),
+                turno: TURNO.LARGA,
+                reason: "Motivo de la rotativa vigente",
+                source: "manual_extra",
+                addsShift: false
+            });
+            registerShiftMove({
+                profile: FAKE_PROFILE,
+                sourceKey: key(2026, 5, 12),
+                targetKey: key(2026, 5, 13),
+                sourceTurn: TURNO.LARGA,
+                destinationTurn: TURNO.NOCHE
+            });
+            registerShiftMove({
+                profile: FAKE_PROFILE,
+                sourceKey: key(2026, 6, 12),
+                targetKey: key(2026, 6, 13),
+                sourceTurn: TURNO.LARGA,
+                destinationTurn: TURNO.NOCHE
+            });
+
+            cancelReplacementsForWorkerRange(
+                FAKE_PROFILE,
+                "2026-01-01",
+                "2026-06-30"
+            );
+            cancelShiftMovesForWorkerRange(
+                FAKE_PROFILE,
+                new Date(2026, 0, 1),
+                "2026-06-30"
+            );
+
+            const replacements = getReplacements()
+                .filter(replacement => replacement.worker === FAKE_PROFILE);
+            const juneReplacement =
+                replacements.find(r => r.date === "2026-06-20");
+            const julyReplacement =
+                replacements.find(r => r.date === "2026-07-10");
+            const moves = getShiftMoves()
+                .filter(move => move.profile === FAKE_PROFILE);
+            const juneMove =
+                moves.some(move => move.sourceKey === key(2026, 5, 12));
+            const julyMove =
+                moves.some(move => move.sourceKey === key(2026, 6, 12));
+
+            assert(
+                juneReplacement && juneReplacement.canceled === true,
+                "el reemplazo dentro del tramo historico debe anularse"
+            );
+            assert(
+                julyReplacement && julyReplacement.canceled !== true,
+                "el reemplazo de la rotativa vigente no debe anularse"
+            );
+            assert(
+                !juneMove,
+                "el turno movido dentro del tramo historico debe eliminarse"
+            );
+            assert(
+                julyMove,
+                "el turno movido de la rotativa vigente no debe eliminarse"
             );
         }
     },

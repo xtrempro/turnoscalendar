@@ -10,6 +10,10 @@ let messagesUnsubscribe = null;
 let activeWorkerUid = "";
 let activeMessages = [];
 let unreadCount = 0;
+let threadIndex = new Map();
+let threadUnreadCounts = new Map();
+let threadSnapshotVersion = 0;
+let messageDrafts = new Map();
 let floatingButton = null;
 let floatingBadge = null;
 let dialog = null;
@@ -43,6 +47,14 @@ function timestampToDate(value) {
     return Number.isNaN(date.getTime()) ? new Date() : date;
 }
 
+function timestampToMillis(value) {
+    if (!value) return 0;
+
+    const date = value?.toDate?.() || new Date(value);
+
+    return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
 function formatTime(value) {
     const date = timestampToDate(value);
 
@@ -72,8 +84,81 @@ function linkedWorkers() {
         .sort((a, b) => a.name.localeCompare(b.name, "es"));
 }
 
+function normalizeThreadDoc(docSnap) {
+    const data = docSnap.data() || {};
+    const uid = String(data.uid || docSnap.id || "").trim();
+
+    if (!uid) return null;
+
+    return {
+        ...data,
+        uid,
+        updatedAtMillis: timestampToMillis(
+            data.updatedAt ||
+            data.lastMessageAt ||
+            data.createdAt
+        )
+    };
+}
+
+function explicitThreadUnreadCount(thread = {}) {
+    const candidates = [
+        thread.unreadForSupervisorCount,
+        thread.unreadSupervisorCount,
+        thread.supervisorUnreadCount,
+        thread.unreadCountForSupervisor
+    ];
+
+    for (const value of candidates) {
+        const count = Number(value);
+
+        if (Number.isFinite(count) && count > 0) {
+            return Math.floor(count);
+        }
+    }
+
+    return 0;
+}
+
+function workerUnreadCount(uid) {
+    const thread = threadIndex.get(uid);
+
+    if (!thread?.unreadForSupervisor) return 0;
+
+    return explicitThreadUnreadCount(thread) ||
+        threadUnreadCounts.get(uid) ||
+        1;
+}
+
+function updateTotalUnreadCount() {
+    unreadCount = Array.from(threadIndex.keys())
+        .reduce((total, uid) => total + workerUnreadCount(uid), 0);
+    updateFloatingBadge();
+}
+
+function sortWorkersForMessages(workers = []) {
+    return [...workers].sort((a, b) => {
+        const aThread = threadIndex.get(a.uid);
+        const bThread = threadIndex.get(b.uid);
+        const aTime = Number(aThread?.updatedAtMillis) || 0;
+        const bTime = Number(bThread?.updatedAtMillis) || 0;
+        const aHasActivity = aTime > 0;
+        const bHasActivity = bTime > 0;
+
+        if (aHasActivity !== bHasActivity) {
+            return aHasActivity ? -1 : 1;
+        }
+
+        if (aHasActivity && bHasActivity && aTime !== bTime) {
+            return bTime - aTime;
+        }
+
+        return a.name.localeCompare(b.name, "es");
+    });
+}
+
 function selectedWorker() {
-    const workers = linkedWorkers();
+    const workers = sortWorkersForMessages(linkedWorkers());
 
     return workers.find(worker => worker.uid === activeWorkerUid) ||
         workers[0] ||
@@ -85,6 +170,63 @@ function updateFloatingBadge() {
 
     floatingBadge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
     floatingBadge.classList.toggle("hidden", unreadCount <= 0);
+}
+
+async function countUnreadWorkerMessages(uid) {
+    if (!activeWorkspace?.id || !uid) return 0;
+
+    const { db, firestoreModule } = await getFirebaseServices();
+    const unreadQuery = firestoreModule.query(
+        firestoreModule.collection(
+            db,
+            "workspaces",
+            activeWorkspace.id,
+            "workerMessages",
+            uid,
+            "messages"
+        ),
+        firestoreModule.where("readBySupervisor", "==", false)
+    );
+    const snap = await firestoreModule.getDocs(unreadQuery);
+
+    return snap.docs
+        .map(docSnap => docSnap.data() || {})
+        .filter(message => message.sender !== "supervisor")
+        .length;
+}
+
+async function refreshUnreadCountsForThreads(version) {
+    const unreadThreads = Array.from(threadIndex.values())
+        .filter(thread => thread.unreadForSupervisor === true);
+
+    if (!unreadThreads.length) return;
+
+    await Promise.all(
+        unreadThreads.map(async thread => {
+            if (explicitThreadUnreadCount(thread) > 0) return;
+
+            try {
+                const count = await countUnreadWorkerMessages(thread.uid);
+
+                if (version !== threadSnapshotVersion) return;
+
+                threadUnreadCounts.set(
+                    thread.uid,
+                    Math.max(1, count)
+                );
+            } catch (error) {
+                console.warn(
+                    "No se pudo calcular mensajes no leidos.",
+                    error
+                );
+            }
+        })
+    );
+
+    if (version !== threadSnapshotVersion) return;
+
+    updateTotalUnreadCount();
+    refreshDialog();
 }
 
 function messageComposer() {
@@ -161,12 +303,25 @@ export async function startSupervisorMessages(workspace) {
         unreadUnsubscribe = firestoreModule.onSnapshot(
             threadsRef,
             snap => {
-                unreadCount = snap.docs
-                    .map(docSnap => docSnap.data() || {})
-                    .filter(thread => thread.unreadForSupervisor === true)
-                    .length;
-                updateFloatingBadge();
+                const nextVersion = threadSnapshotVersion + 1;
+                const nextIndex = new Map();
+
+                snap.docs
+                    .map(normalizeThreadDoc)
+                    .filter(Boolean)
+                    .forEach(thread => {
+                        nextIndex.set(thread.uid, thread);
+                    });
+
+                threadSnapshotVersion = nextVersion;
+                threadIndex = nextIndex;
+                threadUnreadCounts = new Map(
+                    Array.from(threadUnreadCounts.entries())
+                        .filter(([uid]) => threadIndex.has(uid))
+                );
+                updateTotalUnreadCount();
                 refreshDialog();
+                void refreshUnreadCountsForThreads(nextVersion);
             },
             error => {
                 console.warn("No se pudo leer mensajeria.", error);
@@ -188,6 +343,9 @@ export function stopSupervisorMessages() {
     activeWorkerUid = "";
     activeMessages = [];
     unreadCount = 0;
+    threadIndex = new Map();
+    threadUnreadCounts = new Map();
+    threadSnapshotVersion++;
     updateFloatingBadge();
     closeMessagesDialog();
 }
@@ -203,7 +361,7 @@ function openMessagesDialog() {
         return;
     }
 
-    const workers = linkedWorkers();
+    const workers = sortWorkersForMessages(linkedWorkers());
     if (!activeWorkerUid && workers[0]) {
         activeWorkerUid = workers[0].uid;
     }
@@ -275,6 +433,7 @@ function closeMessagesDialog() {
     massSelected.clear();
     massText = "";
     massSending = false;
+    messageDrafts = new Map();
     stopMessagesSubscription();
 }
 
@@ -303,9 +462,10 @@ function refreshDialog() {
         return;
     }
 
+    const chatWorkers = sortWorkersForMessages(workers);
     const worker = selectedWorker();
 
-    body.innerHTML = renderMessagesLayout(workers, worker);
+    body.innerHTML = renderMessagesLayout(chatWorkers, worker);
 
     body.querySelectorAll("[data-message-worker]").forEach(button => {
         button.addEventListener("click", () => {
@@ -320,10 +480,17 @@ function refreshDialog() {
     applyWorkerSearchFilter();
 
     const form = body.querySelector("[data-supervisor-message-form]");
+    const textarea = form?.querySelector("textarea");
+
+    if (textarea && worker?.uid) {
+        textarea.value = messageDrafts.get(worker.uid) || "";
+        textarea.addEventListener("input", () => {
+            messageDrafts.set(worker.uid, textarea.value);
+        });
+    }
+
     form?.addEventListener("submit", sendSupervisorMessage);
-    form
-        ?.querySelector("textarea")
-        ?.addEventListener("keydown", handleComposerKeydown);
+    textarea?.addEventListener("keydown", handleComposerKeydown);
 
     const list = body.querySelector(".supervisor-message-thread");
     if (list) {
@@ -386,15 +553,24 @@ function renderMessagesLayout(workers, worker) {
             <div class="supervisor-message-search">
                 <input type="search" data-message-worker-search placeholder="Buscar trabajador" value="${escapeHTML(workerSearch)}" autocomplete="off">
             </div>
-            ${workers.map(item => `
-                <button class="supervisor-message-worker ${item.uid === worker?.uid ? "is-active" : ""}" type="button" data-message-worker="${escapeHTML(item.uid)}" data-search="${escapeHTML(workerSearchText(item))}">
+            ${workers.map(item => {
+                const unread = workerUnreadCount(item.uid);
+
+                return `
+                <button class="supervisor-message-worker ${item.uid === worker?.uid ? "is-active" : ""} ${unread ? "has-unread" : ""}" type="button" data-message-worker="${escapeHTML(item.uid)}" data-search="${escapeHTML(workerSearchText(item))}">
                     <span class="supervisor-message-avatar">${escapeHTML(initials(item.name))}</span>
-                    <span>
+                    <span class="supervisor-message-worker-copy">
                         <strong>${escapeHTML(item.name)}</strong>
                         <small>${escapeHTML(item.role || item.email || "App enlazada")}</small>
                     </span>
+                    ${unread ? `
+                        <span class="supervisor-message-unread-badge" aria-label="${unread} mensajes no leidos">
+                            ${unread > 99 ? "99+" : unread}
+                        </span>
+                    ` : ""}
                 </button>
-            `).join("")}
+            `;
+            }).join("")}
             <div class="supervisor-message-no-results hidden">Sin resultados</div>
         </aside>
         <section class="supervisor-message-chat">
@@ -690,12 +866,15 @@ async function sendSupervisorMessage(event) {
     if (!worker?.uid || !text) return;
 
     textarea.disabled = true;
+    messageDrafts.delete(worker.uid);
+    textarea.value = "";
 
     try {
         await writeSupervisorMessage(worker, text);
-        textarea.value = "";
     } catch (error) {
         console.error(error);
+        messageDrafts.set(worker.uid, text);
+        textarea.value = text;
         alert(error.message || "No se pudo enviar el mensaje.");
     } finally {
         textarea.disabled = false;
@@ -731,6 +910,7 @@ async function writeSupervisorMessage(worker, text) {
             lastSender: "supervisor",
             unreadForWorker: true,
             unreadForSupervisor: false,
+            unreadForSupervisorCount: 0,
             updatedAt: now
         }, { merge: true })
         .set(messageRef, {
@@ -748,6 +928,22 @@ async function writeSupervisorMessage(worker, text) {
             readByWorker: false
         })
         .commit();
+
+    threadIndex.set(worker.uid, {
+        ...(threadIndex.get(worker.uid) || {}),
+        uid: worker.uid,
+        profileName: worker.name || "",
+        profileRut: worker.rut || "",
+        workerEmail: worker.email || "",
+        lastMessage: text,
+        lastSender: "supervisor",
+        unreadForSupervisor: false,
+        unreadForSupervisorCount: 0,
+        updatedAtMillis: Date.now()
+    });
+    threadUnreadCounts.set(worker.uid, 0);
+    updateTotalUnreadCount();
+    refreshDialog();
 }
 
 async function markThreadReadBySupervisor(uid) {
@@ -755,20 +951,48 @@ async function markThreadReadBySupervisor(uid) {
 
     try {
         const { db, firestoreModule } = await getFirebaseServices();
-        await firestoreModule.setDoc(
-            firestoreModule.doc(
-                db,
-                "workspaces",
-                activeWorkspace.id,
-                "workerMessages",
-                uid
-            ),
-            {
-                unreadForSupervisor: false,
-                supervisorReadAt: firestoreModule.serverTimestamp()
-            },
-            { merge: true }
+        const threadRef = firestoreModule.doc(
+            db,
+            "workspaces",
+            activeWorkspace.id,
+            "workerMessages",
+            uid
         );
+        const unreadQuery = firestoreModule.query(
+            firestoreModule.collection(threadRef, "messages"),
+            firestoreModule.where("readBySupervisor", "==", false)
+        );
+        const unreadSnap = await firestoreModule.getDocs(unreadQuery);
+        const batch = firestoreModule.writeBatch(db);
+
+        unreadSnap.docs
+            .filter(docSnap =>
+                (docSnap.data() || {}).sender !== "supervisor"
+            )
+            .slice(0, 450)
+            .forEach(docSnap => {
+                batch.set(docSnap.ref, {
+                    readBySupervisor: true,
+                    supervisorReadAt: firestoreModule.serverTimestamp()
+                }, { merge: true });
+            });
+
+        batch.set(threadRef, {
+            unreadForSupervisor: false,
+            unreadForSupervisorCount: 0,
+            supervisorReadAt: firestoreModule.serverTimestamp()
+        }, { merge: true });
+
+        await batch.commit();
+        if (threadIndex.has(uid)) {
+            threadIndex.set(uid, {
+                ...threadIndex.get(uid),
+                unreadForSupervisor: false,
+                unreadForSupervisorCount: 0
+            });
+        }
+        threadUnreadCounts.set(uid, 0);
+        updateTotalUnreadCount();
     } catch (error) {
         console.warn("No se pudo marcar conversacion como leida.", error);
     }

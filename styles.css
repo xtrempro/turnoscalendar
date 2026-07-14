@@ -3203,7 +3203,7 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
 .supervisor-message-worker {
     width: 100%;
     display: grid;
-    grid-template-columns: 42px minmax(0, 1fr);
+    grid-template-columns: 42px minmax(0, 1fr) auto;
     align-items: center;
     gap: 10px;
     padding: 10px;
@@ -3215,10 +3215,33 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     cursor: pointer;
 }
 
+.supervisor-message-worker-copy {
+    min-width: 0;
+}
+
 .supervisor-message-worker:hover,
 .supervisor-message-worker.is-active {
     border-color: var(--border-strong);
     background: var(--panel-hover);
+}
+
+.supervisor-message-worker.has-unread {
+    background: rgba(255, 59, 48, 0.06);
+}
+
+.supervisor-message-unread-badge {
+    min-width: 22px;
+    height: 22px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: #ef4444;
+    color: #ffffff;
+    font-size: 0.72rem;
+    font-weight: 900;
+    line-height: 1;
+    box-shadow: 0 8px 16px rgba(239, 68, 68, 0.24);
 }
 
 .supervisor-message-worker strong,
