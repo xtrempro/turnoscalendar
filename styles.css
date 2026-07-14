@@ -10558,6 +10558,15 @@ body[data-active-view="turnos"] .staffing-report-day strong {
     text-decoration: line-through;
 }
 
+body[data-active-view="memos"] .memo-card .memo-detail {
+    margin: 8px 0 4px;
+    color: var(--text-strong);
+    font-size: 1.04rem;
+    font-weight: 800;
+    line-height: 1.35;
+    letter-spacing: -0.015em;
+}
+
 .memo-check {
     display: inline-flex;
     align-items: center;

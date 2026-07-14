@@ -534,8 +534,7 @@ function memoCardHTML(memo) {
             <div class="worker-request-card__main">
                 <div>
                     <span class="worker-request-type">${escapeHTML(memo.typeLabel)}</span>
-                    <h4>${escapeHTML(memo.title)}</h4>
-                    <p>${escapeHTML(memo.detail || "Sin detalle adicional.")}</p>
+                    <p class="memo-detail">${escapeHTML(memo.detail || "Sin detalle adicional.")}</p>
                     <small>Creado: ${escapeHTML(formatTimestamp(memo.createdAt))}</small>
                 </div>
 

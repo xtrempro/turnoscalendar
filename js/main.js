@@ -19,7 +19,10 @@ import {
 import { normalizeText, stripAccents, sanitizeDigits } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { formatRut, getRutValidationMessage } from "./rutUtils.js";
-import { getEmailValidationMessage } from "./emailUtils.js";
+import {
+    findDuplicateEmailProfile,
+    getEmailValidationMessage
+} from "./emailUtils.js";
 import {
     getRotativaLabel,
     requiresRotationFirstTurn,
@@ -217,7 +220,6 @@ import {
 import { initFirebaseShell } from "./firebaseShell.js";
 import {
     ensureFirebaseTotpEnrollment,
-    getCurrentFirebaseUser,
     isFirebaseSessionMfaVerified,
     signOutFirebase
 } from "./firebaseClient.js";
@@ -392,7 +394,6 @@ import {
     canEditTarget,
     canViewTarget,
     firstViewableTarget,
-    listWorkspaceMembersForPermissions,
     loadWorkspacePermissions,
     startWorkspacePermissionListener,
     stopWorkspacePermissionListener,
@@ -907,9 +908,18 @@ function syncRutValidity(showMessage = false) {
 }
 
 function syncEmailValidity(showMessage = false) {
-    const message = getEmailValidationMessage(
+    const formatMessage = getEmailValidationMessage(
         DOM.profileEmailInput.value
     );
+    const duplicateMessage = formatMessage || !isProfileEditing()
+        ? ""
+        : getProfileEmailDuplicateMessage(
+            DOM.profileEmailInput.value,
+            profileDraft.mode === PROFILE_MODE.EDIT
+                ? profileDraft.originalName
+                : ""
+        );
+    const message = formatMessage || duplicateMessage;
 
     DOM.profileEmailInput.setCustomValidity(message);
 
@@ -6630,39 +6640,16 @@ function validateDraft() {
     return false;
 }
 
-function normalizeProfileEmailKey(value) {
-    return String(value || "").trim().toLowerCase();
-}
+function getProfileEmailDuplicateMessage(email, originalName = "") {
+    const duplicateProfile = findDuplicateEmailProfile(
+        getProfiles(),
+        email,
+        originalName
+    );
 
-async function workspaceMemberEmailKeys() {
-    const keys = new Set();
-    const currentUser = getCurrentFirebaseUser();
-    const currentUserEmail = normalizeProfileEmailKey(currentUser?.email);
-
-    if (currentUserEmail) {
-        keys.add(currentUserEmail);
-    }
-
-    const workspace = getActiveWorkspace();
-
-    if (!workspace?.id) return keys;
-
-    try {
-        const members = await listWorkspaceMembersForPermissions(workspace);
-
-        members.forEach(member => {
-            const email = normalizeProfileEmailKey(member.email);
-
-            if (email) keys.add(email);
-        });
-    } catch (error) {
-        console.warn(
-            "No se pudo validar correos de administradores de la unidad.",
-            error
-        );
-    }
-
-    return keys;
+    return duplicateProfile
+        ? `Ya existe un trabajador creado con ese correo (${duplicateProfile.name}). Cada trabajador debe tener un correo distinto dentro de la unidad.`
+        : "";
 }
 
 async function validateProfileEmailPolicy({
@@ -6672,22 +6659,16 @@ async function validateProfileEmailPolicy({
 }) {
     if (!nextEmailKey) return true;
 
-    const duplicateProfile = getProfiles().find(profile =>
-        profile.name !== originalName &&
-        normalizeProfileEmailKey(profile.email) === nextEmailKey
+    const message = getProfileEmailDuplicateMessage(
+        nextEmailKey,
+        originalName
     );
 
-    if (!duplicateProfile) return true;
-
-    const privilegedEmails = await workspaceMemberEmailKeys();
-
-    if (privilegedEmails.has(nextEmailKey)) {
+    if (!message) {
         return true;
     }
 
-    alert(
-        `Ya existe un trabajador creado con ese correo (${duplicateProfile.name}). Cada trabajador debe tener un correo distinto.`
-    );
+    alert(message);
 
     return false;
 }

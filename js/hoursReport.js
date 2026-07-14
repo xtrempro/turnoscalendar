@@ -43,6 +43,7 @@ import {
     cambiosDelMes,
     getSwapPerspective
 } from "./swaps.js";
+import { getShiftMoveMarkers } from "./shiftMoves.js";
 import {
     formatContractDate,
     getContractsForProfile,
@@ -59,6 +60,7 @@ import {
 } from "./clockMarks.js";
 
 const UNBACKED_OVERTIME_DETAIL = "Horas sin respaldo registrado";
+const SHIFT_MOVE_REPORT_DETAIL = "Turno base modificado";
 
 function key(year, month, day) {
     return `${year}-${month}-${day}`;
@@ -241,6 +243,12 @@ function replacementDetail(profileName, keyDay) {
     }).join(" | ");
 }
 
+function shiftMoveDetail(profileName, keyDay) {
+    return getShiftMoveMarkers(profileName, keyDay).length
+        ? SHIFT_MOVE_REPORT_DETAIL
+        : "";
+}
+
 function contractDetail(contracts, iso) {
     const contract = contracts.find(item =>
         item.start <= iso &&
@@ -395,6 +403,49 @@ function actualStateForReport(profileName, data, keyDay) {
     );
 }
 
+function movedBaseStateForReport(profileName, keyDay, fallbackBase) {
+    if (isReplacementProfile(profileName)) {
+        return fallbackBase;
+    }
+
+    const markers = getShiftMoveMarkers(profileName, keyDay);
+
+    if (!markers.length) {
+        return fallbackBase;
+    }
+
+    const marker = markers[markers.length - 1];
+    const move = marker.move || {};
+
+    if (marker.role === "source") {
+        return TURNO.LIBRE;
+    }
+
+    if (
+        move.combinedInto24 &&
+        move.combinedBaseComplement
+    ) {
+        return TURNO.TURNO24;
+    }
+
+    return Number(move.destinationTurn) || fallbackBase;
+}
+
+function baseWithSwapsForReport(profileName, keyDay) {
+    const baseWithSwaps = aplicarCambiosTurno(
+        profileName,
+        keyDay,
+        getTurnoBase(profileName, keyDay),
+        { includeReplacements: false }
+    );
+
+    return movedBaseStateForReport(
+        profileName,
+        keyDay,
+        baseWithSwaps
+    );
+}
+
 function reportCarryForBoundary(profileName, date, data, maps, holidays) {
     const keyDay = key(
         date.getFullYear(),
@@ -470,12 +521,8 @@ function hasNightCarryComponent(turno) {
 }
 
 function assignedExtraStateForDay(profileName, keyDay, data) {
-    const baseWithSwaps = aplicarCambiosTurno(
-        profileName,
-        keyDay,
-        getTurnoBase(profileName, keyDay),
-        { includeReplacements: false }
-    );
+    const baseWithSwaps =
+        baseWithSwapsForReport(profileName, keyDay);
     const actual = actualStateForReport(profileName, data, keyDay);
 
     return getTurnoExtraAgregado(baseWithSwaps, actual);
@@ -610,12 +657,8 @@ function buildNoAssignmentDayRows(
             continue;
         }
 
-        const baseWithSwaps = aplicarCambiosTurno(
-            profileName,
-            keyDay,
-            rawBase,
-            { includeReplacements: false }
-        );
+        const baseWithSwaps =
+            baseWithSwapsForReport(profileName, keyDay);
         const actual = actualStateForReport(profileName, data, keyDay);
         const absence = dayAbsenceDetail(keyDay, maps);
         const workState = absence?.full
@@ -641,11 +684,13 @@ function buildNoAssignmentDayRows(
             rawBase > TURNO.LIBRE;
         const swap = getSwapDetail(profileName, keyDay, swaps);
         const replacement = replacementDetail(profileName, keyDay);
+        const shiftMove = shiftMoveDetail(profileName, keyDay);
         const contract = contractDetail(contracts, iso);
         const clock = clockMarkSummary(profileName, keyDay);
         const details = [
             absence?.label,
             replacement,
+            shiftMove,
             contract,
             swap,
             clock
@@ -657,7 +702,9 @@ function buildNoAssignmentDayRows(
         rows.push({
             fecha: formatDate(iso),
             diaHabil: isBusinessDay(date, holidays) ? "S\u00ed" : "No",
-            tipo: hasManualBase
+            tipo: shiftMove
+                ? SHIFT_MOVE_REPORT_DETAIL
+                : hasManualBase
                 ? "Turno base"
                 : "Turno registrado",
             turnoBase: turnoLabel(rawBase),
@@ -719,12 +766,8 @@ function buildAssignedShiftDayRows(profile, year, month, days, holidays) {
         const iso = isoFromKey(keyDay);
         const date = parseKey(keyDay);
         const rawBase = getTurnoBase(profileName, keyDay);
-        const baseWithSwaps = aplicarCambiosTurno(
-            profileName,
-            keyDay,
-            rawBase,
-            { includeReplacements: false }
-        );
+        const baseWithSwaps =
+            baseWithSwapsForReport(profileName, keyDay);
         const actual = actualStateForReport(profileName, data, keyDay);
         const absence = dayAbsenceDetail(keyDay, maps);
         const extraState = absence?.full
@@ -752,11 +795,13 @@ function buildAssignedShiftDayRows(profile, year, month, days, holidays) {
         );
         const swap = getSwapDetail(profileName, keyDay, swaps);
         const replacement = replacementDetail(profileName, keyDay);
+        const shiftMove = shiftMoveDetail(profileName, keyDay);
         const contract = contractDetail(contracts, iso);
         const clock = clockMarkSummary(profileName, keyDay);
         const details = [
             absence?.label,
             replacement,
+            shiftMove,
             contract,
             swap,
             clock
@@ -802,12 +847,8 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
         const iso = isoFromKey(keyDay);
         const date = parseKey(keyDay);
         const rawBase = getTurnoBase(profileName, keyDay);
-        const baseWithSwaps = aplicarCambiosTurno(
-            profileName,
-            keyDay,
-            rawBase,
-            { includeReplacements: false }
-        );
+        const baseWithSwaps =
+            baseWithSwapsForReport(profileName, keyDay);
         const actual = actualStateForReport(
             profileName,
             data,
@@ -831,12 +872,13 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
         const isExtra = Number(extraState) > TURNO.LIBRE;
         const hasReplacement =
             getReplacementsForWorkerShift(profileName, keyDay).length > 0;
+        const shiftMove = shiftMoveDetail(profileName, keyDay);
         const include =
             kind === "extra-only"
-                ? isExtra || hasReplacement
+                ? isExtra || hasReplacement || Boolean(shiftMove)
                 : kind === "replacement"
-                    ? actual || hasReplacement || contract || swap
-                    : rawBase || baseWithSwaps || actual || hasReplacement || swap;
+                    ? actual || hasReplacement || contract || swap || shiftMove
+                    : rawBase || baseWithSwaps || actual || hasReplacement || swap || shiftMove;
 
         if (!include) continue;
 
@@ -848,7 +890,9 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
             fecha: formatDate(iso),
             diaHabil: isBusinessDay(date, holidays) ? "S\u00ed" : "No",
             tipo: kind === "extra-only"
-                ? "Turno extra"
+                ? shiftMove
+                    ? SHIFT_MOVE_REPORT_DETAIL
+                    : "Turno extra"
                 : hasManualBase
                     ? "Turno base"
                     : "Turno registrado",
@@ -862,7 +906,7 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
             horasNocturnas: kind === "extra-only"
                 ? extraHours.n
                 : actualHours.n,
-            respaldo: details || (
+            respaldo: shiftMove || details || (
                 isExtra
                     ? UNBACKED_OVERTIME_DETAIL
                     : ""

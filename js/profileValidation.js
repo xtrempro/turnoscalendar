@@ -16,7 +16,10 @@ import {
 } from "./profileDraft.js";
 import { requiresRotationStart, requiresRotationFirstTurn } from "./rotationUtils.js";
 import { getRutValidationMessage } from "./rutUtils.js";
-import { getEmailValidationMessage } from "./emailUtils.js";
+import {
+    findDuplicateEmailProfile,
+    getEmailValidationMessage
+} from "./emailUtils.js";
 import { compareISODate } from "./dateUtils.js";
 import { getProfiles } from "./storage.js";
 
@@ -36,6 +39,15 @@ export function validateProfileDraft() {
         getRutValidationMessage(profileDraft.rut);
     const emailMessage =
         getEmailValidationMessage(profileDraft.email);
+    const duplicateEmailProfile = emailMessage
+        ? null
+        : findDuplicateEmailProfile(
+            getProfiles(),
+            profileDraft.email,
+            profileDraft.mode === PROFILE_MODE.EDIT
+                ? profileDraft.originalName
+                : ""
+        );
 
     if (!profileDraft.name.trim()) missing.push("nombre");
     if (!profileDraft.estamento) missing.push("estamento");
@@ -210,6 +222,15 @@ export function validateProfileDraft() {
         return {
             ok: false,
             message: emailMessage,
+            focusEmail: true
+        };
+    }
+
+    if (duplicateEmailProfile) {
+        return {
+            ok: false,
+            message:
+                `Ya existe un trabajador creado con ese correo (${duplicateEmailProfile.name}). Cada trabajador debe tener un correo distinto dentro de la unidad.`,
             focusEmail: true
         };
     }

@@ -36,6 +36,7 @@ import {
     hasContractForDate,
     isReplacementProfile
 } from "./contracts.js";
+import { getShiftMoveMarkers } from "./shiftMoves.js";
 
 const HORA_BASE_DIARIA = 8.8;
 
@@ -592,12 +593,38 @@ function actualStateForDay(nombre, data, keyDay) {
 }
 
 function baseStateForExtraComparison(nombre, keyDay) {
-    return aplicarCambiosTurno(
+    const baseState = aplicarCambiosTurno(
         nombre,
         keyDay,
         getTurnoBase(nombre, keyDay),
         { includeReplacements: false }
     );
+
+    if (isReplacementProfile(nombre)) {
+        return baseState;
+    }
+
+    const markers = getShiftMoveMarkers(nombre, keyDay);
+
+    if (!markers.length) {
+        return baseState;
+    }
+
+    const marker = markers[markers.length - 1];
+    const move = marker.move || {};
+
+    if (marker.role === "source") {
+        return TURNO.LIBRE;
+    }
+
+    if (
+        move.combinedInto24 &&
+        move.combinedBaseComplement
+    ) {
+        return TURNO.TURNO24;
+    }
+
+    return Number(move.destinationTurn) || baseState;
 }
 
 function addAggregateWorkedHours(

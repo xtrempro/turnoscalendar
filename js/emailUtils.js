@@ -5,6 +5,10 @@
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
+export function normalizeEmailKey(value) {
+    return String(value || "").trim().toLowerCase();
+}
+
 export function isValidEmailFormat(value) {
     return EMAIL_PATTERN.test(String(value || "").trim());
 }
@@ -17,4 +21,20 @@ export function getEmailValidationMessage(value) {
     return isValidEmailFormat(email)
         ? ""
         : "El correo debe tener el formato nombre@dominio.cl.";
+}
+
+export function findDuplicateEmailProfile(
+    profiles = [],
+    email,
+    currentProfileName = ""
+) {
+    const emailKey = normalizeEmailKey(email);
+    const ownName = String(currentProfileName || "");
+
+    if (!emailKey || !Array.isArray(profiles)) return null;
+
+    return profiles.find(profile =>
+        String(profile?.name || "") !== ownName &&
+        normalizeEmailKey(profile?.email) === emailKey
+    ) || null;
 }

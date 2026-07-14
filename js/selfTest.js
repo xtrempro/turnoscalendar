@@ -70,7 +70,10 @@ import {
     getShiftMoves,
     registerShiftMove
 } from "./shiftMoves.js";
-import { getEmailValidationMessage } from "./emailUtils.js";
+import {
+    findDuplicateEmailProfile,
+    getEmailValidationMessage
+} from "./emailUtils.js";
 
 const FAKE_PROFILE = "__selftest__";
 const FAKE_SWAP_RECEIVER = "__receiver___selftest__";
@@ -474,6 +477,48 @@ const TESTS = [
             assert(
                 getEmailValidationMessage("ana @clinica.cl") !== "",
                 "con espacio deberia rechazarse"
+            );
+        }
+    },
+    {
+        name: "Correo unico por trabajador dentro de la unidad",
+        run() {
+            const profiles = [
+                {
+                    name: "Ana Rojas",
+                    email: "ana.rojas@clinica.cl"
+                },
+                {
+                    name: "Luis Perez",
+                    email: "luis.perez@clinica.cl"
+                }
+            ];
+
+            assertEqual(
+                findDuplicateEmailProfile(
+                    profiles,
+                    "ANA.ROJAS@clinica.cl",
+                    "Luis Perez"
+                )?.name,
+                "Ana Rojas",
+                "el correo repetido debe detectarse aunque cambien mayusculas"
+            );
+            assertEqual(
+                findDuplicateEmailProfile(
+                    profiles,
+                    "ana.rojas@clinica.cl",
+                    "Ana Rojas"
+                ),
+                null,
+                "editar el mismo perfil no debe marcar su propio correo como duplicado"
+            );
+            assertEqual(
+                findDuplicateEmailProfile(
+                    profiles,
+                    "nuevo@clinica.cl"
+                ),
+                null,
+                "un correo no usado debe aceptarse"
             );
         }
     },
