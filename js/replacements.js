@@ -124,6 +124,30 @@ export function getReplacementForCoveredShift(profile, keyDay) {
     ) || null;
 }
 
+export function getActiveCoveredReplacementsForProfileRange(
+    profile,
+    startISO,
+    endISO = ""
+) {
+    const start = String(startISO || "");
+    const end = String(endISO || "");
+
+    if (!profile || !start) return [];
+
+    return getReplacements()
+        .filter(replacement =>
+            replacementActive(replacement) &&
+            replacement.replaced === profile &&
+            replacement.date &&
+            compareISODate(replacement.date, start) >= 0 &&
+            (!end || compareISODate(replacement.date, end) <= 0)
+        )
+        .sort((a, b) =>
+            String(a.date || "").localeCompare(String(b.date || "")) ||
+            String(a.worker || "").localeCompare(String(b.worker || ""))
+        );
+}
+
 // Nombres de los trabajadores que cubren el turno del ausente ese dia (uno o
 // varios si el turno esta combinado). Sin duplicados.
 export function getCoveringWorkersForShift(profile, keyDay) {

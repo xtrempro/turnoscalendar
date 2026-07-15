@@ -45,8 +45,11 @@ import {
     replacementActive
 } from "./replacements.js";
 import {
+    getAllReplacementContracts,
+    getInheritedReplacementContractForCoveredShift,
     hasContractForDate,
-    isReplacementProfile
+    isReplacementProfile,
+    replacementContractCoversCoveredShift
 } from "./contracts.js";
 import {
     getHonorariaExcessForKey,
@@ -1502,6 +1505,40 @@ function createTimelineRenderCache(year, month, diasMes) {
             }
         });
 
+    getAllReplacementContracts()
+        .forEach(contract => {
+            keys.forEach(keyDay => {
+                const iso = isoByKey.get(keyDay);
+
+                if (
+                    !iso ||
+                    !replacementContractCoversCoveredShift(
+                        contract,
+                        keyDay
+                    )
+                ) {
+                    return;
+                }
+
+                const coveredMap = timelineEnsureNestedMap(
+                    coveredReplacementByProfileIso,
+                    contract.replaces
+                );
+
+                if (!coveredMap.has(iso)) {
+                    coveredMap.set(iso, {
+                        id: `contract:${contract.id}:${iso}`,
+                        date: iso,
+                        worker: contract.worker,
+                        replaced: contract.replaces,
+                        source: "replacement_contract",
+                        contractId: contract.id,
+                        inherited: true
+                    });
+                }
+            });
+        });
+
     return {
         year,
         month,
@@ -1904,7 +1941,7 @@ function getColor(nombre, key, maps = null, isExtra = false, realTurn = null){
     if (absenceType === "professional_license") return "#2563eb";
     if (absenceType === "union_leave") return "#e64747";
     if (absenceType === "unpaid_leave") return "#6b7280";
-    if (abs[key]) return "#ef4444";
+    if (abs[key]) return "#d97706";
     if (legal[key]) return "#0ea5a6";
     if (comp[key]) return "#f97316";
 
@@ -2004,7 +2041,8 @@ function needsReplacementMarker(nombre, key) {
             getComp(nombre),
             getAbs(nombre)
         ) &&
-        !getReplacementForCoveredShift(nombre, key)
+        !getReplacementForCoveredShift(nombre, key) &&
+        !getInheritedReplacementContractForCoveredShift(nombre, key)
     );
 }
 

@@ -8,6 +8,8 @@ import { TURNO_LABEL } from "./constants.js";
 import { getJSON, setJSON } from "./persistence.js";
 
 const CONFIG_KEY = "turnoColorConfig";
+const OLD_LICENSE_DEFAULT = "#e64747";
+const LICENSE_MUTED_ORANGE = "#d97706";
 
 // Codigos de turno con color configurable (se siguen seteando como variables).
 export const TURNO_COLOR_CODES = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -25,7 +27,7 @@ export const NAMED_TURNO_COLORS = [
     { key: "reduction", label: "Reducción horaria", default: "#dc2626" },
     { key: "legal", label: "F. Legal", default: "#0ea5a6" },
     { key: "comp", label: "F. Compensatorio", default: "#8b2bd9" },
-    { key: "license", label: "Licencia Médica", default: "#e64747" },
+    { key: "license", label: "Licencia Médica", default: LICENSE_MUTED_ORANGE },
     { key: "professional_license", label: "LM Profesional", default: "#2563eb" },
     { key: "unpaid_leave", label: "Permiso sin Goce", default: "#6b7280" },
     { key: "hours_return", label: "Devolución de horas", default: "#14b8a6" },
@@ -40,7 +42,16 @@ function buildNamedColors(saved) {
     const named = {};
 
     for (const item of NAMED_TURNO_COLORS) {
-        named[item.key] = normalizeHex(saved?.[item.key], item.default);
+        let value = normalizeHex(saved?.[item.key], item.default);
+
+        if (
+            item.key === "license" &&
+            value.toLowerCase() === OLD_LICENSE_DEFAULT
+        ) {
+            value = LICENSE_MUTED_ORANGE;
+        }
+
+        named[item.key] = value;
     }
 
     return named;

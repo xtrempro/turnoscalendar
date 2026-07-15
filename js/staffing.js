@@ -40,6 +40,7 @@ import { showConfirm } from "./dialogs.js";
 import {
     formatContractDate,
     getAllReplacementContracts,
+    getInheritedReplacementContractForCoveredShift,
     getReplacementRotationModeForDate,
     getReplacedProfileForDate,
     isReplacementProfile
@@ -2525,7 +2526,11 @@ function weeklyProfileNeedsReplacement(profile, keyDay, turno) {
         maps.comp,
         maps.absences
     ) &&
-        !getReplacementForCoveredShift(profile.name, keyDay);
+        !getReplacementForCoveredShift(profile.name, keyDay) &&
+        !getInheritedReplacementContractForCoveredShift(
+            profile.name,
+            keyDay
+        );
 }
 
 function profileWeeklyPendingReplacementSlot(

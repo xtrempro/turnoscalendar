@@ -1,5 +1,6 @@
 import {
     keyFromDate,
+    keyFromISO,
     toISODate,
     keyToDate as parseKey,
     parseISODate as parseInputDate,
@@ -359,8 +360,10 @@ import {
     registerShiftMove
 } from "./shiftMoves.js";
 import {
+    cancelReplacementById,
     cancelReplacementsForWorkerRange,
     cancelFutureReplacementsForWorker,
+    getActiveCoveredReplacementsForProfileRange,
     renderReplacementLogHTML
 } from "./replacements.js";
 import {
@@ -1456,11 +1459,210 @@ function findReplacementLeaveOption(profileName, optionId) {
         .find(option => option.id === optionId) || null;
 }
 
-function openRotationConfigModal(type = profileDraft.rotationType) {
+async function resolveReplacementContractCoverageConflicts({
+    replacementWorker,
+    replaced,
+    start,
+    end,
+    rotationMode
+}) {
+    const mode = normalizeReplacementRotationMode(
+        rotationMode,
+        REPLACEMENT_ROTATION_MODE.INHERIT
+    );
+
+    if (mode !== REPLACEMENT_ROTATION_MODE.INHERIT) {
+        return {
+            cancelExisting: false,
+            conflicts: []
+        };
+    }
+
+    const conflicts =
+        getActiveCoveredReplacementsForProfileRange(
+            replaced,
+            start,
+            end
+        )
+            .filter(replacement =>
+                replacement.worker !== replacementWorker
+            );
+
+    if (!conflicts.length) {
+        return {
+            cancelExisting: false,
+            conflicts: []
+        };
+    }
+
+    const workerPreview = [...new Set(
+        conflicts
+            .map(replacement => replacement.worker)
+            .filter(Boolean)
+    )]
+        .slice(0, 4)
+        .join(", ");
+    const datePreview = conflicts
+        .slice(0, 4)
+        .map(replacement => formatDisplayDate(replacement.date))
+        .join(", ");
+    const extraCount = Math.max(0, conflicts.length - 4);
+    const cancelExisting = await showConfirm(
+        `Ya existen ${conflicts.length} turno(s) de ${replaced} cubierto(s) por otro trabajador${workerPreview ? ` (${workerPreview})` : ""} dentro del contrato seleccionado${datePreview ? `: ${datePreview}${extraCount ? ` y ${extraCount} mas` : ""}` : ""}.\n\nSi anulas esos reemplazos, ${replacementWorker} heredara tambien esos turnos. Si los conservas, ${replacementWorker} heredara solo los turnos restantes.`,
+        {
+            title: "Turnos ya cubiertos",
+            tone: "warning",
+            confirmText: "Anular y asignar",
+            cancelText: "Conservar existentes"
+        }
+    );
+
+    return {
+        cancelExisting,
+        conflicts
+    };
+}
+
+function applyReplacementContractCoverageDecision(
+    replacementWorker,
+    decision
+) {
+    const conflicts = decision?.conflicts || [];
+
+    if (!replacementWorker || !conflicts.length) return;
+
+    if (decision.cancelExisting) {
+        conflicts.forEach(replacement => {
+            cancelReplacementById(replacement.id, {
+                reason: "replacement_contract_inherited",
+                details: `Reemplazo anulado al asignar contrato heredado a ${replacementWorker}.`,
+                canceledBy: "Contrato Reemplazo"
+            });
+        });
+        return;
+    }
+
+    const data = getProfileData(replacementWorker);
+    let changed = false;
+
+    conflicts.forEach(replacement => {
+        const keyDay = keyFromISO(replacement.date);
+
+        if (
+            keyDay &&
+            !Object.prototype.hasOwnProperty.call(data, keyDay)
+        ) {
+            data[keyDay] = TURNO.LIBRE;
+            changed = true;
+        }
+    });
+
+    if (changed) {
+        saveProfileData(data, replacementWorker);
+    }
+}
+
+async function saveReplacementContractFromDraft(
+    profileName,
+    {
+        audit = false,
+        memo = true
+    } = {}
+) {
+    const replacementWorker = String(profileName || "").trim();
+    const replaced = profileDraft.contractReplaces.trim();
+    const start = profileDraft.contractStart;
+    const end = profileDraft.contractEnd;
+    const rotationMode = normalizeReplacementRotationMode(
+        profileDraft.contractRotationMode,
+        REPLACEMENT_ROTATION_MODE.INHERIT
+    );
+
+    if (
+        !replacementWorker ||
+        !replaced ||
+        !start ||
+        !end ||
+        !requiresReplacementContract()
+    ) {
+        return null;
+    }
+
+    const coverageDecision =
+        await resolveReplacementContractCoverageConflicts({
+            replacementWorker,
+            replaced,
+            start,
+            end,
+            rotationMode
+        });
+    const replacementContract = addReplacementContract(
+        replacementWorker,
+        {
+            start,
+            end,
+            replaces: replaced,
+            reason: profileDraft.contractReason,
+            leaveRef: profileDraft.contractLeaveRef,
+            leaveType: profileDraft.contractReason,
+            leaveStart: start,
+            leaveEnd: end,
+            rotationMode
+        }
+    );
+
+    applyReplacementContractCoverageDecision(
+        replacementWorker,
+        coverageDecision
+    );
+
+    if (memo) {
+        createReplacementContractMemoTask({
+            profile: replacementWorker,
+            contract: replacementContract
+        });
+    }
+
+    if (audit) {
+        addAuditLog(
+            AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+            "Agrego contrato de reemplazo",
+            `${replacementWorker}: reemplaza a ${replaced} desde ${formatDisplayDate(start)} hasta ${formatDisplayDate(end)}.`,
+            {
+                profile: replacementWorker,
+                replaces: replaced,
+                start,
+                end,
+                contractId: replacementContract.id
+            }
+        );
+    }
+
+    scheduleWorkerAppDataPublish(300, replacementWorker);
+    scheduleWorkerAppDataPublish(300, replaced);
+    [...new Set(
+        (coverageDecision.conflicts || [])
+            .map(replacement => replacement.worker)
+            .filter(Boolean)
+    )].forEach(worker =>
+        scheduleWorkerAppDataPublish(300, worker)
+    );
+
+    return replacementContract;
+}
+
+function openRotationConfigModal(
+    type = profileDraft.rotationType,
+    options = {}
+) {
     if (!isProfileEditing() || !type) return;
 
     const profile = getPerfilActual();
     const isReplacement = type === "reemplazo";
+    const quickContractSave =
+        isReplacement && Boolean(options.quickContractSave);
+    const quickCancelProfile =
+        String(options.previousProfileName || "").trim();
     const isHonoraria = !isReplacement && isHonorariaDraft();
     const defaultRotationStart =
         getRotationConfigDefaultStart(type);
@@ -1525,6 +1727,19 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         monthPicker?.remove();
         monthPicker = null;
         backdrop.remove();
+    };
+    const cancelModal = () => {
+        const selectedName =
+            profileDraft.name ||
+            profile?.name ||
+            getCurrentProfile();
+
+        close();
+
+        if (quickContractSave) {
+            replacementContractMonthHint = "";
+            exitProfileMode(quickCancelProfile || selectedName);
+        }
     };
     const closeRotationMonthPicker = () => {
         if (!monthPicker) return;
@@ -1725,7 +1940,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
             state.monthDate = parseInputDate(leaveOption.start);
         }
     };
-    const save = () => {
+    const save = async () => {
         const targetField =
             backdrop.querySelector("[data-contract-replaces]");
 
@@ -1782,6 +1997,43 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
                     REPLACEMENT_ROTATION_MODE.INHERIT
                 );
             profileDraft.rotationFirstTurn = "larga";
+
+            if (quickContractSave) {
+                try {
+                    const savedContract =
+                        await saveReplacementContractFromDraft(
+                            profileDraft.name ||
+                                profile?.name ||
+                                getCurrentProfile(),
+                            {
+                                audit: true,
+                                memo: true
+                            }
+                        );
+
+                    if (!savedContract) {
+                        alert("No se pudo guardar el contrato de reemplazo.");
+                        return;
+                    }
+
+                    const selectedName =
+                        profileDraft.name ||
+                        profile?.name ||
+                        getCurrentProfile();
+
+                    close();
+                    replacementContractMonthHint = "";
+                    exitProfileMode(selectedName);
+                    refreshAll();
+                    return;
+                } catch (error) {
+                    alert(
+                        error.message ||
+                        "No se pudo guardar el contrato de reemplazo."
+                    );
+                    return;
+                }
+            }
         } else {
             if (!state.rotationStart) {
                 alert("Debes seleccionar desde que fecha comenzara la rotativa.");
@@ -2253,7 +2505,7 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
 
     backdrop.addEventListener("click", async event => {
         if (event.target === backdrop) {
-            close();
+            cancelModal();
             return;
         }
 
@@ -2306,12 +2558,12 @@ function openRotationConfigModal(type = profileDraft.rotationType) {
         }
 
         if (action === "save") {
-            save();
+            await save();
             return;
         }
 
         if (action === "cancel") {
-            close();
+            cancelModal();
         }
     });
 
@@ -6513,6 +6765,7 @@ function startEditMode() {
 function startReplacementContractEdit(profileName, keyDay) {
     if (!canEditCurrentProfileMenu()) return;
 
+    const previousProfileName = getCurrentProfile();
     const profile = getProfiles().find(item =>
         item.name === profileName
     );
@@ -6542,12 +6795,13 @@ function startReplacementContractEdit(profileName, keyDay) {
         REPLACEMENT_ROTATION_MODE.INHERIT;
     profileRotationMiniDate = parseKey(keyDay);
 
-    renderProfiles();
-    renderBotones();
-    refreshAll();
-    setActiveShortcut("profileSection");
-
-    openRotationConfigModal("reemplazo");
+    renderDashboardState();
+    openRotationConfigModal("reemplazo", {
+        quickContractSave: true,
+        previousProfileName,
+        sourceProfileName: profileName,
+        sourceKeyDay: keyDay
+    });
 }
 
 window.startReplacementContractEdit =
@@ -7611,22 +7865,9 @@ async function guardarPerfil() {
         }
 
         if (shouldSaveReplacementContract) {
-            const replacementContract = addReplacementContract(nextName, {
-                start: profileDraft.contractStart,
-                end: profileDraft.contractEnd,
-                replaces:
-                    profileDraft.contractReplaces.trim(),
-                reason: profileDraft.contractReason,
-                leaveRef: profileDraft.contractLeaveRef,
-                leaveType: profileDraft.contractReason,
-                leaveStart: profileDraft.contractStart,
-                leaveEnd: profileDraft.contractEnd,
-                rotationMode: profileDraft.contractRotationMode
-            });
-
-            createReplacementContractMemoTask({
-                profile: nextName,
-                contract: replacementContract
+            await saveReplacementContractFromDraft(nextName, {
+                audit: false,
+                memo: true
             });
         }
 

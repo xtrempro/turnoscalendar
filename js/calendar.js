@@ -104,6 +104,7 @@ import {
     workerHasAbsence
 } from "./replacements.js";
 import {
+    getInheritedReplacementContractForCoveredShift,
     hasContractForDate,
     isReplacementProfile
 } from "./contracts.js";
@@ -1035,6 +1036,11 @@ async function handleCalendarCellFallbackClick(cell, event) {
         getHonorariaExcessForKey(honorariaSummary, keyDay);
     const severeClockIncident =
         hasSevereClockIncident(activeProfile, keyDay);
+    const inheritedContractCoverage =
+        getInheritedReplacementContractForCoveredShift(
+            activeProfile,
+            keyDay
+        );
     const needsReplacement =
         requiereReemplazoTurnoBase(
             keyDay,
@@ -1044,7 +1050,8 @@ async function handleCalendarCellFallbackClick(cell, event) {
             comp,
             absences
         ) &&
-        !coveredReplacement;
+        !coveredReplacement &&
+        !inheritedContractCoverage;
     const pendingManualExtra =
         getPendingManualExtraTurn(
             activeProfile,
@@ -5625,6 +5632,10 @@ async function clickDia(
         !getReplacementForCoveredShift(
             profileName,
             keyDay
+        ) &&
+        !getInheritedReplacementContractForCoveredShift(
+            profileName,
+            keyDay
         );
 
     if (needsReplacement) {
@@ -6112,6 +6123,11 @@ async function renderCalendarImpl(options = {}) {
         const turnChange = turnChangeMarker?.swap || null;
         const coveredReplacement =
             replacementIndex.byCoveredDate.get(isoDay) || null;
+        const inheritedContractCoverage =
+            getInheritedReplacementContractForCoveredShift(
+                activeProfile,
+                keyDay
+            );
         const workerReplacement =
             replacementIndex.byWorkerDate.get(isoDay) || null;
         const replacementContractError =
@@ -6163,7 +6179,8 @@ async function renderCalendarImpl(options = {}) {
                 comp,
                 absences
             ) &&
-            !coveredReplacement;
+            !coveredReplacement &&
+            !inheritedContractCoverage;
         const showExtraReason =
             !needsReplacement &&
             !turnChange &&

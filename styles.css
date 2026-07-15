@@ -7181,7 +7181,7 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 }
 
 .license-day {
-    background: var(--color-license, #e64747) !important;
+    background: var(--color-license, #d97706) !important;
     color: var(--color-license-text, #ffffff) !important;
 }
 
@@ -8363,8 +8363,8 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 }
 
 .staffing-weekly-cell--leave-license {
-    --staffing-weekly-cell-bg: linear-gradient(135deg, rgba(230, 71, 71, 0.14), rgba(255, 103, 103, 0.06));
-    --staffing-weekly-cell-border: rgba(230, 71, 71, 0.3);
+    --staffing-weekly-cell-bg: linear-gradient(135deg, rgba(217, 119, 6, 0.18), rgba(245, 158, 11, 0.08));
+    --staffing-weekly-cell-border: rgba(217, 119, 6, 0.34);
 }
 
 .staffing-weekly-cell--leave-professional-license {
@@ -10813,7 +10813,7 @@ body[data-active-view="memos"] .memo-card .memo-detail {
 
 .medical-color-license,
 .medical-stack--license {
-    background: linear-gradient(135deg, #ef4444, #fb7185);
+    background: linear-gradient(135deg, #d97706, #f59e0b);
 }
 
 .medical-color-professional,

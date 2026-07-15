@@ -2,10 +2,12 @@ import { parseKeyParts as parseKey } from "./dateUtils.js";
 import { normalizeText } from "./stringUtils.js";
 import {
     getProfiles,
+    getProfileData,
     getReplacementContracts,
     saveReplacementContracts,
     getRotativa
 } from "./storage.js";
+import { TURNO } from "./constants.js";
 import {
     REPLACEMENT_ROTATION_MODE,
     normalizeReplacementRotationMode
@@ -202,4 +204,52 @@ export function getAllReplacementContracts() {
             a.start.localeCompare(b.start) ||
             a.worker.localeCompare(b.worker)
         );
+}
+
+export function replacementContractCoversCoveredShift(
+    contract,
+    keyDay
+) {
+    const iso = keyToISO(keyDay);
+
+    if (
+        !contract?.worker ||
+        !contract?.replaces ||
+        !iso ||
+        contract.start > iso ||
+        contract.end < iso ||
+        normalizeReplacementRotationMode(
+            contract.rotationMode,
+            REPLACEMENT_ROTATION_MODE.INHERIT
+        ) !== REPLACEMENT_ROTATION_MODE.INHERIT
+    ) {
+        return false;
+    }
+
+    const data = getProfileData(contract.worker);
+
+    if (
+        Object.prototype.hasOwnProperty.call(data, keyDay) &&
+        Number(data[keyDay]) <= TURNO.LIBRE
+    ) {
+        return false;
+    }
+
+    return true;
+}
+
+export function getInheritedReplacementContractForCoveredShift(
+    profileName,
+    keyDay
+) {
+    if (!profileName || !keyToISO(keyDay)) return null;
+
+    return getAllReplacementContracts()
+        .find(contract =>
+            contract.replaces === profileName &&
+            replacementContractCoversCoveredShift(
+                contract,
+                keyDay
+            )
+        ) || null;
 }
