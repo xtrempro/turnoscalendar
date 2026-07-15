@@ -192,6 +192,63 @@ function timelineCurrentProfileGroup(profiles = getProfiles()) {
     return profile ? timelineGroupForProfile(profile) : null;
 }
 
+function timelineMonthContractSignature(year, month) {
+    const diasMes = new Date(year, month + 1, 0).getDate();
+    const keys = monthKeys(year, month, diasMes);
+    const monthStart = isoFromKey(keys[0]);
+    const monthEnd = isoFromKey(keys[keys.length - 1]);
+    const parts = [];
+
+    getAllReplacementContracts().forEach(contract => {
+        if (
+            !contract?.worker ||
+            !contract?.replaces ||
+            !monthStart ||
+            !monthEnd ||
+            contract.end < monthStart ||
+            contract.start > monthEnd
+        ) {
+            return;
+        }
+
+        const coverage = keys
+            .map(keyDay => {
+                const iso = isoFromKey(keyDay);
+
+                if (
+                    !iso ||
+                    contract.start > iso ||
+                    contract.end < iso
+                ) {
+                    return "";
+                }
+
+                return `${iso}:${replacementContractCoversCoveredShift(
+                    contract,
+                    keyDay
+                ) ? "1" : "0"}`;
+            })
+            .filter(Boolean)
+            .join(",");
+
+        if (!coverage) return;
+
+        parts.push([
+            contract.id,
+            contract.worker,
+            contract.replaces,
+            contract.start,
+            contract.end,
+            contract.rotationMode || "",
+            coverage
+        ].join("\u001f"));
+    });
+
+    return parts.length
+        ? timelineCacheHash(parts.sort().join("\u001e"))
+        : "no-contracts";
+}
+
 function timelineFastSignature(year, month) {
     const profiles = getProfiles();
     const selectedKey = currentTimelineSelectedKey();
@@ -210,7 +267,8 @@ function timelineFastSignature(year, month) {
         year,
         month,
         selectedKey,
-        profiles.length
+        profiles.length,
+        timelineMonthContractSignature(year, month)
     ].join("\u001f");
 }
 
@@ -247,7 +305,8 @@ function timelineRowCacheKey({
     workspaceId = timelineWorkspaceId(),
     monthKey,
     workerId,
-    filtersSignature
+    filtersSignature,
+    dependencySignature = ""
 }) {
     return (
         TIMELINE_ROW_CACHE_PREFIX +
@@ -256,7 +315,8 @@ function timelineRowCacheKey({
             workspaceId,
             monthKey,
             workerId,
-            filtersSignature
+            filtersSignature,
+            dependencySignature
         ].join("\u001f"))
     );
 }
@@ -737,7 +797,27 @@ function clearLegacyTimelineCache() {
     listKeys(TIMELINE_MONTH_INDEX_CACHE_PREFIX).forEach(removeKey);
 }
 
-function timelineAffectedProfilesFromKeys(keys = []) {
+function timelineProfilesFromReplacementContractRaw(raw) {
+    if (!raw) return [];
+
+    try {
+        const contracts = JSON.parse(raw);
+
+        if (!Array.isArray(contracts)) return [];
+
+        return contracts
+            .flatMap(contract => [
+                contract?.worker,
+                contract?.replaces
+            ])
+            .map(name => String(name || "").trim())
+            .filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+function timelineAffectedProfilesFromKeys(keys = [], changes = {}) {
     const profiles = getProfiles();
     const names = new Set();
     const prefixes = [
@@ -748,6 +828,7 @@ function timelineAffectedProfilesFromKeys(keys = []) {
         "absences_",
         "blocked_",
         "rotativa_",
+        "replacementContracts_",
         "carry_",
         "clockMarks_",
         "hourReturns_"
@@ -766,6 +847,17 @@ function timelineAffectedProfilesFromKeys(keys = []) {
             );
 
             if (match) names.add(match.name);
+
+            if (prefix === "replacementContracts_") {
+                const change = changes?.[text] || {};
+
+                timelineProfilesFromReplacementContractRaw(
+                    change.previous
+                ).forEach(name => names.add(name));
+                timelineProfilesFromReplacementContractRaw(
+                    change.next
+                ).forEach(name => names.add(name));
+            }
         });
     });
 
@@ -3697,10 +3789,13 @@ function buildTimelineContext(year, month) {
             sortContext
         );
     const filtersSignature = timelineFiltersSignature(selectedKeys);
+    const contractSignature =
+        timelineMonthContractSignature(year, month);
     const structureSignature = [
         diasMes,
         baseGroup.key,
         filtersSignature,
+        contractSignature,
         orderedGroup
             .map(profile =>
                 timelineProfileStructuralSignature(
@@ -3733,6 +3828,7 @@ function buildTimelineContext(year, month) {
         baseGroup,
         selectedKeys,
         filtersSignature,
+        contractSignature,
         diasMes,
         renderCache,
         sortContext,
@@ -3750,7 +3846,8 @@ function timelineRowCacheInfo(profile, context) {
         workspaceId: context.workspaceId,
         monthKey: context.monthKey,
         workerId,
-        filtersSignature: context.filtersSignature
+        filtersSignature: context.filtersSignature,
+        dependencySignature: context.contractSignature
     });
 
     return {
@@ -5100,7 +5197,10 @@ if (typeof window !== "undefined") {
             return;
         }
 
-        const affectedProfiles = timelineAffectedProfilesFromKeys(keys);
+        const affectedProfiles = timelineAffectedProfilesFromKeys(
+            keys,
+            event.detail?.changes || {}
+        );
 
         clearLegacyTimelineCache();
 
