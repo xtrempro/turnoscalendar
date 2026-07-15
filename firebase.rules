@@ -384,6 +384,13 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Dashboards RRHH (enlace director↔unidades): solo via Cloud Functions con
+    // Admin SDK. El cliente nunca lee/escribe; getRrhhDashboard resuelve el
+    // alcance del viewer server-side.
+    match /rrhhDashboards/{dashboardId} {
+      allow read, write: if false;
+    }
+
     // Pagos (Webpay/MercadoPago): solo via Cloud Functions (admin SDK). El
     // cliente nunca lee/escribe; recibe token/url por la function y vuelve por
     // el retorno publico.

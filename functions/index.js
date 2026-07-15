@@ -71,6 +71,8 @@ Object.assign(exports, require("./getAccountsAndUnits"));
 // Dashboard RRHH: agregación de métricas e imputación de costo de préstamos.
 Object.assign(exports, require("./getRrhhDashboard"));
 Object.assign(exports, require("./attributeInterUnitCost"));
+// Dashboard RRHH: enlace director↔unidades (admin arma cada dashboard).
+Object.assign(exports, require("./rrhhDashboards"));
 // Proyección del worker-app en el servidor (reemplaza el pipeline del navegador).
 Object.assign(exports, require("./workerAppProjection"));
 

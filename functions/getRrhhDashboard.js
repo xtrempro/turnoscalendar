@@ -128,6 +128,27 @@ async function listAccessibleUnits(uid) {
     return units;
 }
 
+// Unidades de los dashboards RRHH donde el usuario es viewer (Opción C). El
+// admin curó el mapeo director↔unidades; el viewer NO necesita ser miembro.
+// Devuelve null si el usuario no tiene ningún dashboard asignado (para caer a
+// la resolución por membresía).
+async function listDashboardUnits(uid, dashboardId) {
+    const snap = await db.collection("rrhhDashboards")
+        .where("viewerUids", "array-contains", uid).limit(50).get();
+    if (snap.empty) return null;
+    let docs = snap.docs;
+    if (dashboardId) docs = docs.filter((d) => d.id === dashboardId);
+    const wsIds = [...new Set(docs.flatMap((d) =>
+        Array.isArray(d.data().workspaceIds) ? d.data().workspaceIds : []))].slice(0, MAX_UNITS);
+    if (wsIds.length === 0) return [];
+    const refs = wsIds.map((id) => db.collection("workspaces").doc(id));
+    const wsDocs = await db.getAll(...refs);
+    const units = wsDocs.filter((d) => d.exists)
+        .map((d) => ({ id: d.id, name: String(d.data().name || d.id) }));
+    units.sort((a, b) => a.name.localeCompare(b.name, "es"));
+    return units;
+}
+
 // --------------------------------------------------------- cálculo por unidad
 function emptyMonth() {
     return {
@@ -276,11 +297,17 @@ const getRrhhDashboard = onCall(
         const monthKeyToIdx = new Map(months.map((m, i) => [m.key, i]));
         const uid = request.auth.uid;
 
+        const dashboardId = String((request.data && request.data.dashboardId) || "").trim().slice(0, 160);
         let units;
-        try { units = await listAccessibleUnits(uid); }
+        try {
+            // Prioridad: dashboard asignado por el admin (Opción C). Si no hay,
+            // cae a las unidades donde el usuario es miembro con permiso.
+            units = await listDashboardUnits(uid, dashboardId);
+            if (units === null) units = await listAccessibleUnits(uid);
+        }
         catch (e) { logger.error("No se pudieron listar unidades.", e); throw new HttpsError("internal", "No se pudieron cargar tus unidades."); }
-        if (units.length === 0) {
-            throw new HttpsError("permission-denied", "Tu cuenta no tiene unidades con permiso de dashboard/turnos/horas.");
+        if (!units || units.length === 0) {
+            throw new HttpsError("permission-denied", "Tu cuenta no tiene un dashboard asignado ni unidades con permiso.");
         }
 
         const series = {};

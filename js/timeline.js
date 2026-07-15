@@ -1087,6 +1087,54 @@ function ensureTimelineCellDelegation(container) {
 
     container.dataset.timelineDelegated = "1";
     container.addEventListener("click", event => {
+        const cell = event.target.closest(
+            "[data-replacement-profile]," +
+            "[data-worker-replacement-profile]," +
+            "[data-extra-profile]," +
+            "[data-clock-extra-profile]," +
+            "[data-contract-error-profile]," +
+            "[data-honoraria-limit-profile]"
+        );
+
+        if (cell && container.contains(cell)) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            if (cell.dataset.replacementProfile) {
+                window.openReplacementDialog?.(
+                    cell.dataset.replacementProfile,
+                    cell.dataset.replacementKey
+                );
+            } else if (cell.dataset.workerReplacementProfile) {
+                window.openReplacementDetailDialog?.(
+                    cell.dataset.workerReplacementProfile,
+                    cell.dataset.workerReplacementKey,
+                    cell.dataset.workerReplacementId || ""
+                );
+            } else if (cell.dataset.extraProfile) {
+                window.openExtraReasonDialog?.(
+                    cell.dataset.extraProfile,
+                    cell.dataset.extraKey,
+                    Number(cell.dataset.extraTurn) || 0
+                );
+            } else if (cell.dataset.clockExtraProfile) {
+                window.openClockExtraReasonDialog?.(
+                    cell.dataset.clockExtraProfile,
+                    cell.dataset.clockExtraKey,
+                    Number(cell.dataset.clockExtraTurn) || 0
+                );
+            } else if (cell.dataset.contractErrorProfile) {
+                window.startReplacementContractEdit?.(
+                    cell.dataset.contractErrorProfile,
+                    cell.dataset.contractErrorKey
+                );
+            } else if (cell.dataset.honorariaLimitProfile) {
+                alert(cell.dataset.honorariaLimitMessage);
+            }
+
+            return;
+        }
+
         const profileButton = event.target.closest("[data-profile-name]");
 
         if (profileButton && container.contains(profileButton)) {
@@ -1100,49 +1148,6 @@ function ensureTimelineCellDelegation(container) {
                 }
             );
             return;
-        }
-
-        const cell = event.target.closest(
-            "[data-replacement-profile]," +
-            "[data-worker-replacement-profile]," +
-            "[data-extra-profile]," +
-            "[data-clock-extra-profile]," +
-            "[data-contract-error-profile]," +
-            "[data-honoraria-limit-profile]"
-        );
-
-        if (!cell || !container.contains(cell)) return;
-
-        if (cell.dataset.replacementProfile) {
-            window.openReplacementDialog?.(
-                cell.dataset.replacementProfile,
-                cell.dataset.replacementKey
-            );
-        } else if (cell.dataset.workerReplacementProfile) {
-            window.openReplacementDetailDialog?.(
-                cell.dataset.workerReplacementProfile,
-                cell.dataset.workerReplacementKey,
-                cell.dataset.workerReplacementId || ""
-            );
-        } else if (cell.dataset.extraProfile) {
-            window.openExtraReasonDialog?.(
-                cell.dataset.extraProfile,
-                cell.dataset.extraKey,
-                Number(cell.dataset.extraTurn) || 0
-            );
-        } else if (cell.dataset.clockExtraProfile) {
-            window.openClockExtraReasonDialog?.(
-                cell.dataset.clockExtraProfile,
-                cell.dataset.clockExtraKey,
-                Number(cell.dataset.clockExtraTurn) || 0
-            );
-        } else if (cell.dataset.contractErrorProfile) {
-            window.startReplacementContractEdit?.(
-                cell.dataset.contractErrorProfile,
-                cell.dataset.contractErrorKey
-            );
-        } else if (cell.dataset.honorariaLimitProfile) {
-            alert(cell.dataset.honorariaLimitMessage);
         }
     });
 }
