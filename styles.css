@@ -360,6 +360,9 @@ body.theme-dark {
     --bg-orb-2: rgba(122, 92, 255, 0.16);
     --panel: rgba(10, 18, 30, 0.94);
     --panel-alt: rgba(20, 31, 48, 0.88);
+    /* Version opaca de --panel-alt para el header sticky del timeline (evita que
+       las filas se transparenten a traves del encabezado al scrollear). */
+    --timeline-head-bg: #141e2e;
     --panel-hover: rgba(28, 42, 64, 0.92);
     --border: rgba(255, 255, 255, 0.08);
     --border-strong: rgba(255, 255, 255, 0.14);
@@ -386,6 +389,7 @@ body.theme-light {
     --bg-orb-2: rgba(20, 184, 166, 0.12);
     --panel: rgba(255, 255, 255, 0.94);
     --panel-alt: rgba(248, 250, 255, 0.96);
+    --timeline-head-bg: #f6f9ff;
     --panel-hover: rgba(240, 245, 255, 0.98);
     --border: rgba(14, 26, 44, 0.08);
     --border-strong: rgba(14, 26, 44, 0.14);
@@ -8039,6 +8043,37 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 
 .timeline-hhee--night {
     left: var(--timeline-hhee-night-left);
+}
+
+/* Encabezado del timeline fijo al hacer scroll vertical. Los <th> del thead
+   quedan sticky arriba; las esquinas (nombre + HHEE) ya son sticky a la
+   izquierda, asi que con top:0 quedan congeladas en ambos ejes. Se les da mayor
+   z-index para que tapen las celdas de dias al scrollear. */
+.timeline-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: var(--timeline-head-bg, var(--panel-alt));
+}
+
+.timeline-table thead th.timeline-hhee-head {
+    z-index: 6;
+}
+
+.timeline-table thead th.timeline-name-head {
+    z-index: 7;
+}
+
+/* En pantallas medianas/grandes el shell se acota a la altura del viewport para
+   que las filas scrolleen DENTRO del shell (scroll interno) y el encabezado
+   quede sticky. La variable la calcula el JS (posicion real del shell); el calc
+   es el respaldo si el JS aun no corrio. En movil (<=760px) el shell sigue
+   scrolleando con la pagina (overflow-y: hidden), sin tocar nada. */
+@media (min-width: 761px) {
+    .timeline-shell {
+        max-height: var(--timeline-shell-max-height, calc(100vh - 128px));
+        max-height: var(--timeline-shell-max-height, calc(100dvh - 128px));
+    }
 }
 
 .timeline-hhee-label {
