@@ -9,7 +9,8 @@ import {
 import {
     aplicarCambiosTurno,
     getTurnoBase,
-    getTurnoProgramado
+    getTurnoProgramado,
+    includesWorkDay
 } from "./turnEngine.js";
 
 import {
@@ -33,7 +34,6 @@ import {
     isHheeReturnTransferEnabled
 } from "./hourReturnTransfers.js";
 import {
-    hasContractForDate,
     isReplacementProfile
 } from "./contracts.js";
 import { getShiftMoveMarkers } from "./shiftMoves.js";
@@ -228,10 +228,9 @@ function getMaps(nombre) {
 }
 
 function includesContractDay(nombre, keyDay) {
-    return (
-        !isReplacementProfile(nombre) ||
-        hasContractForDate(nombre, keyDay)
-    );
+    // Incluye tambien los dias sin contrato vigente en que el supervisor le
+    // registro un turno al reemplazo (suma base habil y horas trabajadas).
+    return includesWorkDay(nombre, keyDay);
 }
 
 function hasUnjustifiedAbsence(keyDay, maps) {

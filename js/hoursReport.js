@@ -18,7 +18,8 @@ import {
 import {
     aplicarCambiosTurno,
     getTurnoBase,
-    getTurnoProgramado
+    getTurnoProgramado,
+    includesWorkDay
 } from "./turnEngine.js";
 import {
     getTurnoExtraAgregado,
@@ -47,7 +48,6 @@ import { getShiftMoveMarkers } from "./shiftMoves.js";
 import {
     formatContractDate,
     getContractsForProfile,
-    hasContractForDate,
     isReplacementProfile
 } from "./contracts.js";
 import { REPLACEMENT_ROTATION_MODE } from "./replacementRotation.js";
@@ -453,10 +453,7 @@ function reportCarryForBoundary(profileName, date, data, maps, holidays) {
         date.getDate()
     );
 
-    if (
-        isReplacementProfile(profileName) &&
-        !hasContractForDate(profileName, keyDay)
-    ) {
+    if (!includesWorkDay(profileName, keyDay)) {
         return { d: 0, n: 0 };
     }
 
@@ -639,7 +636,7 @@ function buildNoAssignmentDayRows(
             options.contractOnly === true;
         const hasActiveContract =
             !contractIsRequired ||
-            hasContractForDate(profileName, keyDay);
+            includesWorkDay(profileName, keyDay);
 
         if (!hasActiveContract) {
             rows.push({
@@ -1190,7 +1187,7 @@ function permissionRowsAndAdjustments(
 
         if (
             options.contractOnly === true &&
-            !hasContractForDate(profileName, keyDay)
+            !includesWorkDay(profileName, keyDay)
         ) {
             appendPermissionSegment(rows, currentSegment);
             currentSegment = null;
@@ -1630,7 +1627,7 @@ function noAssignmentBusinessRows(model) {
     const rows = [
         {
             cantidad: formatHour(adj.businessDays),
-            item: "D\u00edas h\u00e1biles con contrato",
+            item: "D\u00edas h\u00e1biles trabajados",
             signo: "(+)",
             horas: formatHour(adj.businessHours)
         }
@@ -1884,7 +1881,7 @@ function buildNoAssignmentReportHTML(model) {
                 { key: "turnoRealizado", label: "Turno realizado" },
                 { key: "horasDiurnas", label: "Horas diurnas" },
                 { key: "horasNocturnas", label: "Horas nocturnas" },
-                { key: "respaldo", label: "Reemplazo / motivo / CCTT" }
+                { key: "respaldo", label: "Detalles" }
             ], model.dayRows)}
             ${reportSignatureFooterHTML()}
         </div>
@@ -1935,7 +1932,7 @@ function buildAssignedShiftReportHTML(model) {
                 { key: "turnoRealizado", label: "Turno realizado" },
                 { key: "hheeDiurnas", label: "HHEE diurnas" },
                 { key: "hheeNocturnas", label: "HHEE nocturnas" },
-                { key: "respaldo", label: "Reemplazo / motivo / CCTT" }
+                { key: "respaldo", label: "Detalles" }
             ], model.dayRows)}
             ${reportSignatureFooterHTML()}
         </div>
@@ -2121,7 +2118,7 @@ function buildWorkbookHTML({
                     { key: "turnoExtra", label: "Turno extra" },
                     { key: "horasDiurnas", label: "Horas diurnas" },
                     { key: "horasNocturnas", label: "Horas nocturnas" },
-                    { key: "respaldo", label: "Reemplazo / motivo / CCTT" }
+                    { key: "respaldo", label: "Detalles" }
                 ], dayRows)}
                 ${table("Respaldos de horas extras", [
                     { key: "fecha", label: "Fecha" },

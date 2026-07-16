@@ -1195,7 +1195,15 @@ function ensureTimelineCellDelegation(container) {
             event.preventDefault();
             event.stopPropagation();
 
-            if (cell.dataset.replacementProfile) {
+            if (cell.dataset.contractErrorProfile) {
+                // La cruz de "sin contrato" tiene prioridad visual y de accion:
+                // el dia puede tener tambien un reemplazo, pero lo primero es
+                // configurar el contrato (modal de contratos), no anularlo.
+                window.startReplacementContractEdit?.(
+                    cell.dataset.contractErrorProfile,
+                    cell.dataset.contractErrorKey
+                );
+            } else if (cell.dataset.replacementProfile) {
                 window.openReplacementDialog?.(
                     cell.dataset.replacementProfile,
                     cell.dataset.replacementKey
@@ -1217,11 +1225,6 @@ function ensureTimelineCellDelegation(container) {
                     cell.dataset.clockExtraProfile,
                     cell.dataset.clockExtraKey,
                     Number(cell.dataset.clockExtraTurn) || 0
-                );
-            } else if (cell.dataset.contractErrorProfile) {
-                window.startReplacementContractEdit?.(
-                    cell.dataset.contractErrorProfile,
-                    cell.dataset.contractErrorKey
                 );
             } else if (cell.dataset.honorariaLimitProfile) {
                 alert(cell.dataset.honorariaLimitMessage);

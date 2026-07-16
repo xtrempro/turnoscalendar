@@ -22,6 +22,7 @@ import {
 import {
     getReplacementRotationModeForDate,
     getReplacedProfileForDate,
+    hasContractForDate,
     hasHonorariaContractForDate,
     isHonorariaProfile,
     isReplacementProfile
@@ -885,4 +886,18 @@ export function getTurnoProgramado(nombre, key) {
     }
 
     return getTurnoBase(nombre, key);
+}
+
+// Un dia cuenta como jornada del trabajador (para horas habiles y horas
+// trabajadas) cuando: no es reemplazo (siempre cuenta), o es reemplazo con
+// contrato vigente ese dia, o es reemplazo al que el supervisor le registro un
+// turno en el calendario fuera del contrato vigente. Fuera del contrato la base
+// del reemplazo es LIBRE, asi que un turno programado != LIBRE implica una
+// asignacion explicita del supervisor. Compartido por hoursEngine (base habil +
+// horas trabajadas) y hoursReport para no duplicar el criterio.
+export function includesWorkDay(nombre, key) {
+    if (!isReplacementProfile(nombre)) return true;
+    if (hasContractForDate(nombre, key)) return true;
+
+    return getTurnoProgramado(nombre, key) !== TURNO.LIBRE;
 }
