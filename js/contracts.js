@@ -13,6 +13,57 @@ import {
     normalizeReplacementRotationMode
 } from "./replacementRotation.js";
 
+function addDaysISO(iso, offset) {
+    const parts = String(iso || "").split("-").map(Number);
+    const date = new Date(
+        Number(parts[0]) || 0,
+        (Number(parts[1]) || 1) - 1,
+        Number(parts[2]) || 1
+    );
+
+    if (Number.isNaN(date.getTime())) return "";
+
+    date.setDate(date.getDate() + Number(offset || 0));
+
+    return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0"),
+        String(date.getDate()).padStart(2, "0")
+    ].join("-");
+}
+
+// Ajusta [start, end] (ISO) para que un nuevo contrato no se superponga con los
+// contratos existentes del mismo trabajador (por otro justificativo): si un
+// contrato ya cubre el inicio, el nuevo empieza el dia inmediatamente posterior
+// a aquel; si otro contrato empieza dentro del rango, el nuevo termina el dia
+// inmediatamente anterior. Devuelve null si no queda ningun dia libre.
+export function clampContractRange(start, end, existingContracts = []) {
+    if (!start || !end) return null;
+
+    const existing = (existingContracts || [])
+        .filter(contract => contract && contract.start && contract.end)
+        .sort((a, b) => a.start.localeCompare(b.start));
+    let s = start;
+    let e = end;
+
+    for (const contract of existing) {
+        if (contract.end < s || contract.start > e) continue;
+
+        if (contract.start <= s) {
+            s = addDaysISO(contract.end, 1);
+        } else {
+            e = addDaysISO(contract.start, -1);
+            break;
+        }
+
+        if (!s || s > e) break;
+    }
+
+    if (!s || !e || s > e) return null;
+
+    return { start: s, end: e };
+}
+
 export function keyToISO(keyDay) {
     const { year, month, day } = parseKey(keyDay);
 

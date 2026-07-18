@@ -22,7 +22,8 @@ import { escapeHTML } from "./htmlUtils.js";
 import { formatRut, getRutValidationMessage } from "./rutUtils.js";
 import {
     findDuplicateEmailProfile,
-    getEmailValidationMessage
+    getEmailValidationMessage,
+    normalizeEmailKey
 } from "./emailUtils.js";
 import {
     getRotativaLabel,
@@ -383,6 +384,7 @@ import {
 } from "./memos.js";
 import {
     addReplacementContract,
+    clampContractRange,
     formatContractDate,
     getContractsForProfile,
     isHonorariaContractType,
@@ -1571,8 +1573,8 @@ async function saveReplacementContractFromDraft(
 ) {
     const replacementWorker = String(profileName || "").trim();
     const replaced = profileDraft.contractReplaces.trim();
-    const start = profileDraft.contractStart;
-    const end = profileDraft.contractEnd;
+    const requestedStart = profileDraft.contractStart;
+    const requestedEnd = profileDraft.contractEnd;
     const rotationMode = normalizeReplacementRotationMode(
         profileDraft.contractRotationMode,
         REPLACEMENT_ROTATION_MODE.INHERIT
@@ -1581,11 +1583,33 @@ async function saveReplacementContractFromDraft(
     if (
         !replacementWorker ||
         !replaced ||
-        !start ||
-        !end ||
+        !requestedStart ||
+        !requestedEnd ||
         !requiresReplacementContract()
     ) {
         return null;
+    }
+
+    const clampedRange = clampContractRange(
+        requestedStart,
+        requestedEnd,
+        getContractsForProfile(replacementWorker)
+    );
+
+    if (!clampedRange) {
+        alert(
+            `El periodo del permiso ya esta cubierto por otro contrato de ${replacementWorker}. No se creo un contrato nuevo.`
+        );
+        return null;
+    }
+
+    const start = clampedRange.start;
+    const end = clampedRange.end;
+
+    if (start !== requestedStart || end !== requestedEnd) {
+        alert(
+            `Para no superponer contratos de ${replacementWorker}, el nuevo contrato se ajusto al periodo libre: ${formatDisplayDate(start)} al ${formatDisplayDate(end)}.`
+        );
     }
 
     const coverageDecision =
@@ -1661,6 +1685,12 @@ function openRotationConfigModal(
     const isReplacement = type === "reemplazo";
     const quickContractSave =
         isReplacement && Boolean(options.quickContractSave);
+    // Abierto desde la cruz del calendario (o desde sugerencias de reemplazo):
+    // solo se ofrecen trabajadores cuyo permiso/ausencia cubre ESA fecha. Desde
+    // el perfil no llega sourceKeyDay -> se listan todos (flujo actual).
+    const contractCoverISO = options.sourceKeyDay
+        ? calendarKeyToInputDate(options.sourceKeyDay)
+        : "";
     const quickCancelProfile =
         String(options.previousProfileName || "").trim();
     const isHonoraria = !isReplacement && isHonorariaDraft();
@@ -2251,7 +2281,8 @@ function openRotationConfigModal(
                         ""
                 },
                 getLeaveOptions:
-                    getReplacementLeaveOptionsForProfile
+                    getReplacementLeaveOptionsForProfile,
+                coverISO: contractCoverISO
             })
             : [];
         const currentTargetIsEligible =
@@ -6762,7 +6793,10 @@ function startEditMode() {
     DOM.profileNameInput.select();
 }
 
-function startReplacementContractEdit(profileName, keyDay) {
+// `prefill.replaced` (opcional): al llegar desde las sugerencias de reemplazo se
+// preselecciona a quien reemplaza y su permiso que cubre `keyDay`, para usarlo
+// como respaldo del contrato del reemplazante.
+function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
     if (!canEditCurrentProfileMenu()) return;
 
     const previousProfileName = getCurrentProfile();
@@ -6771,6 +6805,19 @@ function startReplacementContractEdit(profileName, keyDay) {
     );
 
     if (!profile) return;
+
+    const replaced = String(prefill.replaced || "").trim();
+    let prefillLeaveRef = "";
+
+    if (replaced) {
+        const coverISO = calendarKeyToInputDate(keyDay);
+        const leaveOption = getReplacementLeaveOptionsForProfile(replaced)
+            .find(option =>
+                option.start <= coverISO &&
+                option.end >= coverISO
+            );
+        prefillLeaveRef = leaveOption?.id || "";
+    }
 
     clearSelectionMode(false);
     availabilityEditMode = false;
@@ -6788,9 +6835,9 @@ function startReplacementContractEdit(profileName, keyDay) {
         calendarKeyToInputDate(keyDay);
     profileDraft.contractStart = "";
     profileDraft.contractEnd = "";
-    profileDraft.contractReplaces = "";
+    profileDraft.contractReplaces = replaced;
     profileDraft.contractReason = "";
-    profileDraft.contractLeaveRef = "";
+    profileDraft.contractLeaveRef = prefillLeaveRef;
     profileDraft.contractRotationMode =
         REPLACEMENT_ROTATION_MODE.INHERIT;
     profileRotationMiniDate = parseKey(keyDay);
@@ -7490,8 +7537,68 @@ async function requestShiftAssignmentEffectiveMonth(assigned) {
     }
 }
 
+// Resuelve el caso en que el correo que se intenta usar sigue asociado a otro
+// perfil aunque su ficha se vea vacia (dato residual tras "quitar" el correo).
+// Devuelve false solo si el usuario cancela; si libera el correo lo quita de ese
+// otro perfil para poder reutilizarlo. Debe correr ANTES de la validacion
+// sincronica, que si no bloquearia con "ya existe un trabajador con ese correo".
+async function resolveDuplicateEmailBeforeSave() {
+    const emailKey = normalizeEmailKey(profileDraft.email);
+
+    if (!emailKey || getEmailValidationMessage(profileDraft.email)) {
+        return true;
+    }
+
+    const originalName =
+        profileDraft.mode === PROFILE_MODE.EDIT
+            ? profileDraft.originalName
+            : "";
+    const duplicateProfile = findDuplicateEmailProfile(
+        getProfiles(),
+        emailKey,
+        originalName
+    );
+
+    if (!duplicateProfile) return true;
+
+    const link = getWorkerAppLinkForProfile(duplicateProfile.name);
+
+    if (link?.uid) {
+        alert(
+            `El correo pertenece a ${duplicateProfile.name}, que tiene la PWA enlazada. Desenlaza esa cuenta desde su perfil antes de reutilizar el correo.`
+        );
+        return false;
+    }
+
+    const freeEmail = await showConfirm(
+        `El correo ya figura en el perfil de ${duplicateProfile.name} (aunque su ficha se vea vacia por un dato residual).\n\n¿Quitar el correo de ${duplicateProfile.name} para usarlo aqui?`,
+        {
+            title: "Correo en uso",
+            tone: "warning",
+            confirmText: "Quitar y usar aqui",
+            cancelText: "Cancelar"
+        }
+    );
+
+    if (!freeEmail) return false;
+
+    updateProfile(duplicateProfile.name, {
+        ...duplicateProfile,
+        email: ""
+    });
+    addAuditLog(
+        AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+        "Libero correo de colaborador",
+        `Se quito el correo de ${duplicateProfile.name} para reutilizarlo.`,
+        { profile: duplicateProfile.name }
+    );
+
+    return true;
+}
+
 async function guardarPerfil() {
     if (!canEditCurrentProfileMenu()) return;
+    if (!await resolveDuplicateEmailBeforeSave()) return;
     if (!validateDraft()) return;
 
     const isCreating =

@@ -10,8 +10,16 @@ import { performWorkerAppUnlink } from "./workerAppUnlink.js";
 import { showConfirm } from "./dialogs.js";
 import { getProfiles } from "./storage.js";
 import { listWorkspaceMembersForPermissions } from "./workspacePermissions.js";
+import { IS_TEST_ENVIRONMENT } from "./firebaseConfig.js";
 
-const WORKER_APP_URL = "https://turnoplusfuncionarios.web.app/";
+// La PWA del trabajador es una app distinta por entorno: la de pruebas se conecta
+// al proyecto de test y la de produccion al de produccion. El enlace copiado debe
+// apuntar a la que corresponde (antes siempre apuntaba a produccion, por lo que
+// una invitacion creada en test no se podia validar). El servidor ya hace lo
+// mismo en functions/index.js (WORKER_APP_BASE_URL).
+const WORKER_APP_URL = IS_TEST_ENVIRONMENT
+    ? "https://turnoplusfunc-test.web.app/"
+    : "https://turnoplusfuncionarios.web.app/";
 const INVITE_DURATION_DAYS = 14;
 
 function normalizeEmail(value) {

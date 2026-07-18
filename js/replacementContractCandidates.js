@@ -6,10 +6,16 @@ function normalizeEstamento(value) {
         .toLowerCase();
 }
 
+// `coverISO` (opcional, "YYYY-MM-DD"): cuando el modal se abre desde la cruz de
+// un dia del calendario, solo se ofrecen trabajadores cuyo permiso/ausencia
+// cubre ESA fecha (y solo esos permisos), para usarlos como respaldo del nuevo
+// contrato. Sin `coverISO` (acceso desde el perfil) se listan todos los permisos
+// disponibles (flujo actual).
 export function buildReplacementContractCandidates({
     profiles = [],
     replacementProfile = null,
-    getLeaveOptions
+    getLeaveOptions,
+    coverISO = ""
 }) {
     const replacementName = String(
         replacementProfile?.name || ""
@@ -26,6 +32,14 @@ export function buildReplacementContractCandidates({
         return [];
     }
 
+    const cover = String(coverISO || "");
+    const optionCoversDate = option =>
+        !cover ||
+        (
+            String(option?.start || "") <= cover &&
+            String(option?.end || "") >= cover
+        );
+
     return profiles
         .filter(profile =>
             profile?.name &&
@@ -36,7 +50,8 @@ export function buildReplacementContractCandidates({
         )
         .map(profile => ({
             profile,
-            leaveOptions: getLeaveOptions(profile.name) || []
+            leaveOptions: (getLeaveOptions(profile.name) || [])
+                .filter(optionCoversDate)
         }))
         .filter(candidate => candidate.leaveOptions.length > 0)
         .sort((a, b) =>

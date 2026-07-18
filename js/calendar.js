@@ -5012,6 +5012,39 @@ async function openReplacementDialog(profileName, keyDay) {
                             return;
                         }
 
+                        const coveringWorker = button.dataset.worker;
+
+                        // Reemplazante (tipo contrato reemplazo) sin contrato
+                        // vigente ese dia: ofrecer crear un contrato usando el
+                        // permiso del ausente como respaldo. Si dice que no, se
+                        // asigna solo el turno y queda con la cruz de sin contrato.
+                        if (
+                            !button.dataset.workerWorkspaceId &&
+                            coveringWorker &&
+                            isReplacementProfile(coveringWorker) &&
+                            !hasContractForDate(coveringWorker, keyDay)
+                        ) {
+                            const addContract = await showConfirm(
+                                `${coveringWorker} no tiene un contrato de reemplazo vigente en esta fecha.\n\n¿Agregar un contrato usando el permiso de ${profileName} como respaldo? Si eliges "No", se asigna solo este turno y quedara marcado sin contrato.`,
+                                {
+                                    title: "Sin contrato vigente",
+                                    tone: "warning",
+                                    confirmText: "Agregar contrato",
+                                    cancelText: "Solo este turno"
+                                }
+                            );
+
+                            if (addContract) {
+                                close();
+                                window.startReplacementContractEdit?.(
+                                    coveringWorker,
+                                    keyDay,
+                                    { replaced: profileName }
+                                );
+                                return;
+                            }
+                        }
+
                         if (button.dataset.workerWorkspaceId) {
                             await saveLinkedUnitReplacement(button);
                         } else {
@@ -5035,8 +5068,6 @@ async function openReplacementDialog(profileName, keyDay) {
 
                         // Actualiza solo las casillas afectadas del timeline (el
                         // trabajador ausente y quien lo cubre) sin reconstruirlo.
-                        const coveringWorker = button.dataset.worker;
-
                         if (
                             coveringWorker &&
                             coveringWorker !== profileName

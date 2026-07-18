@@ -45,6 +45,82 @@ test("autoselecciona trabajador y permiso cuando ambos son unicos", () => {
     assert.equal(resolved.leaveOption?.id, "fl-1");
 });
 
+test("coverISO: solo trabajadores cuyo permiso cubre la fecha clickeada", () => {
+    const localProfiles = [
+        { name: "Reemplazante", estamento: "Profesional", active: true },
+        { name: "Ana", estamento: "Profesional", active: true },
+        { name: "Luis", estamento: "Profesional", active: true }
+    ];
+    const localLeaves = {
+        Ana: [
+            { id: "a1", label: "LM", start: "2026-07-01", end: "2026-07-06" }
+        ],
+        Luis: [
+            { id: "l1", label: "FL", start: "2026-07-10", end: "2026-07-15" }
+        ]
+    };
+    const candidates = buildReplacementContractCandidates({
+        profiles: localProfiles,
+        replacementProfile: localProfiles[0],
+        getLeaveOptions: name => localLeaves[name] || [],
+        coverISO: "2026-07-02"
+    });
+
+    assert.deepEqual(candidates.map(item => item.profile.name), ["Ana"]);
+});
+
+test("coverISO vacio lista todos los permisos (flujo desde el perfil)", () => {
+    const localProfiles = [
+        { name: "Reemplazante", estamento: "Profesional", active: true },
+        { name: "Ana", estamento: "Profesional", active: true },
+        { name: "Luis", estamento: "Profesional", active: true }
+    ];
+    const localLeaves = {
+        Ana: [
+            { id: "a1", label: "LM", start: "2026-07-01", end: "2026-07-06" }
+        ],
+        Luis: [
+            { id: "l1", label: "FL", start: "2026-07-10", end: "2026-07-15" }
+        ]
+    };
+    const candidates = buildReplacementContractCandidates({
+        profiles: localProfiles,
+        replacementProfile: localProfiles[0],
+        getLeaveOptions: name => localLeaves[name] || [],
+        coverISO: ""
+    });
+
+    assert.deepEqual(
+        candidates.map(item => item.profile.name).sort(),
+        ["Ana", "Luis"]
+    );
+});
+
+test("coverISO filtra tambien los permisos dentro de un candidato", () => {
+    const localProfiles = [
+        { name: "Reemplazante", estamento: "Profesional", active: true },
+        { name: "Ana", estamento: "Profesional", active: true }
+    ];
+    const localLeaves = {
+        Ana: [
+            { id: "a1", label: "LM", start: "2026-07-01", end: "2026-07-06" },
+            { id: "a2", label: "FL", start: "2026-08-01", end: "2026-08-06" }
+        ]
+    };
+    const candidates = buildReplacementContractCandidates({
+        profiles: localProfiles,
+        replacementProfile: localProfiles[0],
+        getLeaveOptions: name => localLeaves[name] || [],
+        coverISO: "2026-07-03"
+    });
+
+    assert.equal(candidates.length, 1);
+    assert.deepEqual(
+        candidates[0].leaveOptions.map(option => option.id),
+        ["a1"]
+    );
+});
+
 test("autoselecciona el unico permiso de un trabajador elegido", () => {
     const candidates = [
         {
