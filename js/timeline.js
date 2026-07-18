@@ -1992,27 +1992,6 @@ function dayExtraAlertClass(nombre, value, monthDate = new Date()) {
     return "";
 }
 
-// Reajusta la altura sticky del shell cuando cambia el tamaño de la ventana
-// (rotacion, resize del navegador). Se enlaza una sola vez.
-let timelineViewportResizeBound = false;
-
-function bindTimelineViewportResizeSync() {
-    if (timelineViewportResizeBound || typeof window === "undefined") return;
-
-    timelineViewportResizeBound = true;
-    let rafId = 0;
-
-    window.addEventListener("resize", () => {
-        if (rafId) cancelAnimationFrame(rafId);
-        rafId = requestAnimationFrame(() => {
-            const div = document.getElementById("teamTimeline");
-            if (div && div.querySelector(".timeline-shell")) {
-                syncTimelineStickyOffsets(div);
-            }
-        });
-    });
-}
-
 function syncTimelineStickyOffsets(container) {
     return measurePerformance(
         "timeline:sync-sticky-offsets",
@@ -2039,31 +2018,6 @@ function syncTimelineStickyOffsets(container) {
                 "--timeline-hhee-night-left",
                 `${nameWidth + dayWidth}px`
             );
-
-            // Acota la altura del shell a lo que queda de viewport bajo su borde
-            // superior, para que las filas scrolleen dentro del shell y el thead
-            // quede sticky. Se mide la posicion real (viewport-relativa) para no
-            // depender de offsets fijos del layout (topbar, paddings, etc.).
-            const viewportH =
-                window.innerHeight || document.documentElement.clientHeight || 0;
-
-            if (viewportH > 0) {
-                const shellTop = shell.getBoundingClientRect().top;
-                const bottomGap = 16;
-                const maxHeight = Math.max(
-                    260,
-                    Math.min(
-                        viewportH - bottomGap,
-                        Math.floor(viewportH - shellTop - bottomGap)
-                    )
-                );
-                shell.style.setProperty(
-                    "--timeline-shell-max-height",
-                    `${maxHeight}px`
-                );
-            }
-
-            bindTimelineViewportResizeSync();
         },
         {
             rowCount:

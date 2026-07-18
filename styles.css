@@ -8064,15 +8064,17 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     z-index: 7;
 }
 
-/* En pantallas medianas/grandes el shell se acota a la altura del viewport para
-   que las filas scrolleen DENTRO del shell (scroll interno) y el encabezado
-   quede sticky. La variable la calcula el JS (posicion real del shell); el calc
-   es el respaldo si el JS aun no corrio. En movil (<=760px) el shell sigue
-   scrolleando con la pagina (overflow-y: hidden), sin tocar nada. */
+/* En pantallas medianas/grandes el timeline se despliega COMPLETO y scrollea con
+   la pagina (una sola barra de scroll, sin scroll interno propio). Se quita el
+   overflow de los contenedores para que el thead pueda quedar sticky respecto a
+   la pagina: al bajar, los dias del mes siguen visibles arriba aunque las
+   primeras filas ya se hayan perdido. En movil (<=760px) se mantiene el scroll
+   horizontal del shell, sin tocar nada. */
 @media (min-width: 761px) {
+    #teamTimeline,
     .timeline-shell {
-        max-height: var(--timeline-shell-max-height, calc(100vh - 128px));
-        max-height: var(--timeline-shell-max-height, calc(100dvh - 128px));
+        overflow: visible;
+        max-height: none;
     }
 }
 
