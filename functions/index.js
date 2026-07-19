@@ -84,7 +84,11 @@ const DEFAULT_MAIL_FROM = "TurnoPlus <onboarding@resend.dev>";
 const APP_URL = `${WORKER_APP_BASE_URL}?screen=solicitudes`;
 const SWAPS_APP_URL = `${WORKER_APP_BASE_URL}?screen=cambios`;
 const APP_ICON = `${WORKER_APP_BASE_URL}img/logo-turnoplus.png`;
-const APP_BADGE = `${WORKER_APP_BASE_URL}img/favicon-turnoplus-calendar.png`;
+// El badge de Android se pinta como SILUETA a partir del canal alfa: debe ser
+// un PNG monocromo con transparencia. Si se apunta a un icono a color y opaco
+// (p.ej. favicon-turnoplus-calendar.png, 512x512 sin alfa), Android lo dibuja
+// como un cuadrado blanco. badge-calendar.png es 96x96, monocromo y 71% alfa.
+const APP_BADGE = `${WORKER_APP_BASE_URL}img/badge-calendar.png`;
 const INVALID_TOKEN_CODES = new Set([
   "messaging/invalid-argument",
   "messaging/invalid-registration-token",
