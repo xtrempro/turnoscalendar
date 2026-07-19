@@ -8,6 +8,10 @@ import { TURNO_LABEL } from "./constants.js";
 import { getJSON, setJSON } from "./persistence.js";
 
 const CONFIG_KEY = "turnoColorConfig";
+// Color base de la aplicacion (azul del logo). Es el mismo token --brand-blue
+// de styles.css; cada usuario puede personalizarlo desde Ajustes y solo cambia
+// para el (se guarda en su localStorage, no en el workspace).
+export const DEFAULT_BRAND_COLOR = "#10498b";
 const OLD_LICENSE_DEFAULT = "#e64747";
 const LICENSE_MUTED_ORANGE = "#d97706";
 
@@ -112,8 +116,9 @@ export function getTurnoColorConfig() {
     }
 
     const named = buildNamedColors(saved?.named);
+    const brand = normalizeHex(saved?.brand, DEFAULT_BRAND_COLOR);
 
-    cachedConfig = { base, extra, named };
+    cachedConfig = { base, extra, named, brand };
     return cachedConfig;
 }
 
@@ -127,8 +132,9 @@ export function saveTurnoColorConfig(config) {
     }
 
     const named = buildNamedColors(config?.named);
+    const brand = normalizeHex(config?.brand, DEFAULT_BRAND_COLOR);
 
-    setJSON(CONFIG_KEY, { base, extra, named });
+    setJSON(CONFIG_KEY, { base, extra, named, brand });
     cachedConfig = null;
 }
 
@@ -146,7 +152,7 @@ export function getDefaultTurnoColorConfig() {
         extra[code] = DEFAULT_BASE[code];
     }
 
-    return { base, extra, named: { ...NAMED_DEFAULTS } };
+    return { base, extra, named: { ...NAMED_DEFAULTS }, brand: DEFAULT_BRAND_COLOR };
 }
 
 export function defaultTurnoColor(code) {
@@ -183,8 +189,15 @@ export function applyTurnoColors() {
 
     // Relee fresco una vez por render (cubre cambios por sync de estado).
     cachedConfig = null;
-    const { base, extra, named } = getTurnoColorConfig();
+    const { base, extra, named, brand } = getTurnoColorConfig();
     const root = document.documentElement;
+
+    // Token de marca: de el derivan --accent* y todas las sombras
+    // rgba(var(--brand-blue-rgb), X) definidas en styles.css.
+    const [br, bg, bb] = hexToRgbParts(brand);
+    root.style.setProperty("--brand-blue", brand);
+    root.style.setProperty("--brand-blue-rgb", `${br}, ${bg}, ${bb}`);
+    root.style.setProperty("--brand-blue-dark", darkenHex(brand));
 
     for (const code of TURNO_COLOR_CODES) {
         root.style.setProperty(`--turno-color-${code}`, base[code]);
@@ -198,4 +211,23 @@ export function applyTurnoColors() {
         root.style.setProperty(`--color-${item.key}`, value);
         root.style.setProperty(`--color-${item.key}-text`, contrastTextColor(value));
     }
+}
+
+// --- utilidades de color para el token de marca ---
+function hexToRgbParts(hex) {
+    const v = String(hex || "").replace("#", "");
+    return [
+        parseInt(v.slice(0, 2), 16) || 0,
+        parseInt(v.slice(2, 4), 16) || 0,
+        parseInt(v.slice(4, 6), 16) || 0
+    ];
+}
+
+// Variante oscura para hover/degradados (mismo tono, ~22% mas oscuro).
+function darkenHex(hex, factor = 0.78) {
+    const channel = (n) => Math.max(0, Math.min(255, Math.round(n * factor)))
+        .toString(16)
+        .padStart(2, "0");
+    const [r, g, b] = hexToRgbParts(hex);
+    return `#${channel(r)}${channel(g)}${channel(b)}`;
 }

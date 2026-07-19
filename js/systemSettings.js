@@ -41,6 +41,7 @@ import {
     turnoColorLabel,
     getTurnoColorConfig,
     saveTurnoColorConfig,
+    DEFAULT_BRAND_COLOR,
     getDefaultTurnoColorConfig,
     applyTurnoColors
 } from "./turnoColors.js";
@@ -601,8 +602,26 @@ function renderColorsPanel() {
         </div>
     `).join("");
 
+    const brandColor = config.brand || DEFAULT_BRAND_COLOR;
+
     return `
         <div class="settings-section">
+            <h4 class="settings-subtitle">Color de la aplicacion</h4>
+            <p class="settings-hint">
+                Color principal de la interfaz (botones, pestanas y destacados).
+                Es un ajuste tuyo: solo cambia como TU ves la aplicacion, no
+                afecta a los demas supervisores ni a los trabajadores.
+            </p>
+            <div class="settings-color-grid">
+                <div class="settings-color-row">
+                    <span class="settings-color-name">Color principal</span>
+                    <label class="settings-color-field">
+                        <span>Color</span>
+                        <input type="color" data-brand-color value="${escapeHTML(brandColor)}">
+                    </label>
+                </div>
+            </div>
+
             <h4 class="settings-subtitle">Colores de turnos base</h4>
             <p class="settings-hint">
                 Define el color de los turnos base. La columna "Extra" es el color
@@ -656,7 +675,10 @@ function readColorConfig(backdrop) {
         named[item.key] = input?.value || current.named[item.key];
     }
 
-    return { base, extra, named };
+    const brandInput = backdrop.querySelector("[data-brand-color]");
+    const brand = brandInput?.value || current.brand || DEFAULT_BRAND_COLOR;
+
+    return { base, extra, named, brand };
 }
 
 function renderActivePanel(config) {
