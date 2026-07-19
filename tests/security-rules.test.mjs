@@ -1027,6 +1027,104 @@ test("reglas modulares de Firestore y Storage", async t => {
     );
 
     await t.test(
+        "trabajadores enlazados usan un directorio minimo para mensajes",
+        async () => {
+            const ownDirectoryDoc = doc(
+                workerA.firestore(),
+                "workspaces",
+                WORKSPACE_ID,
+                "workerMessageDirectory",
+                "worker-a"
+            );
+            const peerDirectoryDoc = doc(
+                workerB.firestore(),
+                "workspaces",
+                WORKSPACE_ID,
+                "workerMessageDirectory",
+                "worker-b"
+            );
+            const workerADirectoryCollection = collection(
+                workerA.firestore(),
+                "workspaces",
+                WORKSPACE_ID,
+                "workerMessageDirectory"
+            );
+
+            await assertSucceeds(
+                setDoc(ownDirectoryDoc, {
+                    uid: "worker-a",
+                    workspaceId: WORKSPACE_ID,
+                    workspaceName: "Seguridad",
+                    profileName: "Trabajador A",
+                    worker: {
+                        name: "Trabajador A",
+                        role: "Enfermeria",
+                        profession: "TENS"
+                    },
+                    status: "active",
+                    updatedAt: new Date(),
+                    updatedAtISO: new Date().toISOString()
+                })
+            );
+            await assertSucceeds(
+                setDoc(peerDirectoryDoc, {
+                    uid: "worker-b",
+                    workspaceId: WORKSPACE_ID,
+                    profileName: "Trabajador B",
+                    status: "active",
+                    updatedAt: new Date(),
+                    updatedAtISO: new Date().toISOString()
+                })
+            );
+            await assertSucceeds(getDocs(workerADirectoryCollection));
+            await assertFails(
+                setDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerMessageDirectory",
+                        "worker-b"
+                    ),
+                    {
+                        uid: "worker-b",
+                        workspaceId: WORKSPACE_ID,
+                        profileName: "Perfil ajeno",
+                        status: "active"
+                    }
+                )
+            );
+            await assertFails(
+                setDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerMessageDirectory",
+                        "worker-a"
+                    ),
+                    {
+                        uid: "worker-a",
+                        workspaceId: TARGET_WORKSPACE_ID,
+                        profileName: "Workspace incorrecto",
+                        status: "active"
+                    }
+                )
+            );
+            await assertFails(
+                setDoc(ownDirectoryDoc, {
+                    uid: "worker-a",
+                    workspaceId: WORKSPACE_ID,
+                    profileName: "Dato privado",
+                    profileRut: "11111111-1",
+                    status: "active"
+                })
+            );
+            await assertSucceeds(deleteDoc(ownDirectoryDoc));
+        }
+    );
+
+    await t.test(
         "un trabajador solo cambia campos de cancelacion de su solicitud",
         async () => {
             await assertFails(

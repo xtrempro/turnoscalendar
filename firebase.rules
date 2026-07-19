@@ -224,6 +224,59 @@ service cloud.firestore {
       return !(key in data) || validText(data[key], maxLength);
     }
 
+    function validWorkerDirectoryWorker(worker) {
+      return worker is map &&
+        optionalText(worker, "name", 160) &&
+        optionalText(worker, "role", 160) &&
+        optionalText(worker, "profession", 160) &&
+        worker.keys().hasOnly([
+          "name",
+          "role",
+          "profession"
+        ]);
+    }
+
+    function validOwnWorkerDirectoryPayload(workspaceId, userId) {
+      return request.resource.data.uid == userId &&
+        request.resource.data.workspaceId == workspaceId &&
+        request.resource.data.status == "active" &&
+        validText(request.resource.data.profileName, 160) &&
+        optionalText(request.resource.data, "workspaceName", 160) &&
+        optionalText(request.resource.data, "profession", 160) &&
+        optionalText(request.resource.data, "role", 160) &&
+        optionalText(request.resource.data, "updatedAtISO", 80) &&
+        (!("updatedAt" in request.resource.data) ||
+          request.resource.data.updatedAt is timestamp) &&
+        (!("worker" in request.resource.data) ||
+          validWorkerDirectoryWorker(request.resource.data.worker)) &&
+        request.resource.data.keys().hasOnly([
+          "uid",
+          "workspaceId",
+          "workspaceName",
+          "profileName",
+          "worker",
+          "profession",
+          "role",
+          "status",
+          "updatedAt",
+          "updatedAtISO"
+        ]);
+    }
+
+    function canWriteOwnWorkerMessageDirectory(workspaceId, userId) {
+      return signedIn() &&
+        request.auth.uid == userId &&
+        isCurrentLinkedWorker(workspaceId) &&
+        validOwnWorkerDirectoryPayload(workspaceId, userId);
+    }
+
+    function canDeleteOwnWorkerMessageDirectory(workspaceId, userId) {
+      return signedIn() &&
+        request.auth.uid == userId &&
+        resource.data.uid == userId &&
+        resource.data.workspaceId == workspaceId;
+    }
+
     function canCreateOwnWorkspaceMember(workspaceId, userId) {
       return signedIn() &&
         userId == request.auth.uid &&
@@ -713,8 +766,12 @@ service cloud.firestore {
       match /workerMessageDirectory/{userId} {
         allow read: if canReadRequests(workspaceId) ||
           isCurrentLinkedWorker(workspaceId);
-        allow create, update, delete: if
-          canPublishWorkerData(workspaceId);
+        allow create, update: if
+          canPublishWorkerData(workspaceId) ||
+          canWriteOwnWorkerMessageDirectory(workspaceId, userId);
+        allow delete: if
+          canPublishWorkerData(workspaceId) ||
+          canDeleteOwnWorkerMessageDirectory(workspaceId, userId);
       }
 
       match /workerPeerThreads/{threadId} {
