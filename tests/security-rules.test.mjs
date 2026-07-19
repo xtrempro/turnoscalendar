@@ -7,6 +7,7 @@ import {
 } from "@firebase/rules-unit-testing";
 import {
     collection,
+    deleteDoc,
     doc,
     getDoc,
     getDocs,
@@ -894,6 +895,132 @@ test("reglas modulares de Firestore y Storage", async t => {
                         unlinkedByUid: "turnos-editor",
                         updatedAt: new Date()
                     }
+                )
+            );
+        }
+    );
+
+    await t.test(
+        "un trabajador puede desenlazar solo su propia app",
+        async () => {
+            const selfUnlinkWorkspaceId = "workspace-worker-self-unlink";
+
+            await env.withSecurityRulesDisabled(async context => {
+                const db = context.firestore();
+                await setDoc(doc(db, "workspaces", selfUnlinkWorkspaceId), {
+                    ownerUid: "owner",
+                    name: "Autodesenlace"
+                });
+                await setDoc(
+                    doc(
+                        db,
+                        "workspaces",
+                        selfUnlinkWorkspaceId,
+                        "members",
+                        "profile-editor"
+                    ),
+                    {
+                        role: "member",
+                        permissions: permissions(["profile"])
+                    }
+                );
+                await setDoc(
+                    doc(
+                        db,
+                        "workspaces",
+                        selfUnlinkWorkspaceId,
+                        "workerLinks",
+                        "worker-a"
+                    ),
+                    {
+                        uid: "worker-a",
+                        workspaceId: selfUnlinkWorkspaceId,
+                        status: "active"
+                    }
+                );
+                await setDoc(
+                    doc(
+                        db,
+                        "workspaces",
+                        selfUnlinkWorkspaceId,
+                        "workerLinks",
+                        "worker-b"
+                    ),
+                    {
+                        uid: "worker-b",
+                        workspaceId: selfUnlinkWorkspaceId,
+                        status: "active"
+                    }
+                );
+                await setDoc(
+                    doc(
+                        db,
+                        "users",
+                        "worker-a",
+                        "workerLinks",
+                        selfUnlinkWorkspaceId
+                    ),
+                    {
+                        uid: "worker-a",
+                        workspaceId: selfUnlinkWorkspaceId,
+                        status: "active"
+                    }
+                );
+            });
+
+            await assertSucceeds(
+                deleteDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        selfUnlinkWorkspaceId,
+                        "workerLinks",
+                        "worker-a"
+                    )
+                )
+            );
+            await assertSucceeds(
+                deleteDoc(
+                    doc(
+                        workerA.firestore(),
+                        "users",
+                        "worker-a",
+                        "workerLinks",
+                        selfUnlinkWorkspaceId
+                    )
+                )
+            );
+            await assertFails(
+                deleteDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        selfUnlinkWorkspaceId,
+                        "workerLinks",
+                        "worker-b"
+                    )
+                )
+            );
+            await assertFails(
+                deleteDoc(
+                    doc(
+                        outsider.firestore(),
+                        "workspaces",
+                        selfUnlinkWorkspaceId,
+                        "workerLinks",
+                        "worker-b"
+                    )
+                )
+            );
+            await assertSucceeds(
+                deleteDoc(
+                    doc(
+                        profileEditor.firestore(),
+                        "workspaces",
+                        selfUnlinkWorkspaceId,
+                        "workerLinks",
+                        "worker-b"
+                    )
                 )
             );
         }

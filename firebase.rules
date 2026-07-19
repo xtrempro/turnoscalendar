@@ -836,7 +836,8 @@ service cloud.firestore {
             userId
           )
         );
-        allow delete: if canManageProfiles(workspaceId);
+        allow delete: if canManageProfiles(workspaceId) ||
+          (signedIn() && request.auth.uid == userId);
       }
 
       match /workerPushTokens/{userId} {
