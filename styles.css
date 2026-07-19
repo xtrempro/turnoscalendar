@@ -6411,8 +6411,17 @@ body.theme-dark .overtime-backup-subsection {
     min-height: 42px;
     padding: 0 14px;
     border-radius: 12px;
+    /* Sin background explicito el navegador aplica su gris por defecto, que en
+       modo noche se veia como un boton blanco. Transparente toma el color del
+       contenedor (--field) y funciona en ambos temas. */
+    background: transparent;
     color: var(--text-muted);
     font-weight: 800;
+}
+
+.settings-tabs button:hover {
+    background: var(--panel-hover);
+    color: var(--text);
 }
 
 .settings-tabs button.is-active {
