@@ -227,6 +227,7 @@ import {
 } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import {
+    flushPendingFirebaseAppStateEntries,
     startFirebaseAppStateSync,
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
@@ -310,7 +311,7 @@ import {
     calcularHorasMesPerfil,
     renderSummaryHTML
 } from "./hoursEngine.js";
-import { getRaw, setRaw, getJSON, setJSON } from "./persistence.js";
+import { getRaw, setRaw, getJSON, setJSON, listKeys } from "./persistence.js";
 import {
     getProfileData,
     saveProfileData,
@@ -1146,6 +1147,85 @@ function canEditCurrentProfileMenu() {
 
     alert("Tu usuario tiene permiso solo de lectura en Perfiles.");
     return false;
+}
+
+const CRITICAL_PROFILE_STATE_PREFIXES = [
+    "data_",
+    "baseData_",
+    "blocked_",
+    "admin_",
+    "legal_",
+    "comp_",
+    "absences_",
+    "hourReturns_",
+    "hheeReturnTransfers_",
+    "leaveBalances_",
+    "rotativa_",
+    "shift_",
+    "shiftAssignmentHistory_",
+    "gradeHistory_",
+    "contractHistory_",
+    "replacementContracts_",
+    "clockMarks_",
+    "hrLogs_"
+];
+
+const CRITICAL_PROFILE_GLOBAL_KEYS = [
+    "profiles",
+    "auditLog",
+    "replacements",
+    "swaps",
+    "shiftMoves",
+    "memos",
+    "replacementRequests",
+    "workerRequests",
+    "staffing_config",
+    "staffing_applicants",
+    "staffing_custom_reminders"
+];
+
+function criticalProfileStateKeys(profileNames = [], extraKeys = []) {
+    const keys = new Set([
+        ...CRITICAL_PROFILE_GLOBAL_KEYS,
+        ...extraKeys
+    ]);
+
+    [...new Set(
+        (Array.isArray(profileNames) ? profileNames : [profileNames])
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+    )].forEach(name => {
+        CRITICAL_PROFILE_STATE_PREFIXES.forEach(prefix => {
+            keys.add(`${prefix}${name}`);
+        });
+
+        listKeys(`carry_${name}_`).forEach(key => keys.add(key));
+    });
+
+    return [...keys];
+}
+
+async function sealCriticalProfileState(profileNames, reason = "profile-save") {
+    const workspace = getActiveWorkspace();
+
+    if (!workspace?.id) {
+        throw new Error(
+            "No se pudo confirmar el guardado: no hay una unidad Firebase activa."
+        );
+    }
+
+    const result = await flushPendingFirebaseAppStateEntries({
+        keys: criticalProfileStateKeys(profileNames),
+        reason
+    });
+
+    if (!result?.flushed) {
+        throw new Error(
+            `No se pudo confirmar el guardado en Firebase (${result?.reason || "sin respuesta"}). Intenta nuevamente antes de recargar.`
+        );
+    }
+
+    return result;
 }
 
 function renderContractHistory(profile) {
@@ -2881,8 +2961,12 @@ async function applyCalendarRotationChange(fecha) {
                 mode: overlapDecision.mode
             }
         );
+        await sealCriticalProfileState(
+            [profile.name],
+            "calendar-rotation-save"
+        );
     }, {
-        label: "Aplicando rotativa..."
+        label: "Aplicando y confirmando rotativa..."
     });
 }
 
@@ -7869,6 +7953,13 @@ async function guardarPerfil() {
     }
 
     let automaticInviteResult = null;
+    const profileSaveSealNames = [
+        nextName,
+        isEditing ? profileDraft.originalName : "",
+        shouldSaveReplacementContract
+            ? profileDraft.contractReplaces
+            : ""
+    ].filter(Boolean);
 
     try {
         if (shouldReplaceWorkerAppLink) {
@@ -8110,6 +8201,15 @@ async function guardarPerfil() {
                 }
             );
         }
+        await withBusyState(
+            () => sealCriticalProfileState(
+                profileSaveSealNames,
+                "profile-save"
+            ),
+            {
+                label: "Confirmando guardado..."
+            }
+        );
         refreshAll();
         scheduleWorkerAppDataPublish(300, nextName);
 

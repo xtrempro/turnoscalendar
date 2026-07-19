@@ -6,7 +6,11 @@ import {
     stateModulePermission
 } from "../js/firebaseStateModules.js";
 import {
-    isWorkerCalendarUrgentStateKey
+    isRemoteStateEntryStaleForLocalChange,
+    isWorkerCalendarUrgentStateKey,
+    normalizeFirebaseStateDelay,
+    normalizeQueuedStateEntries,
+    shouldDeferFirebaseEntrySlice
 } from "../js/firebaseAppState.js";
 
 test("clasifica las claves persistidas por modulo de seguridad", () => {
@@ -84,4 +88,82 @@ test("marca cambios de calendario PWA como sincronizacion urgente", () => {
 
     assert.equal(isWorkerCalendarUrgentStateKey("memos"), false);
     assert.equal(isWorkerCalendarUrgentStateKey("agenda_contacts"), false);
+});
+
+test("la cola urgente de Firebase respeta delay cero", () => {
+    assert.equal(normalizeFirebaseStateDelay(0, 2500), 0);
+    assert.equal(normalizeFirebaseStateDelay(undefined, 2500), 2500);
+    assert.equal(normalizeFirebaseStateDelay("150", 2500), 150);
+});
+
+test("un flush urgente no difiere documentos restantes en primer plano", () => {
+    assert.equal(
+        shouldDeferFirebaseEntrySlice({ urgent: true, visible: true }),
+        false
+    );
+    assert.equal(
+        shouldDeferFirebaseEntrySlice({ urgent: false, visible: true }),
+        true
+    );
+});
+
+test("ignora entradas remotas antiguas si hay un cambio local pendiente", () => {
+    const changedAt = Date.parse("2026-07-18T12:00:00.000Z");
+
+    assert.equal(
+        isRemoteStateEntryStaleForLocalChange(
+            { updatedAtISO: "2026-07-18T11:59:59.000Z" },
+            { changedAt },
+            changedAt + 1000
+        ),
+        true
+    );
+    assert.equal(
+        isRemoteStateEntryStaleForLocalChange(
+            { updatedAtISO: "2026-07-18T12:00:01.000Z" },
+            { changedAt },
+            changedAt + 1000
+        ),
+        false
+    );
+    assert.equal(
+        isRemoteStateEntryStaleForLocalChange(
+            {},
+            { changedAt },
+            changedAt + 1000,
+            10000
+        ),
+        true
+    );
+    assert.equal(
+        isRemoteStateEntryStaleForLocalChange(
+            {},
+            { changedAt },
+            changedAt + 11000,
+            10000
+        ),
+        false
+    );
+});
+
+test("reexpande documentos agrupados antes de reencolarlos", () => {
+    assert.deepEqual(
+        normalizeQueuedStateEntries([{
+            moduleId: "turnos",
+            storageKey: "data_Ana",
+            items: {
+                "2026-5-2": "3"
+            },
+            deletedItems: {
+                "2026-5-2": false
+            }
+        }]),
+        [{
+            moduleId: "turnos",
+            storageKey: "data_Ana",
+            itemKey: "2026-5-2",
+            value: "3",
+            deleted: false
+        }]
+    );
 });
