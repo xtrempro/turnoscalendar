@@ -11,8 +11,10 @@ import {
     doc,
     getDoc,
     getDocs,
+    query,
     setDoc,
-    updateDoc
+    updateDoc,
+    where
 } from "firebase/firestore";
 import {
     deleteObject,
@@ -1121,6 +1123,78 @@ test("reglas modulares de Firestore y Storage", async t => {
                 })
             );
             await assertSucceeds(deleteDoc(ownDirectoryDoc));
+        }
+    );
+
+    await t.test(
+        "trabajadores enlazados pueden listar hilos propios para badges de mensajes",
+        async () => {
+            const threadId = "worker-a__worker-b";
+            const workerAThreadsQuery = query(
+                collection(
+                    workerA.firestore(),
+                    "workspaces",
+                    WORKSPACE_ID,
+                    "workerPeerThreads"
+                ),
+                where("participantUids", "array-contains", "worker-a")
+            );
+
+            await assertSucceeds(
+                setDoc(
+                    doc(
+                        workerB.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerPeerThreads",
+                        threadId
+                    ),
+                    {
+                        id: threadId,
+                        workspaceId: WORKSPACE_ID,
+                        participantUids: ["worker-a", "worker-b"],
+                        participants: {
+                            "worker-a": {
+                                uid: "worker-a",
+                                name: "Trabajador A",
+                                role: "Trabajador"
+                            },
+                            "worker-b": {
+                                uid: "worker-b",
+                                name: "Trabajador B",
+                                role: "Trabajador"
+                            }
+                        },
+                        createdByUid: "worker-b",
+                        targetUid: "worker-a",
+                        lastMessage: "Mensaje para A",
+                        lastMessageId: "msg-badge",
+                        lastSenderUid: "worker-b",
+                        lastSenderName: "Trabajador B",
+                        unreadFor: {
+                            "worker-a": true,
+                            "worker-b": false
+                        },
+                        unreadCounts: {
+                            "worker-a": 1,
+                            "worker-b": 0
+                        },
+                        updatedAt: new Date()
+                    }
+                )
+            );
+            await assertSucceeds(getDocs(workerAThreadsQuery));
+            await assertFails(
+                getDoc(
+                    doc(
+                        workerA.firestore(),
+                        "workspaces",
+                        WORKSPACE_ID,
+                        "workerPeerThreads",
+                        "external-thread"
+                    )
+                )
+            );
         }
     );
 

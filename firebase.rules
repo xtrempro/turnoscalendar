@@ -99,6 +99,11 @@ service cloud.firestore {
         request.auth.uid in get(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)).data.participantUids;
     }
 
+    function canReadWorkerPeerThread(workspaceId) {
+      return isCurrentLinkedWorker(workspaceId) &&
+        request.auth.uid in resource.data.participantUids;
+    }
+
     function canAccessWorkerPeerThreadAfter(workspaceId, threadId) {
       return isCurrentLinkedWorker(workspaceId) &&
         existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/workerPeerThreads/$(threadId)) &&
@@ -775,7 +780,7 @@ service cloud.firestore {
       }
 
       match /workerPeerThreads/{threadId} {
-        allow read: if canAccessWorkerPeerThread(workspaceId, threadId);
+        allow read: if canReadWorkerPeerThread(workspaceId);
         allow create: if
           (
             isCurrentLinkedWorker(workspaceId) &&
