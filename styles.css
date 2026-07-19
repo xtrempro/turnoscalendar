@@ -3233,6 +3233,11 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     background: rgba(255, 59, 48, 0.06);
 }
 
+.supervisor-message-worker.is-historical {
+    border-style: dashed;
+    background: var(--panel-alt);
+}
+
 .supervisor-message-unread-badge {
     min-width: 22px;
     height: 22px;
@@ -3344,6 +3349,17 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     padding: 12px;
     border-top: 1px solid var(--border);
     background: var(--panel-alt);
+}
+
+.supervisor-message-disabled-note {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 9px 11px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-md);
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    font-weight: 800;
 }
 
 .supervisor-message-form textarea {

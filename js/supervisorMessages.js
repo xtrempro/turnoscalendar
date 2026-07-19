@@ -66,7 +66,7 @@ function formatTime(value) {
     }).format(date);
 }
 
-function linkedWorkers() {
+function activeLinkedWorkers() {
     return getWorkerAppLinks()
         .filter(link => link.uid)
         .map(link => ({
@@ -79,8 +79,38 @@ function linkedWorkers() {
             ].filter(Boolean).join(" | "),
             email: link.profile?.email || link.workerEmail || "",
             rut: link.profile?.rut || link.profileRut || "",
-            link
+            link,
+            isActive: true,
+            isHistorical: false
         }))
+        .sort((a, b) => a.name.localeCompare(b.name, "es"));
+}
+
+function historicalMessageWorkers(activeByUid) {
+    return Array.from(threadIndex.values())
+        .filter(thread => thread?.uid && !activeByUid.has(thread.uid))
+        .map(thread => ({
+            uid: thread.uid,
+            name: thread.profileName || thread.workerName || "Trabajador",
+            estamento: "",
+            role: thread.workerEmail || "Historial de mensajes",
+            email: thread.workerEmail || "",
+            rut: thread.profileRut || "",
+            link: null,
+            isActive: false,
+            isHistorical: true
+        }));
+}
+
+function linkedWorkers() {
+    const active = activeLinkedWorkers();
+    const byUid = new Map(active.map(worker => [worker.uid, worker]));
+
+    historicalMessageWorkers(byUid).forEach(worker => {
+        byUid.set(worker.uid, worker);
+    });
+
+    return Array.from(byUid.values())
         .sort((a, b) => a.name.localeCompare(b.name, "es"));
 }
 
@@ -448,14 +478,14 @@ function refreshDialog() {
     if (!workers.length) {
         body.innerHTML = `
             <div class="supervisor-messages-empty">
-                No hay trabajadores con aplicacion enlazada.
+                No hay conversaciones ni trabajadores con aplicacion enlazada.
             </div>
         `;
         return;
     }
 
     if (massMode) {
-        body.innerHTML = renderMassLayout(workers);
+        body.innerHTML = renderMassLayout(activeLinkedWorkers());
         bindMassLayout(body);
         bindWorkerSearch(body);
         applyWorkerSearchFilter();
@@ -548,6 +578,9 @@ function applyWorkerSearchFilter() {
 }
 
 function renderMessagesLayout(workers, worker) {
+    const canSend = Boolean(worker?.uid) && worker.isActive !== false;
+    const disabledNote = "Este trabajador ya no tiene la aplicacion enlazada. El historial queda disponible.";
+
     return `
         <aside class="supervisor-message-workers">
             <div class="supervisor-message-search">
@@ -555,13 +588,17 @@ function renderMessagesLayout(workers, worker) {
             </div>
             ${workers.map(item => {
                 const unread = workerUnreadCount(item.uid);
+                const historical = item.isActive === false;
+                const subtitle = historical
+                    ? `${item.role || "Trabajador"} | Historial`
+                    : item.role || item.email || "App enlazada";
 
                 return `
-                <button class="supervisor-message-worker ${item.uid === worker?.uid ? "is-active" : ""} ${unread ? "has-unread" : ""}" type="button" data-message-worker="${escapeHTML(item.uid)}" data-search="${escapeHTML(workerSearchText(item))}">
+                <button class="supervisor-message-worker ${item.uid === worker?.uid ? "is-active" : ""} ${unread ? "has-unread" : ""} ${historical ? "is-historical" : ""}" type="button" data-message-worker="${escapeHTML(item.uid)}" data-search="${escapeHTML(workerSearchText(item))}">
                     <span class="supervisor-message-avatar">${escapeHTML(initials(item.name))}</span>
                     <span class="supervisor-message-worker-copy">
                         <strong>${escapeHTML(item.name)}</strong>
-                        <small>${escapeHTML(item.role || item.email || "App enlazada")}</small>
+                        <small>${escapeHTML(subtitle)}</small>
                     </span>
                     ${unread ? `
                         <span class="supervisor-message-unread-badge" aria-label="${unread} mensajes no leidos">
@@ -578,7 +615,7 @@ function renderMessagesLayout(workers, worker) {
                 <span class="supervisor-message-avatar">${escapeHTML(initials(worker?.name))}</span>
                 <div>
                     <strong>${escapeHTML(worker?.name || "Trabajador")}</strong>
-                    <small>${escapeHTML(worker?.email || worker?.rut || "App enlazada")}</small>
+                    <small>${escapeHTML(canSend ? (worker?.email || worker?.rut || "App enlazada") : "Historial de mensajes")}</small>
                 </div>
             </div>
             <div class="supervisor-message-thread">
@@ -587,8 +624,9 @@ function renderMessagesLayout(workers, worker) {
                     : `<div class="supervisor-messages-empty">Sin mensajes todavia.</div>`}
             </div>
             <form class="supervisor-message-form" data-supervisor-message-form>
-                <textarea name="message" rows="2" maxlength="2000" placeholder="Escribe un mensaje para ${escapeHTML(worker?.name || "el trabajador")}"></textarea>
-                <button class="primary-button" type="submit">Enviar</button>
+                ${canSend ? "" : `<p class="supervisor-message-disabled-note">${escapeHTML(disabledNote)}</p>`}
+                <textarea name="message" rows="2" maxlength="2000" placeholder="${canSend ? `Escribe un mensaje para ${escapeHTML(worker?.name || "el trabajador")}` : "Trabajador desenlazado"}" ${canSend ? "" : "disabled"}></textarea>
+                <button class="primary-button" type="submit" ${canSend ? "" : "disabled"}>Enviar</button>
             </form>
         </section>
     `;
@@ -693,7 +731,7 @@ function bindMassLayout(body) {
     body.querySelectorAll("[data-mass-group]").forEach(chip => {
         chip.addEventListener("click", () => {
             const group = chip.dataset.massGroup || "";
-            const workers = linkedWorkers();
+            const workers = activeLinkedWorkers();
 
             if (group === "__all__") {
                 workers.forEach(item => massSelected.add(item.uid));
@@ -739,7 +777,7 @@ async function sendMassMessage() {
     if (massSending) return;
 
     const text = String(massText || "").trim();
-    const recipients = linkedWorkers()
+    const recipients = activeLinkedWorkers()
         .filter(item => massSelected.has(item.uid));
 
     if (!text) {
@@ -864,6 +902,10 @@ async function sendSupervisorMessage(event) {
     const text = String(textarea?.value || "").trim();
 
     if (!worker?.uid || !text) return;
+    if (worker.isActive === false) {
+        alert("Este trabajador ya no tiene la aplicacion enlazada.");
+        return;
+    }
 
     textarea.disabled = true;
     messageDrafts.delete(worker.uid);
@@ -883,6 +925,10 @@ async function sendSupervisorMessage(event) {
 }
 
 async function writeSupervisorMessage(worker, text) {
+    if (worker?.isActive === false) {
+        throw new Error("Este trabajador ya no tiene la aplicacion enlazada.");
+    }
+
     const user = getCurrentFirebaseUser();
     const { db, firestoreModule } = await getFirebaseServices();
     const threadRef = firestoreModule.doc(

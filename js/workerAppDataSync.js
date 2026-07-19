@@ -1945,6 +1945,91 @@ async function writeWorkerMessageDirectoryEntry(payload, workspaceId) {
 
 // ───────── Deteccion de "sucios" desde detail.keys ─────────
 
+function buildUnlinkedWorkerMessageDirectoryPayload(workspaceId, uid, data = {}) {
+    return {
+        uid,
+        workspaceId,
+        profileName: data.profileName || "",
+        status: "unlinked",
+        unlinkedAt: data.unlinkedAt || null,
+        updatedAtISO: new Date().toISOString()
+    };
+}
+
+async function markUnlinkedWorkerMessageDirectoryEntries(
+    workspaceId,
+    { activeUids = [], removedLinks = [], includeOrphans = false } = {}
+) {
+    if (!workspaceId) return;
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+        const activeSet = new Set(activeUids.map(String).filter(Boolean));
+        const directoryRef = firestoreModule.collection(
+            db,
+            "workspaces",
+            workspaceId,
+            "workerMessageDirectory"
+        );
+        const byUid = new Map();
+
+        removedLinks.forEach(link => {
+            const uid = String(link?.uid || "").trim();
+            if (!uid || activeSet.has(uid)) return;
+
+            byUid.set(uid, buildUnlinkedWorkerMessageDirectoryPayload(
+                workspaceId,
+                uid,
+                link
+            ));
+        });
+
+        if (includeOrphans) {
+            const snap = await firestoreModule.getDocs(directoryRef);
+
+            snap.docs.forEach(docSnap => {
+                const data = docSnap.data() || {};
+                const uid = String(data.uid || docSnap.id || "").trim();
+                if (!uid || activeSet.has(uid)) return;
+                if (String(data.status || "active") !== "active") return;
+
+                byUid.set(uid, buildUnlinkedWorkerMessageDirectoryPayload(
+                    workspaceId,
+                    uid,
+                    data
+                ));
+            });
+        }
+
+        if (!byUid.size) return;
+
+        const batch = firestoreModule.writeBatch(db);
+        byUid.forEach((payload, uid) => {
+            batch.set(
+                firestoreModule.doc(
+                    db,
+                    "workspaces",
+                    workspaceId,
+                    "workerMessageDirectory",
+                    uid
+                ),
+                {
+                    ...payload,
+                    unlinkedAt: firestoreModule.serverTimestamp(),
+                    updatedAt: firestoreModule.serverTimestamp()
+                }
+            );
+        });
+
+        await batch.commit();
+    } catch (error) {
+        console.warn(
+            "No se pudieron marcar directorios de mensajes desenlazados.",
+            error
+        );
+    }
+}
+
 function resolveProfileName(remainder, profiles) {
     let best = null;
 
@@ -2366,6 +2451,20 @@ export async function startWorkerAppDataSync(workspace) {
 
                 workerLinks = nextLinks;
                 workerLinksInitialized = true;
+                if (initial || removedUids.length) {
+                    const previousByUid = new Map(
+                        previousLinks.map(link => [link.uid, link])
+                    );
+                    void markUnlinkedWorkerMessageDirectoryEntries(
+                        workspaceId,
+                        {
+                            activeUids: nextLinks.map(link => link.uid),
+                            removedLinks: removedUids
+                                .map(uid => previousByUid.get(uid) || { uid }),
+                            includeOrphans: initial
+                        }
+                    );
+                }
                 recordPerformanceEvent("worker-app:links-snapshot", {
                     type: "worker-app",
                     initial,

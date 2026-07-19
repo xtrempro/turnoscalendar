@@ -296,6 +296,33 @@ async function unlinkWorkerApp(workspaceId, link) {
             workspaceId
         )
     );
+    batch.set(
+        firestoreModule.doc(
+            db,
+            "workspaces",
+            workspaceId,
+            "workerMessageDirectory",
+            link.uid
+        ),
+        {
+            uid: link.uid,
+            workspaceId,
+            profileName: link.profileName || "",
+            status: "unlinked",
+            unlinkedAt: firestoreModule.serverTimestamp(),
+            updatedAt: firestoreModule.serverTimestamp(),
+            updatedAtISO: new Date().toISOString()
+        }
+    );
+    batch.delete(
+        firestoreModule.doc(
+            db,
+            "workspaces",
+            workspaceId,
+            "workerSwapCandidates",
+            link.uid
+        )
+    );
 
     if (link.inviteId) {
         batch.delete(
