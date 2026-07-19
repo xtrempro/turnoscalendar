@@ -455,6 +455,7 @@ let legalCantidad = 0;
 let licenseCantidad = 0;
 let licenseType = "license";
 let availabilityEditMode = false;
+let profileAvailabilityDraftTouched = false;
 let availabilityHistoryYear = new Date().getFullYear();
 let availabilityHistoryProfile = "";
 let profileRotationMiniDate = new Date();
@@ -3837,24 +3838,27 @@ function renderDisponibilidadVacaciones() {
                 ...defaultCreateAvailabilityBalances(),
                 ...saldos
             };
+        }
 
-            [
-                ["availabilityLegalInput", "legal"],
-                ["availabilityCompInput", "comp"],
-                ["availabilityAdminInput", "admin"],
-                ["availabilityHoursReturnInput", "hoursReturn"]
-            ].forEach(([id, field]) => {
-                const input = document.getElementById(id);
+        [
+            ["availabilityLegalInput", "legal"],
+            ["availabilityCompInput", "comp"],
+            ["availabilityAdminInput", "admin"],
+            ["availabilityHoursReturnInput", "hoursReturn"]
+        ].forEach(([id, field]) => {
+            const input = document.getElementById(id);
 
-                if (!input) return;
+            if (!input) return;
 
-                input.oninput = () => {
+            input.oninput = () => {
+                profileAvailabilityDraftTouched = true;
+                if (creating) {
                     createAvailabilityBalances[field] =
                         input.value;
-                };
-                input.onchange = input.oninput;
-            });
-        }
+                }
+            };
+            input.onchange = input.oninput;
+        });
 
         bindAvailabilityHistoryYear();
 
@@ -4546,7 +4550,7 @@ function updateTurnChangesNavState() {
         disabled &&
         document.body.dataset.activeView === "swap"
     ) {
-        setActiveShortcut(firstViewableTarget());
+        void setActiveShortcut(firstViewableTarget());
     }
 }
 
@@ -4585,7 +4589,7 @@ function syncWorkspacePermissionUI(options = {}) {
     if (shouldSwitch && !canViewTarget(activeTarget)) {
         const nextTarget = firstViewableTarget();
         if (nextTarget && nextTarget !== activeTarget) {
-            setActiveShortcut(nextTarget);
+            void setActiveShortcut(nextTarget);
             return;
         }
     }
@@ -4612,15 +4616,25 @@ function setDashboardView(view) {
     syncTurnosSidePanelHeight();
 }
 
-function setActiveShortcut(targetId, options = {}) {
+async function setActiveShortcut(targetId, options = {}) {
     if (!canViewTarget(targetId)) {
         alert("Tu usuario no tiene permiso para ingresar a este menu.");
         syncWorkspacePermissionUI({ switchIfNeeded: false });
-        return;
+        return false;
     }
 
     const previousView = document.body.dataset.activeView || "turnos";
     const nextView = getViewForTarget(targetId);
+
+    if (
+        options.skipProfileDraftGuard !== true &&
+        previousView === "profile" &&
+        nextView !== "profile" &&
+        !await confirmProfileDraftBeforeLeaving()
+    ) {
+        return false;
+    }
+
     const finishNavigation = startPerformanceSpan(
         "navigation:set-active-shortcut",
         {
@@ -4719,6 +4733,7 @@ function setActiveShortcut(targetId, options = {}) {
             targetId,
             options.historyMode || "push"
         );
+        return true;
     } finally {
         finishNavigation();
     }
@@ -4934,7 +4949,9 @@ function renderHheeProfiles() {
         content.append(name, meta);
         item.append(avatar, content);
 
-        item.onclick = () => selectProfileByName(profile.name);
+        item.onclick = () => {
+            void selectProfileByName(profile.name);
+        };
 
         DOM.hheeProfiles.appendChild(item);
     });
@@ -5014,11 +5031,14 @@ function renderClockMarksProfiles() {
         content.append(name, meta);
         item.append(avatar, content);
 
-        item.onclick = () => {
-            selectProfileByName(profile.name, {
+        item.onclick = async () => {
+            const selected = await selectProfileByName(profile.name, {
                 scrollToTop: true
             });
-            setActiveShortcut("clockMarksPanel");
+
+            if (!selected) return;
+
+            await setActiveShortcut("clockMarksPanel");
         };
 
         DOM.clockMarksProfiles.appendChild(item);
@@ -5541,10 +5561,13 @@ async function renderReportsProfiles(options = {}) {
 
         item.onclick = async () => {
             await withBusyState(async () => {
-                selectProfileByName(profile.name, {
+                const selected = await selectProfileByName(profile.name, {
                     scrollToTop: true,
                     refresh: false
                 });
+
+                if (!selected) return;
+
                 await renderReportsProfiles({
                     renderDetail: true
                 });
@@ -6065,7 +6088,7 @@ function syncTopProfileSearch() {
     });
 }
 
-function handleTopProfileSearch() {
+async function handleTopProfileSearch() {
     if (!DOM.topProfileSearchInput) return;
 
     const query = DOM.topProfileSearchInput.value.trim();
@@ -6095,16 +6118,51 @@ function handleTopProfileSearch() {
 
     DOM.topProfileSearchInput.value =
         getCalendarProfileSearchValue(match);
-    selectProfileByName(match.name);
-    DOM.topProfileSearchInput.blur();
+    if (await selectProfileByName(match.name)) {
+        DOM.topProfileSearchInput.blur();
+    } else {
+        syncTopProfileSearch();
+    }
 }
 
-function selectProfileByName(profileName, options = {}) {
-    const profile = getProfiles().find(item =>
+async function selectProfileByName(profileName, options = {}) {
+    let profile = getProfiles().find(item =>
         item.name === profileName
     );
 
-    if (!profile) return;
+    if (!profile) return false;
+
+    const sameStoredProfile =
+        profile.name === getCurrentProfile() &&
+        profileDraft.mode !== PROFILE_MODE.CREATE;
+
+    if (
+        options.skipProfileDraftGuard !== true &&
+        isProfileEditing() &&
+        (
+            !sameStoredProfile ||
+            hasUnsavedProfileDraftChanges()
+        )
+    ) {
+        if (!await confirmProfileDraftBeforeLeaving()) {
+            return false;
+        }
+
+        profile = getProfiles().find(item =>
+            item.name === profileName
+        );
+
+        if (!profile) return true;
+    }
+
+    if (
+        sameStoredProfile &&
+        !options.openProfile &&
+        !options.openTurns &&
+        !hasUnsavedProfileDraftChanges()
+    ) {
+        return true;
+    }
 
     void disableCalendarDirectEditMode({
         flush: true,
@@ -6120,11 +6178,15 @@ function selectProfileByName(profileName, options = {}) {
     renderBotones();
 
     if (options.openProfile) {
-        setActiveShortcut("profileSection");
+        if (!await setActiveShortcut("profileSection")) {
+            return false;
+        }
     }
 
     if (options.openTurns) {
-        setActiveShortcut("calendarPanel");
+        if (!await setActiveShortcut("calendarPanel")) {
+            return false;
+        }
     }
 
     if (options.refresh !== false) {
@@ -6139,6 +6201,8 @@ function selectProfileByName(profileName, options = {}) {
             });
         });
     }
+
+    return true;
 }
 
 window.selectProfileByName = selectProfileByName;
@@ -6157,7 +6221,7 @@ function parseCalendarJumpDate(value) {
 
 window.addEventListener(
     "proturnos:viewWorkerRequestInCalendar",
-    event => {
+    async event => {
         const profileName = String(event.detail?.profile || "").trim();
         const target = parseCalendarJumpDate(event.detail?.date);
 
@@ -6178,11 +6242,16 @@ window.addEventListener(
         }
 
         currentDate.setFullYear(target.year, target.month, 1);
-        selectProfileByName(profileName, {
+        const selected = await selectProfileByName(profileName, {
             refresh: false,
             openTurns: false
         });
-        setActiveShortcut("calendarPanel");
+
+        if (!selected) return;
+
+        if (!await setActiveShortcut("calendarPanel")) {
+            return;
+        }
 
         requestAnimationFrame(() => {
             document.getElementById("calendarPanel")?.scrollIntoView({
@@ -6839,6 +6908,7 @@ function startCreateMode() {
 
     clearSelectionMode(false);
     resetProfileDraft();
+    profileAvailabilityDraftTouched = false;
     availabilityEditMode = true;
     createAvailabilityBalances =
         defaultCreateAvailabilityBalances();
@@ -6850,7 +6920,9 @@ function startCreateMode() {
     renderProfiles();
     renderBotones();
     refreshAll();
-    setActiveShortcut("profileSection");
+    void setActiveShortcut("profileSection", {
+        skipProfileDraftGuard: true
+    });
     DOM.profileNameInput.focus();
 }
 
@@ -6862,6 +6934,7 @@ function startEditMode() {
 
     clearSelectionMode(false);
     createAvailabilityBalances = null;
+    profileAvailabilityDraftTouched = false;
     availabilityEditMode = true;
     loadDraftFromProfile(profile);
     profileRotationMiniDate = profileDraft.rotationStart
@@ -6872,7 +6945,9 @@ function startEditMode() {
     renderDashboardState();
     renderBotones();
     refreshAll();
-    setActiveShortcut("profileSection");
+    void setActiveShortcut("profileSection", {
+        skipProfileDraftGuard: true
+    });
     DOM.profileNameInput.focus();
     DOM.profileNameInput.select();
 }
@@ -6905,6 +6980,7 @@ function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
 
     clearSelectionMode(false);
     availabilityEditMode = false;
+    profileAvailabilityDraftTouched = false;
     setCurrentProfile(profileName);
     loadDraftFromProfile(profile);
     profileDraft.mode = PROFILE_MODE.EDIT;
@@ -6941,6 +7017,7 @@ window.startReplacementContractEdit =
 function exitProfileMode(selectedName = getCurrentProfile()) {
     clearSelectionMode(false);
     resetProfileDraft();
+    profileAvailabilityDraftTouched = false;
     availabilityEditMode = false;
     createAvailabilityBalances = null;
     profileDraft.mode = PROFILE_MODE.VIEW;
@@ -6948,6 +7025,219 @@ function exitProfileMode(selectedName = getCurrentProfile()) {
     setCurrentProfile(selectedName || null);
     renderProfiles();
     renderBotones();
+}
+
+function normalizeProfileDraftText(value) {
+    return String(value || "").trim();
+}
+
+function normalizeProfileDraftDocs(docs) {
+    return JSON.stringify(Array.isArray(docs) ? docs : []);
+}
+
+function profileDraftComparisonSnapshot(data = {}) {
+    const rotationType = normalizeProfileDraftText(data.rotationType);
+    const estamento = normalizeProfileDraftText(data.estamento);
+
+    return {
+        name: normalizeProfileDraftText(data.name),
+        email: normalizeProfileDraftText(data.email),
+        rut: formatRut(data.rut),
+        phone: sanitizeDigits(data.phone, 8),
+        birthDate: normalizeStoredStart(data.birthDate || ""),
+        docs: normalizeProfileDraftDocs(data.docs),
+        active: data.active !== false,
+        unitEntryDate: isUnitEntryDateEnabled()
+            ? normalizeStoredStart(data.unitEntryDate || "")
+            : "",
+        contractType: normalizeProfileDraftText(data.contractType),
+        estamento,
+        profession: normalizeProfession(data.profession, estamento),
+        grade: String(data.grade || ""),
+        rotationType,
+        rotationStart: normalizeStoredStart(data.rotationStart || ""),
+        rotationFirstTurn: normalizeRotationFirstTurnForType(
+            rotationType,
+            data.rotationFirstTurn || "larga"
+        ),
+        contractStart: normalizeStoredStart(data.contractStart || ""),
+        contractEnd: normalizeStoredStart(data.contractEnd || ""),
+        contractReplaces: normalizeProfileDraftText(data.contractReplaces),
+        contractReason: normalizeProfileDraftText(data.contractReason),
+        contractLeaveRef: normalizeProfileDraftText(data.contractLeaveRef),
+        contractRotationMode:
+            normalizeProfileDraftText(data.contractRotationMode) ||
+            "inherit",
+        honorariaStart: normalizeStoredStart(data.honorariaStart || ""),
+        honorariaEnd: normalizeStoredStart(data.honorariaEnd || ""),
+        honorariaHourlyRate: String(data.honorariaHourlyRate || ""),
+        honorariaMaxMonthlyHours:
+            String(data.honorariaMaxMonthlyHours || ""),
+        unionLeaveEnabled: Boolean(data.unionLeaveEnabled),
+        shiftAssigned: Boolean(data.shiftAssigned)
+    };
+}
+
+function savedProfileComparisonSnapshot(profile) {
+    const rotativa = getRotativa(profile.name);
+    const legacyReplacement = rotativa.type === "reemplazo";
+
+    return profileDraftComparisonSnapshot({
+        name: profile.name,
+        email: profile.email || "",
+        rut: profile.rut || "",
+        phone: profile.phone || "",
+        birthDate: profile.birthDate || "",
+        docs: profile.docs,
+        active: isProfileActive(profile),
+        unitEntryDate: isUnitEntryDateEnabled()
+            ? profile.unitEntryDate || ""
+            : "",
+        contractType: legacyReplacement
+            ? "Reemplazo"
+            : profile.contractType || "",
+        estamento: profile.estamento || "",
+        profession: profile.profession || "Sin informacion",
+        grade: String(profile.grade || ""),
+        rotationType: legacyReplacement
+            ? ""
+            : rotativa.type || "",
+        rotationStart: legacyReplacement
+            ? ""
+            : rotativa.start || "",
+        rotationFirstTurn: rotativa.firstTurn || "larga",
+        contractStart: "",
+        contractEnd: "",
+        contractReplaces: "",
+        contractReason: "",
+        contractLeaveRef: "",
+        contractRotationMode: "inherit",
+        honorariaStart: profile.honorariaStart || "",
+        honorariaEnd: profile.honorariaEnd || "",
+        honorariaHourlyRate: String(profile.honorariaHourlyRate || ""),
+        honorariaMaxMonthlyHours:
+            String(profile.honorariaMaxMonthlyHours || ""),
+        unionLeaveEnabled: Boolean(profile.unionLeaveEnabled),
+        shiftAssigned:
+            getShiftAssignmentConfiguredState(profile.name)
+    });
+}
+
+function emptyCreateProfileComparisonSnapshot() {
+    return profileDraftComparisonSnapshot({
+        name: "",
+        email: "",
+        rut: "",
+        phone: "",
+        birthDate: PROFILE_BIRTH_DATE_DEFAULT,
+        docs: [],
+        active: true,
+        unitEntryDate: "",
+        contractType: "",
+        estamento: "",
+        profession: "Sin informacion",
+        grade: "",
+        rotationType: "",
+        rotationStart: "",
+        rotationFirstTurn: "larga",
+        contractStart: "",
+        contractEnd: "",
+        contractReplaces: "",
+        contractReason: "",
+        contractLeaveRef: "",
+        contractRotationMode: "inherit",
+        honorariaStart: "",
+        honorariaEnd: "",
+        honorariaHourlyRate: "",
+        honorariaMaxMonthlyHours: "",
+        unionLeaveEnabled: false,
+        shiftAssigned: false
+    });
+}
+
+function hasCreateAvailabilityDraftChanged() {
+    const defaults = defaultCreateAvailabilityBalances();
+    const balances = {
+        ...defaults,
+        ...(createAvailabilityBalances || {})
+    };
+
+    return (
+        normalizeLegalBalanceValue(balances.legal) !==
+            defaults.legal ||
+        normalizeCompEntitlement(balances.comp) !==
+            defaults.comp ||
+        normalizeBalanceValue(balances.admin) !==
+            defaults.admin ||
+        normalizeBalanceValue(balances.hoursReturn) !==
+            defaults.hoursReturn
+    );
+}
+
+function hasUnsavedProfileDraftChanges() {
+    if (!isProfileEditing()) return false;
+    if (profileAvailabilityDraftTouched) return true;
+
+    if (profileDraft.mode === PROFILE_MODE.CREATE) {
+        return (
+            JSON.stringify(profileDraftComparisonSnapshot(profileDraft)) !==
+                JSON.stringify(emptyCreateProfileComparisonSnapshot()) ||
+            hasCreateAvailabilityDraftChanged()
+        );
+    }
+
+    if (profileDraft.mode !== PROFILE_MODE.EDIT) {
+        return false;
+    }
+
+    const profile = getProfiles().find(item =>
+        item.name === profileDraft.originalName
+    ) || getPerfilActual();
+
+    if (!profile) return true;
+
+    return JSON.stringify(profileDraftComparisonSnapshot(profileDraft)) !==
+        JSON.stringify(savedProfileComparisonSnapshot(profile));
+}
+
+function discardProfileDraftChangesBeforeLeaving() {
+    const selectedName =
+        profileDraft.mode === PROFILE_MODE.CREATE
+            ? getCurrentProfile()
+            : profileDraft.originalName || getCurrentProfile();
+
+    exitProfileMode(selectedName);
+    renderDashboardState();
+}
+
+async function confirmProfileDraftBeforeLeaving() {
+    if (!isProfileEditing()) return true;
+
+    if (!hasUnsavedProfileDraftChanges()) {
+        discardProfileDraftChangesBeforeLeaving();
+        return true;
+    }
+
+    const label =
+        profileDraft.name?.trim() ||
+        profileDraft.originalName ||
+        "este perfil";
+    const shouldSave = await showConfirm(
+        `Hay cambios sin guardar en ${label}. Si continuas sin guardar, se descartara el borrador actual.`,
+        {
+            title: "Cambios sin guardar",
+            tone: "warning",
+            confirmText: "Guardar cambios",
+            cancelText: "Continuar sin guardar"
+        }
+    );
+
+    if (shouldSave) {
+        return await guardarPerfil() === true;
+    }
+
+    discardProfileDraftChangesBeforeLeaving();
+    return true;
 }
 
 function handleRotationSelectionChange() {
@@ -6979,7 +7269,9 @@ function handleRotationSelectionChange() {
     }
 
     renderDashboardState();
-    setActiveShortcut("profileSection");
+    void setActiveShortcut("profileSection", {
+        skipProfileDraftGuard: true
+    });
 
     if (profileDraft.rotationType === "libre") {
         return;
@@ -7681,9 +7973,9 @@ async function resolveDuplicateEmailBeforeSave() {
 }
 
 async function guardarPerfil() {
-    if (!canEditCurrentProfileMenu()) return;
-    if (!await resolveDuplicateEmailBeforeSave()) return;
-    if (!validateDraft()) return;
+    if (!canEditCurrentProfileMenu()) return false;
+    if (!await resolveDuplicateEmailBeforeSave()) return false;
+    if (!validateDraft()) return false;
 
     const isCreating =
         profileDraft.mode === PROFILE_MODE.CREATE;
@@ -7710,7 +8002,7 @@ async function guardarPerfil() {
                 "Para activar mas, mejora tu plan desde el boton de Planes en la barra superior, " +
                 "o desactiva a otro trabajador."
             );
-            return;
+            return false;
         }
     }
 
@@ -7869,7 +8161,7 @@ async function guardarPerfil() {
             nextEmailKey
         })
     ) {
-        return;
+        return false;
     }
 
     if (shiftAssignmentChanged) {
@@ -7879,7 +8171,7 @@ async function guardarPerfil() {
             );
 
         if (!shiftAssignmentEffectiveMonth) {
-            return;
+            return false;
         }
     }
 
@@ -7891,7 +8183,7 @@ async function guardarPerfil() {
             );
 
         if (!gradeEffectiveDate) {
-            return;
+            return false;
         }
     }
 
@@ -7906,7 +8198,7 @@ async function guardarPerfil() {
             }
         )
     ) {
-        return;
+        return false;
     }
 
     if (
@@ -7924,7 +8216,7 @@ async function guardarPerfil() {
             });
 
         if (!rotationOverlapDecision) {
-            return;
+            return false;
         }
 
         if (rotationOverlapDecision.mode === "limit") {
@@ -7987,7 +8279,7 @@ async function guardarPerfil() {
                 )
             ) {
                 alert("Ese perfil ya existe.");
-                return;
+                return false;
             }
 
             profiles.push(nextProfilePayload);
@@ -8218,11 +8510,13 @@ async function guardarPerfil() {
                 `El perfil de ${nextName} se guardo, pero no se pudo enviar la invitacion al correo ${nextProfilePayload.email}. Puedes reintentarlo con ENLACE APP.`
             );
         }
+        return true;
     } catch (error) {
         alert(
             error.message ||
             "No se pudo guardar el colaborador."
         );
+        return false;
     }
 }
 
@@ -9553,7 +9847,7 @@ function bindAppNavigationHistory() {
     if (appNavigationHistoryBound) return;
 
     appNavigationHistoryBound = true;
-    window.addEventListener("popstate", event => {
+    window.addEventListener("popstate", async event => {
         const targetId =
             event.state?.proTurnosTarget ||
             targetFromHash() ||
@@ -9564,7 +9858,16 @@ function bindAppNavigationHistory() {
                 : firstViewableTarget();
 
         if (nextTarget) {
-            setActiveShortcut(nextTarget, { historyMode: "none" });
+            const navigated = await setActiveShortcut(nextTarget, {
+                historyMode: "none"
+            });
+
+            if (!navigated) {
+                syncAppNavigationHistory(
+                    getTargetForActiveView(),
+                    "replace"
+                );
+            }
         }
     });
 }
@@ -9950,7 +10253,7 @@ function bindShellInteractions() {
         if (!action || !DOM.profiles.contains(action)) return;
 
         if (action.dataset.action === "select-profile") {
-            selectProfileByName(action.dataset.profileName);
+            void selectProfileByName(action.dataset.profileName);
             return;
         }
 
@@ -10010,13 +10313,14 @@ function bindShellInteractions() {
     if (DOM.topProfileSearchForm) {
         DOM.topProfileSearchForm.onsubmit = event => {
             event.preventDefault();
-            handleTopProfileSearch();
+            void handleTopProfileSearch();
         };
     }
 
     if (DOM.topProfileSearchInput) {
-        DOM.topProfileSearchInput.onchange =
-            handleTopProfileSearch;
+        DOM.topProfileSearchInput.onchange = () => {
+            void handleTopProfileSearch();
+        };
         DOM.topProfileSearchInput.onfocus = () =>
             DOM.topProfileSearchInput.select();
     }
@@ -10024,7 +10328,7 @@ function bindShellInteractions() {
     document
         .querySelectorAll(".nav-tile[data-target]")
         .forEach(button => {
-            button.onclick = () => {
+            button.onclick = async () => {
                 if (button.disabled || button.dataset.permissionLocked === "true") {
                     return;
                 }
@@ -10035,7 +10339,12 @@ function bindShellInteractions() {
 
                 if (!target) return;
 
-                setActiveShortcut(button.dataset.target);
+                const navigated = await setActiveShortcut(
+                    button.dataset.target
+                );
+
+                if (!navigated) return;
+
                 setMobileMenuOpen(false);
                 target.scrollIntoView({
                     behavior: "smooth",
@@ -10900,4 +11209,4 @@ const startupTarget = hasProfilesAtStartup
     ? targetFromHash() || "calendarPanel"
     : "profileSection";
 
-setActiveShortcut(startupTarget, { historyMode: "replace" });
+void setActiveShortcut(startupTarget, { historyMode: "replace" });
