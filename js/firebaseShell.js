@@ -1,6 +1,7 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { showConfirm, showPrompt } from "./dialogs.js";
 import {
+    getFirebaseServices,
     isFirebaseConfigured,
     onFirebaseAuthChanged,
     signInWithGoogle,
@@ -57,6 +58,9 @@ let supervisorInviteState = {
 let activeFirebaseBackdrop = null;
 let handlingAccessLost = false;
 let loginGateEnabled = true;
+let unsubscribeUserWorkspaces = null;
+let userWorkspacesListenerVersion = 0;
+let activatingWorkspace = false;
 
 function displayUserName(user) {
     if (!isFirebaseConfigured()) return "Modo local";
@@ -259,6 +263,45 @@ function isShellLocked() {
 // entorno valido, libera si todo esta en orden.
 function refreshShellGate() {
     setLoginGateActive(isShellLocked());
+}
+
+async function activateWorkspace(workspace, optionsOverride = {}) {
+    if (!workspace?.id || activatingWorkspace) return false;
+
+    activatingWorkspace = true;
+
+    try {
+        currentWorkspace = workspace;
+        setActiveWorkspace(workspace);
+        linkedUnitState.message = "";
+        refreshShellGate();
+        updateTopbar();
+
+        // Detener el sync actual y LIMPIAR el estado local antes de activar
+        // el nuevo entorno; si no, los datos locales del entorno anterior se
+        // subirian al nuevo (corrupcion al cambiar de unidad).
+        await options.onWorkspaceChange?.(null);
+        replaceLocalSnapshot({}, { silent: true });
+        await options.onWorkspaceChange?.(currentWorkspace);
+
+        await refreshSupervisorInvites();
+
+        if (optionsOverride.closeModal !== false) {
+            closeModal(activeFirebaseBackdrop, { force: true });
+        }
+
+        return true;
+    } finally {
+        activatingWorkspace = false;
+    }
+}
+
+async function maybeActivateSingleWorkspace() {
+    if (!currentUser) return false;
+    if (hasValidActiveWorkspace()) return false;
+    if (workspaceList.length !== 1) return false;
+
+    return activateWorkspace(workspaceList[0]);
 }
 
 function closeModal(backdrop, options = {}) {
@@ -954,6 +997,79 @@ async function refreshWorkspaces() {
     await refreshSupervisorInvites();
 }
 
+function stopUserWorkspacesListener() {
+    userWorkspacesListenerVersion += 1;
+
+    if (unsubscribeUserWorkspaces) {
+        unsubscribeUserWorkspaces();
+        unsubscribeUserWorkspaces = null;
+    }
+}
+
+async function handleUserWorkspacesChanged(uid) {
+    if (!currentUser || currentUser.uid !== uid) return;
+
+    await refreshWorkspaces();
+
+    if (await maybeActivateSingleWorkspace()) {
+        return;
+    }
+
+    refreshShellGate();
+    updateTopbar();
+
+    if (activeFirebaseBackdrop?.isConnected) {
+        renderSignedInModal(activeFirebaseBackdrop);
+    }
+}
+
+async function startUserWorkspacesListener(user) {
+    stopUserWorkspacesListener();
+
+    if (!user?.uid || !isFirebaseConfigured()) return;
+
+    userWorkspacesListenerVersion += 1;
+
+    const listenerVersion = userWorkspacesListenerVersion;
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+
+        if (
+            listenerVersion !== userWorkspacesListenerVersion ||
+            !currentUser ||
+            currentUser.uid !== user.uid
+        ) {
+            return;
+        }
+
+        const ref = firestoreModule.collection(
+            db,
+            "users",
+            user.uid,
+            "workspaces"
+        );
+
+        unsubscribeUserWorkspaces = firestoreModule.onSnapshot(
+            ref,
+            () => {
+                void handleUserWorkspacesChanged(user.uid);
+            },
+            error => {
+                console.warn(
+                    "No se pudo sincronizar las unidades del usuario.",
+                    error
+                );
+            }
+        );
+    } catch (error) {
+        console.warn(
+            "No se pudo iniciar sincronizacion de unidades del usuario.",
+            error
+        );
+    }
+}
+
 async function refreshSupervisorInvites() {
     supervisorInviteState.invites = [];
 
@@ -1055,7 +1171,14 @@ async function handleAction(action, backdrop, sourceButton = null) {
             currentUser = result?.user || currentUser;
             if (currentUser) {
                 await ensureFirebaseUser(currentUser);
+                await startUserWorkspacesListener(currentUser);
                 await refreshWorkspaces();
+
+                if (await maybeActivateSingleWorkspace()) {
+                    options.onAuthChange?.(currentUser);
+                    return;
+                }
+
                 // El gate y el bloqueo del modal los resuelve refreshShellGate /
                 // renderSignedInModal segun haya o no un entorno valido.
                 refreshShellGate();
@@ -1074,6 +1197,7 @@ async function handleAction(action, backdrop, sourceButton = null) {
                 setLoginGateActive(true);
             }
 
+            stopUserWorkspacesListener();
             setActiveWorkspace(null);
             currentWorkspace = null;
             workspaceList = [];
@@ -1440,22 +1564,7 @@ function bindModalActions(backdrop) {
 
             if (!workspace) return;
 
-            currentWorkspace = workspace;
-            setActiveWorkspace(workspace);
-            linkedUnitState.message = "";
-            refreshShellGate();
-            updateTopbar();
-
-            // Detener el sync actual y LIMPIAR el estado local antes de activar
-            // el nuevo entorno; si no, los datos locales del entorno anterior se
-            // subirian al nuevo (corrupcion al cambiar de unidad).
-            await options.onWorkspaceChange?.(null);
-            replaceLocalSnapshot({}, { silent: true });
-            await options.onWorkspaceChange?.(currentWorkspace);
-
-            await refreshSupervisorInvites();
-
-            closeModal(backdrop, { force: true });
+            await activateWorkspace(workspace);
         };
     });
 }
@@ -1514,6 +1623,8 @@ async function openFirebaseModal(modalOptions = {}) {
     }
 
     await refreshWorkspaces();
+    if (await maybeActivateSingleWorkspace()) return;
+
     await refreshLinkedUnits();
     renderSignedInModal(backdrop);
 }
@@ -1545,19 +1656,33 @@ export async function initFirebaseShell(initOptions = {}) {
     try {
         await onFirebaseAuthChanged(async user => {
             currentUser = user;
+            let workspaceChangeHandled = false;
 
             if (user) {
                 await ensureFirebaseUser(user);
+                await startUserWorkspacesListener(user);
                 await refreshWorkspaces();
 
-                if (hasValidActiveWorkspace()) {
+                workspaceChangeHandled =
+                    await maybeActivateSingleWorkspace();
+
+                if (
+                    workspaceChangeHandled ||
+                    hasValidActiveWorkspace()
+                ) {
                     setLoginGateActive(false);
 
                     if (
                         activeFirebaseBackdrop?.isConnected &&
                         activeFirebaseBackdrop.dataset.authRequired === "true"
                     ) {
-                        renderSignedInModal(activeFirebaseBackdrop);
+                        if (workspaceChangeHandled) {
+                            closeModal(activeFirebaseBackdrop, {
+                                force: true
+                            });
+                        } else {
+                            renderSignedInModal(activeFirebaseBackdrop);
+                        }
                     }
                 } else {
                     // Logueado pero sin entorno valido (nunca creo uno, o el
@@ -1574,6 +1699,7 @@ export async function initFirebaseShell(initOptions = {}) {
                 workspaceList = [];
                 currentWorkspace = null;
                 linkedUnitState.links = [];
+                stopUserWorkspacesListener();
 
                 if (loginGateEnabled) {
                     setLoginGateActive(true);
@@ -1583,7 +1709,9 @@ export async function initFirebaseShell(initOptions = {}) {
 
             updateTopbar();
             options.onAuthChange?.(user);
-            options.onWorkspaceChange?.(currentWorkspace);
+            if (!workspaceChangeHandled) {
+                options.onWorkspaceChange?.(currentWorkspace);
+            }
         });
     } catch (error) {
         console.warn("No se pudo inicializar Firebase.", error);
