@@ -178,10 +178,6 @@ export async function getFirebaseServices() {
     return servicesPromise;
 }
 
-function isPopupBlocked(error) {
-    return error?.code === "auth/popup-blocked";
-}
-
 async function resolveGoogleSignInMfa(services, error) {
     const {
         auth,
@@ -229,11 +225,7 @@ async function signInWithGoogleRedirect(services = initializedServices) {
     };
 }
 
-async function handleGoogleSignInError(services, error) {
-    if (isPopupBlocked(error)) {
-        return signInWithGoogleRedirect(services);
-    }
-
+async function handleGoogleRedirectResultError(services, error) {
     if (error?.code === "auth/multi-factor-auth-required") {
         return resolveGoogleSignInMfa(services, error);
     }
@@ -242,24 +234,20 @@ async function handleGoogleSignInError(services, error) {
 }
 
 export function signInWithGoogle() {
-    const services = initializedServices;
+    return signInWithGoogleRedirect();
+}
 
-    if (!services) {
-        return signInWithGoogleRedirect();
-    }
-
+export async function completeGoogleRedirectSignIn() {
+    const services = await getFirebaseServices();
     const {
         auth,
-        authModule,
-        googleProvider
+        authModule
     } = services;
 
     try {
-        return authModule
-            .signInWithPopup(auth, googleProvider)
-            .catch(error => handleGoogleSignInError(services, error));
+        return await authModule.getRedirectResult(auth);
     } catch (error) {
-        return handleGoogleSignInError(services, error);
+        return handleGoogleRedirectResultError(services, error);
     }
 }
 

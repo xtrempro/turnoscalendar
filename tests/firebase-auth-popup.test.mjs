@@ -3,34 +3,35 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const firebaseClient = readFileSync("js/firebaseClient.js", "utf8");
+const firebaseShell = readFileSync("js/firebaseShell.js", "utf8");
 
-test("login con Google abre el popup sin esperar carga asincrona previa", () => {
+test("login con Google usa redireccion como flujo principal", () => {
     const match = firebaseClient.match(
-        /export function signInWithGoogle\(\) \{[\s\S]*?\n\}\n\nexport async function signOutFirebase/
+        /export function signInWithGoogle\(\) \{[\s\S]*?\n\}/
     );
 
     assert.ok(match, "No se encontro signInWithGoogle");
 
     const signInWithGoogle = match[0];
 
-    assert.match(firebaseClient, /initializedServices = services;/);
-    assert.match(signInWithGoogle, /initializedServices/);
-    assert.match(signInWithGoogle, /signInWithPopup/);
-    assert.doesNotMatch(signInWithGoogle, /await\s+getFirebaseServices\(/);
-    assert.doesNotMatch(
-        firebaseClient,
-        /export\s+async\s+function\s+signInWithGoogle/
+    assert.match(signInWithGoogle, /signInWithGoogleRedirect\(\)/);
+    assert.doesNotMatch(signInWithGoogle, /signInWithPopup/);
+    assert.match(firebaseClient, /signInWithRedirect/);
+});
+
+test("procesa el retorno de Google antes de escuchar auth state", () => {
+    assert.match(firebaseClient, /export async function completeGoogleRedirectSignIn/);
+    assert.match(firebaseClient, /getRedirectResult/);
+    assert.match(
+        firebaseShell,
+        /await completeGoogleRedirectSignIn\(\);[\s\S]*await onFirebaseAuthChanged/
     );
 });
 
-test("login con Google cae a redirect si el popup fue bloqueado", () => {
-    const match = firebaseClient.match(
-        /async function handleGoogleSignInError[\s\S]*?export function signInWithGoogle/
-    );
-
-    assert.ok(match, "No se encontro handleGoogleSignInError");
+test("mantiene resolucion MFA cuando Google vuelve por redirect", () => {
+    assert.match(firebaseClient, /handleGoogleRedirectResultError/);
     assert.match(
-        match[0],
-        /isPopupBlocked\(error\)[\s\S]*signInWithGoogleRedirect\(services\)/
+        firebaseClient,
+        /auth\/multi-factor-auth-required[\s\S]*resolveGoogleSignInMfa/
     );
 });

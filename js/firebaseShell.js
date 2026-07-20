@@ -1,6 +1,7 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { showConfirm, showPrompt } from "./dialogs.js";
 import {
+    completeGoogleRedirectSignIn,
     getFirebaseServices,
     isFirebaseConfigured,
     onFirebaseAuthChanged,
@@ -650,8 +651,26 @@ function friendlyFirebaseError(error) {
     if (code === "auth/popup-blocked") {
         return [
             "El navegador bloqueo la ventana de Google.",
-            "Permite ventanas emergentes para este sitio o vuelve a intentar; el sistema usara redireccion si el popup no se puede abrir."
+            "Vuelve a intentar: el inicio de sesion usa redireccion para evitar ventanas emergentes."
         ].join(" ");
+    }
+
+    if (code === "auth/web-storage-unsupported") {
+        return [
+            "El navegador bloqueo el almacenamiento que Firebase necesita para iniciar sesion.",
+            "Habilita cookies y datos del sitio para TurnoPlus y Google, o prueba en una ventana normal sin modo privado."
+        ].join(" ");
+    }
+
+    if (code === "auth/operation-not-supported-in-this-environment") {
+        return [
+            "Este navegador o visor embebido no permite completar el login de Google.",
+            "Abre TurnoPlus directamente en Chrome, Edge o Safari actualizado."
+        ].join(" ");
+    }
+
+    if (code === "auth/redirect-cancelled-by-user") {
+        return "El inicio de sesion con Google fue cancelado antes de completarse.";
     }
 
     if (
@@ -1654,6 +1673,13 @@ export async function initFirebaseShell(initOptions = {}) {
     }
 
     try {
+        try {
+            await completeGoogleRedirectSignIn();
+        } catch (error) {
+            console.warn("No se pudo completar el retorno de Google.", error);
+            alert(friendlyFirebaseError(error));
+        }
+
         await onFirebaseAuthChanged(async user => {
             currentUser = user;
             let workspaceChangeHandled = false;
