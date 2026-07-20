@@ -19,12 +19,17 @@ import {
     listSupervisorInvitations,
     rejectSupervisorInvitation,
     revokeSupervisorInvitation,
+    sendSupervisorInvitationEmail,
     setActiveWorkspace,
     fetchWorkspaceDeletionInfo,
     requestWorkspaceDeletion,
     cancelWorkspaceDeletion,
     WORKSPACE_DELETION_GRACE_HOURS
 } from "./workspaces.js";
+import {
+    isValidEmailFormat,
+    normalizeEmailKey
+} from "./emailUtils.js";
 import { replaceLocalSnapshot } from "./persistence.js";
 import {
     MENU_PERMISSION_DEFS,
@@ -613,11 +618,26 @@ function workspaceListHTML() {
                         <button class="secondary-button" type="button" data-action="copy-workspace-invite" data-workspace-ref="${escapeHTML(workspace.id)}">
                             Copiar invitación segura
                         </button>
-                        <button class="primary-button" type="button" data-action="email-workspace-invite" data-workspace-ref="${escapeHTML(workspace.id)}">
-                            Enviar invitación
-                        </button>
                     ` : ""}
                 </div>
+
+                ${isOwner ? `
+                    <div class="firebase-workspace-email">
+                        <label class="firebase-workspace-email-field">
+                            <span>Correo para invitación</span>
+                            <input
+                                type="email"
+                                inputmode="email"
+                                autocomplete="email"
+                                data-workspace-invite-email
+                                placeholder="supervisor@correo.cl"
+                            >
+                        </label>
+                        <button class="primary-button" type="button" data-action="send-workspace-invite-email" data-workspace-ref="${escapeHTML(workspace.id)}">
+                            Enviar invitación
+                        </button>
+                    </div>
+                ` : ""}
 
                 ${workspaceDeletionBlockHTML(workspace)}
             </article>
@@ -1316,41 +1336,47 @@ async function handleAction(action, backdrop, sourceButton = null) {
             return;
         }
 
-        if (action === "email-workspace-invite") {
+        if (action === "send-workspace-invite-email") {
             const workspace = workspaceById(
                 sourceButton?.dataset.workspaceRef
             );
 
             if (!workspace) return;
 
+            const emailInput = sourceButton
+                ?.closest(".firebase-workspace-item")
+                ?.querySelector("[data-workspace-invite-email]");
+            const email = normalizeEmailKey(emailInput?.value);
+
+            if (!email) {
+                emailInput?.focus();
+                throw new Error("Ingresa el correo al que quieres enviar la invitación.");
+            }
+
+            if (!isValidEmailFormat(email)) {
+                emailInput?.focus();
+                throw new Error("El correo debe tener el formato nombre@dominio.cl.");
+            }
+
             const permissions =
                 await showSupervisorInvitePermissionsDialog({
                     title: "Nueva invitación segura",
                     message:
                         "Selecciona los permisos que tendrá el supervisor si apruebas su solicitud.",
-                    confirmText: "Crear invitación"
+                    confirmText: "Enviar invitación"
                 });
 
             if (!permissions) return;
 
-            const invitationWorkspace =
-                await createSupervisorInvitation(
-                    currentUser,
-                    workspace,
-                    permissions
-                );
-
-            const subject = encodeURIComponent(
-                `Invitación a TurnoPlus - ${workspace.name || workspace.id}`
-            );
-            const body = encodeURIComponent(
-                workspaceInvitationText(invitationWorkspace)
+            await sendSupervisorInvitationEmail(
+                currentUser,
+                workspace,
+                email,
+                permissions
             );
 
-            window.location.href =
-                `mailto:?subject=${subject}&body=${body}`;
             supervisorInviteState.message =
-                "Invitación segura creada. Completa el correo para enviarla.";
+                `Invitación enviada a ${email}.`;
             await refreshWorkspaces();
             renderSignedInModal(backdrop);
             return;

@@ -5527,13 +5527,54 @@ body.auth-gate-active .app-shell {
 
 .firebase-workspace-actions {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 8px;
 }
 
 .firebase-workspace-actions button {
     min-height: 38px;
     padding: 0 10px;
+    font-size: 0.9rem;
+}
+
+.firebase-workspace-email {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(150px, 0.38fr);
+    gap: 8px;
+    align-items: end;
+}
+
+.firebase-workspace-email-field {
+    display: grid;
+    gap: 6px;
+}
+
+.firebase-workspace-email-field span {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 800;
+}
+
+.firebase-workspace-email-field input {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--text-strong);
+    font: inherit;
+}
+
+.firebase-workspace-email-field input:focus {
+    outline: none;
+    border-color: rgba(var(--brand-blue-rgb), 0.58);
+    box-shadow: 0 0 0 3px rgba(var(--brand-blue-rgb), 0.12);
+}
+
+.firebase-workspace-email button {
+    min-height: 42px;
+    padding: 0 12px;
     font-size: 0.9rem;
 }
 
@@ -6943,6 +6984,7 @@ body.theme-dark .overtime-backup-subsection {
     .settings-staffing-row,
     .firebase-dialog-grid,
     .firebase-linked-request,
+    .firebase-workspace-email,
     .firebase-workspace-actions,
     .settings-actions {
         grid-template-columns: 1fr;

@@ -80,6 +80,9 @@ const db = admin.firestore();
 const WORKER_APP_BASE_URL = process.env.GCLOUD_PROJECT === "turnoplus-test-7c4d9"
   ? "https://turnoplusfunc-test.web.app/"
   : "https://turnoplusfuncionarios.web.app/";
+const PROTURNOS_APP_BASE_URL = process.env.GCLOUD_PROJECT === "turnoplus-test-7c4d9"
+  ? "https://turnoplus-test-7c4d9.web.app/"
+  : "https://calendarioturnos-7c4d9.web.app/";
 const DEFAULT_MAIL_FROM = "TurnoPlus <onboarding@resend.dev>";
 const APP_URL = `${WORKER_APP_BASE_URL}?screen=solicitudes`;
 const SWAPS_APP_URL = `${WORKER_APP_BASE_URL}?screen=cambios`;
@@ -318,6 +321,15 @@ function workerInviteUrl(workspaceId, token, email) {
   return url.toString();
 }
 
+function supervisorInviteUrl(workspaceId, token) {
+  const url = new URL(PROTURNOS_APP_BASE_URL);
+
+  url.searchParams.set("joinWorkspace", workspaceId);
+  url.searchParams.set("supervisorInvite", token);
+
+  return url.toString();
+}
+
 async function reserveInviteEmailSend(senderUid, email) {
   const now = Date.now();
   const hourMs = 60 * 60 * 1000;
@@ -506,6 +518,65 @@ exports.sendWorkerAppInviteEmail = onDocumentCreated(
   }
 );
 
+async function createSupervisorInviteDocument({
+  workspaceId,
+  uid,
+  authToken = {},
+  permissions,
+  extraData = {},
+  ownerChecked = false
+}) {
+  if (!ownerChecked) {
+    await requireWorkspaceOwner(workspaceId, uid, authToken);
+  }
+
+  const workspaceRef = db.collection("workspaces").doc(workspaceId);
+  const workspaceSnap = await workspaceRef.get();
+
+  if (!workspaceSnap.exists) {
+    throw new HttpsError(
+      "not-found",
+      "La unidad no existe."
+    );
+  }
+
+  const token = createSupervisorInviteToken();
+  const inviteId = supervisorInviteIdFromToken(token);
+  const now = admin.firestore.Timestamp.now();
+  const expiresAt = admin.firestore.Timestamp.fromMillis(
+    Date.now() + SUPERVISOR_INVITE_TTL_MS
+  );
+  const workspace = workspaceSnap.data() || {};
+  const workspaceName = cleanCallableText(workspace.name, 160);
+
+  await workspaceRef
+    .collection("supervisorInvites")
+    .doc(inviteId)
+    .set({
+      workspaceId,
+      workspaceName,
+      tokenHash: inviteId,
+      status: "open",
+      permissions,
+      createdAt: now,
+      createdByUid: uid,
+      createdByEmail: cleanCallableText(authToken.email, 254),
+      createdByName: cleanCallableText(authToken.name, 160),
+      expiresAt,
+      updatedAt: now,
+      ...extraData
+    });
+
+  return {
+    inviteId,
+    token,
+    workspaceId,
+    workspaceName,
+    expiresAt: expiresAt.toMillis(),
+    permissions
+  };
+}
+
 exports.createSupervisorInvite = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,
@@ -539,50 +610,159 @@ exports.createSupervisorInvite = onCall(
       );
     }
 
-    await requireWorkspaceOwner(workspaceId, uid, request.auth.token || {});
+    return createSupervisorInviteDocument({
+      workspaceId,
+      uid,
+      authToken: request.auth.token || {},
+      permissions
+    });
+  }
+);
 
-    const workspaceRef = db.collection("workspaces").doc(workspaceId);
-    const workspaceSnap = await workspaceRef.get();
+exports.sendSupervisorInviteEmail = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30,
+    secrets: [RESEND_API_KEY]
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
 
-    if (!workspaceSnap.exists) {
+    if (!uid) {
       throw new HttpsError(
-        "not-found",
-        "La unidad no existe."
+        "unauthenticated",
+        "Debes iniciar sesion para enviar una invitacion."
       );
     }
 
-    const token = createSupervisorInviteToken();
-    const inviteId = supervisorInviteIdFromToken(token);
-    const now = admin.firestore.Timestamp.now();
-    const expiresAt = admin.firestore.Timestamp.fromMillis(
-      Date.now() + SUPERVISOR_INVITE_TTL_MS
-    );
-    const workspace = workspaceSnap.data() || {};
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const email = normalizeEmail(request.data?.email);
+    const permissions =
+      normalizeSupervisorPermissions(request.data?.permissions || {});
 
-    await workspaceRef
+    if (!workspaceId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la unidad."
+      );
+    }
+
+    if (!isValidEmail(email)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Ingresa un correo valido para enviar la invitacion."
+      );
+    }
+
+    if (!hasAnyPermission(permissions)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "La invitacion debe incluir al menos un permiso visible."
+      );
+    }
+
+    await requireWorkspaceOwner(workspaceId, uid, request.auth.token || {});
+
+    if (!await reserveInviteEmailSend(uid, email)) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Se alcanzo el limite de envios. Espera un minuto antes de enviar otra invitacion a este correo."
+      );
+    }
+
+    const invite = await createSupervisorInviteDocument({
+      workspaceId,
+      uid,
+      authToken: request.auth.token || {},
+      permissions,
+      extraData: {
+        deliveryEmail: email,
+        emailStatus: "pending"
+      },
+      ownerChecked: true
+    });
+    const inviteRef = db
+      .collection("workspaces")
+      .doc(workspaceId)
       .collection("supervisorInvites")
-      .doc(inviteId)
-      .set({
-        workspaceId,
-        workspaceName: cleanCallableText(workspace.name, 160),
-        tokenHash: inviteId,
-        status: "open",
-        permissions,
-        createdAt: now,
-        createdByUid: uid,
-        createdByEmail: cleanCallableText(request.auth.token?.email, 254),
-        createdByName: cleanCallableText(request.auth.token?.name, 160),
-        expiresAt,
-        updatedAt: now
+      .doc(invite.inviteId);
+    const inviteUrl = supervisorInviteUrl(workspaceId, invite.token);
+    const { html, text } = buildSupervisorInviteEmail({
+      workspaceName: invite.workspaceName || "TurnoPlus",
+      inviteUrl,
+      expiresAtMs: invite.expiresAt,
+      senderName:
+        cleanCallableText(
+          request.auth.token?.name || request.auth.token?.email,
+          160
+        )
+    });
+
+    let sent;
+
+    try {
+      sent = await sendResendEmail({
+        to: email,
+        subject: `Invitacion a TurnoPlus - ${invite.workspaceName || workspaceId}`,
+        html,
+        text
       });
+    } catch (error) {
+      logger.error("No se pudo enviar correo de invitacion de supervisor.", {
+        recipient: maskedEmail(email),
+        message: error.message
+      });
+      await inviteRef.set(
+        {
+          emailStatus: "error",
+          emailError: String(error.message || error).slice(0, 500),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+      throw new HttpsError(
+        "unavailable",
+        "No se pudo enviar el correo. Intenta nuevamente."
+      );
+    }
+
+    if (!sent?.ok) {
+      await inviteRef.set(
+        {
+          emailStatus: sent?.skipped ? "skipped_no_api_key" : "error",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+      throw new HttpsError(
+        "failed-precondition",
+        "El servicio de correo no esta configurado."
+      );
+    }
+
+    await inviteRef.set(
+      {
+        emailStatus: "sent",
+        emailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        emailProviderId: sent.id || "",
+        emailError: "",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    logger.info("Correo de invitacion de supervisor enviado.", {
+      recipient: maskedEmail(email),
+      inviteId: invite.inviteId,
+      id: sent.id || ""
+    });
 
     return {
-      inviteId,
-      token,
+      ok: true,
+      inviteId: invite.inviteId,
       workspaceId,
-      workspaceName: cleanCallableText(workspace.name, 160),
-      expiresAt: expiresAt.toMillis(),
-      permissions
+      workspaceName: invite.workspaceName,
+      email
     };
   }
 );
@@ -2906,6 +3086,60 @@ function buildInviteEmail({ workerName, unit, ctaUrl, installUrl, isGoogleEmail 
         <strong>Instalala como app en tu celular</strong><br>
         Abre <a href="${safeInstall}">${safeInstall}</a> en tu navegador y elige <strong>"Agregar a pantalla de inicio"</strong> o <strong>"Instalar app"</strong>. Asi la tendras como una app normal, sin pasar por una tienda.
       </div>
+      <hr style="border: none; border-top: 1px solid #e4e7eb; margin: 24px 0;">
+      <p style="font-size: 12px; color: #9aa5b1;">Si no esperabas esta invitacion, puedes ignorar este correo.</p>
+    </div>
+  `;
+
+  return { html, text };
+}
+
+function buildSupervisorInviteEmail({
+  workspaceName,
+  inviteUrl,
+  expiresAtMs,
+  senderName
+}) {
+  const unit = String(workspaceName || "TurnoPlus").trim();
+  const sender = String(senderName || "un propietario").trim();
+  const expiresAt = expiresAtMs ? new Date(expiresAtMs) : null;
+  const expiresText =
+    expiresAt && !Number.isNaN(expiresAt.getTime())
+      ? expiresAt.toLocaleString("es-CL", {
+          timeZone: "America/Santiago",
+          dateStyle: "medium",
+          timeStyle: "short"
+        })
+      : "";
+  const safeUnit = escapeHtml(unit);
+  const safeSender = escapeHtml(sender);
+  const safeInviteUrl = escapeHtml(inviteUrl);
+  const safeExpiresText = escapeHtml(expiresText);
+
+  const text = [
+    "Hola.",
+    `${sender} te invito a solicitar acceso como supervisor a la unidad "${unit}" en TurnoPlus.`,
+    `Abre este enlace seguro: ${inviteUrl}`,
+    "Inicia sesion con Google. La invitacion es de un solo uso y el propietario debe aprobar tu solicitud antes de que puedas entrar.",
+    expiresText ? `Vence el ${expiresText}.` : "",
+    "Si no esperabas esta invitacion, puedes ignorar este correo."
+  ].filter(Boolean).join("\n\n");
+
+  const html = `
+    <div style="font-family: Arial, Helvetica, sans-serif; color: #1f2933; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px;">TurnoPlus</h2>
+      <p>Hola,</p>
+      <p><strong>${safeSender}</strong> te invito a solicitar acceso como supervisor a la unidad <strong>${safeUnit}</strong>.</p>
+      <p>El enlace es de un solo uso. Despues de abrirlo e iniciar sesion con Google, el propietario debera aprobar tu solicitud.</p>
+      <p style="margin: 24px 0;">
+        <a href="${safeInviteUrl}" style="background: #15559a; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 10px; font-weight: bold; display: inline-block;">Abrir invitacion</a>
+      </p>
+      <p style="font-size: 14px; color: #52606d;">Si el boton no funciona, copia y pega este enlace en tu navegador:<br>
+        <a href="${safeInviteUrl}">${safeInviteUrl}</a>
+      </p>
+      ${safeExpiresText ? `
+        <p style="font-size: 14px; color: #52606d;">Vence el ${safeExpiresText}.</p>
+      ` : ""}
       <hr style="border: none; border-top: 1px solid #e4e7eb; margin: 24px 0;">
       <p style="font-size: 12px; color: #9aa5b1;">Si no esperabas esta invitacion, puedes ignorar este correo.</p>
     </div>

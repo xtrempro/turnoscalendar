@@ -298,6 +298,43 @@ export async function createSupervisorInvitation(
     };
 }
 
+export async function sendSupervisorInvitationEmail(
+    user,
+    workspace,
+    email,
+    permissions
+) {
+    const cleanId = String(workspace?.id || "").trim();
+    const cleanEmail = String(email || "").trim();
+
+    if (!user) {
+        throw new Error("Debes iniciar sesion para enviar una invitacion.");
+    }
+
+    if (!cleanId) {
+        throw new Error("No se pudo identificar la unidad.");
+    }
+
+    if (!cleanEmail) {
+        throw new Error("Debes ingresar el correo de destino.");
+    }
+
+    const invite = await callWorkspaceFunction("sendSupervisorInviteEmail", {
+        workspaceId: cleanId,
+        email: cleanEmail,
+        permissions
+    });
+
+    return {
+        ...workspace,
+        id: cleanId,
+        name: invite.workspaceName || workspaceLabel(workspace),
+        supervisorInviteId: invite.inviteId || "",
+        deliveryEmail: invite.email || cleanEmail,
+        permissions: invite.permissions || permissions || {}
+    };
+}
+
 export async function claimSupervisorInvitation(
     user,
     workspaceInput,
