@@ -86,7 +86,10 @@ test("las unidades enlazadas solo se consultan desde la accion explicita", async
         /httpsCallable\([\s\S]*"findCompatibleReplacementInLinkedUnits"/
     );
     assert.doesNotMatch(service, /addEventListener|onSnapshot|listAcceptedLinkedWorkspaces/);
-    assert.doesNotMatch(workerRequests, /onSnapshot/);
+    assert.doesNotMatch(
+        workerRequests,
+        /(?:onSnapshot[\s\S]{0,160}workspaceLinks|workspaceLinks[\s\S]{0,160}onSnapshot)/
+    );
     assert.doesNotMatch(
         firebaseShell,
         /await refreshWorkspaces\(\);\s*await refreshLinkedUnits\(\);\s*if \(hasValidActiveWorkspace/

@@ -29,6 +29,10 @@ import {
     normalizeMenuPermissions
 } from "./workspacePermissions.js";
 import {
+    defaultSupervisorInvitePermissions,
+    formatInviteDate
+} from "./supervisorInvitesUI.js";
+import {
     acceptWorkspaceLink,
     listWorkspaceLinks,
     rejectWorkspaceLink,
@@ -332,35 +336,6 @@ function renderDisabledModal() {
 
     backdrop.querySelectorAll("[data-action]").forEach(button => {
         button.onclick = () => closeModal(backdrop);
-    });
-}
-
-function defaultSupervisorInvitePermissions() {
-    return MENU_PERMISSION_DEFS.reduce((permissions, menu) => {
-        permissions[menu.key] = {
-            view: true,
-            edit: false
-        };
-        return permissions;
-    }, {});
-}
-
-function timestampToMillis(value) {
-    if (!value) return 0;
-    if (typeof value === "number") return value;
-    if (value.toMillis) return value.toMillis();
-    if (value.seconds) return value.seconds * 1000;
-
-    return 0;
-}
-
-function formatInviteDate(value) {
-    const ms = timestampToMillis(value);
-    if (!ms) return "";
-
-    return new Date(ms).toLocaleString("es-CL", {
-        dateStyle: "medium",
-        timeStyle: "short"
     });
 }
 

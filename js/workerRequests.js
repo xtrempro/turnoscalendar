@@ -16,6 +16,18 @@ import {
     listWorkspaceLinks,
     rejectWorkspaceLink
 } from "./firebaseLinkedUnits.js";
+import {
+    approveSupervisorInvitation,
+    getActiveWorkspace,
+    listSupervisorInvitations,
+    rejectSupervisorInvitation
+} from "./workspaces.js";
+import { isWorkspaceOwner } from "./workspacePermissions.js";
+import {
+    formatInviteDate,
+    showSupervisorInvitePermissionsDialog,
+    supervisorInviteActor
+} from "./supervisorInvitesUI.js";
 import { fetchHolidays } from "./holidays.js";
 import {
     getCurrentProfile,
@@ -47,7 +59,6 @@ import {
     getSwapTurnState,
     registrarCambio
 } from "./swaps.js";
-import { getActiveWorkspace } from "./workspaces.js";
 import {
     getWorkerAppLinkForProfile,
     notifyWorkerApp
@@ -69,6 +80,7 @@ const REQUEST_TYPE_LABELS = {
     hhee_return: "Devolución de Horas",
     report_request: "Informe mensual",
     workspace_link: "Enlace de Unidad",
+    supervisor_invite: "Acceso Supervisor",
     unknown: "Solicitud"
 };
 
@@ -107,6 +119,9 @@ const STATUS_LABELS = {
 
 let selectedStatus = "pending";
 let selectedMonth = monthValue();
+let unsubscribeSupervisorInviteRequests = null;
+let activeSupervisorInviteWorkspaceId = "";
+let supervisorInviteListenerVersion = 0;
 
 // El traspaso de HH.EE a devolucion vive en main.js (depende de helpers de
 // saldo y estadisticas que estan alli). main.js registra aqui el manejador para
@@ -202,6 +217,10 @@ function statusLabel(status) {
 }
 
 function displayStatusLabel(request) {
+    if (isSupervisorInviteRequest(request)) {
+        return request.statusLabel || statusLabel(request.status);
+    }
+
     if (isReplacementRequest(request) && request.status === "pending") {
         return "Enviada";
     }
@@ -231,8 +250,21 @@ function isWorkspaceLinkRequest(request = {}) {
     return request.kind === "workspace_link";
 }
 
+function isSupervisorInviteRequest(request = {}) {
+    return request.kind === "supervisor_invite";
+}
+
 function isReplacementRequest(request = {}) {
     return request.kind === "replacement_request";
+}
+
+function supervisorInvitePanelStatus(status) {
+    if (status === "claimed") return "pending";
+    if (status === "approved") return "accepted";
+    if (status === "rejected") return "rejected";
+    if (status === "revoked") return "canceled";
+    if (status === "expired") return "expired";
+    return "";
 }
 
 const CALENDAR_REVIEW_REQUEST_TYPES = new Set([
@@ -975,6 +1007,20 @@ function saveUpdatedRequest(requestId, patch) {
 function requestDetailsHTML(request) {
     const pieces = [];
 
+    if (isSupervisorInviteRequest(request)) {
+        pieces.push(`Solicitante: ${request.profile || "Supervisor"}`);
+
+        if (request.claimedByEmail) {
+            pieces.push(`Correo: ${request.claimedByEmail}`);
+        }
+
+        if (request.expiresAt && request.status === "pending") {
+            pieces.push(`Vence: ${formatInviteDate(request.expiresAt)}`);
+        }
+
+        return pieces.join(" | ");
+    }
+
     if (isWorkspaceLinkRequest(request)) {
         pieces.push(`Unidad solicitante: ${request.fromWorkspaceName || "Sin nombre"}`);
 
@@ -1086,10 +1132,15 @@ function requestCardHTML(request) {
         !isReplacementRequest(request);
     const title = isWorkspaceLinkRequest(request)
         ? request.fromWorkspaceName || "Unidad solicitante"
-        : isReplacementRequest(request)
-            ? request.worker || "Trabajador"
-            : request.profile || "Sin trabajador";
+        : isSupervisorInviteRequest(request)
+            ? request.profile || "Supervisor"
+            : isReplacementRequest(request)
+                ? request.worker || "Trabajador"
+                : request.profile || "Sin trabajador";
     const statusText = displayStatusLabel(request);
+    const acceptLabel = isSupervisorInviteRequest(request)
+        ? "Aprobar"
+        : "Aceptar";
 
     return `
         <article class="worker-request-card worker-request-card--${escapeHTML(request.status)}">
@@ -1120,7 +1171,7 @@ function requestCardHTML(request) {
                 ? `
                     <div class="worker-request-actions">
                         <button class="primary-button secondary-button--small" type="button" data-worker-request-action="accept" data-request-id="${escapeHTML(request.id)}">
-                            Aceptar
+                            ${escapeHTML(acceptLabel)}
                         </button>
                         <button class="secondary-button secondary-button--small" type="button" data-worker-request-action="reject" data-request-id="${escapeHTML(request.id)}">
                             Rechazar
@@ -1176,7 +1227,10 @@ export async function refreshWorkerRequestsNavBadge() {
     const workerRequests = getWorkerRequests();
     const replacementRequests = getReplacementRequests()
         .map(replacementRequestToPanelRequest);
+    const supervisorInviteRequests =
+        await getSupervisorInviteRequests();
     const pending = [
+        ...supervisorInviteRequests,
         ...workerRequests,
         ...replacementRequests
     ].filter(request => request.status === "pending");
@@ -1234,6 +1288,165 @@ async function getWorkspaceLinkRequests() {
             error
         );
         return [];
+    }
+}
+
+function supervisorInviteRequestStatusLabel(status) {
+    if (status === "claimed") return "Pendiente de aprobacion";
+    if (status === "approved") return "Aprobada";
+    if (status === "rejected") return "Rechazada";
+    if (status === "revoked") return "Revocada";
+    if (status === "expired") return "Vencida";
+    return statusLabel(supervisorInvitePanelStatus(status));
+}
+
+function supervisorInviteToPanelRequest(invite, workspace) {
+    const panelStatus = supervisorInvitePanelStatus(invite.status);
+
+    if (!panelStatus) return null;
+
+    const actor = supervisorInviteActor(invite);
+
+    return {
+        kind: "supervisor_invite",
+        id: `supervisor_invite:${invite.id}`,
+        inviteId: invite.id,
+        workspaceId: workspace.id,
+        type: "supervisor_invite",
+        status: panelStatus,
+        statusLabel: supervisorInviteRequestStatusLabel(invite.status),
+        sourceStatus: invite.status || "",
+        profile: actor,
+        claimedByEmail: invite.claimedByEmail || "",
+        permissions: invite.permissions || invite.finalPermissions || {},
+        note:
+            invite.status === "claimed"
+                ? "Solicita acceso como supervisor a esta unidad."
+                : "",
+        rejectReason: invite.rejectReason || "",
+        expiresAt: invite.expiresAt || "",
+        createdAt: timestampISO(
+            invite.claimedAt ||
+            invite.updatedAt ||
+            invite.createdAt ||
+            new Date()
+        )
+    };
+}
+
+async function getSupervisorInviteRequests() {
+    const activeWorkspace = getActiveWorkspace();
+
+    if (
+        !isFirebaseConfigured() ||
+        !getCurrentFirebaseUser() ||
+        !activeWorkspace?.id ||
+        (
+            activeWorkspace.role &&
+            activeWorkspace.role !== "owner"
+        ) ||
+        !isWorkspaceOwner()
+    ) {
+        return [];
+    }
+
+    try {
+        const invites =
+            await listSupervisorInvitations(activeWorkspace.id);
+
+        return invites
+            .map(invite =>
+                supervisorInviteToPanelRequest(invite, activeWorkspace)
+            )
+            .filter(Boolean);
+    } catch (error) {
+        console.warn(
+            "No se pudieron cargar solicitudes de supervisor.",
+            error
+        );
+        return [];
+    }
+}
+
+export function stopSupervisorInviteRequestsListener() {
+    supervisorInviteListenerVersion += 1;
+
+    if (unsubscribeSupervisorInviteRequests) {
+        unsubscribeSupervisorInviteRequests();
+        unsubscribeSupervisorInviteRequests = null;
+    }
+
+    activeSupervisorInviteWorkspaceId = "";
+}
+
+export async function startSupervisorInviteRequestsListener(
+    workspace = getActiveWorkspace()
+) {
+    const workspaceId = workspace?.id || "";
+
+    if (
+        !workspaceId ||
+        !isFirebaseConfigured() ||
+        !getCurrentFirebaseUser() ||
+        (
+            workspace.role &&
+            workspace.role !== "owner"
+        ) ||
+        !isWorkspaceOwner()
+    ) {
+        stopSupervisorInviteRequestsListener();
+        return;
+    }
+
+    if (
+        activeSupervisorInviteWorkspaceId === workspaceId &&
+        unsubscribeSupervisorInviteRequests
+    ) {
+        return;
+    }
+
+    stopSupervisorInviteRequestsListener();
+    activeSupervisorInviteWorkspaceId = workspaceId;
+    supervisorInviteListenerVersion += 1;
+
+    const listenerVersion = supervisorInviteListenerVersion;
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+        const collectionRef = firestoreModule.collection(
+            db,
+            "workspaces",
+            workspaceId,
+            "supervisorInvites"
+        );
+
+        if (
+            listenerVersion !== supervisorInviteListenerVersion ||
+            activeSupervisorInviteWorkspaceId !== workspaceId
+        ) {
+            return;
+        }
+
+        unsubscribeSupervisorInviteRequests = firestoreModule.onSnapshot(
+            collectionRef,
+            () => {
+                window.dispatchEvent(
+                    new CustomEvent("proturnos:workerRequestsChanged")
+                );
+            },
+            error => {
+                console.warn(
+                    "No se pudo sincronizar solicitudes de supervisor.",
+                    error
+                );
+            }
+        );
+    } catch (error) {
+        console.warn(
+            "No se pudo iniciar sincronizacion de solicitudes de supervisor.",
+            error
+        );
+        stopSupervisorInviteRequestsListener();
     }
 }
 
@@ -1415,6 +1628,63 @@ async function rejectWorkspaceLinkRequest(request) {
     );
 }
 
+async function approveSupervisorInviteRequest(request) {
+    const permissions =
+        await showSupervisorInvitePermissionsDialog({
+            title: "Aprobar supervisor",
+            message:
+                `Revisa los permisos para ${request.profile || "este supervisor"} antes de aprobar el acceso.`,
+            confirmText: "Aprobar",
+            permissions: request.permissions || {}
+        });
+
+    if (!permissions) return false;
+
+    await approveSupervisorInvitation(
+        request.workspaceId,
+        request.inviteId,
+        permissions
+    );
+
+    addAuditLog(
+        AUDIT_CATEGORY.WORKER_REQUESTS,
+        "Aprobo solicitud de supervisor",
+        `${request.profile}: acceso supervisor aprobado.`,
+        {
+            requestId: request.inviteId,
+            requestType: "supervisor_invite",
+            workspaceId: request.workspaceId
+        }
+    );
+
+    return true;
+}
+
+async function rejectSupervisorInviteRequest(request) {
+    const reason = await showRejectDialog(request);
+
+    if (!reason) return false;
+
+    await rejectSupervisorInvitation(
+        request.workspaceId,
+        request.inviteId,
+        reason
+    );
+
+    addAuditLog(
+        AUDIT_CATEGORY.WORKER_REQUESTS,
+        "Rechazo solicitud de supervisor",
+        `${request.profile}: acceso supervisor rechazado. Motivo: ${reason}.`,
+        {
+            requestId: request.inviteId,
+            requestType: "supervisor_invite",
+            workspaceId: request.workspaceId
+        }
+    );
+
+    return true;
+}
+
 export async function renderWorkerRequestsPanel() {
     const panel = document.getElementById("workerRequestsPanel");
 
@@ -1428,7 +1698,10 @@ export async function renderWorkerRequestsPanel() {
     const replacementRequests = getReplacementRequests()
         .map(replacementRequestToPanelRequest);
     const linkRequests = await getWorkspaceLinkRequests();
+    const supervisorInviteRequests =
+        await getSupervisorInviteRequests();
     const allRequests = [
+        ...supervisorInviteRequests,
         ...linkRequests,
         ...workerRequests,
         ...replacementRequests
@@ -1454,7 +1727,7 @@ export async function renderWorkerRequestsPanel() {
             <span class="section-head__title">
                 <h3>Solicitudes</h3>
                 <small>
-                    Revisa y gestiona solicitudes de trabajadores y enlaces entre unidades.
+                    Revisa solicitudes de trabajadores, supervisores y enlaces entre unidades.
                 </small>
             </span>
             <div class="worker-request-head-actions">
@@ -1545,6 +1818,12 @@ export async function renderWorkerRequestsPanel() {
                     await acceptWorkspaceLinkRequest(request);
                 } else {
                     await rejectWorkspaceLinkRequest(request);
+                }
+            } else if (isSupervisorInviteRequest(request)) {
+                if (accepting) {
+                    await approveSupervisorInviteRequest(request);
+                } else {
+                    await rejectSupervisorInviteRequest(request);
                 }
             } else if (accepting) {
                 await acceptRequest(request);

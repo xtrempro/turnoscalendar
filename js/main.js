@@ -371,7 +371,9 @@ import {
 import {
     refreshWorkerRequestsNavBadge,
     renderWorkerRequestsPanel,
-    setHheeReturnRequestHandler
+    setHheeReturnRequestHandler,
+    startSupervisorInviteRequestsListener,
+    stopSupervisorInviteRequestsListener
 } from "./workerRequests.js";
 import {
     openWorkerAppInviteDialog,
@@ -10999,6 +11001,7 @@ initFirebaseShell({
             stopWorkerAvailabilitySync();
             stopInterUnitLoanSync();
             stopSupervisorMessages();
+            stopSupervisorInviteRequestsListener();
             stopWorkspacePermissionListener();
         }
 
@@ -11025,6 +11028,7 @@ initFirebaseShell({
                 syncWorkspacePermissionUI();
                 syncCalendarDirectEditToggle();
                 renderDashboardState();
+                void startSupervisorInviteRequestsListener(workspace);
 
                 if (workspaceRequiresMfa()) {
                     enforceWorkspaceMfa(workspace).catch(async error => {
@@ -11036,7 +11040,6 @@ initFirebaseShell({
                     });
                 }
             });
-
             try {
                 await enforceWorkspaceMfa(workspace);
             } catch (error) {
@@ -11170,6 +11173,7 @@ initFirebaseShell({
             stopInterUnitLoanSync();
             stopSupervisorMessages();
             stopFirebaseAppStateSync();
+            stopSupervisorInviteRequestsListener();
             stopWorkspacePermissionListener();
             await loadWorkspacePermissions(workspace);
             syncWorkspacePermissionUI();
