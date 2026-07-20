@@ -2391,9 +2391,23 @@ export async function buildWorkerHheeMonthSummary(
     // Detalle por turno para la PWA (seccion "Detalle de turnos"). Reemplazo
     // muestra TODOS sus turnos; el resto, solo los turnos extra (los que se
     // suman sobre la rotativa base, incluidas extensiones horarias).
-    const detailKind = isReplacementReportProfile(profile.name)
+    //
+    // Excepcion: sin asignacion de turno y con rotativa de 3er/4to turno no hay
+    // una base contra la cual medir "lo extra": todo lo que trabaja cuenta. Para
+    // esos casos el detalle lista TODOS los turnos del mes (kind "all", que
+    // ademas reporta las horas realmente trabajadas y no solo el excedente).
+    const isReplacement = isReplacementReportProfile(profile.name);
+    const rotativaType = String(getRotativa(profile.name)?.type || "")
+        .trim()
+        .toLowerCase();
+    const showsAllShifts = !isReplacement &&
+        !getShiftAssigned(profile.name, monthDate) &&
+        (rotativaType === "3turno" || rotativaType === "4turno");
+    const detailKind = isReplacement
         ? "replacement"
-        : "extra-only";
+        : showsAllShifts
+            ? "all"
+            : "extra-only";
     const extraShifts = buildDayRows(profile, year, month, days, holidays, detailKind)
         .map(row => ({
             iso: row.iso,
@@ -2409,6 +2423,9 @@ export async function buildWorkerHheeMonthSummary(
         year,
         month,
         extraShifts,
+        // Que representa extraShifts, para que la PWA titule la seccion sin
+        // tener que reconstruir esta regla: "all" = todos los turnos del mes.
+        detailScope: showsAllShifts ? "all" : "extra",
         rawDiurnas: num(model.rawDiurnas),
         rawNocturnas: num(model.rawNocturnas),
         carryInD: num(model.carryIn?.d),
