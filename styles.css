@@ -6987,12 +6987,12 @@ body.theme-dark .overtime-backup-subsection {
    de texto se calcula por contraste. Los turnos extra (replacement-day) usan
    su propia variable para poder distinguirse del turno base. */
 .green {
-    background: var(--turno-color-1, #22c55e) !important;
+    background: var(--turno-color-1, #0089c5) !important;
     color: var(--turno-text-1, #ffffff) !important;
 }
 
 .blue {
-    background: var(--turno-color-2, #1d6cff) !important;
+    background: var(--turno-color-2, #10498b) !important;
     color: var(--turno-text-2, #ffffff) !important;
 }
 
@@ -7027,12 +7027,12 @@ body.theme-dark .overtime-backup-subsection {
 }
 
 .day.replacement-day.green {
-    background: var(--turno-color-1-extra, #22c55e) !important;
+    background: var(--turno-color-1-extra, #0089c5) !important;
     color: var(--turno-text-1-extra, #ffffff) !important;
 }
 
 .day.replacement-day.blue {
-    background: var(--turno-color-2-extra, #1d6cff) !important;
+    background: var(--turno-color-2-extra, #10498b) !important;
     color: var(--turno-text-2-extra, #ffffff) !important;
 }
 
@@ -7077,8 +7077,8 @@ body.theme-dark .overtime-backup-subsection {
 .turno-split--24 {
     background: linear-gradient(
         to bottom,
-        var(--turno-color-1, #22c55e) 0 50%,
-        var(--turno-color-2, #1d6cff) 50% 100%
+        var(--turno-color-1, #0089c5) 0 50%,
+        var(--turno-color-2, #10498b) 50% 100%
     ) !important;
 }
 
@@ -7086,7 +7086,7 @@ body.theme-dark .overtime-backup-subsection {
     background: linear-gradient(
         to bottom,
         var(--turno-color-4, #0b8853) 0 50%,
-        var(--turno-color-2, #1d6cff) 50% 100%
+        var(--turno-color-2, #10498b) 50% 100%
     ) !important;
 }
 
@@ -7094,15 +7094,15 @@ body.theme-dark .overtime-backup-subsection {
     background: linear-gradient(
         to bottom,
         var(--color-extension, #f59e0b) 0 33.333%,
-        var(--turno-color-2, #1d6cff) 33.333% 100%
+        var(--turno-color-2, #10498b) 33.333% 100%
     ) !important;
 }
 
 .day.replacement-day.turno-split--24 {
     background: linear-gradient(
         to bottom,
-        var(--turno-color-1-extra, #22c55e) 0 50%,
-        var(--turno-color-2-extra, #1d6cff) 50% 100%
+        var(--turno-color-1-extra, #0089c5) 0 50%,
+        var(--turno-color-2-extra, #10498b) 50% 100%
     ) !important;
 }
 
@@ -7110,7 +7110,7 @@ body.theme-dark .overtime-backup-subsection {
     background: linear-gradient(
         to bottom,
         var(--turno-color-4-extra, #0b8853) 0 50%,
-        var(--turno-color-2-extra, #1d6cff) 50% 100%
+        var(--turno-color-2-extra, #10498b) 50% 100%
     ) !important;
 }
 
@@ -7118,7 +7118,7 @@ body.theme-dark .overtime-backup-subsection {
     background: linear-gradient(
         to bottom,
         var(--color-extension, #f59e0b) 0 33.333%,
-        var(--turno-color-2-extra, #1d6cff) 33.333% 100%
+        var(--turno-color-2-extra, #10498b) 33.333% 100%
     ) !important;
 }
 
@@ -7128,7 +7128,7 @@ body.theme-dark .overtime-backup-subsection {
     background: linear-gradient(
         to bottom,
         var(--color-admin, #f97316) 0 50%,
-        var(--turno-color-1, #22c55e) 50% 100%
+        var(--turno-color-1, #0089c5) 50% 100%
     ) !important;
 }
 
@@ -7143,7 +7143,7 @@ body.theme-dark .overtime-backup-subsection {
 .turno-split--adm-t-larga {
     background: linear-gradient(
         to bottom,
-        var(--turno-color-1, #22c55e) 0 50%,
+        var(--turno-color-1, #0089c5) 0 50%,
         var(--color-admin, #f97316) 50% 100%
     ) !important;
 }

@@ -51,8 +51,8 @@ export const TURNO_CLASS = {
 
 export const TURNO_COLOR = {
    0:"var(--timeline-empty)",
-   1:"#22c55e",
-   2:"#1d6cff",
+   1:"#0089c5",
+   2:"#10498b",
    3:"#8b2bd9",
    4:"#0b8853",
    5:"#f0b100",

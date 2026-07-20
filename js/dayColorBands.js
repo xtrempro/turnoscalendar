@@ -44,8 +44,8 @@ const INCIDENT_PCT = 15;
 
 // Codigo -> variable CSS base/extra + color de respaldo.
 const TURNO_VAR = {
-    L: { num: 1, fallback: "#22c55e" },
-    N: { num: 2, fallback: "#1d6cff" },
+    L: { num: 1, fallback: "#0089c5" },
+    N: { num: 2, fallback: "#10498b" },
     D: { num: 4, fallback: "#0b8853" }
 };
 

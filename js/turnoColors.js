@@ -15,6 +15,29 @@ export const DEFAULT_BRAND_COLOR = "#10498b";
 const OLD_LICENSE_DEFAULT = "#e64747";
 const LICENSE_MUTED_ORANGE = "#d97706";
 
+// Colores base de los turnos Larga y Noche (los mismos que usa la PWA del
+// trabajador). Son semanticos del calendario: no dependen del color de marca.
+const SHIFT_LARGA_BLUE = "#0089c5";
+const SHIFT_NOCHE_BLUE = "#10498b";
+
+// Defaults anteriores de Larga/Noche. Si una configuracion guardada todavia los
+// conserva, significa que nunca se personalizaron: se adoptan los nuevos colores
+// (mismo criterio que la migracion del color de Licencia Medica).
+const LEGACY_BASE_DEFAULTS = {
+    1: "#22c55e",
+    2: "#1d6cff"
+};
+
+function migrateLegacyBaseColor(code, value) {
+    const legacy = LEGACY_BASE_DEFAULTS[code];
+
+    if (!legacy || String(value).toLowerCase() !== legacy) {
+        return value;
+    }
+
+    return code === 1 ? SHIFT_LARGA_BLUE : SHIFT_NOCHE_BLUE;
+}
+
 // Codigos de turno con color configurable (se siguen seteando como variables).
 export const TURNO_COLOR_CODES = [1, 2, 3, 4, 5, 6, 7, 8];
 
@@ -75,8 +98,8 @@ export const TURNO_CODE_CLASS = {
 
 // Colores solidos por defecto (equivalentes a los actuales del timeline).
 const DEFAULT_BASE = {
-    1: "#22c55e",
-    2: "#1d6cff",
+    1: SHIFT_LARGA_BLUE,
+    2: SHIFT_NOCHE_BLUE,
     3: "#8b2bd9",
     4: "#0b8853",
     5: "#f0b100",
@@ -111,8 +134,14 @@ export function getTurnoColorConfig() {
     const extra = {};
 
     for (const code of TURNO_COLOR_CODES) {
-        base[code] = normalizeHex(saved?.base?.[code], DEFAULT_BASE[code]);
-        extra[code] = normalizeHex(saved?.extra?.[code], base[code]);
+        base[code] = migrateLegacyBaseColor(
+            code,
+            normalizeHex(saved?.base?.[code], DEFAULT_BASE[code])
+        );
+        extra[code] = migrateLegacyBaseColor(
+            code,
+            normalizeHex(saved?.extra?.[code], base[code])
+        );
     }
 
     const named = buildNamedColors(saved?.named);
