@@ -6,6 +6,7 @@ import {
 } from "./firebaseConfig.js";
 
 let servicesPromise = null;
+let initializedServices = null;
 let currentAuthUser = null;
 let mfaOperationPromise = null;
 
@@ -153,7 +154,7 @@ export async function getFirebaseServices() {
                 prompt: "select_account"
             });
 
-            return {
+            const services = {
                 app,
                 appCheck,
                 auth,
@@ -167,50 +168,98 @@ export async function getFirebaseServices() {
                 functionsModule,
                 storageModule
             };
+
+            initializedServices = services;
+
+            return services;
         });
     }
 
     return servicesPromise;
 }
 
-export async function signInWithGoogle() {
+function isPopupBlocked(error) {
+    return error?.code === "auth/popup-blocked";
+}
+
+async function resolveGoogleSignInMfa(services, error) {
+    const {
+        auth,
+        authModule
+    } = services;
+    const resolver =
+        authModule.getMultiFactorResolver(auth, error);
+    const hint = resolver.hints.find(item =>
+        item.factorId ===
+        authModule.TotpMultiFactorGenerator.FACTOR_ID
+    );
+
+    if (!hint) {
+        throw new Error(
+            "Tu cuenta exige un segundo factor no compatible. Contacta al propietario del sistema."
+        );
+    }
+
+    const code = await promptTotpCode({
+        title: "Verificacion en dos pasos",
+        message:
+            "Ingresa el codigo de seis digitos de tu aplicacion autenticadora.",
+        confirmText: "Verificar"
+    });
+    const assertion =
+        authModule.TotpMultiFactorGenerator
+            .assertionForSignIn(hint.uid, code);
+
+    return resolver.resolveSignIn(assertion);
+}
+
+async function signInWithGoogleRedirect(services = initializedServices) {
+    const resolvedServices = services || await getFirebaseServices();
     const {
         auth,
         authModule,
         googleProvider
-    } = await getFirebaseServices();
+    } = resolvedServices;
+
+    await authModule.signInWithRedirect(auth, googleProvider);
+
+    return {
+        redirected: true,
+        user: null
+    };
+}
+
+async function handleGoogleSignInError(services, error) {
+    if (isPopupBlocked(error)) {
+        return signInWithGoogleRedirect(services);
+    }
+
+    if (error?.code === "auth/multi-factor-auth-required") {
+        return resolveGoogleSignInMfa(services, error);
+    }
+
+    throw error;
+}
+
+export function signInWithGoogle() {
+    const services = initializedServices;
+
+    if (!services) {
+        return signInWithGoogleRedirect();
+    }
+
+    const {
+        auth,
+        authModule,
+        googleProvider
+    } = services;
 
     try {
-        return await authModule.signInWithPopup(auth, googleProvider);
+        return authModule
+            .signInWithPopup(auth, googleProvider)
+            .catch(error => handleGoogleSignInError(services, error));
     } catch (error) {
-        if (error?.code !== "auth/multi-factor-auth-required") {
-            throw error;
-        }
-
-        const resolver =
-            authModule.getMultiFactorResolver(auth, error);
-        const hint = resolver.hints.find(item =>
-            item.factorId ===
-            authModule.TotpMultiFactorGenerator.FACTOR_ID
-        );
-
-        if (!hint) {
-            throw new Error(
-                "Tu cuenta exige un segundo factor no compatible. Contacta al propietario del sistema."
-            );
-        }
-
-        const code = await promptTotpCode({
-            title: "Verificacion en dos pasos",
-            message:
-                "Ingresa el codigo de seis digitos de tu aplicacion autenticadora.",
-            confirmText: "Verificar"
-        });
-        const assertion =
-            authModule.TotpMultiFactorGenerator
-                .assertionForSignIn(hint.uid, code);
-
-        return resolver.resolveSignIn(assertion);
+        return handleGoogleSignInError(services, error);
     }
 }
 

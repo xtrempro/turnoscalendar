@@ -629,6 +629,13 @@ function friendlyFirebaseError(error) {
         ].join(" ");
     }
 
+    if (code === "auth/popup-blocked") {
+        return [
+            "El navegador bloqueo la ventana de Google.",
+            "Permite ventanas emergentes para este sitio o vuelve a intentar; el sistema usara redireccion si el popup no se puede abrir."
+        ].join(" ");
+    }
+
     if (
         code === "permission-denied" ||
         String(error?.message || "")
@@ -1067,6 +1074,8 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
         if (action === "sign-in") {
             const result = await signInWithGoogle();
+
+            if (result?.redirected) return;
 
             currentUser = result?.user || currentUser;
             if (currentUser) {
