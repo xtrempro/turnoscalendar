@@ -42,5 +42,7 @@ test("la callable de correo exige seguridad y envia por Resend", () => {
     assert.match(source, /sendResendEmail\(/);
     assert.match(functionsSource, /function supervisorInviteUrl/);
     assert.match(functionsSource, /const PROTURNOS_APP_BASE_URL/);
+    assert.match(functionsSource, /calendarioturnos-7c4d9\.firebaseapp\.com/);
+    assert.match(functionsSource, /turnoplus-test-7c4d9\.firebaseapp\.com/);
     assert.match(functionsSource, /function buildSupervisorInviteEmail/);
 });

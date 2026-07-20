@@ -1,6 +1,10 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { showConfirm, showPrompt } from "./dialogs.js";
 import {
+    FIREBASE_CONFIG,
+    FIREBASE_PUBLIC_APP_URL
+} from "./firebaseConfig.js";
+import {
     completeGoogleRedirectSignIn,
     getFirebaseServices,
     isFirebaseConfigured,
@@ -94,6 +98,7 @@ function workspaceText() {
 }
 
 function appShareURL() {
+    if (FIREBASE_PUBLIC_APP_URL) return FIREBASE_PUBLIC_APP_URL;
     if (typeof window === "undefined") return "";
 
     const url = new URL(window.location.href);
@@ -102,6 +107,32 @@ function appShareURL() {
     url.hash = "";
 
     return url.toString();
+}
+
+function redirectPendingInviteToAuthDomain() {
+    if (
+        typeof window === "undefined" ||
+        !pendingSupervisorInviteToken()
+    ) {
+        return false;
+    }
+
+    const authDomain = String(FIREBASE_CONFIG.authDomain || "").trim();
+
+    if (
+        !authDomain ||
+        window.location.hostname === authDomain ||
+        !["https:", "http:"].includes(window.location.protocol)
+    ) {
+        return false;
+    }
+
+    const targetURL = new URL(window.location.href);
+
+    targetURL.hostname = authDomain;
+    window.location.replace(targetURL.toString());
+
+    return true;
 }
 
 function workspaceInviteURL(workspace) {
@@ -1693,6 +1724,8 @@ export async function initFirebaseShell(initOptions = {}) {
     });
 
     if (!isFirebaseConfigured()) return;
+
+    if (redirectPendingInviteToAuthDomain()) return;
 
     if (loginGateEnabled) {
         setLoginGateActive(true);

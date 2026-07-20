@@ -81,8 +81,8 @@ const WORKER_APP_BASE_URL = process.env.GCLOUD_PROJECT === "turnoplus-test-7c4d9
   ? "https://turnoplusfunc-test.web.app/"
   : "https://turnoplusfuncionarios.web.app/";
 const PROTURNOS_APP_BASE_URL = process.env.GCLOUD_PROJECT === "turnoplus-test-7c4d9"
-  ? "https://turnoplus-test-7c4d9.web.app/"
-  : "https://calendarioturnos-7c4d9.web.app/";
+  ? "https://turnoplus-test-7c4d9.firebaseapp.com/"
+  : "https://calendarioturnos-7c4d9.firebaseapp.com/";
 const DEFAULT_MAIL_FROM = "TurnoPlus <onboarding@resend.dev>";
 const APP_URL = `${WORKER_APP_BASE_URL}?screen=solicitudes`;
 const SWAPS_APP_URL = `${WORKER_APP_BASE_URL}?screen=cambios`;

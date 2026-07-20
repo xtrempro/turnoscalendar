@@ -44,27 +44,27 @@ test("producci\u00f3n y Test usan proveedores App Check independientes", async (
     delete globalThis.location;
 });
 
-test("Auth usa el mismo dominio publico que abrio la app", async () => {
+test("Auth usa el dominio firebaseapp autorizado por Google", async () => {
     const productionWeb = await configForHost(
         "calendarioturnos-7c4d9.web.app",
-        "auth-domain=production-web"
+        "auth-domain=firebaseapp-production-web"
     );
     const productionFirebase = await configForHost(
         "calendarioturnos-7c4d9.firebaseapp.com",
-        "auth-domain=production-firebase"
+        "auth-domain=firebaseapp-production"
     );
     const testWeb = await configForHost(
         "turnoplus-test-7c4d9.web.app",
-        "auth-domain=test-web"
+        "auth-domain=firebaseapp-test-web"
     );
     const testFirebase = await configForHost(
         "turnoplus-test-7c4d9.firebaseapp.com",
-        "auth-domain=test-firebase"
+        "auth-domain=firebaseapp-test"
     );
 
     assert.equal(
         productionWeb.FIREBASE_CONFIG.authDomain,
-        "calendarioturnos-7c4d9.web.app"
+        "calendarioturnos-7c4d9.firebaseapp.com"
     );
     assert.equal(
         productionFirebase.FIREBASE_CONFIG.authDomain,
@@ -72,11 +72,19 @@ test("Auth usa el mismo dominio publico que abrio la app", async () => {
     );
     assert.equal(
         testWeb.FIREBASE_CONFIG.authDomain,
-        "turnoplus-test-7c4d9.web.app"
+        "turnoplus-test-7c4d9.firebaseapp.com"
     );
     assert.equal(
         testFirebase.FIREBASE_CONFIG.authDomain,
         "turnoplus-test-7c4d9.firebaseapp.com"
+    );
+    assert.equal(
+        productionWeb.FIREBASE_PUBLIC_APP_URL,
+        "https://calendarioturnos-7c4d9.firebaseapp.com/"
+    );
+    assert.equal(
+        testWeb.FIREBASE_PUBLIC_APP_URL,
+        "https://turnoplus-test-7c4d9.firebaseapp.com/"
     );
 
     delete globalThis.location;

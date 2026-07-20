@@ -11,26 +11,12 @@ const PRODUCTION_APP_CHECK_SITE_KEY =
 const TEST_APP_CHECK_SITE_KEY =
     "6LdZgEctAAAAAGMCUugxmTLm3bfspq8OzqI5xs9M";
 
-function currentHostname() {
-    return typeof location !== "undefined"
-        ? String(location.hostname || "")
-        : "";
-}
-
-function authDomainForProject({ webDomain, firebaseDomain }) {
-    const hostname = currentHostname();
-
-    return hostname === webDomain || hostname === firebaseDomain
-        ? hostname
-        : firebaseDomain;
-}
+const PRODUCTION_AUTH_DOMAIN = "calendarioturnos-7c4d9.firebaseapp.com";
+const TEST_AUTH_DOMAIN = "turnoplus-test-7c4d9.firebaseapp.com";
 
 const PRODUCTION_CONFIG = {
     apiKey: "AIzaSyCG7KarKpMMGzTHIXnRit9E2CGpGgjf6_k",
-    authDomain: authDomainForProject({
-        webDomain: "calendarioturnos-7c4d9.web.app",
-        firebaseDomain: "calendarioturnos-7c4d9.firebaseapp.com"
-    }),
+    authDomain: PRODUCTION_AUTH_DOMAIN,
     projectId: "calendarioturnos-7c4d9",
     storageBucket: "calendarioturnos-7c4d9.firebasestorage.app",
     messagingSenderId: "1034511206564",
@@ -40,10 +26,7 @@ const PRODUCTION_CONFIG = {
 
 const TEST_CONFIG = {
     apiKey: "AIzaSyCb8aig1wauxVFrDPKgOpwJOVH6KBcGmyk",
-    authDomain: authDomainForProject({
-        webDomain: "turnoplus-test-7c4d9.web.app",
-        firebaseDomain: "turnoplus-test-7c4d9.firebaseapp.com"
-    }),
+    authDomain: TEST_AUTH_DOMAIN,
     projectId: "turnoplus-test-7c4d9",
     storageBucket: "turnoplus-test-7c4d9.firebasestorage.app",
     messagingSenderId: "596177989812",
@@ -86,3 +69,7 @@ export const FIREBASE_APP_CHECK_SITE_KEY = useTestProject
 export const FIREBASE_CONFIG = useTestProject
     ? TEST_CONFIG
     : PRODUCTION_CONFIG;
+
+export const FIREBASE_PUBLIC_APP_URL = useTestProject
+    ? `https://${TEST_AUTH_DOMAIN}/`
+    : `https://${PRODUCTION_AUTH_DOMAIN}/`;

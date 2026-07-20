@@ -35,3 +35,11 @@ test("mantiene resolucion MFA cuando Google vuelve por redirect", () => {
         /auth\/multi-factor-auth-required[\s\S]*resolveGoogleSignInMfa/
     );
 });
+
+test("las invitaciones antiguas en web.app se mueven al authDomain", () => {
+    assert.match(firebaseShell, /redirectPendingInviteToAuthDomain/);
+    assert.match(firebaseShell, /pendingSupervisorInviteToken\(\)/);
+    assert.match(firebaseShell, /FIREBASE_CONFIG\.authDomain/);
+    assert.match(firebaseShell, /window\.location\.replace/);
+    assert.match(firebaseShell, /if \(redirectPendingInviteToAuthDomain\(\)\) return;/);
+});
