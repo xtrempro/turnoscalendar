@@ -71,6 +71,7 @@ let loginGateEnabled = true;
 let unsubscribeUserWorkspaces = null;
 let userWorkspacesListenerVersion = 0;
 let activatingWorkspace = false;
+let claimingPendingSupervisorInvite = false;
 
 function displayUserName(user) {
     if (!isFirebaseConfigured()) return "Modo local";
@@ -339,6 +340,48 @@ async function maybeActivateSingleWorkspace() {
     if (workspaceList.length !== 1) return false;
 
     return activateWorkspace(workspaceList[0]);
+}
+
+async function claimPendingSupervisorInvite() {
+    const workspaceId = pendingJoinWorkspaceId();
+    const token = pendingSupervisorInviteToken();
+
+    if (
+        !currentUser ||
+        !workspaceId ||
+        !token ||
+        claimingPendingSupervisorInvite
+    ) {
+        return false;
+    }
+
+    claimingPendingSupervisorInvite = true;
+    supervisorInviteState.loading = true;
+    supervisorInviteState.message = "Enviando solicitud de acceso...";
+
+    try {
+        const result = await claimSupervisorInvitation(
+            currentUser,
+            workspaceId,
+            token
+        );
+
+        clearPendingJoinWorkspaceId();
+        supervisorInviteState.message =
+            `Solicitud enviada para ${result.workspaceName || "la unidad"}. Espera la aprobacion del propietario.`;
+        await refreshWorkspaces();
+        await refreshLinkedUnits();
+        refreshShellGate();
+        updateTopbar();
+
+        return true;
+    } catch (error) {
+        supervisorInviteState.message = "";
+        throw error;
+    } finally {
+        supervisorInviteState.loading = false;
+        claimingPendingSupervisorInvite = false;
+    }
 }
 
 function closeModal(backdrop, options = {}) {
@@ -722,6 +765,13 @@ function friendlyFirebaseError(error) {
 
     if (code === "auth/redirect-cancelled-by-user") {
         return "El inicio de sesion con Google fue cancelado antes de completarse.";
+    }
+
+    if (code === "auth/internal-error") {
+        return [
+            "Firebase no pudo completar el retorno de Google en este navegador.",
+            "Abre nuevamente el enlace de invitacion en Chrome o Edge, y si vuelve a ocurrir borra los datos del sitio de TurnoPlus antes de intentar otra vez."
+        ].join(" ");
     }
 
     if (
@@ -1747,6 +1797,18 @@ export async function initFirebaseShell(initOptions = {}) {
                 await ensureFirebaseUser(user);
                 await startUserWorkspacesListener(user);
                 await refreshWorkspaces();
+
+                if (pendingSupervisorInviteToken()) {
+                    try {
+                        await claimPendingSupervisorInvite();
+                    } catch (error) {
+                        console.warn(
+                            "No se pudo reclamar la invitacion de supervisor.",
+                            error
+                        );
+                        alert(friendlyFirebaseError(error));
+                    }
+                }
 
                 workspaceChangeHandled =
                     await maybeActivateSingleWorkspace();

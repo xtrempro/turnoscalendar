@@ -230,6 +230,14 @@ async function handleGoogleRedirectResultError(services, error) {
         return resolveGoogleSignInMfa(services, error);
     }
 
+    if (error?.code === "auth/internal-error") {
+        console.warn(
+            "Firebase no pudo leer el resultado detallado del redirect; se continua con onAuthStateChanged.",
+            error
+        );
+        return null;
+    }
+
     throw error;
 }
 
