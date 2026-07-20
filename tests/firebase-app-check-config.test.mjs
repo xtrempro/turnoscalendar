@@ -44,6 +44,44 @@ test("producci\u00f3n y Test usan proveedores App Check independientes", async (
     delete globalThis.location;
 });
 
+test("Auth usa el mismo dominio publico que abrio la app", async () => {
+    const productionWeb = await configForHost(
+        "calendarioturnos-7c4d9.web.app",
+        "auth-domain=production-web"
+    );
+    const productionFirebase = await configForHost(
+        "calendarioturnos-7c4d9.firebaseapp.com",
+        "auth-domain=production-firebase"
+    );
+    const testWeb = await configForHost(
+        "turnoplus-test-7c4d9.web.app",
+        "auth-domain=test-web"
+    );
+    const testFirebase = await configForHost(
+        "turnoplus-test-7c4d9.firebaseapp.com",
+        "auth-domain=test-firebase"
+    );
+
+    assert.equal(
+        productionWeb.FIREBASE_CONFIG.authDomain,
+        "calendarioturnos-7c4d9.web.app"
+    );
+    assert.equal(
+        productionFirebase.FIREBASE_CONFIG.authDomain,
+        "calendarioturnos-7c4d9.firebaseapp.com"
+    );
+    assert.equal(
+        testWeb.FIREBASE_CONFIG.authDomain,
+        "turnoplus-test-7c4d9.web.app"
+    );
+    assert.equal(
+        testFirebase.FIREBASE_CONFIG.authDomain,
+        "turnoplus-test-7c4d9.firebaseapp.com"
+    );
+
+    delete globalThis.location;
+});
+
 test("App Check Test autoriza tambien la PWA de funcionarios Test", () => {
     const automation = readFileSync(
         "scripts/configure-test-app-check.mjs",
