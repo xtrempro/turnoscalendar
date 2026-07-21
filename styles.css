@@ -8688,7 +8688,7 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 
 .task-assignment-controls {
     display: grid;
-    grid-template-columns: minmax(360px, 1fr) auto;
+    grid-template-columns: minmax(320px, 1fr) minmax(230px, 0.7fr) auto;
     align-items: end;
     gap: 12px;
     min-width: 0;
@@ -8732,7 +8732,8 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
 }
 
 .task-assignment-view-filters strong,
-.task-assignment-dialog__filters strong {
+.task-assignment-dialog__filters strong,
+.task-assignment-global-task-form strong {
     display: block;
     margin-bottom: 5px;
     color: var(--text);
@@ -8942,11 +8943,21 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     font-weight: 900;
 }
 
+.task-assignment-task-head--label {
+    color: var(--text);
+    font-size: 0.84rem;
+    font-weight: 900;
+}
+
 .task-assignment-task-form {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 34px;
     gap: 6px;
     align-items: center;
+}
+
+.task-assignment-global-task-form {
+    min-width: 0;
 }
 
 .task-assignment-task-form input {
@@ -8973,7 +8984,6 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     transform: translateY(-1px);
 }
 
-.task-assignment-day-head,
 .task-assignment-event-day {
     display: grid;
     gap: 3px;
@@ -8981,20 +8991,42 @@ body[data-active-view="turnos"] .leave-panel .legend-action span:last-child {
     padding: 10px;
 }
 
+.task-assignment-event-date {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    text-align: center;
+}
+
 .task-assignment-day-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     min-height: 62px;
+    padding: 10px;
+    text-align: center;
 }
 
 .task-assignment-day-head strong,
-.task-assignment-event-day > strong {
+.task-assignment-event-date strong {
     color: var(--text);
     font-size: 0.84rem;
     font-weight: 900;
     text-transform: capitalize;
 }
 
+.task-assignment-day-head strong,
 .task-assignment-day-head span,
-.task-assignment-event-day > span {
+.task-assignment-event-date strong,
+.task-assignment-event-date span {
+    white-space: nowrap;
+}
+
+.task-assignment-day-head span,
+.task-assignment-event-date span {
     color: var(--text-muted);
     font-size: 0.74rem;
     font-weight: 800;

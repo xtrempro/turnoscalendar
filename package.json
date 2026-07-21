@@ -35,6 +35,7 @@
     "test:worker-app-unlink": "node --test tests/worker-app-unlink.test.mjs",
     "test:worker-app-sync": "node --test tests/worker-app-publish-queue.test.mjs",
     "test:worker-app-months": "node --test tests/worker-app-months.test.mjs",
+    "test:task-assignment-projection": "node --test tests/task-assignment-projection.test.mjs",
     "test:incremental-render": "node --test tests/frontend-incremental-render.test.mjs",
     "test:worker": "node --test tests/schedule-worker.test.mjs",
     "test:linked-units": "node --test tests/linked-units-on-demand.test.mjs",

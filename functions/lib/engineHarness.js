@@ -14,7 +14,15 @@ const ENGINE_PATH = path.join(__dirname, "..", "engine", "engine.mjs");
 
 // Módulos de estado necesarios para el cómputo de turnos + horas + saldos +
 // recordatorios (ver js/firebaseStateModules.js).
-const STATE_MODULES = ["profile", "turnos", "swap", "clockmarks", "hours", "weekly"];
+const STATE_MODULES = [
+    "profile",
+    "turnos",
+    "swap",
+    "clockmarks",
+    "hours",
+    "weekly",
+    "tasks"
+];
 
 // ───────── Shim de globales del navegador (una sola vez por proceso) ─────────
 

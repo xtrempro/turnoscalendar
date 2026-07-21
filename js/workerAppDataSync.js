@@ -62,6 +62,7 @@ import {
     flushCalendarChangeEvents,
     registerWorkerCalendarChange
 } from "./calendarChangeEvents.js";
+import { addTaskAssignmentsToSchedule } from "./taskAssignmentProjection.js";
 
 // Publicacion "caliente": se agenda con margen para no competir con
 // clicks/cambios de mes del calendario principal. La PWA puede navegar meses
@@ -104,7 +105,9 @@ const WORKER_APP_PROJECTION_GLOBAL_STATE_KEYS = [
     "swaps",
     "manualHolidays",
     "turnoColorConfig",
-    "turnChangeConfig"
+    "turnChangeConfig",
+    "weekly_task_assignment_tasks",
+    "weekly_task_assignment_entries"
 ];
 
 // Claves de localStorage por-perfil que afectan lo que ve el trabajador. El
@@ -138,6 +141,8 @@ const GLOBAL_RELEVANT_KEYS = new Set([
     "turnoColorConfig",
     "turnChangeConfig",
     "staffing_custom_reminders",
+    "weekly_task_assignment_tasks",
+    "weekly_task_assignment_entries",
     "gradeHourConfig",
     "profiles"
 ]);
@@ -580,12 +585,12 @@ function computeProfileSchedule(profile) {
         Object.assign(computedDays, computeMonthDays(profile, month, ctx));
     });
 
-    return {
+    return addTaskAssignmentsToSchedule(profile, {
         start: toISODate(start),
         end: toISODate(end),
         days: computedDays,
         partial: true
-    };
+    });
 }
 
 function stableStringify(value) {
@@ -2334,7 +2339,8 @@ async function publishHotNow() {
 export function scheduleWorkerAppDataPublish(
     delay = HOT_PUBLISH_DELAY_MS,
     profileTargets = [],
-    changeMetadata = null
+    changeMetadata = null,
+    options = {}
 ) {
     if (!activeWorkspace?.id || !workerLinks.length) return;
 
@@ -2342,8 +2348,11 @@ export function scheduleWorkerAppDataPublish(
 
     normalizedTargets.forEach(name => dirtyProfileNames.add(name));
 
-    if (changeMetadata) {
+    if (changeMetadata || options?.requiresLocalStateFlush === true) {
         hotPublishNeedsLocalStateFlush = true;
+    }
+
+    if (changeMetadata) {
         const profiles = getProfiles();
         const linkedByName = new Map();
         const notifyProfileNames = Array.isArray(changeMetadata.notifyProfiles)

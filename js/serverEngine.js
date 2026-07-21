@@ -32,6 +32,7 @@ import { baseRenderDay } from "./rotationBase.js";
 import { normalizeText } from "./stringUtils.js";
 import { withManualBalance } from "./balanceUtils.js";
 import { activeMonthlySwapCount } from "./swaps.js";
+import { addTaskAssignmentsToSchedule } from "./taskAssignmentProjection.js";
 import {
     buildWorkerHheeSummaries,
     buildWorkerHheeMonthSummary,
@@ -201,12 +202,12 @@ export function computeProfileSchedule(profile, today = new Date()) {
         Object.assign(computedDays, computeMonthDays(profile, month, ctx));
     });
 
-    return {
+    return addTaskAssignmentsToSchedule(profile, {
         start: toISODate(start),
         end: toISODate(end),
         days: computedDays,
         partial: true
-    };
+    });
 }
 
 // ───────── Excepciones ─────────
