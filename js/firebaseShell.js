@@ -906,8 +906,6 @@ function supervisorInvitesPanelHTML() {
 }
 
 function renderSignedInModal(backdrop) {
-    const pendingWorkspaceId = pendingJoinWorkspaceId();
-    const pendingInviteToken = pendingSupervisorInviteToken();
     const locked = isShellLocked();
 
     // Mientras no haya entorno valido, el selector queda bloqueado: no se puede
@@ -943,14 +941,6 @@ function renderSignedInModal(backdrop) {
                     <input id="firebaseCreateWorkspaceName" type="text" placeholder="Ej: UCI Hospital Central">
                     <button class="primary-button" type="button" data-action="create-workspace">Crear unidad</button>
                 </label>
-
-                <label class="firebase-field">
-                    <span>Unirse a una unidad existente</span>
-                    <input id="firebaseJoinWorkspaceId" type="text" placeholder="Pega enlace de invitación segura" value="${escapeHTML(pendingWorkspaceId)}">
-                    <button class="secondary-button" type="button" data-action="join-workspace">
-                        ${pendingInviteToken ? "Solicitar acceso" : "Solicitar acceso"}
-                    </button>
-                </label>
             </div>
 
             <div class="firebase-workspace-list">
@@ -978,7 +968,7 @@ function renderSignedOutModal(backdrop, options = {}) {
             <strong>Iniciar sesion</strong>
             <p>
                 Ingresa con tu cuenta Google para crear una unidad de trabajo
-                o unirte a una existente.
+                o aceptar una invitación recibida por correo.
             </p>
             ${required ? "" : `
                 <div class="firebase-dialog-note">
@@ -1340,27 +1330,6 @@ async function handleAction(action, backdrop, sourceButton = null) {
             updateTopbar();
             await options.onWorkspaceChange?.(currentWorkspace);
             closeModal(backdrop, { force: true });
-            return;
-        }
-
-        if (action === "join-workspace") {
-            const input = backdrop.querySelector(
-                "#firebaseJoinWorkspaceId"
-            );
-
-            const result = await claimSupervisorInvitation(
-                currentUser,
-                input?.value,
-                pendingSupervisorInviteToken()
-            );
-            clearPendingJoinWorkspaceId();
-            supervisorInviteState.message =
-                `Solicitud enviada para ${result.workspaceName || "la unidad"}. Espera la aprobacion del propietario.`;
-            await refreshWorkspaces();
-            await refreshLinkedUnits();
-            refreshShellGate();
-            updateTopbar();
-            renderSignedInModal(backdrop);
             return;
         }
 
