@@ -19,6 +19,11 @@ test("la tarjeta de unidad envia invitaciones por correo sin mailto", () => {
     assert.match(firebaseShell, /data-workspace-invite-email/);
     assert.match(firebaseShell, /data-action="send-workspace-invite-email"/);
     assert.match(firebaseShell, /sendSupervisorInvitationEmail/);
+    assert.doesNotMatch(firebaseShell, /data-action="copy-workspace-id"/);
+    assert.doesNotMatch(firebaseShell, /data-action="copy-workspace-invite"/);
+    assert.doesNotMatch(firebaseShell, /firebase-workspace-id/);
+    assert.doesNotMatch(firebaseShell, /firebase-workspace-actions/);
+    assert.doesNotMatch(firebaseShell, /copyTextToClipboard/);
     assert.doesNotMatch(firebaseShell, /email-workspace-invite/);
     assert.doesNotMatch(firebaseShell, /mailto:\?subject/);
 });

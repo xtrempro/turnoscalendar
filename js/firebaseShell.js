@@ -1,9 +1,6 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { showConfirm, showPrompt } from "./dialogs.js";
-import {
-    FIREBASE_CONFIG,
-    FIREBASE_PUBLIC_APP_URL
-} from "./firebaseConfig.js";
+import { FIREBASE_CONFIG } from "./firebaseConfig.js";
 import {
     completeGoogleRedirectSignIn,
     getFirebaseServices,
@@ -19,7 +16,6 @@ import {
     listUserWorkspaces,
     approveSupervisorInvitation,
     claimSupervisorInvitation,
-    createSupervisorInvitation,
     listSupervisorInvitations,
     rejectSupervisorInvitation,
     revokeSupervisorInvitation,
@@ -98,18 +94,6 @@ function workspaceText() {
     return `Unidad: ${currentWorkspace.name}`;
 }
 
-function appShareURL() {
-    if (FIREBASE_PUBLIC_APP_URL) return FIREBASE_PUBLIC_APP_URL;
-    if (typeof window === "undefined") return "";
-
-    const url = new URL(window.location.href);
-
-    url.search = "";
-    url.hash = "";
-
-    return url.toString();
-}
-
 function redirectPendingInviteToAuthDomain() {
     if (
         typeof window === "undefined" ||
@@ -134,24 +118,6 @@ function redirectPendingInviteToAuthDomain() {
     window.location.replace(targetURL.toString());
 
     return true;
-}
-
-function workspaceInviteURL(workspace) {
-    const baseURL = appShareURL();
-
-    if (!baseURL) return "";
-
-    const url = new URL(baseURL);
-
-    url.searchParams.set("joinWorkspace", workspace.id);
-    if (workspace.supervisorInvite) {
-        url.searchParams.set(
-            "supervisorInvite",
-            workspace.supervisorInvite
-        );
-    }
-
-    return url.toString();
 }
 
 function pendingJoinWorkspaceId() {
@@ -202,50 +168,6 @@ function workspaceById(workspaceId) {
     return workspaceList.find(workspace =>
         workspace.id === workspaceId
     );
-}
-
-function workspaceInvitationText(workspace) {
-    const inviteURL = workspaceInviteURL(workspace);
-    const expiresAt = workspace.supervisorInviteExpiresAt
-        ? new Date(workspace.supervisorInviteExpiresAt)
-        : null;
-    const expiresText = expiresAt && !Number.isNaN(expiresAt.getTime())
-        ? expiresAt.toLocaleString("es-CL", {
-            dateStyle: "medium",
-            timeStyle: "short"
-        })
-        : "";
-
-    return [
-        `Te invito a solicitar acceso como supervisor a la unidad "${workspace.name || workspace.id}" en TurnoPlus.`,
-        "",
-        inviteURL ? `Abre esta invitacion: ${inviteURL}` : "",
-        "Inicia sesion con Google.",
-        "La invitacion es de un solo uso y debe ser aprobada por el propietario.",
-        expiresText ? `Vence el ${expiresText}.` : "",
-        "Si el enlace no aparece automaticamente, pega el enlace completo en Unirse a una unidad existente."
-    ].filter(Boolean).join("\n");
-}
-
-async function copyTextToClipboard(text) {
-    if (
-        navigator.clipboard &&
-        window.isSecureContext
-    ) {
-        await navigator.clipboard.writeText(text);
-        return;
-    }
-
-    const textArea = document.createElement("textarea");
-
-    textArea.value = text;
-    textArea.setAttribute("readonly", "");
-    textArea.style.position = "fixed";
-    textArea.style.left = "-9999px";
-    document.body.appendChild(textArea);
-    textArea.select();
-    document.execCommand("copy");
-    textArea.remove();
 }
 
 function updateTopbar() {
@@ -677,22 +599,6 @@ function workspaceListHTML() {
                             Usar
                         </button>
                     `}
-                </div>
-
-                <label class="firebase-workspace-id">
-                    <span>ID de la unidad</span>
-                    <input type="text" readonly value="${escapeHTML(workspace.id)}">
-                </label>
-
-                <div class="firebase-workspace-actions">
-                    <button class="secondary-button" type="button" data-action="copy-workspace-id" data-workspace-ref="${escapeHTML(workspace.id)}">
-                        Copiar ID
-                    </button>
-                    ${isOwner ? `
-                        <button class="secondary-button" type="button" data-action="copy-workspace-invite" data-workspace-ref="${escapeHTML(workspace.id)}">
-                            Copiar invitación segura
-                        </button>
-                    ` : ""}
                 </div>
 
                 ${isOwner ? `
@@ -1367,51 +1273,6 @@ async function handleAction(action, backdrop, sourceButton = null) {
         if (action === "cancel-workspace-deletion") {
             const id = sourceButton?.dataset.workspaceRef;
             await cancelWorkspaceDeletion(id);
-            await refreshWorkspaces();
-            renderSignedInModal(backdrop);
-            return;
-        }
-
-        if (action === "copy-workspace-id") {
-            const workspace = workspaceById(
-                sourceButton?.dataset.workspaceRef
-            );
-
-            if (!workspace) return;
-
-            await copyTextToClipboard(workspace.id);
-            return;
-        }
-
-        if (action === "copy-workspace-invite") {
-            const workspace = workspaceById(
-                sourceButton?.dataset.workspaceRef
-            );
-
-            if (!workspace) return;
-
-            const permissions =
-                await showSupervisorInvitePermissionsDialog({
-                    title: "Nueva invitación segura",
-                    message:
-                        "Selecciona los permisos que tendrá el supervisor si apruebas su solicitud.",
-                    confirmText: "Crear invitación"
-                });
-
-            if (!permissions) return;
-
-            const invitationWorkspace =
-                await createSupervisorInvitation(
-                    currentUser,
-                    workspace,
-                    permissions
-                );
-
-            await copyTextToClipboard(
-                workspaceInvitationText(invitationWorkspace)
-            );
-            supervisorInviteState.message =
-                "Invitación segura creada y copiada al portapapeles.";
             await refreshWorkspaces();
             renderSignedInModal(backdrop);
             return;

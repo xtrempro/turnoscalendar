@@ -5501,42 +5501,6 @@ body.auth-gate-active .app-shell {
     min-height: 38px;
 }
 
-.firebase-workspace-id {
-    display: grid;
-    gap: 6px;
-}
-
-.firebase-workspace-id span {
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    font-weight: 800;
-}
-
-.firebase-workspace-id input {
-    width: 100%;
-    min-height: 40px;
-    padding: 0 12px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: #fff;
-    color: var(--text-strong);
-    font: inherit;
-    font-weight: 750;
-    user-select: text;
-}
-
-.firebase-workspace-actions {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 8px;
-}
-
-.firebase-workspace-actions button {
-    min-height: 38px;
-    padding: 0 10px;
-    font-size: 0.9rem;
-}
-
 .firebase-workspace-email {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(150px, 0.38fr);
@@ -6985,7 +6949,6 @@ body.theme-dark .overtime-backup-subsection {
     .firebase-dialog-grid,
     .firebase-linked-request,
     .firebase-workspace-email,
-    .firebase-workspace-actions,
     .settings-actions {
         grid-template-columns: 1fr;
     }
