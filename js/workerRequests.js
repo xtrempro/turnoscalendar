@@ -13,8 +13,10 @@ import {
 } from "./firebaseClient.js";
 import {
     acceptWorkspaceLink,
+    isOwnerPendingWorkspaceLink,
     listWorkspaceLinks,
-    rejectWorkspaceLink
+    rejectWorkspaceLink,
+    workspaceLinkDisplayName
 } from "./firebaseLinkedUnits.js";
 import {
     approveSupervisorInvitation,
@@ -120,6 +122,7 @@ const STATUS_LABELS = {
 let selectedStatus = "pending";
 let selectedMonth = monthValue();
 let unsubscribeSupervisorInviteRequests = null;
+let unsubscribeWorkspaceLinkRequests = [];
 let activeSupervisorInviteWorkspaceId = "";
 let supervisorInviteListenerVersion = 0;
 
@@ -1227,10 +1230,12 @@ export async function refreshWorkerRequestsNavBadge() {
     const workerRequests = getWorkerRequests();
     const replacementRequests = getReplacementRequests()
         .map(replacementRequestToPanelRequest);
+    const linkRequests = await getWorkspaceLinkRequests();
     const supervisorInviteRequests =
         await getSupervisorInviteRequests();
     const pending = [
         ...supervisorInviteRequests,
+        ...linkRequests,
         ...workerRequests,
         ...replacementRequests
     ].filter(request => request.status === "pending");
@@ -1254,7 +1259,10 @@ async function getWorkspaceLinkRequests() {
 
         return links
             .filter(link =>
-                link.toWorkspaceId === activeWorkspace.id &&
+                (
+                    link.toWorkspaceId === activeWorkspace.id ||
+                    isOwnerPendingWorkspaceLink(link)
+                ) &&
                 ["pending", "accepted", "rejected"].includes(
                     link.status || "pending"
                 )
@@ -1265,12 +1273,10 @@ async function getWorkspaceLinkRequests() {
                 linkId: link.id,
                 type: "workspace_link",
                 status: link.status || "pending",
-                profile: link.fromWorkspaceName || link.fromWorkspaceId,
+                profile: workspaceLinkDisplayName(link, activeWorkspace),
                 fromWorkspaceId: link.fromWorkspaceId || "",
                 fromWorkspaceName:
-                    link.fromWorkspaceName ||
-                    link.fromWorkspaceId ||
-                    "Unidad solicitante",
+                    workspaceLinkDisplayName(link, activeWorkspace),
                 note:
                     link.status === "pending"
                         ? "Solicita enlazarse a esta unidad para gestionar prestamos entre unidades."
@@ -1376,6 +1382,10 @@ export function stopSupervisorInviteRequestsListener() {
         unsubscribeSupervisorInviteRequests = null;
     }
 
+    unsubscribeWorkspaceLinkRequests.forEach(unsubscribe => {
+        unsubscribe?.();
+    });
+    unsubscribeWorkspaceLinkRequests = [];
     activeSupervisorInviteWorkspaceId = "";
 }
 
@@ -1413,6 +1423,7 @@ export async function startSupervisorInviteRequestsListener(
 
     try {
         const { db, firestoreModule } = await getFirebaseServices();
+        const user = getCurrentFirebaseUser();
         const collectionRef = firestoreModule.collection(
             db,
             "workspaces",
@@ -1440,6 +1451,42 @@ export async function startSupervisorInviteRequestsListener(
                     error
                 );
             }
+        );
+        const workspaceLinksRef = firestoreModule.collection(
+            db,
+            "workspaceLinks"
+        );
+        const workspaceLinkQueries = [
+            firestoreModule.query(
+                workspaceLinksRef,
+                firestoreModule.where("toWorkspaceId", "==", workspaceId)
+            )
+        ];
+
+        if (user?.uid) {
+            workspaceLinkQueries.push(
+                firestoreModule.query(
+                    workspaceLinksRef,
+                    firestoreModule.where("toOwnerUid", "==", user.uid)
+                )
+            );
+        }
+
+        unsubscribeWorkspaceLinkRequests = workspaceLinkQueries.map(queryRef =>
+            firestoreModule.onSnapshot(
+                queryRef,
+                () => {
+                    window.dispatchEvent(
+                        new CustomEvent("proturnos:workerRequestsChanged")
+                    );
+                },
+                error => {
+                    console.warn(
+                        "No se pudo sincronizar solicitudes de enlace entre unidades.",
+                        error
+                    );
+                }
+            )
         );
     } catch (error) {
         console.warn(

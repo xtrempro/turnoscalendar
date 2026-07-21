@@ -175,6 +175,13 @@ test("reglas modulares de Firestore y Storage", async t => {
     const viewer = env.authenticatedContext("viewer", {
         email: "viewer@example.com"
     });
+    const targetOwner = env.authenticatedContext("target-owner", {
+        email: "target-owner@example.com",
+        firebase: {
+            sign_in_provider: "google.com",
+            sign_in_second_factor: "totp"
+        }
+    });
     const restrictedViewer = env.authenticatedContext(
         "restricted-viewer",
         { email: "restricted@example.com" }
@@ -196,6 +203,16 @@ test("reglas modulares de Firestore y Storage", async t => {
         });
         await setDoc(
             doc(db, "workspaces", WORKSPACE_ID, "members", "owner"),
+            { role: "owner", permissions: permissions() }
+        );
+        await setDoc(
+            doc(
+                db,
+                "workspaces",
+                TARGET_WORKSPACE_ID,
+                "members",
+                "target-owner"
+            ),
             { role: "owner", permissions: permissions() }
         );
         await setDoc(
@@ -312,6 +329,20 @@ test("reglas modulares de Firestore y Storage", async t => {
                 toWorkspaceId: WORKSPACE_ID,
                 status: "pending",
                 requestedByUid: "target-owner"
+            }
+        );
+        await setDoc(
+            doc(db, "workspaceLinks", "owner-email-link"),
+            {
+                fromWorkspaceId: WORKSPACE_ID,
+                fromWorkspaceName: "Pruebas",
+                toOwnerUid: "target-owner",
+                toOwnerEmail: "target-owner@example.com",
+                toWorkspaceId: "",
+                toWorkspaceName: "",
+                status: "pending",
+                requestMode: "owner_email",
+                requestedByUid: "turnos-editor"
             }
         );
         await setDoc(
@@ -823,7 +854,7 @@ test("reglas modulares de Firestore y Storage", async t => {
     );
 
     await t.test(
-        "solo gestores de solicitudes administran enlaces entre unidades",
+        "solo gestores de solicitudes responden enlaces entre unidades",
         async () => {
             await assertFails(
                 setDoc(
@@ -836,7 +867,7 @@ test("reglas modulares de Firestore y Storage", async t => {
                     }
                 )
             );
-            await assertSucceeds(
+            await assertFails(
                 setDoc(
                     doc(
                         turnosEditor.firestore(),
@@ -898,6 +929,44 @@ test("reglas modulares de Firestore y Storage", async t => {
                         updatedAt: new Date()
                     }
                 )
+            );
+
+            const ownerEmailLinkViewerRef = doc(
+                viewer.firestore(),
+                "workspaceLinks",
+                "owner-email-link"
+            );
+            const ownerEmailLinkTargetRef = doc(
+                targetOwner.firestore(),
+                "workspaceLinks",
+                "owner-email-link"
+            );
+            const ownerEmailLinkOutsiderRef = doc(
+                outsider.firestore(),
+                "workspaceLinks",
+                "owner-email-link"
+            );
+
+            await assertFails(getDoc(ownerEmailLinkOutsiderRef));
+            await assertSucceeds(getDoc(ownerEmailLinkTargetRef));
+            await assertFails(
+                updateDoc(ownerEmailLinkViewerRef, {
+                    status: "accepted",
+                    toWorkspaceId: TARGET_WORKSPACE_ID,
+                    toWorkspaceName: "Unidad destino",
+                    acceptedByUid: "viewer",
+                    updatedAt: new Date()
+                })
+            );
+            await assertSucceeds(
+                updateDoc(ownerEmailLinkTargetRef, {
+                    status: "accepted",
+                    toWorkspaceId: TARGET_WORKSPACE_ID,
+                    toWorkspaceName: "Unidad destino",
+                    acceptedByUid: "target-owner",
+                    acceptedByName: "Owner destino",
+                    updatedAt: new Date()
+                })
             );
         }
     );

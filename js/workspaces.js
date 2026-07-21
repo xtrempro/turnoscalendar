@@ -398,8 +398,23 @@ export async function revokeSupervisorInvitation(workspaceId, inviteId) {
     });
 }
 
+export async function trimSupervisorInvitationHistory(workspaceId) {
+    return callWorkspaceFunction("trimSupervisorInviteHistory", {
+        workspaceId
+    });
+}
+
 export async function listSupervisorInvitations(workspaceId) {
     if (!workspaceId) return [];
+
+    try {
+        await trimSupervisorInvitationHistory(workspaceId);
+    } catch (error) {
+        console.warn(
+            "No se pudo limpiar el historial de invitaciones.",
+            error
+        );
+    }
 
     const { db, firestoreModule } = await getFirebaseServices();
     const snap = await firestoreModule.getDocs(

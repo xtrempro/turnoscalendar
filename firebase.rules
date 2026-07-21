@@ -359,16 +359,52 @@ service cloud.firestore {
 
     function linkIdentityUnchanged() {
       return request.resource.data.fromWorkspaceId == resource.data.fromWorkspaceId &&
-        request.resource.data.toWorkspaceId == resource.data.toWorkspaceId &&
-        request.resource.data.requestedByUid == resource.data.requestedByUid;
+        request.resource.data.requestedByUid == resource.data.requestedByUid &&
+        (
+          request.resource.data.toWorkspaceId == resource.data.toWorkspaceId ||
+          (
+            resource.data.toWorkspaceId == "" &&
+            request.resource.data.toOwnerUid == resource.data.toOwnerUid &&
+            request.resource.data.toWorkspaceId is string
+          )
+        );
+    }
+
+    function canReadOwnerWorkspaceLink() {
+      return signedIn() &&
+        "toOwnerUid" in resource.data &&
+        resource.data.toOwnerUid == request.auth.uid;
+    }
+
+    function hasLinkedTargetWorkspace() {
+      return resource.data.toWorkspaceId is string &&
+        resource.data.toWorkspaceId != "";
+    }
+
+    function canResolveOwnerWorkspaceLink() {
+      return resource.data.toWorkspaceId == "" &&
+        "toOwnerUid" in resource.data &&
+        resource.data.toOwnerUid == request.auth.uid &&
+        request.resource.data.toWorkspaceId is string &&
+        request.resource.data.fromWorkspaceId != request.resource.data.toWorkspaceId &&
+        workspaceExists(request.resource.data.toWorkspaceId) &&
+        isOwner(request.resource.data.toWorkspaceId);
     }
 
     function canResolveWorkspaceLink() {
       return resource.data.status == "pending" &&
-        canManageRequests(resource.data.toWorkspaceId) &&
+        (
+          (
+            hasLinkedTargetWorkspace() &&
+            canManageRequests(resource.data.toWorkspaceId)
+          ) ||
+          canResolveOwnerWorkspaceLink()
+        ) &&
         request.resource.data.status in ["accepted", "rejected"] &&
+        optionalText(request.resource.data, "toWorkspaceName", 160) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           "status",
+          "toWorkspaceId",
           "toWorkspaceName",
           "acceptedAt",
           "acceptedByUid",
@@ -457,20 +493,14 @@ service cloud.firestore {
     }
 
     match /workspaceLinks/{linkId} {
-      allow create: if signedIn() &&
-        request.resource.data.fromWorkspaceId is string &&
-        request.resource.data.toWorkspaceId is string &&
-        request.resource.data.fromWorkspaceId != request.resource.data.toWorkspaceId &&
-        request.resource.data.status == "pending" &&
-        request.resource.data.requestedByUid == request.auth.uid &&
-        optionalText(request.resource.data, "fromWorkspaceName", 160) &&
-        optionalText(request.resource.data, "toWorkspaceName", 160) &&
-        optionalText(request.resource.data, "requestedByName", 160) &&
-        canManageRequests(request.resource.data.fromWorkspaceId) &&
-        workspaceExists(request.resource.data.toWorkspaceId);
+      allow create: if false;
 
       allow read: if canReadRequests(resource.data.fromWorkspaceId) ||
-        canReadRequests(resource.data.toWorkspaceId);
+        (
+          hasLinkedTargetWorkspace() &&
+          canReadRequests(resource.data.toWorkspaceId)
+        ) ||
+        canReadOwnerWorkspaceLink();
 
       allow update: if linkIdentityUnchanged() &&
         (

@@ -501,6 +501,10 @@ function renderUsersPanel() {
         `;
     }
 
+    const collaborators = memberPermissionDraft.filter(member =>
+        member.role !== "owner"
+    );
+
     return `
         <section class="settings-card settings-card--wide">
             <div class="settings-card__head">
@@ -511,22 +515,21 @@ function renderUsersPanel() {
                 </span>
             </div>
 
-            <div class="settings-users-list">
-                ${memberPermissionDraft.map(member => {
-                    const isOwner = member.role === "owner";
-                    const permissions =
-                        normalizeMenuPermissions(member.permissions);
+            ${collaborators.length ? `
+                <div class="settings-users-list">
+                    ${collaborators.map(member => {
+                        const permissions =
+                            normalizeMenuPermissions(member.permissions);
 
-                    return `
-                        <article class="settings-user-card">
-                            <div class="settings-user-card__head">
-                                <span>
-                                    <strong>${escapeHTML(memberLabel(member))}</strong>
-                                    <small>${escapeHTML(member.email || member.uid)}</small>
-                                </span>
-                                <div class="settings-user-card__actions">
-                                    <em>${isOwner ? "Creador" : "Colaborador"}</em>
-                                    ${isOwner ? "" : `
+                        return `
+                            <article class="settings-user-card">
+                                <div class="settings-user-card__head">
+                                    <span>
+                                        <strong>${escapeHTML(memberLabel(member))}</strong>
+                                        <small>${escapeHTML(member.email || member.uid)}</small>
+                                    </span>
+                                    <div class="settings-user-card__actions">
+                                        <em>Colaborador</em>
                                         <button
                                             class="settings-user-delete"
                                             type="button"
@@ -534,45 +537,48 @@ function renderUsersPanel() {
                                         >
                                             Eliminar
                                         </button>
-                                    `}
+                                    </div>
                                 </div>
-                            </div>
 
-                            <div class="settings-permission-grid">
-                                <div class="settings-permission-row settings-permission-row--head">
-                                    <span>Men\u00fa</span>
-                                    <span>Ver</span>
-                                    <span>Editar</span>
+                                <div class="settings-permission-grid">
+                                    <div class="settings-permission-row settings-permission-row--head">
+                                        <span>Men\u00fa</span>
+                                        <span>Ver</span>
+                                        <span>Editar</span>
+                                    </div>
+                                    ${MENU_PERMISSION_DEFS.map(menu => {
+                                        const permission = permissions[menu.key];
+                                        return `
+                                            <label class="settings-permission-row">
+                                                <span>${escapeHTML(menu.label)}</span>
+                                                <input
+                                                    type="checkbox"
+                                                    data-member-permission="${escapeHTML(member.uid)}"
+                                                    data-permission-menu="${escapeHTML(menu.key)}"
+                                                    data-permission-kind="view"
+                                                    ${permission.view ? "checked" : ""}
+                                                >
+                                                <input
+                                                    type="checkbox"
+                                                    data-member-permission="${escapeHTML(member.uid)}"
+                                                    data-permission-menu="${escapeHTML(menu.key)}"
+                                                    data-permission-kind="edit"
+                                                    ${permission.edit ? "checked" : ""}
+                                                    ${!permission.view ? "disabled" : ""}
+                                                >
+                                            </label>
+                                        `;
+                                    }).join("")}
                                 </div>
-                                ${MENU_PERMISSION_DEFS.map(menu => {
-                                    const permission = permissions[menu.key];
-                                    return `
-                                        <label class="settings-permission-row">
-                                            <span>${escapeHTML(menu.label)}</span>
-                                            <input
-                                                type="checkbox"
-                                                data-member-permission="${escapeHTML(member.uid)}"
-                                                data-permission-menu="${escapeHTML(menu.key)}"
-                                                data-permission-kind="view"
-                                                ${permission.view ? "checked" : ""}
-                                                ${isOwner ? "disabled" : ""}
-                                            >
-                                            <input
-                                                type="checkbox"
-                                                data-member-permission="${escapeHTML(member.uid)}"
-                                                data-permission-menu="${escapeHTML(menu.key)}"
-                                                data-permission-kind="edit"
-                                                ${permission.edit ? "checked" : ""}
-                                                ${(!permission.view || isOwner) ? "disabled" : ""}
-                                            >
-                                        </label>
-                                    `;
-                                }).join("")}
-                            </div>
-                        </article>
-                    `;
-                }).join("")}
-            </div>
+                            </article>
+                        `;
+                    }).join("")}
+                </div>
+            ` : `
+                <div class="settings-empty">
+                    Aun no hay colaboradores aprobados en esta unidad.
+                </div>
+            `}
         </section>
     `;
 }
@@ -1223,7 +1229,24 @@ function bindBackdrop(backdrop) {
     });
 }
 
-export function openSystemSettings() {
+export function openSystemSettings(initialTab = activeTab) {
+    const nextTab = String(initialTab || activeTab);
+
+    if (
+        nextTab === "users" ||
+        [
+            "grades",
+            "holidays",
+            "requests",
+            "signature",
+            "turnChanges",
+            "colors",
+            "staffing"
+        ].includes(nextTab)
+    ) {
+        activeTab = nextTab;
+    }
+
     document
         .querySelector(".turn-change-dialog-backdrop[data-system-settings]")
         ?.remove();

@@ -108,6 +108,8 @@ const VALID_INTER_UNIT_TURNS = new Set([
   "18"
 ]);
 const SUPERVISOR_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SUPERVISOR_INVITE_REVOKED_HISTORY_LIMIT = 3;
+const SUPERVISOR_INVITE_EXPIRED_HISTORY_LIMIT = 5;
 const MENU_PERMISSION_KEYS = [
   "turnos",
   "weekly",
@@ -328,6 +330,173 @@ function supervisorInviteUrl(workspaceId, token) {
   url.searchParams.set("supervisorInvite", token);
 
   return url.toString();
+}
+
+function proturnosRequestsUrl() {
+  const url = new URL(PROTURNOS_APP_BASE_URL);
+
+  url.hash = "workerRequestsPanel";
+  return url.toString();
+}
+
+function workspaceLinkOwnerRequestId(fromWorkspaceId, ownerUid, ownerEmail) {
+  const from = cleanCallableText(fromWorkspaceId, 160).replace(/\//g, "");
+  const target = createHash("sha256")
+    .update(`${ownerUid || ""}|${ownerEmail || ""}`)
+    .digest("hex")
+    .slice(0, 40);
+
+  return `${from}__owner_${target}`;
+}
+
+function workspaceIsActiveForLinks(workspace = {}) {
+  return !["pending_deletion", "deleted"].includes(
+    String(workspace.deletionStatus || "")
+  );
+}
+
+function inviteHistoryTimestampMillis(invite = {}, status = "") {
+  const statusField = status === "revoked" ? invite.revokedAt : invite.expiredAt;
+  const value =
+    statusField ||
+    invite.updatedAt ||
+    invite.createdAt ||
+    invite.expiresAt;
+
+  if (!value) return 0;
+  if (typeof value === "number") return value;
+  if (typeof value.toMillis === "function") return value.toMillis();
+  if (typeof value.seconds === "number") return value.seconds * 1000;
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function deleteRefsInBatches(refs) {
+  let deleted = 0;
+
+  for (let index = 0; index < refs.length; index += 450) {
+    const batch = db.batch();
+    const slice = refs.slice(index, index + 450);
+
+    slice.forEach(ref => batch.delete(ref));
+    await batch.commit();
+    deleted += slice.length;
+  }
+
+  return deleted;
+}
+
+async function trimSupervisorInviteHistory(workspaceId) {
+  const invitesRef = db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("supervisorInvites");
+  const limits = {
+    revoked: SUPERVISOR_INVITE_REVOKED_HISTORY_LIMIT,
+    expired: SUPERVISOR_INVITE_EXPIRED_HISTORY_LIMIT
+  };
+  const result = {};
+
+  await Promise.all(Object.entries(limits).map(async ([status, limit]) => {
+    const snap = await invitesRef
+      .where("status", "==", status)
+      .get();
+    const staleRefs = snap.docs
+      .map(docSnap => ({
+        ref: docSnap.ref,
+        millis: inviteHistoryTimestampMillis(docSnap.data(), status),
+        id: docSnap.id
+      }))
+      .sort((a, b) => {
+        const byTime = b.millis - a.millis;
+
+        return byTime || b.id.localeCompare(a.id);
+      })
+      .slice(limit)
+      .map(item => item.ref);
+
+    result[status] = await deleteRefsInBatches(staleRefs);
+  }));
+
+  return result;
+}
+
+async function resolveOwnerUidByEmail(email) {
+  try {
+    const userRecord = await admin.auth().getUserByEmail(email);
+
+    if (userRecord?.uid) return userRecord.uid;
+  } catch (error) {
+    if (error?.code !== "auth/user-not-found") {
+      logger.warn("No se pudo buscar usuario por correo en Auth.", {
+        recipient: maskedEmail(email),
+        message: error.message
+      });
+    }
+  }
+
+  const usersSnap = await db
+    .collection("users")
+    .where("email", "==", email)
+    .limit(2)
+    .get();
+
+  return usersSnap.docs[0]?.id || "";
+}
+
+async function resolveWorkspaceLinkOwner(email, fromWorkspaceId) {
+  let ownerUid = await resolveOwnerUidByEmail(email);
+  const workspaces = new Map();
+
+  async function addWorkspaceDocs(query) {
+    const snap = await query.get();
+
+    snap.docs.forEach(docSnap => {
+      const data = docSnap.data() || {};
+
+      if (!workspaceIsActiveForLinks(data)) return;
+      if (docSnap.id === fromWorkspaceId) return;
+      workspaces.set(docSnap.id, {
+        id: docSnap.id,
+        ...data
+      });
+      if (!ownerUid && data.ownerUid) {
+        ownerUid = String(data.ownerUid || "");
+      }
+    });
+  }
+
+  if (ownerUid) {
+    await addWorkspaceDocs(
+      db.collection("workspaces")
+        .where("ownerUid", "==", ownerUid)
+        .limit(20)
+    );
+  }
+
+  await addWorkspaceDocs(
+    db.collection("workspaces")
+      .where("createdByEmail", "==", email)
+      .limit(20)
+  );
+
+  if (!ownerUid || workspaces.size === 0) {
+    throw new HttpsError(
+      "not-found",
+      "No encontramos una unidad activa cuyo owner use ese correo."
+    );
+  }
+
+  return {
+    ownerUid,
+    ownerEmail: email,
+    workspaceCount: workspaces.size,
+    workspaceNames: [...workspaces.values()]
+      .map(workspace => cleanCallableText(workspace.name, 160))
+      .filter(Boolean)
+      .slice(0, 5)
+  };
 }
 
 async function reserveInviteEmailSend(senderUid, email) {
@@ -767,6 +936,204 @@ exports.sendSupervisorInviteEmail = onCall(
   }
 );
 
+exports.requestWorkspaceLinkByOwnerEmail = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30,
+    secrets: [RESEND_API_KEY]
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para solicitar un enlace."
+      );
+    }
+
+    const fromWorkspaceId =
+      cleanCallableText(request.data?.fromWorkspaceId, 160);
+    const ownerEmail = normalizeEmail(request.data?.ownerEmail);
+
+    if (!fromWorkspaceId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la unidad solicitante."
+      );
+    }
+
+    if (!isValidEmail(ownerEmail)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Ingresa un correo valido para solicitar el enlace."
+      );
+    }
+
+    const fromMember = await requireWorkspaceRequestManager(
+      fromWorkspaceId,
+      uid,
+      request.auth.token || {}
+    );
+    const fromWorkspaceRef = db.collection("workspaces").doc(fromWorkspaceId);
+    const fromWorkspaceSnap = await fromWorkspaceRef.get();
+
+    if (!fromWorkspaceSnap.exists) {
+      throw new HttpsError(
+        "not-found",
+        "La unidad solicitante no existe."
+      );
+    }
+
+    const fromWorkspace = fromWorkspaceSnap.data() || {};
+    const targetOwner = await resolveWorkspaceLinkOwner(
+      ownerEmail,
+      fromWorkspaceId
+    );
+
+    if (
+      targetOwner.ownerUid === fromWorkspace.ownerUid &&
+      targetOwner.workspaceCount === 0
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "No puedes enlazar la unidad activa consigo misma."
+      );
+    }
+
+    if (!await reserveInviteEmailSend(uid, ownerEmail)) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Se alcanzo el limite de envios. Espera un minuto antes de enviar otra solicitud a este correo."
+      );
+    }
+
+    const linkId = workspaceLinkOwnerRequestId(
+      fromWorkspaceId,
+      targetOwner.ownerUid,
+      ownerEmail
+    );
+    const linkRef = db.collection("workspaceLinks").doc(linkId);
+    const now = admin.firestore.Timestamp.now();
+    const requesterName =
+      cleanCallableText(request.auth.token?.name, 160) ||
+      cleanCallableText(fromMember.displayName, 160) ||
+      cleanCallableText(request.auth.token?.email, 254) ||
+      "Usuario";
+    const fromWorkspaceName =
+      cleanCallableText(fromWorkspace.name, 160) || "Unidad solicitante";
+
+    await db.runTransaction(async transaction => {
+      const linkSnap = await transaction.get(linkRef);
+      const previous = linkSnap.data() || {};
+
+      if (
+        linkSnap.exists &&
+        previous.status === "accepted" &&
+        previous.toWorkspaceId
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Ya existe un enlace activo con una unidad de ese owner."
+        );
+      }
+
+      transaction.set(linkRef, {
+        fromWorkspaceId,
+        fromWorkspaceName,
+        fromOwnerUid: cleanCallableText(fromWorkspace.ownerUid, 160),
+        toOwnerUid: targetOwner.ownerUid,
+        toOwnerEmail: ownerEmail,
+        toWorkspaceId: "",
+        toWorkspaceName: "",
+        status: "pending",
+        requestMode: "owner_email",
+        requestedByUid: uid,
+        requestedByName: requesterName,
+        requestedByEmail: cleanCallableText(request.auth.token?.email, 254),
+        createdAt: previous.createdAt || now,
+        updatedAt: now,
+        emailStatus: "pending",
+        emailError: ""
+      }, { merge: true });
+    });
+
+    const requestsUrl = proturnosRequestsUrl();
+    const { html, text } = buildWorkspaceLinkRequestEmail({
+      fromWorkspaceName,
+      requesterName,
+      requestsUrl
+    });
+    let sent;
+
+    try {
+      sent = await sendResendEmail({
+        to: ownerEmail,
+        subject: `Solicitud de enlace de unidad - ${fromWorkspaceName}`,
+        html,
+        text
+      });
+    } catch (error) {
+      logger.error("No se pudo enviar correo de solicitud de enlace.", {
+        recipient: maskedEmail(ownerEmail),
+        linkId,
+        message: error.message
+      });
+      await linkRef.set(
+        {
+          emailStatus: "error",
+          emailError: String(error.message || error).slice(0, 500),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+      throw new HttpsError(
+        "unavailable",
+        "No se pudo enviar el correo. Intenta nuevamente."
+      );
+    }
+
+    if (!sent?.ok) {
+      await linkRef.set(
+        {
+          emailStatus: sent?.skipped ? "skipped_no_api_key" : "error",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        },
+        { merge: true }
+      );
+      throw new HttpsError(
+        "failed-precondition",
+        "El servicio de correo no esta configurado."
+      );
+    }
+
+    await linkRef.set(
+      {
+        emailStatus: "sent",
+        emailSentAt: admin.firestore.FieldValue.serverTimestamp(),
+        emailProviderId: sent.id || "",
+        emailError: "",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    logger.info("Solicitud de enlace entre unidades enviada.", {
+      recipient: maskedEmail(ownerEmail),
+      linkId,
+      id: sent.id || ""
+    });
+
+    return {
+      ok: true,
+      linkId,
+      fromWorkspaceId,
+      fromWorkspaceName,
+      ownerEmail
+    };
+  }
+);
+
 exports.claimSupervisorInvite = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,
@@ -873,6 +1240,7 @@ exports.claimSupervisorInvite = onCall(
     });
 
     if (result.status === "expired") {
+      await trimSupervisorInviteHistory(result.workspaceId);
       throw new HttpsError(
         "failed-precondition",
         "Esta invitacion vencio. Solicita una nueva al propietario."
@@ -1153,10 +1521,52 @@ exports.revokeSupervisorInvite = onCall(
       });
     });
 
+    await trimSupervisorInviteHistory(workspaceId);
+
     return {
       status: "revoked",
       inviteId,
       workspaceId
+    };
+  }
+);
+
+exports.trimSupervisorInviteHistory = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para limpiar invitaciones."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+
+    if (!workspaceId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la unidad."
+      );
+    }
+
+    await requireWorkspaceOwner(workspaceId, uid, request.auth.token || {});
+
+    const deleted = await trimSupervisorInviteHistory(workspaceId);
+
+    return {
+      ok: true,
+      workspaceId,
+      deleted,
+      limits: {
+        revoked: SUPERVISOR_INVITE_REVOKED_HISTORY_LIMIT,
+        expired: SUPERVISOR_INVITE_EXPIRED_HISTORY_LIMIT
+      }
     };
   }
 );
@@ -3142,6 +3552,45 @@ function buildSupervisorInviteEmail({
       ` : ""}
       <hr style="border: none; border-top: 1px solid #e4e7eb; margin: 24px 0;">
       <p style="font-size: 12px; color: #9aa5b1;">Si no esperabas esta invitacion, puedes ignorar este correo.</p>
+    </div>
+  `;
+
+  return { html, text };
+}
+
+function buildWorkspaceLinkRequestEmail({
+  fromWorkspaceName,
+  requesterName,
+  requestsUrl
+}) {
+  const unit = String(fromWorkspaceName || "una unidad").trim();
+  const requester = String(requesterName || "un administrador").trim();
+  const safeUnit = escapeHtml(unit);
+  const safeRequester = escapeHtml(requester);
+  const safeRequestsUrl = escapeHtml(requestsUrl);
+
+  const text = [
+    "Hola.",
+    `${requester} solicito enlazar la unidad "${unit}" con una de tus unidades en TurnoPlus.`,
+    "La solicitud ya esta disponible en el menu Solicitudes.",
+    `Abre TurnoPlus para revisarla: ${requestsUrl}`,
+    "Si no esperabas esta solicitud, puedes rechazarla desde TurnoPlus."
+  ].join("\n\n");
+
+  const html = `
+    <div style="font-family: Arial, Helvetica, sans-serif; color: #1f2933; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px;">TurnoPlus</h2>
+      <p>Hola,</p>
+      <p><strong>${safeRequester}</strong> solicito enlazar la unidad <strong>${safeUnit}</strong> con una de tus unidades.</p>
+      <p>La solicitud ya esta disponible en el menu <strong>Solicitudes</strong>. Al aceptarla, quedara enlazada con la unidad que tengas activa.</p>
+      <p style="margin: 24px 0;">
+        <a href="${safeRequestsUrl}" style="background: #15559a; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 10px; font-weight: bold; display: inline-block;">Abrir Solicitudes</a>
+      </p>
+      <p style="font-size: 14px; color: #52606d;">Si el boton no funciona, copia y pega este enlace en tu navegador:<br>
+        <a href="${safeRequestsUrl}">${safeRequestsUrl}</a>
+      </p>
+      <hr style="border: none; border-top: 1px solid #e4e7eb; margin: 24px 0;">
+      <p style="font-size: 12px; color: #9aa5b1;">Si no esperabas esta solicitud, puedes rechazarla desde TurnoPlus.</p>
     </div>
   `;
 

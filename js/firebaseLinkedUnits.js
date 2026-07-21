@@ -14,6 +14,10 @@ function cleanWorkspaceId(value) {
     return cleanText(value).replace(/\//g, "").trim();
 }
 
+function cleanEmail(value) {
+    return cleanText(value).toLowerCase();
+}
+
 function workspaceName(workspace) {
     return cleanText(workspace?.name, workspace?.id || "Unidad");
 }
@@ -22,8 +26,12 @@ function userName(user) {
     return cleanText(user?.displayName, user?.email || "Usuario");
 }
 
-function linkDocId(fromWorkspaceId, toWorkspaceId) {
-    return `${cleanWorkspaceId(fromWorkspaceId)}__${cleanWorkspaceId(toWorkspaceId)}`;
+async function callLinkedUnitFunction(name, payload = {}) {
+    const { functions, functionsModule } = await getFirebaseServices();
+    const callable = functionsModule.httpsCallable(functions, name);
+    const result = await callable(payload);
+
+    return result.data || {};
 }
 
 function linkFromSnap(docSnap) {
@@ -33,7 +41,11 @@ function linkFromSnap(docSnap) {
     };
 }
 
-function uniqueLinks(snaps) {
+function workspaceLinkSortName(link, activeWorkspace) {
+    return workspaceLinkDisplayName(link, activeWorkspace);
+}
+
+function uniqueLinks(snaps, activeWorkspace) {
     const links = new Map();
 
     snaps.forEach(snap => {
@@ -42,16 +54,121 @@ function uniqueLinks(snaps) {
         });
     });
 
-    return [...links.values()].sort((a, b) => {
-        const aName = a.fromWorkspaceName || a.toWorkspaceName || a.id;
-        const bName = b.fromWorkspaceName || b.toWorkspaceName || b.id;
-
-        return String(aName).localeCompare(String(bName));
-    });
+    return [...links.values()]
+        .sort((a, b) =>
+            workspaceLinkSortName(a, activeWorkspace)
+                .localeCompare(workspaceLinkSortName(b, activeWorkspace))
+        );
 }
 
-export async function requestWorkspaceLink(targetWorkspaceId) {
-    const targetId = cleanWorkspaceId(targetWorkspaceId);
+function ownerPendingLinkQuery(firestoreModule, linksRef, user) {
+    if (!user?.uid) return null;
+
+    return firestoreModule.query(
+        linksRef,
+        firestoreModule.where("toOwnerUid", "==", user.uid)
+    );
+}
+
+async function workspaceLinkQueries(firestoreModule, linksRef, workspace, user) {
+    const queries = [
+        firestoreModule.query(
+            linksRef,
+            firestoreModule.where("fromWorkspaceId", "==", workspace.id)
+        ),
+        firestoreModule.query(
+            linksRef,
+            firestoreModule.where("toWorkspaceId", "==", workspace.id)
+        )
+    ];
+    const ownerQuery = ownerPendingLinkQuery(firestoreModule, linksRef, user);
+
+    if (ownerQuery) queries.push(ownerQuery);
+
+    return Promise.all(queries.map(queryRef =>
+        firestoreModule.getDocs(queryRef)
+    ));
+}
+
+function activeWorkspaceTargetPayload(firestoreModule, activeWorkspace) {
+    return {
+        toWorkspaceId: cleanWorkspaceId(activeWorkspace.id),
+        toWorkspaceName: workspaceName(activeWorkspace),
+        updatedAt: firestoreModule.serverTimestamp()
+    };
+}
+
+export function isOwnerPendingWorkspaceLink(
+    link,
+    user = getCurrentFirebaseUser()
+) {
+    return Boolean(
+        link &&
+        !link.toWorkspaceId &&
+        link.toOwnerUid &&
+        user?.uid &&
+        link.toOwnerUid === user.uid
+    );
+}
+
+export function workspaceLinkDisplayName(
+    link,
+    activeWorkspace = getActiveWorkspace()
+) {
+    const isSource = link.fromWorkspaceId === activeWorkspace?.id;
+
+    if (isSource) {
+        return (
+            cleanText(link.toWorkspaceName) ||
+            cleanText(link.toOwnerEmail) ||
+            "Unidad solicitada"
+        );
+    }
+
+    return (
+        cleanText(link.fromWorkspaceName) ||
+        cleanText(link.requestedByName) ||
+        "Unidad solicitante"
+    );
+}
+
+function canResolveLinkFromActiveWorkspace(link, activeWorkspace, user) {
+    if (link.toWorkspaceId === activeWorkspace.id) return true;
+
+    return isOwnerPendingWorkspaceLink(link, user);
+}
+
+function ensureLinkCanResolveHere(link, activeWorkspace, user) {
+    if (!canResolveLinkFromActiveWorkspace(link, activeWorkspace, user)) {
+        throw new Error("Solo la unidad invitada puede responder este enlace.");
+    }
+
+    if (link.fromWorkspaceId === activeWorkspace.id) {
+        throw new Error("No puedes enlazar la unidad activa consigo misma.");
+    }
+}
+
+function responsePayloadForLink(
+    payload,
+    link,
+    firestoreModule,
+    activeWorkspace
+) {
+    if (link.toWorkspaceId) {
+        return {
+            ...payload,
+            updatedAt: firestoreModule.serverTimestamp()
+        };
+    }
+
+    return {
+        ...payload,
+        ...activeWorkspaceTargetPayload(firestoreModule, activeWorkspace)
+    };
+}
+
+export async function requestWorkspaceLink(targetOwnerEmail) {
+    const email = cleanEmail(targetOwnerEmail);
     const activeWorkspace = getActiveWorkspace();
     const user = getCurrentFirebaseUser();
 
@@ -63,67 +180,36 @@ export async function requestWorkspaceLink(targetWorkspaceId) {
         throw new Error("Selecciona una unidad antes de solicitar un enlace.");
     }
 
-    if (!targetId) {
-        throw new Error("Ingresa el ID de la unidad que quieres enlazar.");
+    if (!email) {
+        throw new Error("Ingresa el correo del owner de la unidad que quieres enlazar.");
     }
 
-    if (targetId === activeWorkspace.id) {
-        throw new Error("No puedes enlazar la unidad activa consigo misma.");
-    }
-
-    const { db, firestoreModule } = await getFirebaseServices();
-    const linkRef = firestoreModule.doc(
-        db,
-        "workspaceLinks",
-        linkDocId(activeWorkspace.id, targetId)
+    const result = await callLinkedUnitFunction(
+        "requestWorkspaceLinkByOwnerEmail",
+        {
+            fromWorkspaceId: activeWorkspace.id,
+            ownerEmail: email
+        }
     );
-    const now = firestoreModule.serverTimestamp();
 
-    await firestoreModule.setDoc(linkRef, {
-        fromWorkspaceId: activeWorkspace.id,
-        fromWorkspaceName: workspaceName(activeWorkspace),
-        toWorkspaceId: targetId,
-        toWorkspaceName: targetId,
-        status: "pending",
-        requestedByUid: user.uid,
-        requestedByName: userName(user),
-        createdAt: now,
-        updatedAt: now
-    });
-
-    return linkRef.id;
+    return result.linkId || "";
 }
 
 export async function listWorkspaceLinks(workspace = getActiveWorkspace()) {
     if (!workspace?.id) return [];
 
+    const user = getCurrentFirebaseUser();
     const { db, firestoreModule } = await getFirebaseServices();
     const linksRef =
         firestoreModule.collection(db, "workspaceLinks");
-    const [fromSnap, toSnap] = await Promise.all([
-        firestoreModule.getDocs(
-            firestoreModule.query(
-                linksRef,
-                firestoreModule.where(
-                    "fromWorkspaceId",
-                    "==",
-                    workspace.id
-                )
-            )
-        ),
-        firestoreModule.getDocs(
-            firestoreModule.query(
-                linksRef,
-                firestoreModule.where(
-                    "toWorkspaceId",
-                    "==",
-                    workspace.id
-                )
-            )
-        )
-    ]);
+    const snaps = await workspaceLinkQueries(
+        firestoreModule,
+        linksRef,
+        workspace,
+        user
+    );
 
-    return uniqueLinks([fromSnap, toSnap]);
+    return uniqueLinks(snaps, workspace);
 }
 
 export async function acceptWorkspaceLink(linkId) {
@@ -148,18 +234,14 @@ export async function acceptWorkspaceLink(linkId) {
 
     const link = linkSnap.data() || {};
 
-    if (link.toWorkspaceId !== activeWorkspace.id) {
-        throw new Error("Solo la unidad invitada puede aceptar este enlace.");
-    }
+    ensureLinkCanResolveHere(link, activeWorkspace, user);
 
-    await firestoreModule.updateDoc(linkRef, {
+    await firestoreModule.updateDoc(linkRef, responsePayloadForLink({
         status: "accepted",
-        toWorkspaceName: workspaceName(activeWorkspace),
         acceptedAt: firestoreModule.serverTimestamp(),
         acceptedByUid: user.uid,
-        acceptedByName: userName(user),
-        updatedAt: firestoreModule.serverTimestamp()
-    });
+        acceptedByName: userName(user)
+    }, link, firestoreModule, activeWorkspace));
 }
 
 export async function rejectWorkspaceLink(linkId, reason = "") {
@@ -180,18 +262,15 @@ export async function rejectWorkspaceLink(linkId, reason = "") {
 
     const link = linkSnap.data() || {};
 
-    if (link.toWorkspaceId !== activeWorkspace.id) {
-        throw new Error("Solo la unidad invitada puede rechazar este enlace.");
-    }
+    ensureLinkCanResolveHere(link, activeWorkspace, user);
 
-    await firestoreModule.updateDoc(linkRef, {
+    await firestoreModule.updateDoc(linkRef, responsePayloadForLink({
         status: "rejected",
         rejectedAt: firestoreModule.serverTimestamp(),
         rejectedByUid: user?.uid || "",
         rejectedByName: userName(user),
-        rejectReason: cleanText(reason),
-        updatedAt: firestoreModule.serverTimestamp()
-    });
+        rejectReason: cleanText(reason)
+    }, link, firestoreModule, activeWorkspace));
 }
 
 export async function unlinkWorkspaceLink(linkId) {

@@ -8,7 +8,7 @@ export function defaultSupervisorInvitePermissions() {
     return MENU_PERMISSION_DEFS.reduce((permissions, menu) => {
         permissions[menu.key] = {
             view: true,
-            edit: false
+            edit: true
         };
         return permissions;
     }, {});

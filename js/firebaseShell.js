@@ -39,12 +39,15 @@ import {
     defaultSupervisorInvitePermissions,
     formatInviteDate
 } from "./supervisorInvitesUI.js";
+import { openSystemSettings } from "./systemSettings.js";
 import {
     acceptWorkspaceLink,
+    isOwnerPendingWorkspaceLink,
     listWorkspaceLinks,
     rejectWorkspaceLink,
     requestWorkspaceLink,
-    unlinkWorkspaceLink
+    unlinkWorkspaceLink,
+    workspaceLinkDisplayName
 } from "./firebaseLinkedUnits.js";
 
 let currentUser = null;
@@ -66,6 +69,10 @@ let handlingAccessLost = false;
 let loginGateEnabled = true;
 let unsubscribeUserWorkspaces = null;
 let userWorkspacesListenerVersion = 0;
+const SUPERVISOR_INVITE_DISPLAY_LIMITS = {
+    revoked: 3,
+    expired: 5
+};
 let activatingWorkspace = false;
 let claimingPendingSupervisorInvite = false;
 
@@ -602,6 +609,9 @@ function workspaceListHTML() {
                 </div>
 
                 ${isOwner ? `
+                    <p class="firebase-workspace-invite-help">
+                        Agrega a un administrador m&aacute;s para colaborar en la gesti&oacute;n de la unidad.
+                    </p>
                     <div class="firebase-workspace-email">
                         <label class="firebase-workspace-email-field">
                             <span>Correo para invitación</span>
@@ -610,7 +620,7 @@ function workspaceListHTML() {
                                 inputmode="email"
                                 autocomplete="email"
                                 data-workspace-invite-email
-                                placeholder="supervisor@correo.cl"
+                                placeholder="colaborador@correo.cl"
                             >
                         </label>
                         <button class="primary-button" type="button" data-action="send-workspace-invite-email" data-workspace-ref="${escapeHTML(workspace.id)}">
@@ -706,7 +716,10 @@ function linkedUnitsPanelHTML() {
     if (!currentWorkspace) return "";
 
     const incoming = linkedUnitState.links.filter(link =>
-        link.toWorkspaceId === currentWorkspace.id &&
+        (
+            link.toWorkspaceId === currentWorkspace.id ||
+            isOwnerPendingWorkspaceLink(link, currentUser)
+        ) &&
         link.status === "pending"
     );
     const outgoing = linkedUnitState.links.filter(link =>
@@ -734,13 +747,13 @@ function linkedUnitsPanelHTML() {
         <div class="firebase-linked-panel">
             <strong>Unidades enlazadas</strong>
             <p>
-                Solicita enlace a otra unidad para buscar personal compatible
-                como sugerencia de reemplazo. No se agrega la otra unidad al
-                selector de trabajo.
+                Ingresa el correo del owner de la unidad que quieres enlazar.
+                Le enviaremos un correo y la solicitud aparecera en su menu de
+                Solicitudes.
             </p>
             ${message}
             <div class="firebase-linked-request">
-                <input id="firebaseLinkedWorkspaceId" type="text" placeholder="ID de la unidad a enlazar">
+                <input id="firebaseLinkedWorkspaceOwnerEmail" type="email" inputmode="email" autocomplete="email" placeholder="owner@correo.cl">
                 <button class="secondary-button" type="button" data-action="request-workspace-link" ${linkedUnitState.loading ? "disabled" : ""}>
                     Solicitar enlace
                 </button>
@@ -751,7 +764,7 @@ function linkedUnitsPanelHTML() {
                     ${incoming.map(link => `
                         <article class="firebase-linked-item">
                             <div>
-                                <strong>${escapeHTML(link.fromWorkspaceName || link.fromWorkspaceId)}</strong>
+                                <strong>${escapeHTML(workspaceLinkDisplayName(link, currentWorkspace))}</strong>
                                 <small>Solicitado por ${escapeHTML(link.requestedByName || "Usuario")}</small>
                             </div>
                             <div class="firebase-linked-actions">
@@ -772,7 +785,7 @@ function linkedUnitsPanelHTML() {
                     ${outgoingVisible.map(link => `
                         <article class="firebase-linked-item">
                             <div>
-                                <strong>${escapeHTML(link.toWorkspaceName || link.toWorkspaceId)}</strong>
+                                <strong>${escapeHTML(workspaceLinkDisplayName(link, currentWorkspace))}</strong>
                                 <small>${escapeHTML(linkedUnitStatusLabel(link.status))}</small>
                             </div>
                         </article>
@@ -785,9 +798,10 @@ function linkedUnitsPanelHTML() {
                     ${accepted.map(link => {
                         const isSource =
                             link.fromWorkspaceId === currentWorkspace.id;
-                        const name = isSource
-                            ? link.toWorkspaceName || link.toWorkspaceId
-                            : link.fromWorkspaceName || link.fromWorkspaceId;
+                        const name = workspaceLinkDisplayName(
+                            link,
+                            currentWorkspace
+                        );
 
                         return `
                             <article
@@ -832,6 +846,52 @@ function supervisorInviteActor(invite) {
     );
 }
 
+function supervisorInviteStatusClass(status) {
+    if (status === "approved") {
+        return "supervisor-invite-item--approved firebase-linked-item--action";
+    }
+
+    if (status === "revoked" || status === "expired") {
+        return "supervisor-invite-item--danger";
+    }
+
+    return "";
+}
+
+function supervisorInviteActionAttributes(invite, status) {
+    if (status !== "approved") return "";
+
+    return [
+        'role="button"',
+        'tabindex="0"',
+        'aria-label="Editar permisos en Usuarios"',
+        'title="Editar permisos en Usuarios"',
+        'data-action="open-approved-supervisor-settings"',
+        `data-invite-ref="${escapeHTML(invite.id)}"`
+    ].join(" ");
+}
+
+function limitedSupervisorInvites(invites) {
+    const counts = {
+        revoked: 0,
+        expired: 0
+    };
+
+    return invites.filter(invite => {
+        const status = invite.status || "open";
+
+        if (
+            status !== "revoked" &&
+            status !== "expired"
+        ) {
+            return true;
+        }
+
+        counts[status] += 1;
+        return counts[status] <= SUPERVISOR_INVITE_DISPLAY_LIMITS[status];
+    });
+}
+
 function supervisorInvitesPanelHTML() {
     if (!currentWorkspace || !currentWorkspaceIsOwner()) return "";
 
@@ -842,11 +902,12 @@ function supervisorInvitesPanelHTML() {
             </div>
         `
         : "";
-    const visibleInvites = supervisorInviteState.invites
-        .filter(invite =>
+    const visibleInvites = limitedSupervisorInvites(
+        supervisorInviteState.invites.filter(invite =>
             ["open", "claimed", "approved", "rejected", "revoked", "expired"]
                 .includes(invite.status)
         )
+    )
         .slice(0, 12);
 
     return `
@@ -866,9 +927,12 @@ function supervisorInvitesPanelHTML() {
                         const expiresAt = formatInviteDate(invite.expiresAt);
                         const createdAt = formatInviteDate(invite.createdAt);
                         const actor = supervisorInviteActor(invite);
+                        const statusClass = supervisorInviteStatusClass(status);
+                        const actionAttributes =
+                            supervisorInviteActionAttributes(invite, status);
 
                         return `
-                            <article class="firebase-linked-item supervisor-invite-item">
+                            <article class="firebase-linked-item supervisor-invite-item ${statusClass}" ${actionAttributes}>
                                 <div>
                                     <strong>${escapeHTML(actor)}</strong>
                                     <small>
@@ -1364,6 +1428,14 @@ async function handleAction(action, backdrop, sourceButton = null) {
             return;
         }
 
+        if (action === "open-approved-supervisor-settings") {
+            if (!currentWorkspaceIsOwner()) return;
+
+            closeModal(backdrop, { force: true });
+            openSystemSettings("users");
+            return;
+        }
+
         if (action === "reject-supervisor-invite") {
             const inviteId = sourceButton?.dataset.inviteRef;
             const reason = await showPrompt(
@@ -1415,17 +1487,28 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
         if (action === "request-workspace-link") {
             const input = backdrop.querySelector(
-                "#firebaseLinkedWorkspaceId"
+                "#firebaseLinkedWorkspaceOwnerEmail"
             );
+            const email = normalizeEmailKey(input?.value);
+
+            if (!email) {
+                input?.focus();
+                throw new Error("Ingresa el correo del owner de la unidad que quieres enlazar.");
+            }
+
+            if (!isValidEmailFormat(email)) {
+                input?.focus();
+                throw new Error("El correo debe tener el formato nombre@dominio.cl.");
+            }
 
             linkedUnitState.loading = true;
             linkedUnitState.message = "Enviando solicitud de enlace...";
             renderSignedInModal(backdrop);
 
-            await requestWorkspaceLink(input?.value);
+            await requestWorkspaceLink(email);
             linkedUnitState.loading = false;
             linkedUnitState.message =
-                "Solicitud enviada. La otra unidad debe aceptarla para activar busqueda de prestamos.";
+                `Solicitud enviada a ${email}. El owner la vera en Solicitudes.`;
             await refreshLinkedUnits();
             window.dispatchEvent(
                 new CustomEvent("proturnos:workerRequestsChanged")

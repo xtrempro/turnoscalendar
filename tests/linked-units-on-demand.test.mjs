@@ -86,9 +86,10 @@ test("las unidades enlazadas solo se consultan desde la accion explicita", async
         /httpsCallable\([\s\S]*"findCompatibleReplacementInLinkedUnits"/
     );
     assert.doesNotMatch(service, /addEventListener|onSnapshot|listAcceptedLinkedWorkspaces/);
-    assert.doesNotMatch(
+    assert.match(workerRequests, /where\("toOwnerUid",\s*"=="/);
+    assert.match(
         workerRequests,
-        /(?:onSnapshot[\s\S]{0,160}workspaceLinks|workspaceLinks[\s\S]{0,160}onSnapshot)/
+        /workspaceLinks[\s\S]{0,600}onSnapshot|onSnapshot[\s\S]{0,600}workspaceLinks/
     );
     assert.doesNotMatch(
         firebaseShell,

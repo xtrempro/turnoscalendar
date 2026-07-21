@@ -5501,6 +5501,14 @@ body.auth-gate-active .app-shell {
     min-height: 38px;
 }
 
+.firebase-workspace-invite-help {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.88rem;
+    font-weight: 750;
+    line-height: 1.35;
+}
+
 .firebase-workspace-email {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(150px, 0.38fr);
@@ -5723,6 +5731,34 @@ body.auth-gate-active .app-shell {
 
 .supervisor-invite-item {
     align-items: flex-start;
+}
+
+.supervisor-invite-item--approved {
+    border-color: rgba(34, 197, 94, 0.55);
+    background:
+        linear-gradient(135deg, rgba(34, 197, 94, 0.13), rgba(var(--brand-blue-rgb), 0.08)),
+        var(--panel);
+}
+
+.supervisor-invite-item--approved:hover,
+.supervisor-invite-item--approved:focus-visible {
+    border-color: rgba(34, 197, 94, 0.68);
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
+}
+
+.supervisor-invite-item--approved small {
+    color: #15803d;
+}
+
+.supervisor-invite-item--danger {
+    border-color: rgba(239, 68, 68, 0.48);
+    background:
+        linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(254, 242, 242, 0.82)),
+        #fff;
+}
+
+.supervisor-invite-item--danger small {
+    color: #b91c1c;
 }
 
 .replacement-dialog .turn-change-dialog__actions {
