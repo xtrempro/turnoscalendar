@@ -46,6 +46,23 @@ test("Auth se inicializa con persistencia y resolver de popup/redirect", () => {
     assert.match(firebaseClient, /browserPopupRedirectResolver/);
 });
 
+test("Google espera la preparacion de App Check antes de Auth", () => {
+    assert.match(firebaseClient, /appCheckReadyPromise/);
+    assert.match(firebaseClient, /prepareAppCheckForAuth/);
+    assert.match(
+        firebaseClient,
+        /prepareAppCheckForAuth\(services\)[\s\S]*signInWithPopup/
+    );
+    assert.match(
+        firebaseClient,
+        /await prepareAppCheckForAuth\(resolvedServices\)[\s\S]*signInWithRedirect/
+    );
+    assert.match(
+        firebaseClient,
+        /await prepareAppCheckForAuth\(services\)[\s\S]*getRedirectResult/
+    );
+});
+
 test("redirect de Google se procesa solo si la app lo inicio", () => {
     assert.match(firebaseClient, /GOOGLE_REDIRECT_PENDING_KEY/);
     assert.match(

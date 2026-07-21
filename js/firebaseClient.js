@@ -12,6 +12,7 @@ let mfaOperationPromise = null;
 
 const GOOGLE_REDIRECT_PENDING_KEY = "turnoplus_google_redirect_pending";
 const GOOGLE_REDIRECT_PENDING_MAX_AGE_MS = 10 * 60 * 1000;
+const APP_CHECK_AUTH_PREPARE_TIMEOUT_MS = 8000;
 
 function hasConfigValue(value) {
     return Boolean(String(value || "").trim());
@@ -294,6 +295,7 @@ export async function getFirebaseServices() {
         ]) => {
             const app = appModule.initializeApp(FIREBASE_CONFIG);
             let appCheck = null;
+            let appCheckReadyPromise = Promise.resolve(null);
 
             if (hasConfigValue(FIREBASE_APP_CHECK_SITE_KEY)) {
                 if (
@@ -311,12 +313,15 @@ export async function getFirebaseServices() {
                     isTokenAutoRefreshEnabled: true
                 });
 
-                appCheckModule.getToken(appCheck, false).catch((error) => {
-                    console.warn(
-                        "Firebase App Check no pudo obtener el token inicial.",
-                        error
-                    );
-                });
+                appCheckReadyPromise =
+                    appCheckModule.getToken(appCheck, false)
+                        .catch((error) => {
+                            console.warn(
+                                "Firebase App Check no pudo obtener el token inicial.",
+                                error
+                            );
+                            return null;
+                        });
             }
 
             const auth = initializeBrowserAuth(authModule, app);
@@ -342,6 +347,7 @@ export async function getFirebaseServices() {
                 storage,
                 googleProvider,
                 appCheckModule,
+                appCheckReadyPromise,
                 authModule,
                 firestoreModule,
                 functionsModule,
@@ -355,6 +361,28 @@ export async function getFirebaseServices() {
     }
 
     return servicesPromise;
+}
+
+async function prepareAppCheckForAuth(services) {
+    if (!services?.appCheckReadyPromise) return;
+
+    let timedOut = false;
+
+    await Promise.race([
+        services.appCheckReadyPromise,
+        new Promise(resolve => {
+            setTimeout(() => {
+                timedOut = true;
+                resolve(null);
+            }, APP_CHECK_AUTH_PREPARE_TIMEOUT_MS);
+        })
+    ]);
+
+    if (timedOut) {
+        console.warn(
+            "Firebase App Check demoro en preparar el token para Auth; se continuara sin bloquear el login."
+        );
+    }
 }
 
 async function resolveGoogleSignInMfa(services, error) {
@@ -396,6 +424,7 @@ async function signInWithGoogleRedirect(services = initializedServices) {
         googleProvider
     } = resolvedServices;
 
+    await prepareAppCheckForAuth(resolvedServices);
     markGoogleRedirectPending();
 
     try {
@@ -460,8 +489,8 @@ export function signInWithGoogle() {
     } = services;
 
     try {
-        return authModule
-            .signInWithPopup(auth, googleProvider)
+        return prepareAppCheckForAuth(services)
+            .then(() => authModule.signInWithPopup(auth, googleProvider))
             .catch(error => handleGoogleSignInError(services, error));
     } catch (error) {
         return handleGoogleSignInError(services, error);
@@ -481,6 +510,7 @@ export async function completeGoogleRedirectSignIn() {
     } = services;
 
     try {
+        await prepareAppCheckForAuth(services);
         return await authModule.getRedirectResult(auth);
     } catch (error) {
         return handleGoogleRedirectResultError(services, error);
