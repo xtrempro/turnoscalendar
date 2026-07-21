@@ -189,6 +189,31 @@ function computeMonthDays(profile, month, ctx) {
     return result;
 }
 
+// Feriados (legales + manuales del workspace) como fechas ISO, para que la PWA
+// pueda marcar los dias inhabiles y calcular horas igual que el supervisor. La
+// cache los guarda con clave "YYYY-M-D" y el mes 0-indexado.
+function collectHolidayDates(years) {
+    const isos = new Set();
+
+    for (const year of years) {
+        const map = getCachedHolidays(year) || {};
+
+        for (const key of Object.keys(map)) {
+            if (!map[key]) continue;
+
+            const [y, m, d] = String(key).split("-").map(Number);
+
+            if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) {
+                continue;
+            }
+
+            isos.add(toISODate(new Date(y, m, d)));
+        }
+    }
+
+    return [...isos].sort();
+}
+
 export function computeProfileSchedule(profile, today = new Date()) {
     const { start, end } = hotScheduleRange(today);
     const months = listMonthsInRange(start, end);
@@ -530,6 +555,9 @@ export async function buildFullProjection(
         },
         rotativa: getRotativa(profile.name),
         shiftAssigned: Boolean(getShiftAssigned(profile.name)),
+        holidays: collectHolidayDates([
+            baseYear - 1, baseYear, baseYear + 1, baseYear + 2
+        ]),
         baseVersion: WORKER_APP_BASE_VERSION,
         exceptionsJson: JSON.stringify(exceptions),
         exceptionsCount: Object.keys(exceptions).length,
