@@ -37,6 +37,31 @@ test("login con Google cae a redirect solo si el popup no es viable", () => {
     assert.match(firebaseClient, /signInWithRedirect/);
 });
 
+test("Auth se inicializa con persistencia y resolver de popup/redirect", () => {
+    assert.match(firebaseClient, /initializeBrowserAuth/);
+    assert.match(firebaseClient, /initializeAuth\(app/);
+    assert.match(firebaseClient, /indexedDBLocalPersistence/);
+    assert.match(firebaseClient, /browserLocalPersistence/);
+    assert.match(firebaseClient, /browserSessionPersistence/);
+    assert.match(firebaseClient, /browserPopupRedirectResolver/);
+});
+
+test("redirect de Google se procesa solo si la app lo inicio", () => {
+    assert.match(firebaseClient, /GOOGLE_REDIRECT_PENDING_KEY/);
+    assert.match(
+        firebaseClient,
+        /markGoogleRedirectPending\(\);[\s\S]*signInWithRedirect/
+    );
+    assert.match(
+        firebaseClient,
+        /if \(!hasGoogleRedirectPending\(\)\) \{[\s\S]*clearStaleFirebaseRedirectState\(\)/
+    );
+    assert.match(
+        firebaseClient,
+        /finally \{[\s\S]*clearGoogleRedirectPending\(\)/
+    );
+});
+
 test("procesa el retorno de Google antes de escuchar auth state", () => {
     assert.match(firebaseClient, /export async function completeGoogleRedirectSignIn/);
     assert.match(firebaseClient, /getRedirectResult/);

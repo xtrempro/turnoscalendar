@@ -10,6 +10,9 @@ let initializedServices = null;
 let currentAuthUser = null;
 let mfaOperationPromise = null;
 
+const GOOGLE_REDIRECT_PENDING_KEY = "turnoplus_google_redirect_pending";
+const GOOGLE_REDIRECT_PENDING_MAX_AGE_MS = 10 * 60 * 1000;
+
 function hasConfigValue(value) {
     return Boolean(String(value || "").trim());
 }
@@ -90,6 +93,182 @@ async function loadFirebaseModule(name) {
     return import(`${FIREBASE_SDK_BASE_URL}/${name}.js`);
 }
 
+function optionalStorage(storageName) {
+    try {
+        return typeof self !== "undefined" ? self[storageName] : null;
+    } catch {
+        return null;
+    }
+}
+
+function isFirebaseRedirectStorageKey(key) {
+    const normalized = String(key || "").toLowerCase();
+
+    return (
+        normalized.startsWith("firebase:") &&
+        (
+            normalized.includes("redirect") ||
+            normalized.includes("authevent")
+        )
+    );
+}
+
+function clearFirebaseRedirectKeysFromWebStorage(storage) {
+    if (!storage) return;
+
+    const keys = [];
+
+    for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+
+        if (isFirebaseRedirectStorageKey(key)) {
+            keys.push(key);
+        }
+    }
+
+    keys.forEach(key => {
+        try {
+            storage.removeItem(key);
+        } catch {
+            // Si el navegador bloquea storage, Firebase mostrara su error propio.
+        }
+    });
+}
+
+async function clearFirebaseRedirectKeysFromIndexedDb() {
+    if (
+        typeof indexedDB === "undefined" ||
+        typeof indexedDB.databases !== "function"
+    ) {
+        return;
+    }
+
+    let databases = [];
+
+    try {
+        databases = await indexedDB.databases();
+    } catch {
+        return;
+    }
+
+    if (!databases.some(database =>
+        database.name === "firebaseLocalStorageDb"
+    )) {
+        return;
+    }
+
+    return new Promise(resolve => {
+        const request = indexedDB.open("firebaseLocalStorageDb");
+
+        request.onerror = () => resolve();
+        request.onblocked = () => resolve();
+        request.onsuccess = () => {
+            const db = request.result;
+
+            if (!db.objectStoreNames.contains("firebaseLocalStorage")) {
+                db.close();
+                resolve();
+                return;
+            }
+
+            const transaction = db.transaction(
+                "firebaseLocalStorage",
+                "readwrite"
+            );
+            const store = transaction.objectStore("firebaseLocalStorage");
+            const keysRequest = store.getAllKeys();
+
+            keysRequest.onsuccess = () => {
+                keysRequest.result
+                    .filter(isFirebaseRedirectStorageKey)
+                    .forEach(key => store.delete(key));
+            };
+
+            transaction.oncomplete = () => {
+                db.close();
+                resolve();
+            };
+            transaction.onerror = () => {
+                db.close();
+                resolve();
+            };
+            transaction.onabort = () => {
+                db.close();
+                resolve();
+            };
+        };
+    });
+}
+
+async function clearStaleFirebaseRedirectState() {
+    clearFirebaseRedirectKeysFromWebStorage(optionalStorage("localStorage"));
+    clearFirebaseRedirectKeysFromWebStorage(optionalStorage("sessionStorage"));
+    await clearFirebaseRedirectKeysFromIndexedDb();
+}
+
+function markGoogleRedirectPending() {
+    try {
+        optionalStorage("sessionStorage")?.setItem(
+            GOOGLE_REDIRECT_PENDING_KEY,
+            String(Date.now())
+        );
+    } catch {
+        // El redirect de Firebase depende de storage; si falla, Firebase
+        // devolvera un error mas especifico al intentar iniciar sesion.
+    }
+}
+
+function clearGoogleRedirectPending() {
+    try {
+        optionalStorage("sessionStorage")
+            ?.removeItem(GOOGLE_REDIRECT_PENDING_KEY);
+    } catch {
+        // No es critico para el flujo principal por popup.
+    }
+}
+
+function hasGoogleRedirectPending() {
+    try {
+        const storage = optionalStorage("sessionStorage");
+        const startedAt = Number(
+            storage?.getItem(GOOGLE_REDIRECT_PENDING_KEY) || 0
+        );
+
+        if (!startedAt) return false;
+
+        if (Date.now() - startedAt > GOOGLE_REDIRECT_PENDING_MAX_AGE_MS) {
+            clearGoogleRedirectPending();
+            return false;
+        }
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function initializeBrowserAuth(authModule, app) {
+    if (typeof authModule.initializeAuth === "function") {
+        try {
+            return authModule.initializeAuth(app, {
+                persistence: [
+                    authModule.indexedDBLocalPersistence,
+                    authModule.browserLocalPersistence,
+                    authModule.browserSessionPersistence
+                ].filter(Boolean),
+                popupRedirectResolver:
+                    authModule.browserPopupRedirectResolver
+            });
+        } catch (error) {
+            if (error?.code !== "auth/already-initialized") {
+                throw error;
+            }
+        }
+    }
+
+    return authModule.getAuth(app);
+}
+
 export async function getFirebaseServices() {
     if (!isFirebaseConfigured()) {
         throw new Error(
@@ -140,7 +319,7 @@ export async function getFirebaseServices() {
                 });
             }
 
-            const auth = authModule.getAuth(app);
+            const auth = initializeBrowserAuth(authModule, app);
             const db = firestoreModule.getFirestore(app);
             const storage = storageModule.getStorage(app);
             const functions = functionsModule.getFunctions(
@@ -217,7 +396,14 @@ async function signInWithGoogleRedirect(services = initializedServices) {
         googleProvider
     } = resolvedServices;
 
-    await authModule.signInWithRedirect(auth, googleProvider);
+    markGoogleRedirectPending();
+
+    try {
+        await authModule.signInWithRedirect(auth, googleProvider);
+    } catch (error) {
+        clearGoogleRedirectPending();
+        throw error;
+    }
 
     return {
         redirected: true,
@@ -283,6 +469,11 @@ export function signInWithGoogle() {
 }
 
 export async function completeGoogleRedirectSignIn() {
+    if (!hasGoogleRedirectPending()) {
+        await clearStaleFirebaseRedirectState();
+        return null;
+    }
+
     const services = await getFirebaseServices();
     const {
         auth,
@@ -293,6 +484,8 @@ export async function completeGoogleRedirectSignIn() {
         return await authModule.getRedirectResult(auth);
     } catch (error) {
         return handleGoogleRedirectResultError(services, error);
+    } finally {
+        clearGoogleRedirectPending();
     }
 }
 
