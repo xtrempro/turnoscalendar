@@ -43,6 +43,7 @@
     "test:profile-leave-history": "node --test tests/profile-leave-history.test.mjs",
     "test:hosting-security": "node --test tests/hosting-security-config.test.mjs",
     "test:app-check": "node --test tests/firebase-app-check-config.test.mjs",
+    "test:app-check:live": "node scripts/verify-live-app-check.mjs --env all",
     "test:functions-app-check": "node --test tests/functions-app-check-enforcement.test.mjs",
     "test:backend-authorization": "node --test functions/test/authorization.test.js functions/test/getAccountsAndUnits.test.js functions/test/workerSwapRequests.test.js tests/backend-authorization-wiring.test.mjs",
     "test:messaging": "node --test tests/messaging-regression.test.mjs",

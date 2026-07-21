@@ -33,6 +33,7 @@ const ALLOWED_REFERRERS = [
     "https://calendarioturnos-7c4d9.firebaseapp.com/*",
     "https://turnoplusfuncionarios.web.app/*",
     "https://turnoplusfuncionarios.firebaseapp.com/*",
+    "https://turnoplus-admin.web.app/*",
     "http://localhost:*/*",
     "http://127.0.0.1:*/*"
 ];

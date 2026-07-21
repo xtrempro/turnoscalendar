@@ -7,6 +7,7 @@ const PROJECT_ID = "turnoplus-test-7c4d9";
 const PROJECT_NUMBER = "596177989812";
 const APP_ID = "1:596177989812:web:6e1e5a1e194dac99fbe7e1";
 const KEY_DISPLAY_NAME = "TurnoPlus Test App Check";
+const MIN_VALID_RECAPTCHA_SCORE = 0.1;
 const REQUIRED_DOMAINS = [
     "turnoplus-test-7c4d9.web.app",
     "turnoplus-test-7c4d9.firebaseapp.com",
@@ -262,32 +263,67 @@ function appCheckConfigUrl() {
     );
 }
 
+function appCheckConfigName() {
+    return (
+        `projects/${PROJECT_NUMBER}/apps/${APP_ID}/` +
+        "recaptchaEnterpriseConfig"
+    );
+}
+
 async function getAppCheckConfig() {
     return api(appCheckConfigUrl(), {}, [404]);
 }
 
 async function ensureAppCheckConfig(siteKey) {
     const current = await getAppCheckConfig();
+    let config = current.body;
 
-    if (current.status === 200 && current.body.siteKey === siteKey) {
-        return current.body;
+    if (current.status !== 200 || config.siteKey !== siteKey) {
+        if (!APPLY) {
+            throw new Error(
+                "La app web Test no est\u00e1 registrada con la site key esperada. " +
+                "Ejecuta el comando con --apply."
+            );
+        }
+
+        const { body } = await api(
+            `${appCheckConfigUrl()}?updateMask=siteKey`,
+            {
+                method: "PATCH",
+                body: JSON.stringify({
+                    name: appCheckConfigName(),
+                    siteKey
+                })
+            }
+        );
+
+        config = body;
+    }
+
+    if (
+        Number(config?.riskAnalysis?.minValidScore) ===
+        MIN_VALID_RECAPTCHA_SCORE
+    ) {
+        return config;
     }
 
     if (!APPLY) {
         throw new Error(
-            "La app web Test no est\u00e1 registrada con la site key esperada. " +
+            "La app web Test no tiene el umbral reCAPTCHA esperado. " +
             "Ejecuta el comando con --apply."
         );
     }
 
-    const name =
-        `projects/${PROJECT_NUMBER}/apps/${APP_ID}/` +
-        "recaptchaEnterpriseConfig";
     const { body } = await api(
-        `${appCheckConfigUrl()}?updateMask=siteKey`,
+        `${appCheckConfigUrl()}?updateMask=risk_analysis.min_valid_score`,
         {
             method: "PATCH",
-            body: JSON.stringify({ name, siteKey })
+            body: JSON.stringify({
+                name: appCheckConfigName(),
+                riskAnalysis: {
+                    minValidScore: MIN_VALID_RECAPTCHA_SCORE
+                }
+            })
         }
     );
 
@@ -512,6 +548,7 @@ async function main() {
             : "App Check de TurnoPlus Test verificado."
     );
     console.log(`Site key p\u00fablica: ${siteKey}`);
+    console.log(`Score minimo reCAPTCHA: ${MIN_VALID_RECAPTCHA_SCORE}`);
     console.log(`Dominios: ${REQUIRED_DOMAINS.join(", ")}`);
     PROTECTED_FIREBASE_SERVICES.forEach(service => {
         console.log(`${service}: ${enforcementModes[service]}`);
