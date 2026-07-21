@@ -225,6 +225,25 @@ async function signInWithGoogleRedirect(services = initializedServices) {
     };
 }
 
+function shouldFallbackToRedirect(error) {
+    return [
+        "auth/popup-blocked",
+        "auth/operation-not-supported-in-this-environment"
+    ].includes(error?.code);
+}
+
+async function handleGoogleSignInError(services, error) {
+    if (shouldFallbackToRedirect(error)) {
+        return signInWithGoogleRedirect(services);
+    }
+
+    if (error?.code === "auth/multi-factor-auth-required") {
+        return resolveGoogleSignInMfa(services, error);
+    }
+
+    throw error;
+}
+
 async function handleGoogleRedirectResultError(services, error) {
     if (error?.code === "auth/multi-factor-auth-required") {
         return resolveGoogleSignInMfa(services, error);
@@ -242,7 +261,25 @@ async function handleGoogleRedirectResultError(services, error) {
 }
 
 export function signInWithGoogle() {
-    return signInWithGoogleRedirect();
+    const services = initializedServices;
+
+    if (!services) {
+        return signInWithGoogleRedirect();
+    }
+
+    const {
+        auth,
+        authModule,
+        googleProvider
+    } = services;
+
+    try {
+        return authModule
+            .signInWithPopup(auth, googleProvider)
+            .catch(error => handleGoogleSignInError(services, error));
+    } catch (error) {
+        return handleGoogleSignInError(services, error);
+    }
 }
 
 export async function completeGoogleRedirectSignIn() {

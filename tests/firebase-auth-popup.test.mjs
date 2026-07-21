@@ -5,7 +5,7 @@ import test from "node:test";
 const firebaseClient = readFileSync("js/firebaseClient.js", "utf8");
 const firebaseShell = readFileSync("js/firebaseShell.js", "utf8");
 
-test("login con Google usa redireccion como flujo principal", () => {
+test("login con Google abre popup como flujo principal", () => {
     const match = firebaseClient.match(
         /export function signInWithGoogle\(\) \{[\s\S]*?\n\}/
     );
@@ -14,8 +14,26 @@ test("login con Google usa redireccion como flujo principal", () => {
 
     const signInWithGoogle = match[0];
 
-    assert.match(signInWithGoogle, /signInWithGoogleRedirect\(\)/);
-    assert.doesNotMatch(signInWithGoogle, /signInWithPopup/);
+    assert.match(firebaseClient, /initializedServices = services;/);
+    assert.match(signInWithGoogle, /initializedServices/);
+    assert.match(signInWithGoogle, /signInWithPopup/);
+    assert.doesNotMatch(signInWithGoogle, /await\s+getFirebaseServices\(/);
+    assert.doesNotMatch(
+        firebaseClient,
+        /export\s+async\s+function\s+signInWithGoogle/
+    );
+});
+
+test("login con Google cae a redirect solo si el popup no es viable", () => {
+    assert.match(firebaseClient, /shouldFallbackToRedirect/);
+    assert.match(
+        firebaseClient,
+        /auth\/popup-blocked[\s\S]*auth\/operation-not-supported-in-this-environment/
+    );
+    assert.match(
+        firebaseClient,
+        /shouldFallbackToRedirect\(error\)[\s\S]*signInWithGoogleRedirect\(services\)/
+    );
     assert.match(firebaseClient, /signInWithRedirect/);
 });
 
