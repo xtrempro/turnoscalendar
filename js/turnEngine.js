@@ -308,8 +308,12 @@ function rotativaTurnoBase(nombre, key, visited = new Set()) {
         const replacedProfile =
             getReplacedProfileForDate(nombre, key);
 
+        // Hereda el turno base EFECTIVO del reemplazado (resolveTurnoBase), no
+        // solo su rotativa calculada: si sus turnos vienen de baseData_ o del
+        // respaldo por dia bloqueado, antes se heredaba LIBRE y el reemplazante
+        // se quedaba sin turnos.
         return replacedProfile
-            ? rotativaTurnoBase(replacedProfile, key, visited)
+            ? resolveTurnoBase(replacedProfile, key, visited)
             : TURNO.LIBRE;
     }
 
@@ -828,9 +832,13 @@ export function getProtectedDirectEditTurn(
     };
 }
 
-export function getTurnoBase(nombre, key) {
+// Turno base EFECTIVO de un trabajador: turnos base asignados (baseData_), si no
+// la rotativa calculada, y si no el respaldo por dia bloqueado. `visited` arrastra
+// el guard de ciclos para poder resolver cadenas de reemplazo sin recursion
+// infinita (un reemplazo hereda de su reemplazado, que puede ser otro reemplazo).
+function resolveTurnoBase(nombre, key, visited) {
     if (isReplacementProfile(nombre)) {
-        return rotativaTurnoBase(nombre, key);
+        return rotativaTurnoBase(nombre, key, visited);
     }
 
     if (
@@ -852,7 +860,7 @@ export function getTurnoBase(nombre, key) {
         return Number(baseData[key]) || TURNO.LIBRE;
     }
 
-    const computedBase = rotativaTurnoBase(nombre, key);
+    const computedBase = rotativaTurnoBase(nombre, key, visited);
 
     if (computedBase) {
         return computedBase;
@@ -869,6 +877,10 @@ export function getTurnoBase(nombre, key) {
     const data = getProfileData(nombre);
 
     return Number(data[key]) || TURNO.LIBRE;
+}
+
+export function getTurnoBase(nombre, key) {
+    return resolveTurnoBase(nombre, key, new Set());
 }
 
 export function getTurnoProgramado(nombre, key) {
