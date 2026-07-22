@@ -748,7 +748,8 @@ function getLeaveBalances(
     };
 }
 
-const COMP_ENTITLEMENT_OPTIONS = [10, 20];
+const COMP_ENTITLEMENT_OPTIONS = [0, 10, 20];
+const COMPENSATORY_BLOCK_AMOUNTS = [10, 20];
 
 function normalizeLegalBalanceValue(value) {
     return Math.max(
@@ -760,11 +761,13 @@ function normalizeLegalBalanceValue(value) {
 function normalizeCompEntitlement(value) {
     const numeric = Number(value);
 
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+
     return numeric > 10 ? 20 : 10;
 }
 
 function isCompensatoryBlockAmount(value) {
-    return COMP_ENTITLEMENT_OPTIONS.includes(Number(value));
+    return COMPENSATORY_BLOCK_AMOUNTS.includes(Number(value));
 }
 
 function compDaysUsedForYear(
@@ -3829,7 +3832,7 @@ function renderDisponibilidadVacaciones() {
                 ${creating
                     ? `Saldos iniciales del a\u00f1o ${year}. Puedes modificarlos antes de guardar.`
                     : `Editando saldos vigentes del a\u00f1o ${year}.`}
-                FL solo admite d&iacute;as completos. FC anual solo puede ser 10 o 20 d&iacute;as.
+                FL solo admite d&iacute;as completos. FC anual puede ser 0, 10 o 20 d&iacute;as.
             </div>
 
             ${historyHTML}
