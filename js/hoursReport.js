@@ -2445,7 +2445,11 @@ export async function buildWorkerHheeMonthSummary(
 }
 
 // Resumen HHEE de los ultimos `monthsBack`+1 meses (incluye el mes actual).
-export async function buildWorkerHheeSummaries(profile, monthsBack = 5) {
+export async function buildWorkerHheeSummaries(
+    profile,
+    monthsBack = 5,
+    monthsForward = 0
+) {
     if (!profile?.name) return [];
 
     const today = new Date();
@@ -2453,6 +2457,12 @@ export async function buildWorkerHheeSummaries(profile, monthsBack = 5) {
 
     for (let offset = monthsBack; offset >= 0; offset -= 1) {
         months.push(new Date(today.getFullYear(), today.getMonth() - offset, 1));
+    }
+
+    // Meses futuros: un turno extra o reemplazo cargado para el mes siguiente
+    // tambien tiene que verse en HH.EE, no solo al llegar ese mes.
+    for (let offset = 1; offset <= monthsForward; offset += 1) {
+        months.push(new Date(today.getFullYear(), today.getMonth() + offset, 1));
     }
 
     const summaries = await Promise.all(

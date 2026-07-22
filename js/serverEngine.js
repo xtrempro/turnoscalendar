@@ -40,6 +40,9 @@ import {
 } from "./hoursReport.js";
 
 const OVERTIME_SUMMARY_MONTHS_BACK = 2;
+// Tambien se publican los meses siguientes: los turnos extra y reemplazos se
+// cargan con anticipacion y deben verse en HH.EE apenas se agregan.
+const OVERTIME_SUMMARY_MONTHS_FORWARD = 3;
 // v2: los resumenes ahora incluyen extraShifts (detalle de turnos extra por mes).
 const OVERTIME_SUMMARY_CACHE_VERSION = 2;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
@@ -280,7 +283,7 @@ function computeProfileExceptions(profile, today = new Date()) {
 async function computeOvertimeSummaries(profile, schedule) {
     try {
         const baseSummaries = await buildWorkerHheeSummaries(
-            profile, OVERTIME_SUMMARY_MONTHS_BACK
+            profile, OVERTIME_SUMMARY_MONTHS_BACK, OVERTIME_SUMMARY_MONTHS_FORWARD
         );
         const includedMonths = new Set(
             baseSummaries.map(item =>

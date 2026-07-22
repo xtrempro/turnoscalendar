@@ -658,6 +658,14 @@ export function saveReplacement(data) {
 
     saveReplacements(replacements);
 
+    // El trabajador necesita saber en la notificacion a quien cubre ese dia, o
+    // el motivo cuando el turno extra no reemplaza a nadie.
+    const extraShiftDetail = hasReplacedWorker
+        ? `${data.isLoan ? "Cubres como prestamo a" : "Reemplazas a"} ${data.replaced}${absenceType ? ` por ${absenceType}` : ""}.`
+        : String(data.reason || absenceType || "").trim()
+            ? `Motivo: ${String(data.reason || absenceType).trim()}.`
+            : "";
+
     if (typeof window !== "undefined") {
         window.dispatchEvent(
             new CustomEvent("proturnos:calendarProfilesChanged", {
@@ -674,9 +682,12 @@ export function saveReplacement(data) {
                         title: data.addsShift === false
                             ? "Reemplazo actualizado"
                             : "Nuevo turno extra",
-                        message: data.addsShift === false
-                            ? "Se actualizo informacion de reemplazo en tu calendario."
-                            : `Se agrego un turno extra para el ${formatNotificationDate(record.date)}.`,
+                        message: [
+                            data.addsShift === false
+                                ? "Se actualizo informacion de reemplazo en tu calendario."
+                                : `Se agrego un turno extra para el ${formatNotificationDate(record.date)}.`,
+                            extraShiftDetail
+                        ].filter(Boolean).join(" "),
                         affectedDates: [record.date],
                         entityId: id,
                         notifyProfiles: [data.worker].filter(Boolean)
