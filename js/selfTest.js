@@ -74,18 +74,23 @@ import {
     findDuplicateEmailProfile,
     getEmailValidationMessage
 } from "./emailUtils.js";
+import { addReplacementContract } from "./contracts.js";
 
 const FAKE_PROFILE = "__selftest__";
 const FAKE_SWAP_RECEIVER = "__receiver___selftest__";
 const FAKE_SWAP_SAME_TURN = "__same_turn___selftest__";
 const FAKE_SWAP_ABSENT = "__absent___selftest__";
 const FAKE_SWAP_OTHER_ROLE = "__other_role___selftest__";
+const FAKE_REPLACED = "__reemplazado___selftest__";
+const FAKE_REPLACEMENT = "__reemplazante___selftest__";
 const FAKE_SWAP_PROFILES = [
     FAKE_PROFILE,
     FAKE_SWAP_RECEIVER,
     FAKE_SWAP_SAME_TURN,
     FAKE_SWAP_ABSENT,
-    FAKE_SWAP_OTHER_ROLE
+    FAKE_SWAP_OTHER_ROLE,
+    FAKE_REPLACED,
+    FAKE_REPLACEMENT
 ];
 
 function assert(condition, message) {
@@ -165,6 +170,44 @@ function setupSwapSelfTest() {
 function hasEligibleSwapReceiver(giver, keyDay, receiver) {
     return getEligibleSwapReceivers(giver, keyDay)
         .some(profile => profile.name === receiver);
+}
+
+// Escenario para las pruebas de herencia de turnos: un titular con rotativa
+// 4turno y un reemplazante con contrato vigente que lo cubre (2 al 8 de marzo de
+// 2026). Devuelve las claves de los dias cubiertos por el contrato.
+function setupReplacementInheritanceSelfTest({
+    baseData = null,
+    rotationMode = "inherit"
+} = {}) {
+    const start = "2026-03-02";
+    const end = "2026-03-08";
+
+    saveProfiles([
+        selfTestProfile(FAKE_REPLACED),
+        {
+            ...selfTestProfile(FAKE_REPLACEMENT),
+            contractType: "Reemplazo"
+        }
+    ]);
+    saveRotativa(
+        { type: "4turno", start, firstTurn: "larga" },
+        FAKE_REPLACED
+    );
+
+    if (baseData) {
+        saveBaseProfileData(baseData, FAKE_REPLACED);
+    }
+
+    addReplacementContract(FAKE_REPLACEMENT, {
+        start,
+        end,
+        replaces: FAKE_REPLACED,
+        reason: "Licencia Médica",
+        leaveRef: "selftest-lm",
+        rotationMode
+    });
+
+    return [2, 3, 4, 5, 6, 7, 8].map(day => key(2026, 2, day));
 }
 
 const TESTS = [
@@ -640,6 +683,85 @@ const TESTS = [
                     { estamento: "Profesional", profession: "Enfermería" }
                 ) === false,
                 "distinto estamento no deberia ser compatible"
+            );
+        }
+    },
+    {
+        name: "Contrato de reemplazo: hereda los turnos del reemplazado",
+        run() {
+            const keys = setupReplacementInheritanceSelfTest();
+
+            assert(
+                keys.some(keyDay =>
+                    getTurnoBase(FAKE_REPLACED, keyDay) !== TURNO.LIBRE
+                ),
+                "el reemplazado deberia tener turnos en el periodo"
+            );
+
+            keys.forEach(keyDay => {
+                assertEqual(
+                    getTurnoBase(FAKE_REPLACEMENT, keyDay),
+                    getTurnoBase(FAKE_REPLACED, keyDay),
+                    `herencia de turno en ${keyDay}`
+                );
+            });
+        }
+    },
+    {
+        name: "Contrato de reemplazo: hereda los turnos base asignados, no solo la rotativa",
+        run() {
+            // Turnos base asignados que sobrescriben la rotativa del reemplazado.
+            // Antes se heredaba solo la rotativa calculada, asi que el
+            // reemplazante quedaba sin turnos (o con los turnos equivocados).
+            const keys = [2, 3, 4, 5, 6, 7, 8]
+                .map(day => key(2026, 2, day));
+            const baseData = {};
+
+            keys.forEach(keyDay => {
+                baseData[keyDay] = TURNO.NOCHE;
+            });
+
+            setupReplacementInheritanceSelfTest({ baseData });
+
+            keys.forEach(keyDay => {
+                assertEqual(
+                    getTurnoBase(FAKE_REPLACED, keyDay),
+                    TURNO.NOCHE,
+                    `turno base asignado del reemplazado en ${keyDay}`
+                );
+                assertEqual(
+                    getTurnoBase(FAKE_REPLACEMENT, keyDay),
+                    TURNO.NOCHE,
+                    `herencia del turno asignado en ${keyDay}`
+                );
+            });
+        }
+    },
+    {
+        name: "Contrato de reemplazo: en modo libre no hereda turnos",
+        run() {
+            const keys = setupReplacementInheritanceSelfTest({
+                rotationMode: "free"
+            });
+
+            keys.forEach(keyDay => {
+                assertEqual(
+                    getTurnoBase(FAKE_REPLACEMENT, keyDay),
+                    TURNO.LIBRE,
+                    `modo libre no deberia heredar en ${keyDay}`
+                );
+            });
+        }
+    },
+    {
+        name: "Contrato de reemplazo: fuera de su vigencia no hereda turnos",
+        run() {
+            setupReplacementInheritanceSelfTest();
+
+            assertEqual(
+                getTurnoBase(FAKE_REPLACEMENT, key(2026, 2, 20)),
+                TURNO.LIBRE,
+                "sin contrato vigente ese dia no deberia heredar"
             );
         }
     },
