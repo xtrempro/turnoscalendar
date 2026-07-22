@@ -399,7 +399,7 @@ Arquitectura:
 - `firebase.rules` bloquea por completo los antiguos `system/appState` y `appStateChunks`; no existe fallback monolitico.
 - Las unidades enlazadas acceden solo por Cloud Functions a la proyeccion sanitizada.
 - Los adjuntos nuevos se guardan en `workspaces/{workspaceId}/attachments/{moduleId}/{ownerId}/{recordId}/{fileName}`.
-- `storage.rules` exige membresia, permiso del modulo, metadatos coherentes, tipos permitidos y limite de 5 MB. El cargador original puede eliminar su propio archivo.
+- `storage.rules` exige membresia, permiso del modulo, metadatos coherentes, tipos permitidos y limite de 10 MB por archivo. El cargador original puede eliminar su propio archivo.
 - Los adjuntos base64 antiguos siguen siendo legibles por compatibilidad, pero los nuevos perfiles, marcajes, agenda, memorandos y postulantes usan Firebase Storage.
 - MFA/TOTP esta implementado, pero apagado en todos los entornos durante la etapa comercial inicial. La UI conserva el enrolamiento y la resolucion del segundo factor como capacidad dormida para activarla solo cuando un centro lo solicite o pase a ser un requisito esencial.
 - El proyecto productivo tiene Firestore con proteccion contra eliminacion, PITR de 7 dias y respaldo diario con retencion de 7 dias.

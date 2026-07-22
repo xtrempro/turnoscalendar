@@ -12,9 +12,11 @@ import {
 
 export const ATTACHMENT_ACCEPT =
     ".png,.jpg,.jpeg,.gif,.webp,.bmp,.heic,.heif,.pdf,.txt,.csv,.doc,.docx,.xls,.xlsx";
-export const MAX_ATTACHMENT_SIZE = 5 * 1024 * 1024;
+export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
 export const MAX_ATTACHMENT_FILES = 10;
-export const MAX_ATTACHMENT_TOTAL_SIZE = 12 * 1024 * 1024;
+export const MAX_ATTACHMENT_TOTAL_SIZE =
+    MAX_ATTACHMENT_SIZE * MAX_ATTACHMENT_FILES;
+const STORAGE_APP_CHECK_TIMEOUT_MS = 12000;
 
 const ALLOWED_EXTENSIONS = new Set(
     ATTACHMENT_ACCEPT.split(",").map(extension => extension.slice(1))
@@ -60,6 +62,27 @@ const MIME_BY_EXTENSION = {
     xls: "application/vnd.ms-excel",
     xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 };
+const PREVIEWABLE_MIME_TYPES = new Set([
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "text/plain",
+    "text/csv"
+]);
+const PREVIEWABLE_EXTENSIONS = new Set([
+    "pdf",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+    "txt",
+    "csv"
+]);
 
 function fileExtension(name) {
     const match = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/);
@@ -81,6 +104,166 @@ function fileContentType(file) {
     return String(file.type || "").toLowerCase() ||
         MIME_BY_EXTENSION[fileExtension(file.name)] ||
         "application/octet-stream";
+}
+
+function baseContentType(type) {
+    return String(type || "")
+        .toLowerCase()
+        .split(";")[0]
+        .trim();
+}
+
+export function canPreviewAttachment(attachment) {
+    const type = baseContentType(attachment?.type);
+
+    if (PREVIEWABLE_MIME_TYPES.has(type)) return true;
+
+    return !type &&
+        PREVIEWABLE_EXTENSIONS.has(fileExtension(attachment?.name));
+}
+
+function timeoutPromise(ms) {
+    return new Promise((_, reject) => {
+        globalThis.setTimeout(() => {
+            reject(new Error("No se pudo validar App Check a tiempo."));
+        }, ms);
+    });
+}
+
+async function waitForStorageAppCheck(services, action) {
+    if (!services?.appCheck || !services?.appCheckModule?.getToken) return;
+
+    try {
+        await Promise.race([
+            services.appCheckReadyPromise,
+            timeoutPromise(STORAGE_APP_CHECK_TIMEOUT_MS)
+        ]);
+    } catch {
+        // Se pide token fresco abajo para obtener el error real de App Check.
+    }
+
+    try {
+        await Promise.race([
+            services.appCheckModule.getToken(services.appCheck, false),
+            timeoutPromise(STORAGE_APP_CHECK_TIMEOUT_MS)
+        ]);
+    } catch (error) {
+        throw attachmentStorageError(error, action);
+    }
+}
+
+async function getStorageServices(action) {
+    const services = await getFirebaseServices();
+
+    await waitForStorageAppCheck(services, action);
+
+    return services;
+}
+
+export function attachmentStorageErrorMessage(error, action = "usar") {
+    const code = String(error?.code || "");
+    const message = String(error?.message || "");
+    const normalizedMessage = message.toLowerCase();
+
+    if (error?.planBlocked) return message;
+    if (error?.attachmentStorageMessage) return message;
+
+    if (code === "storage/object-not-found") {
+        return "El archivo adjunto ya no esta disponible en TurnoPlus.";
+    }
+
+    if (
+        code === "storage/unauthenticated" ||
+        code === "storage/unauthorized" ||
+        code === "permission-denied"
+    ) {
+        return "No tienes permisos para acceder a este archivo adjunto.";
+    }
+
+    if (
+        code === "storage/retry-limit-exceeded" ||
+        code === "storage/canceled" ||
+        code === "storage/unknown" ||
+        normalizedMessage.includes("retry time") ||
+        normalizedMessage.includes("app check")
+    ) {
+        return (
+            `Firebase Storage no pudo ${action} el archivo. ` +
+            "Revisa la conexion, recarga TurnoPlus e intenta nuevamente."
+        );
+    }
+
+    return `No se pudo ${action} el archivo adjunto. Intenta nuevamente.`;
+}
+
+function attachmentStorageError(error, action) {
+    const next = new Error(attachmentStorageErrorMessage(error, action));
+
+    next.code = error?.code || "storage/operation-failed";
+    next.cause = error;
+    next.attachmentStorageMessage = true;
+
+    return next;
+}
+
+function renderAttachmentTabMessage(openedTab, title, message) {
+    if (!openedTab) return;
+
+    try {
+        const doc = openedTab.document;
+
+        doc.open();
+        doc.write(`
+            <!doctype html>
+            <html lang="es">
+            <head>
+                <meta charset="utf-8">
+                <title></title>
+                <style>
+                    body {
+                        margin: 0;
+                        min-height: 100vh;
+                        display: grid;
+                        place-items: center;
+                        background: #f5f7fb;
+                        color: #14233b;
+                        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                    }
+                    main {
+                        width: min(460px, calc(100vw - 32px));
+                        padding: 28px;
+                        border: 1px solid #d9e1ef;
+                        border-radius: 10px;
+                        background: #fff;
+                        box-shadow: 0 18px 55px rgba(22, 37, 62, 0.14);
+                    }
+                    strong {
+                        display: block;
+                        margin-bottom: 10px;
+                        font-size: 20px;
+                    }
+                    p {
+                        margin: 0;
+                        color: #596a85;
+                        line-height: 1.5;
+                    }
+                </style>
+            </head>
+            <body>
+                <main>
+                    <strong></strong>
+                    <p></p>
+                </main>
+            </body>
+            </html>
+        `);
+        doc.close();
+        doc.title = title;
+        doc.querySelector("strong").textContent = title;
+        doc.querySelector("p").textContent = message;
+    } catch {
+        // Si el navegador bloquea esta escritura, el modal principal informa.
+    }
 }
 
 function storageContext(options = {}) {
@@ -138,7 +321,7 @@ export function validateAttachmentFile(file) {
     }
 
     if (file.size <= 0 || file.size > MAX_ATTACHMENT_SIZE) {
-        throw new Error("Cada adjunto debe pesar entre 1 byte y 5 MB.");
+        throw new Error("Cada adjunto debe pesar entre 1 byte y 10 MB.");
     }
 
     const extension = fileExtension(file.name);
@@ -171,7 +354,9 @@ export function validateAttachmentFiles(files) {
     });
 
     if (totalSize > MAX_ATTACHMENT_TOTAL_SIZE) {
-        throw new Error("El total de adjuntos no puede superar 12 MB.");
+        throw new Error(
+            `El total de adjuntos no puede superar ${MAX_ATTACHMENT_FILES * 10} MB.`
+        );
     }
 
     return list;
@@ -245,23 +430,27 @@ export async function readAttachmentFiles(files, options = {}) {
             `${id}_${safeName}`
         ].join("/");
         const { storage, storageModule } =
-            await getFirebaseServices();
+            await getStorageServices("subir");
 
-        await storageModule.uploadBytes(
-            storageModule.ref(storage, storagePath),
-            file,
-            {
-                contentType: fileContentType(file),
-                customMetadata: {
-                    workspaceId: context.workspaceId,
-                    moduleId: context.moduleId,
-                    ownerId: context.ownerId,
-                    recordId: context.recordId,
-                    uploadedByUid: context.userId,
-                    originalName: String(file.name || "").slice(0, 240)
+        try {
+            await storageModule.uploadBytes(
+                storageModule.ref(storage, storagePath),
+                file,
+                {
+                    contentType: fileContentType(file),
+                    customMetadata: {
+                        workspaceId: context.workspaceId,
+                        moduleId: context.moduleId,
+                        ownerId: context.ownerId,
+                        recordId: context.recordId,
+                        uploadedByUid: context.userId,
+                        originalName: String(file.name || "").slice(0, 240)
+                    }
                 }
-            }
-        );
+            );
+        } catch (error) {
+            throw attachmentStorageError(error, "subir");
+        }
 
         attachments.push({
             id,
@@ -290,11 +479,15 @@ export function hasAttachmentContent(attachment) {
 async function storedAttachmentBlob(attachment) {
     if (!attachment?.storagePath) return null;
 
-    const { storage, storageModule } = await getFirebaseServices();
+    const { storage, storageModule } = await getStorageServices("abrir");
 
-    return storageModule.getBlob(
-        storageModule.ref(storage, attachment.storagePath)
-    );
+    try {
+        return await storageModule.getBlob(
+            storageModule.ref(storage, attachment.storagePath)
+        );
+    } catch (error) {
+        throw attachmentStorageError(error, "abrir");
+    }
 }
 
 export async function openAttachmentFile(
@@ -305,11 +498,12 @@ export async function openAttachmentFile(
         throw new Error("Este adjunto no tiene contenido disponible.");
     }
 
-    const openedTab = newTab
+    const shouldPreview = newTab && canPreviewAttachment(attachment);
+    const openedTab = shouldPreview
         ? window.open("about:blank", "_blank")
         : null;
 
-    if (newTab && !openedTab) {
+    if (shouldPreview && !openedTab) {
         throw new Error(
             "El navegador bloqueo la ventana emergente."
         );
@@ -317,6 +511,11 @@ export async function openAttachmentFile(
 
     if (openedTab) {
         openedTab.opener = null;
+        renderAttachmentTabMessage(
+            openedTab,
+            "Abriendo archivo",
+            "TurnoPlus esta preparando el adjunto."
+        );
     }
 
     let url = "";
@@ -328,11 +527,15 @@ export async function openAttachmentFile(
 
         url = URL.createObjectURL(blob);
     } catch (error) {
-        openedTab?.close();
+        renderAttachmentTabMessage(
+            openedTab,
+            "No se pudo abrir",
+            attachmentStorageErrorMessage(error, "abrir")
+        );
         throw error;
     }
 
-    if (newTab) {
+    if (shouldPreview) {
         openedTab.location.replace(url);
     } else {
         const link = window.document.createElement("a");
@@ -349,11 +552,15 @@ export async function openAttachmentFile(
 export async function deleteStoredAttachment(attachment) {
     if (!attachment?.storagePath) return;
 
-    const { storage, storageModule } = await getFirebaseServices();
+    const { storage, storageModule } = await getStorageServices("eliminar");
 
-    await storageModule.deleteObject(
-        storageModule.ref(storage, attachment.storagePath)
-    );
+    try {
+        await storageModule.deleteObject(
+            storageModule.ref(storage, attachment.storagePath)
+        );
+    } catch (error) {
+        throw attachmentStorageError(error, "eliminar");
+    }
 }
 
 /**

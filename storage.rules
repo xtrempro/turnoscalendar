@@ -101,10 +101,10 @@ service firebase.storage {
 
     function allowedFile() {
       // Solo imagenes raster (NO svg, que puede contener scripts), PDF, Office y
-      // texto plano. Limite de 5 MB para reducir abuso y mantener los adjuntos
+      // texto plano. Limite de 10 MB por archivo para reducir abuso y mantener los adjuntos
       // compatibles con el almacenamiento local/offline del navegador.
       return request.resource.size > 0 &&
-        request.resource.size <= 5 * 1024 * 1024 &&
+        request.resource.size <= 10 * 1024 * 1024 &&
         request.resource.contentType.matches(
           "image/(png|jpeg|gif|webp|bmp|heic|heif)|application/pdf|application/msword|application/vnd.openxmlformats-officedocument.wordprocessingml.document|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet|text/plain|text/csv"
         );
