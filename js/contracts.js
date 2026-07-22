@@ -96,7 +96,8 @@ export function normalizeContract(contract = {}) {
         leaveStart: String(contract.leaveStart || "").trim(),
         leaveEnd: String(contract.leaveEnd || "").trim(),
         rotationMode: normalizeReplacementRotationMode(
-            contract.rotationMode
+            contract.rotationMode,
+            REPLACEMENT_ROTATION_MODE.INHERIT
         ),
         createdAt:
             contract.createdAt ||
@@ -226,9 +227,7 @@ export function getReplacementRotationModeForDate(
 
     return normalizeReplacementRotationMode(
         contract.rotationMode,
-        getRotativa(profileName).type === "libre"
-            ? REPLACEMENT_ROTATION_MODE.FREE
-            : REPLACEMENT_ROTATION_MODE.INHERIT
+        REPLACEMENT_ROTATION_MODE.INHERIT
     );
 }
 
