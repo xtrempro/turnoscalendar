@@ -2305,6 +2305,19 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     font-weight: 600;
 }
 
+/* Selector de archivos desactivado fuera del modo edicion: se ve claramente
+   apagado y con cursor bloqueado (incluye el boton nativo "Elegir archivos"). */
+.profile-file-row input[type="file"]:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.profile-file-row input[type="file"]:disabled::file-selector-button {
+    cursor: not-allowed;
+    opacity: 0.6;
+    filter: grayscale(1);
+}
+
 .profile-email-cell {
     position: relative;
     display: block;
