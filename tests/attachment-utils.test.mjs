@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
@@ -68,6 +69,19 @@ test("solo archivos previsualizables abren pestana", () => {
         name: "documento.docx",
         type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     }), false);
+});
+
+test("los adjuntos de Storage se abren por URL de descarga, no con getBlob", () => {
+    // getBlob hace un fetch del binario que exige CORS del bucket y se cuelga
+    // ~2 min (retry-limit-exceeded). Abrir con getDownloadURL por navegacion lo
+    // evita. Esta guarda impide reintroducir getBlob para abrir adjuntos.
+    const source = readFileSync(
+        fileURLToPath(new URL("../js/attachmentUtils.js", import.meta.url)),
+        "utf8"
+    );
+
+    assert.match(source, /getDownloadURL\(/);
+    assert.doesNotMatch(source, /storageModule\.getBlob\(/);
 });
 
 test("errores tecnicos de Firebase Storage se traducen a mensajes utiles", () => {

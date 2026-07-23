@@ -476,13 +476,13 @@ export function hasAttachmentContent(attachment) {
     return Boolean(attachment?.dataUrl || attachment?.storagePath);
 }
 
-async function storedAttachmentBlob(attachment) {
-    if (!attachment?.storagePath) return null;
+async function storedAttachmentDownloadURL(attachment) {
+    if (!attachment?.storagePath) return "";
 
     const { storage, storageModule } = await getStorageServices("abrir");
 
     try {
-        return await storageModule.getBlob(
+        return await storageModule.getDownloadURL(
             storageModule.ref(storage, attachment.storagePath)
         );
     } catch (error) {
@@ -518,14 +518,20 @@ export async function openAttachmentFile(
         );
     }
 
+    // Para adjuntos en Storage se abre la URL de descarga (getDownloadURL) por
+    // NAVEGACION, no descargando el binario con getBlob. getBlob hace un fetch
+    // directo del contenido que exige CORS del bucket (y dispara un preflight por
+    // la cabecera de App Check); cuando eso falla, el SDK reintenta ~2 min y
+    // termina en storage/retry-limit-exceeded ("no se pudo abrir"). La URL con
+    // token se sirve por navegacion, sin CORS ni fetch del binario.
+    // Los adjuntos antiguos (solo dataUrl local) siguen usando un object URL.
+    const usesObjectUrl = !attachment.storagePath;
     let url = "";
 
     try {
-        const blob = attachment.storagePath
-            ? await storedAttachmentBlob(attachment)
-            : dataUrlToBlob(attachment.dataUrl);
-
-        url = URL.createObjectURL(blob);
+        url = attachment.storagePath
+            ? await storedAttachmentDownloadURL(attachment)
+            : URL.createObjectURL(dataUrlToBlob(attachment.dataUrl));
     } catch (error) {
         renderAttachmentTabMessage(
             openedTab,
@@ -541,12 +547,21 @@ export async function openAttachmentFile(
         const link = window.document.createElement("a");
 
         link.href = url;
-        link.download = attachment.name || "archivo";
+        // La URL de Storage es de otro origen: el atributo download se ignora, asi
+        // que se abre en una pestana nueva (sin sacar al usuario de TurnoPlus). El
+        // object URL local si respeta la descarga con el nombre original.
+        if (usesObjectUrl) {
+            link.download = attachment.name || "archivo";
+        } else {
+            link.target = "_blank";
+        }
         link.rel = "noopener";
         link.click();
     }
 
-    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    if (usesObjectUrl) {
+        window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
 }
 
 export async function deleteStoredAttachment(attachment) {
