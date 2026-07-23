@@ -467,6 +467,60 @@ function buildSupervisorReminders(profile) {
         }));
 }
 
+// ───────── Cumpleaños de compañeros ─────────
+
+// Los mismos cumpleaños que ve el supervisor en el resumen de RRHH, para el
+// calendario del trabajador. Se recurren cada año (periodicidad Anual en la
+// PWA). Se usa un año de referencia fijo para NO exponer la edad.
+const BIRTHDAY_REFERENCE_YEAR = 2000;
+
+function birthdayMonthDay(value) {
+    const source = String(value || "").trim();
+    let match = source.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) return { month: Number(match[2]), day: Number(match[3]) };
+
+    match = source.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (match) return { month: Number(match[2]), day: Number(match[1]) };
+
+    return null;
+}
+
+function birthdayFirstName(name) {
+    return String(name || "").trim().split(/\s+/)[0] || "Compañero";
+}
+
+function buildBirthdayReminders(currentProfileName = "") {
+    const selfKey = normalizeText(currentProfileName);
+
+    return getProfiles()
+        .filter(isProfileActive)
+        .filter(profile => normalizeText(profile.name) !== selfKey)
+        .map(profile => {
+            const parts = birthdayMonthDay(profile.birthDate);
+
+            if (
+                !parts ||
+                parts.month < 1 || parts.month > 12 ||
+                parts.day < 1 || parts.day > 31
+            ) {
+                return null;
+            }
+
+            const date = [
+                BIRTHDAY_REFERENCE_YEAR,
+                String(parts.month).padStart(2, "0"),
+                String(parts.day).padStart(2, "0")
+            ].join("-");
+
+            return {
+                id: `bday_${normalizeText(profile.name)}_${parts.month}_${parts.day}`,
+                date,
+                name: birthdayFirstName(profile.name)
+            };
+        })
+        .filter(Boolean);
+}
+
 function buildSwapLimit(profileName, today = new Date()) {
     const config = getTurnChangeConfig();
     const limit = Number(config.monthlySwapLimit) || 0;
@@ -573,6 +627,7 @@ export async function buildFullProjection(
         scheduleEnd: schedule.end,
         days: schedule.days,
         supervisorReminders: buildSupervisorReminders(profile),
+        birthdays: buildBirthdayReminders(profile.name),
         overtimeSummaries,
         overtimeSummariesCacheVersion: OVERTIME_SUMMARY_CACHE_VERSION,
         overtimeSummariesStatus: "fresh",
