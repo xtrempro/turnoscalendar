@@ -1996,6 +1996,19 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     gap: 8px;
 }
 
+/* Documentos del perfil en dos columnas para que un solo archivo no ocupe toda
+   la fila. minmax(0, 1fr) permite que el nombre se recorte con puntos suspensivos
+   sin desbordar. En pantallas angostas vuelve a una sola columna. */
+#profileDocsList {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 720px) {
+    #profileDocsList {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
 .attachment-empty {
     padding: 12px 14px;
     border-radius: 14px;
