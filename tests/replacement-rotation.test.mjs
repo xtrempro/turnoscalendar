@@ -95,7 +95,9 @@ test("permite crear un perfil de reemplazo sin contrato", () => {
         mode: PROFILE_MODE.CREATE,
         name: "Reemplazante sin contrato",
         estamento: "Profesional",
-        contractType: "Reemplazo"
+        contractType: "Reemplazo",
+        // El RUT es obligatorio al crear (ancla de identidad del trabajador).
+        rut: "17.816.632-8"
     });
 
     assert.deepEqual(validateProfileDraft(), { ok: true });

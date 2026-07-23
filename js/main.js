@@ -4144,7 +4144,11 @@ function renderDashboardState() {
 
     DOM.profileNameInput.disabled = !editing;
     DOM.profileEmailInput.disabled = !editing;
-    DOM.profileRutInput.disabled = !editing;
+    // El RUT ya guardado no se puede modificar: es el ancla de identidad del
+    // trabajador (mantiene datos y respaldo aunque cambie su correo). Solo es
+    // editable al crear el perfil o si un perfil antiguo aun no tiene RUT.
+    const rutAlreadySet = Boolean(String(data.rut || "").trim());
+    DOM.profileRutInput.disabled = !editing || rutAlreadySet;
     DOM.profilePhoneInput.disabled = !editing;
     DOM.profileBirthDateInput.disabled = !editing;
     DOM.profileDocsInput.disabled = !editing;

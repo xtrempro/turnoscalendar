@@ -210,6 +210,20 @@ export function validateProfileDraft() {
         }
     }
 
+    // El RUT es el ancla de identidad del trabajador: mantiene sus datos y su
+    // respaldo aunque el supervisor le cambie el correo o cambie de cuenta.
+    // Por eso es obligatorio al crear y, una vez guardado, no se puede editar.
+    if (
+        profileDraft.mode === PROFILE_MODE.CREATE &&
+        !String(profileDraft.rut || "").trim()
+    ) {
+        return {
+            ok: false,
+            message: "El RUT es obligatorio para crear el perfil: es el identificador que conserva los datos del trabajador aunque cambie su correo.",
+            focusRut: true
+        };
+    }
+
     if (rutMessage) {
         return {
             ok: false,

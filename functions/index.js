@@ -788,6 +788,119 @@ exports.createSupervisorInvite = onCall(
   }
 );
 
+// Respaldo personal del trabajador (recordatorios, agenda propia, colores)
+// anclado al RUT, para que sus datos lo sigan aunque cambie de correo o de
+// cuenta de Google. El RUT NO lo declara el cliente: se deriva del enlace
+// canonico del uid (workerLinks/{uid}.inviteId) y de la invitacion, cuyo
+// profileRut lo fija el supervisor y el trabajador no puede alterar. Asi un
+// trabajador solo puede tocar el respaldo de SU propio RUT.
+function normalizeRutForBackup(value) {
+  return String(value || "").replace(/[^0-9kK]/g, "").toUpperCase();
+}
+
+// Deriva el RUT de confianza para (uid, workspace). Devuelve "" si no hay un
+// vinculo verificable: en ese caso el cliente se queda con el respaldo por uid.
+async function trustedRutForWorker(uid, workspaceId) {
+  const linkSnap = await db
+    .doc(`workspaces/${workspaceId}/workerLinks/${uid}`)
+    .get();
+
+  if (!linkSnap.exists) {
+    throw new HttpsError(
+      "permission-denied",
+      "No estas enlazado a esta unidad."
+    );
+  }
+
+  const inviteId = String(linkSnap.data()?.inviteId || "").trim();
+  if (!inviteId) return "";
+
+  const inviteSnap = await db
+    .doc(`workspaces/${workspaceId}/workerAppInvites/${inviteId}`)
+    .get();
+
+  if (!inviteSnap.exists) return "";
+
+  return normalizeRutForBackup(inviteSnap.data()?.profileRut);
+}
+
+// El payload es del propio trabajador, pero se acota para no aceptar escrituras
+// arbitrarias enormes en Firestore.
+function sanitizePersonalBackupPayload(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  const serialized = JSON.stringify(payload);
+  if (serialized.length > 700000) {
+    throw new HttpsError(
+      "invalid-argument",
+      "El respaldo es demasiado grande."
+    );
+  }
+
+  return JSON.parse(serialized);
+}
+
+exports.personalBackupSync = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para respaldar tus datos."
+      );
+    }
+
+    const action = cleanCallableText(request.data?.action, 16);
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+
+    if (!workspaceId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Falta identificar la unidad."
+      );
+    }
+
+    if (action !== "read" && action !== "write") {
+      throw new HttpsError("invalid-argument", "Accion no valida.");
+    }
+
+    const rut = await trustedRutForWorker(uid, workspaceId);
+
+    // Sin RUT de confianza (perfil antiguo sin RUT): no hay respaldo por RUT.
+    // El cliente conserva su respaldo por uid, que igual sobrevive a reinstalar.
+    if (!rut) return { rut: null, backup: null };
+
+    const ref = db.doc(`personalBackups/${rut}`);
+
+    if (action === "read") {
+      const snap = await ref.get();
+      return {
+        rut,
+        backup: snap.exists ? snap.data()?.payload || null : null
+      };
+    }
+
+    const payload = sanitizePersonalBackupPayload(request.data?.payload);
+
+    await ref.set(
+      {
+        payload,
+        uid,
+        rut,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      },
+      { merge: true }
+    );
+
+    return { rut, ok: true };
+  }
+);
+
 exports.sendSupervisorInviteEmail = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,

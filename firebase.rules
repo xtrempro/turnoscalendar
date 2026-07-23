@@ -460,6 +460,15 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Respaldo personal del trabajador anclado al RUT (recordatorios, agenda,
+    // colores). Ningun cliente lo lee ni escribe directo: pasa por la Cloud
+    // Function personalBackupSync, que verifica el vinculo uid<->RUT con el
+    // Admin SDK. Asi el RUT no lo puede declarar el cliente para leer datos
+    // ajenos.
+    match /personalBackups/{rutKey} {
+      allow read, write: if false;
+    }
+
     // Registro de administradores globales. Los clientes no pueden leerlo ni
     // modificarlos; solo las Cloud Functions con Admin SDK lo consultan.
     match /adminUsers/{adminUid} {
