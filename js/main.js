@@ -391,6 +391,7 @@ import {
     formatContractDate,
     getContractsForProfile,
     isHonorariaContractType,
+    isOtherContractType,
     isReplacementContractType
 } from "./contracts.js";
 import {
@@ -1125,6 +1126,47 @@ function syncProfileRotationOptions(data = profileDraft) {
     if (libreOption) {
         libreOption.hidden = !libreAllowed;
         libreOption.disabled = !libreAllowed;
+    }
+}
+
+function contractBlocksUnionLeave(data = profileDraft) {
+    return (
+        isReplacementDraft(data) ||
+        isHonorariaDraft(data) ||
+        isOtherContractType(data.contractType)
+    );
+}
+
+function contractBlocksGrade(data = profileDraft) {
+    return (
+        isHonorariaDraft(data) ||
+        isOtherContractType(data.contractType)
+    );
+}
+
+function contractBlocksShiftAssignment(data = profileDraft) {
+    return (
+        isReplacementDraft(data) ||
+        isHonorariaDraft(data) ||
+        isOtherContractType(data.contractType)
+    );
+}
+
+function placeProfileRotationRow(isHonorariaContract) {
+    const row = DOM.profileRotationRow;
+
+    if (!row) return;
+
+    if (
+        isHonorariaContract &&
+        DOM.honorariaRotationSlot?.parentNode
+    ) {
+        DOM.honorariaRotationSlot.after(row);
+        return;
+    }
+
+    if (DOM.profileRotationAnchor?.parentNode) {
+        DOM.profileRotationAnchor.after(row);
     }
 }
 
@@ -3793,9 +3835,17 @@ function renderDisponibilidadVacaciones() {
         year,
         holidays
     );
-    const showCompBalance = isProfileEditing()
-        ? Boolean(profileDraft.shiftAssigned)
-        : getShiftAssigned(profile.name, currentDate);
+    const shiftAssignmentAvailable =
+        creating
+            ? !contractBlocksShiftAssignment(profileDraft)
+            : !contractBlocksShiftAssignment(profile || {});
+    const showCompBalance =
+        shiftAssignmentAvailable &&
+        (
+            isProfileEditing()
+                ? Boolean(profileDraft.shiftAssigned)
+                : getShiftAssigned(profile.name, currentDate)
+        );
     const historyHTML = creating
         ? ""
         : availabilityHistoryHTML(profile.name);
@@ -3955,7 +4005,10 @@ function renderLeaveActionLabels() {
         }
     );
     const canUseUnionLeave =
-        Boolean(profile.unionLeaveEnabled);
+        Boolean(profile.unionLeaveEnabled) &&
+        !isReplacementContractType(profile.contractType) &&
+        !isHonorariaContractType(profile.contractType) &&
+        !isOtherContractType(profile.contractType);
 
     DOM.adminBtnLabel.textContent =
         `${adminBase} (${formatSaldo(saldos.admin)})`;
@@ -4129,17 +4182,29 @@ function renderDashboardState() {
     DOM.profileContractTypeSelect.value = data.contractType || "";
     DOM.profileRoleSelect.value = data.estamento || "";
     syncProfileProfessionField(data, editing);
-    DOM.profileGradeSelect.value = data.grade || "";
     const isReplacementContract =
         isReplacementDraft(data);
+    const isHonorariaContract =
+        isHonorariaDraft(data);
+    const unionLeaveBlocked =
+        contractBlocksUnionLeave(data);
+    const gradeBlocked =
+        contractBlocksGrade(data);
+    const shiftAssignmentBlocked =
+        contractBlocksShiftAssignment(data);
+    placeProfileRotationRow(isHonorariaContract);
+    DOM.profileGradeSelect.value =
+        gradeBlocked ? "" : data.grade || "";
     syncProfileRotationOptions(data);
     DOM.profileRotationSelect.value = data.rotationType || "";
     if (DOM.profileUnionLeaveInput) {
         DOM.profileUnionLeaveInput.checked =
-            !isReplacementContract &&
+            !unionLeaveBlocked &&
             Boolean(data.unionLeaveEnabled);
     }
-    DOM.checkbox.checked = Boolean(data.shiftAssigned);
+    DOM.checkbox.checked =
+        !shiftAssignmentBlocked &&
+        Boolean(data.shiftAssigned);
     DOM.profileActiveToggle.checked = data.active !== false;
 
     DOM.profileNameInput.disabled = !editing;
@@ -4156,10 +4221,11 @@ function renderDashboardState() {
         !editing || !unitEntryDateEnabled;
     DOM.profileContractTypeSelect.disabled = !editing;
     DOM.profileRoleSelect.disabled = !editing;
-    DOM.profileGradeSelect.disabled = !editing;
+    DOM.profileGradeSelect.disabled = !editing || gradeBlocked;
     DOM.profileRotationSelect.disabled = !editing;
     if (DOM.profileUnionLeaveInput) {
-        DOM.profileUnionLeaveInput.disabled = !editing;
+        DOM.profileUnionLeaveInput.disabled =
+            !editing || unionLeaveBlocked;
     }
     DOM.checkbox.disabled = !editing;
     DOM.profileActiveToggle.disabled = !editing;
@@ -4171,20 +4237,34 @@ function renderDashboardState() {
         );
     }
 
-    if (DOM.profileUnionLeaveRow) {
-        DOM.profileUnionLeaveRow.classList.toggle(
+    if (DOM.profileGradeRow) {
+        DOM.profileGradeRow.classList.toggle(
             "hidden",
-            isReplacementContract
+            gradeBlocked
         );
     }
 
-    if (isReplacementContract && editing) {
+    if (DOM.profileUnionLeaveRow) {
+        DOM.profileUnionLeaveRow.classList.toggle(
+            "hidden",
+            unionLeaveBlocked
+        );
+    }
+
+    if (unionLeaveBlocked && editing) {
         profileDraft.unionLeaveEnabled = false;
     }
 
+    if (gradeBlocked && editing) {
+        profileDraft.grade = "";
+    }
+
     const canUseShiftAssignment =
-        data.rotationType === "3turno" ||
-        data.rotationType === "4turno";
+        !shiftAssignmentBlocked &&
+        (
+            data.rotationType === "3turno" ||
+            data.rotationType === "4turno"
+        );
 
     if (DOM.shiftAssignedRow) {
         DOM.shiftAssignedRow.classList.toggle(
@@ -4199,9 +4279,6 @@ function renderDashboardState() {
             profileDraft.shiftAssigned = false;
         }
     }
-
-    const isHonorariaContract =
-        isHonorariaDraft(data);
 
     if (DOM.replacementContractEditor) {
         DOM.replacementContractEditor.classList.toggle(
@@ -7256,6 +7333,7 @@ function handleRotationSelectionChange() {
     profileDraft.rotationType =
         DOM.profileRotationSelect.value;
     if (
+        contractBlocksShiftAssignment() ||
         profileDraft.rotationType !== "3turno" &&
         profileDraft.rotationType !== "4turno"
     ) {
@@ -8027,6 +8105,12 @@ async function guardarPerfil() {
     );
     const replacementContract =
         isReplacementDraft();
+    const honorariaContract =
+        isHonorariaDraft();
+    const gradeBlocked =
+        contractBlocksGrade();
+    const shiftAssignmentBlocked =
+        contractBlocksShiftAssignment();
     const nextRotationType = replacementContract
         ? (
             profileDraft.originalRotationType === "libre"
@@ -8035,6 +8119,7 @@ async function guardarPerfil() {
         )
         : profileDraft.rotationType;
     const nextShiftAssigned =
+        !shiftAssignmentBlocked &&
         (
             nextRotationType === "3turno" ||
             nextRotationType === "4turno"
@@ -8083,24 +8168,24 @@ async function guardarPerfil() {
         active: profileDraft.active !== false,
         unitEntryDate: nextUnitEntryDate,
         contractType: profileDraft.contractType,
-        honorariaStart: isHonorariaDraft()
+        honorariaStart: honorariaContract
             ? profileDraft.honorariaStart
             : "",
-        honorariaEnd: isHonorariaDraft()
+        honorariaEnd: honorariaContract
             ? profileDraft.honorariaEnd
             : "",
-        honorariaHourlyRate: isHonorariaDraft()
+        honorariaHourlyRate: honorariaContract
             ? Number(profileDraft.honorariaHourlyRate) || 0
             : 0,
-        honorariaMaxMonthlyHours: isHonorariaDraft()
+        honorariaMaxMonthlyHours: honorariaContract
             ? Number(profileDraft.honorariaMaxMonthlyHours) || 0
             : 0,
         unionLeaveEnabled:
-            !replacementContract &&
+            !contractBlocksUnionLeave() &&
             Boolean(profileDraft.unionLeaveEnabled),
         estamento: nextEstamento,
         profession: nextProfession,
-        grade: profileDraft.grade
+        grade: gradeBlocked ? "" : profileDraft.grade
     };
     const nextEmailKey =
         nextProfilePayload.email.toLowerCase();
@@ -9552,6 +9637,18 @@ function bindProfileForm() {
                 REPLACEMENT_ROTATION_MODE.INHERIT;
         }
 
+        if (contractBlocksUnionLeave()) {
+            profileDraft.unionLeaveEnabled = false;
+        }
+
+        if (contractBlocksGrade()) {
+            profileDraft.grade = "";
+        }
+
+        if (contractBlocksShiftAssignment()) {
+            profileDraft.shiftAssigned = false;
+        }
+
         if (!isHonorariaDraft()) {
             profileDraft.honorariaStart = "";
             profileDraft.honorariaEnd = "";
@@ -9574,6 +9671,11 @@ function bindProfileForm() {
     if (DOM.profileUnionLeaveInput) {
         DOM.profileUnionLeaveInput.onchange = () => {
             if (!isProfileEditing()) return;
+            if (contractBlocksUnionLeave()) {
+                profileDraft.unionLeaveEnabled = false;
+                DOM.profileUnionLeaveInput.checked = false;
+                return;
+            }
 
             profileDraft.unionLeaveEnabled =
                 DOM.profileUnionLeaveInput.checked;
@@ -9621,6 +9723,10 @@ function bindProfileForm() {
 
     DOM.profileGradeSelect.onchange = () => {
         if (!isProfileEditing()) return;
+        if (contractBlocksGrade()) {
+            profileDraft.grade = "";
+            return;
+        }
         profileDraft.grade = DOM.profileGradeSelect.value;
     };
 
@@ -9686,6 +9792,12 @@ function bindProfileForm() {
 
     DOM.checkbox.onchange = async () => {
         if (isProfileEditing()) {
+            if (contractBlocksShiftAssignment()) {
+                profileDraft.shiftAssigned = false;
+                DOM.checkbox.checked = false;
+                return;
+            }
+
             profileDraft.shiftAssigned =
                 DOM.checkbox.checked;
             renderBotones();

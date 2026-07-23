@@ -151,6 +151,10 @@ export function isHonorariaContractType(value) {
     return normalizeText(value) === "honorarios";
 }
 
+export function isOtherContractType(value) {
+    return normalizeText(value) === "otros";
+}
+
 export function getHonorariaContract(profileOrName) {
     const profile = typeof profileOrName === "string"
         ? getProfiles().find(item => item.name === profileOrName)
@@ -160,6 +164,13 @@ export function getHonorariaContract(profileOrName) {
         return null;
     }
 
+    const maxWeeklyHours = Math.max(
+        0,
+        Number(profile.honorariaMaxWeeklyHours) ||
+            Number(profile.honorariaMaxMonthlyHours) ||
+            0
+    );
+
     return {
         start: String(profile.honorariaStart || ""),
         end: String(profile.honorariaEnd || ""),
@@ -167,10 +178,8 @@ export function getHonorariaContract(profileOrName) {
             0,
             Number(profile.honorariaHourlyRate) || 0
         ),
-        maxMonthlyHours: Math.max(
-            0,
-            Number(profile.honorariaMaxMonthlyHours) || 0
-        )
+        maxWeeklyHours,
+        maxMonthlyHours: maxWeeklyHours
     };
 }
 

@@ -3167,7 +3167,7 @@ function renderTimelineDayCell(profile, d, {
             : needsReplacement
                 ? "Requiere reemplazo de turno base"
                 : showHonorariaLimit
-                    ? getHonorariaLimitMessage(honorariaSummary)
+                    ? getHonorariaLimitMessage(honorariaSummary, key)
                 : showExtraReason
                 ? "Requiere motivo de horas extras"
                 : showClockExtra
@@ -3208,7 +3208,7 @@ function renderTimelineDayCell(profile, d, {
             style="background:${escapeHtml(background)}"
             title="${escapeHtml(titleText)}"
             ${contractError ? `data-contract-error-profile="${escapeHtml(profile.name)}" data-contract-error-key="${escapeHtml(key)}"` : ""}
-            ${showHonorariaLimit ? `data-honoraria-limit-profile="${escapeHtml(profile.name)}" data-honoraria-limit-key="${escapeHtml(key)}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary))}"` : ""}
+            ${showHonorariaLimit ? `data-honoraria-limit-profile="${escapeHtml(profile.name)}" data-honoraria-limit-key="${escapeHtml(key)}" data-honoraria-limit-message="${escapeHtml(getHonorariaLimitMessage(honorariaSummary, key))}"` : ""}
             ${needsReplacement ? `data-replacement-profile="${escapeHtml(profile.name)}" data-replacement-key="${escapeHtml(key)}"` : ""}
             ${replacement ? `data-worker-replacement-profile="${escapeHtml(profile.name)}" data-worker-replacement-key="${escapeHtml(key)}" data-worker-replacement-id="${escapeHtml(replacement.id || "")}"` : ""}
             ${showExtraReason ? `data-extra-profile="${escapeHtml(profile.name)}" data-extra-key="${escapeHtml(key)}" data-extra-turn="${escapeHtml(showExtraReason)}"` : ""}

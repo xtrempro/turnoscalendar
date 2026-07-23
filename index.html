@@ -154,7 +154,7 @@
 
                             <label class="metric-row metric-row--field">
                                 <span class="metric-label">RUT:</span>
-                                <input id="profileRutField" type="text" placeholder="17.816.632-8" required>
+                                <input id="profileRutField" type="text" required>
                             </label>
 
                             <label class="metric-row metric-row--field">
@@ -236,10 +236,11 @@
                                     <option value="Contrata">Contrata</option>
                                     <option value="Honorarios">Honorarios</option>
                                     <option value="Reemplazo">Reemplazo</option>
+                                    <option value="Otros">Otros</option>
                                 </select>
                             </label>
 
-                            <label class="metric-row metric-row--field">
+                            <label id="profileGradeRow" class="metric-row metric-row--field">
                                 <span class="metric-label">Grado:</span>
                                 <select id="profileGradeField">
                                     <option value="">Seleccionar</option>
@@ -300,6 +301,7 @@
                                 </span>
                             </label>
 
+                            <span id="profileRotationAnchor" hidden></span>
                             <label id="profileRotationRow" class="metric-row metric-row--field">
                                 <span class="metric-label">Rotativa:</span>
                                 <select id="profileRotationField">
@@ -352,8 +354,10 @@
                                 <input id="honorariaHourlyRateField" type="number" min="0" step="1" inputmode="decimal" placeholder="0">
                             </label>
 
+                            <span id="honorariaRotationSlot" hidden></span>
+
                             <label class="metric-row metric-row--field">
-                                <span class="metric-label">M&aacute;ximo de horas mensuales:</span>
+                                <span class="metric-label">M&aacute;ximo de horas semanales:</span>
                                 <input id="honorariaMaxMonthlyHoursField" type="number" min="0" step="0.5" inputmode="decimal" placeholder="0">
                             </label>
 

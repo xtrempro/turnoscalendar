@@ -100,7 +100,7 @@ export function validateProfileDraft() {
         }
 
         if (!(Number(profileDraft.honorariaMaxMonthlyHours) > 0)) {
-            missing.push("maximo de horas mensuales");
+            missing.push("maximo de horas semanales");
         }
     }
 

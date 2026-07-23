@@ -1093,7 +1093,7 @@ async function handleCalendarCellFallbackClick(cell, event) {
         badgeTarget
     ) {
         event.stopPropagation();
-        alert(getHonorariaLimitMessage(honorariaSummary));
+        alert(getHonorariaLimitMessage(honorariaSummary, keyDay));
         return;
     }
 
@@ -6310,7 +6310,7 @@ async function renderCalendarImpl(options = {}) {
                     : workerBlockedDay
                         ? ` | ${workerBlockedDay.message}`
                     : honorariaExcess
-                        ? ` | ${getHonorariaLimitMessage(honorariaSummary)}`
+                        ? ` | ${getHonorariaLimitMessage(honorariaSummary, keyDay)}`
                     : showExtraReason
                         ? " | Requiere motivo de horas extras"
                         : showClockExtraReason
@@ -6559,7 +6559,7 @@ async function renderCalendarImpl(options = {}) {
                 event.target.closest(".day-badge")
             ) {
                 event.stopPropagation();
-                alert(getHonorariaLimitMessage(honorariaSummary));
+                alert(getHonorariaLimitMessage(honorariaSummary, keyDay));
                 return;
             }
 

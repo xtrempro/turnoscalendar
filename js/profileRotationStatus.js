@@ -128,7 +128,7 @@ export function buildRotationStatus(data){
         }
 
         const contractSummary =
-            `Contrato Honorarios: ${formatDisplayDate(data.honorariaStart)} al ${formatDisplayDate(data.honorariaEnd)} | Tope mensual: ${data.honorariaMaxMonthlyHours || 0} hrs.`;
+            `Contrato Honorarios: ${formatDisplayDate(data.honorariaStart)} al ${formatDisplayDate(data.honorariaEnd)} | Tope semanal: ${data.honorariaMaxMonthlyHours || 0} hrs.`;
 
         if (!data.rotationType) {
             return `${contractSummary} Selecciona una rotativa.`;
@@ -203,7 +203,7 @@ export function buildEditorHint(profile){
         }
 
         if (isHonorariaDraft()) {
-            return "Actualiza la vigencia, el valor hora y el tope mensual. La rotativa solo se mostrara dentro del contrato.";
+            return "Actualiza la vigencia, el valor hora y el tope semanal. La rotativa solo se mostrara dentro del contrato.";
         }
 
         return "Actualiza los datos del trabajador. Solo si cambias la rotativa debes configurar en el modal desde que fecha aplica.";

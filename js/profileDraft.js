@@ -8,7 +8,8 @@
 
 import {
     isReplacementContractType,
-    isHonorariaContractType
+    isHonorariaContractType,
+    isOtherContractType
 } from "./contracts.js";
 import {
     normalizeStoredStart,
@@ -117,6 +118,15 @@ export function isReplacementDraft(data = profileDraft) {
  */
 export function isHonorariaDraft(data = profileDraft) {
     return isHonorariaContractType(data.contractType);
+}
+
+/**
+ * Indica si el borrador (o un objeto dado) corresponde al contrato Otros.
+ * @param {Object} data
+ * @returns {boolean}
+ */
+export function isOtherDraft(data = profileDraft) {
+    return isOtherContractType(data.contractType);
 }
 
 /**

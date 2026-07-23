@@ -26,3 +26,10 @@ test("el campo RUT queda bloqueado si el perfil ya tiene RUT guardado", () => {
 test("el input de RUT es required en el formulario", () => {
     assert.match(html, /id="profileRutField"[^>]*\brequired\b/);
 });
+
+test("el input de RUT no muestra un RUT de maqueta cuando esta vacio", () => {
+    assert.doesNotMatch(
+        html,
+        /id="profileRutField"[^>]*placeholder=/
+    );
+});

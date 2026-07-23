@@ -49,7 +49,7 @@ export function describeProfileChanges(before, after) {
         ["honorariaStart", "inicio contrato honorarios"],
         ["honorariaEnd", "termino contrato honorarios"],
         ["honorariaHourlyRate", "valor hora honorarios"],
-        ["honorariaMaxMonthlyHours", "maximo mensual honorarios"],
+        ["honorariaMaxMonthlyHours", "maximo semanal honorarios"],
         ["estamento", "estamento"],
         ["profession", "profesion"],
         ["unionLeaveEnabled", "permiso gremial"],
