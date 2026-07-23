@@ -6953,8 +6953,9 @@ function startEditMode() {
     void setActiveShortcut("profileSection", {
         skipProfileDraftGuard: true
     });
-    DOM.profileNameInput.focus();
-    DOM.profileNameInput.select();
+    // No se enfoca el nombre: al pulsar "Editar" el supervisor debe quedarse en
+    // el mismo punto (puede querer modificar otra area), sin scroll ni foco
+    // automatico. En cambio, crear un perfil nuevo si enfoca el nombre.
 }
 
 // `prefill.replaced` (opcional): al llegar desde las sugerencias de reemplazo se
