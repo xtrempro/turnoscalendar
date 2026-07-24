@@ -9,6 +9,7 @@
 
 const admin = require("firebase-admin");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const logger = require("firebase-functions/logger");
 const { computeProjectionsForProfiles } = require("./lib/engineHarness");
 const { writeProjection } = require("./lib/projectionWriter");
@@ -89,6 +90,85 @@ exports.requestProjectionOnWorkerLink = onDocumentCreated(
                 error: error?.message || String(error)
             });
         }
+    }
+);
+
+// De un workspace: nombres de perfil de los trabajadores ENLAZADOS que aun no
+// tienen workerAppData. Puro (sin Firestore) para poder testearlo.
+function missingProjectionProfiles(linkDocs, dataIds) {
+    const haveData = new Set(dataIds);
+    const missing = new Set();
+
+    linkDocs.forEach(data => {
+        const uid = String(data?.uid || "").trim();
+        const profileName = String(data?.profileName || "").trim();
+
+        if (uid && profileName && !haveData.has(uid)) {
+            missing.add(profileName);
+        }
+    });
+
+    return [...missing];
+}
+
+// Autocompleta las proyecciones faltantes: trabajadores enlazados que aun no
+// tienen workerAppData (p.ej. se enlazaron antes del trigger onCreate, con el
+// supervisor desconectado). Se auto-limita: al proyectarlos se crea su
+// workerAppData y la siguiente corrida ya no los toca. Lee SOLO los IDs
+// (select), asi el barrido es barato aunque las proyecciones sean grandes.
+exports.backfillMissingWorkerProjections = onSchedule(
+    {
+        schedule: "every 24 hours",
+        timeoutSeconds: 540,
+        memory: "512MiB"
+    },
+    async () => {
+        const db = admin.firestore();
+        const workspacesSnap = await db.collection("workspaces").select().get();
+        let enqueued = 0;
+
+        for (const wsDoc of workspacesSnap.docs) {
+            const workspaceId = wsDoc.id;
+
+            try {
+                const wsRef = db.collection("workspaces").doc(workspaceId);
+                const [linksSnap, dataSnap] = await Promise.all([
+                    wsRef.collection("workerLinks").select("uid", "profileName").get(),
+                    wsRef.collection("workerAppData").select().get()
+                ]);
+
+                if (linksSnap.empty) continue;
+
+                const missing = missingProjectionProfiles(
+                    linksSnap.docs.map(doc => ({ uid: doc.id, ...(doc.data() || {}) })),
+                    dataSnap.docs.map(doc => doc.id)
+                );
+
+                if (!missing.length) continue;
+
+                await wsRef.collection("projectionRequests").add({
+                    profiles: missing,
+                    requestedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    source: "backfill_missing"
+                });
+
+                enqueued += 1;
+                logger.info("backfill: proyeccion encolada", {
+                    workspaceId,
+                    missing: missing.length
+                });
+            } catch (error) {
+                logger.error("backfill: fallo en workspace", {
+                    workspaceId,
+                    error: error?.message || String(error)
+                });
+            }
+        }
+
+        logger.info("backfill de proyecciones completado", {
+            workspaces: workspacesSnap.size,
+            enqueued
+        });
     }
 );
 
