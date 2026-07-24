@@ -119,6 +119,10 @@ function missingProjectionProfiles(linkDocs, dataIds) {
 exports.backfillMissingWorkerProjections = onSchedule(
     {
         schedule: "every 24 hours",
+        // Cloud Scheduler no esta disponible en southamerica-west1 (region por
+        // defecto del proyecto); las demas funciones programadas usan us-central1.
+        region: "us-central1",
+        timeZone: "America/Santiago",
         timeoutSeconds: 540,
         memory: "512MiB"
     },
