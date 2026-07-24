@@ -46,6 +46,52 @@ async function loadWorkerLinks(db, workspaceId) {
         .filter(Boolean);
 }
 
+// Al crear el enlace (el trabajador acepta la invitacion) se encola de una vez
+// su proyeccion, sin depender de que el navegador del supervisor este abierto.
+// Antes, si el trabajador se enlazaba con el supervisor desconectado, se
+// quedaba sin turnos hasta la proxima edicion de su calendario.
+exports.requestProjectionOnWorkerLink = onDocumentCreated(
+    {
+        document: "workspaces/{workspaceId}/workerLinks/{workerUid}"
+    },
+    async (event) => {
+        const link = event.data?.data() || {};
+        const profileName = String(link.profileName || "").trim();
+
+        if (!profileName) {
+            logger.warn("worker link sin profileName; no se encola proyeccion", {
+                workspaceId: event.params.workspaceId,
+                workerUid: event.params.workerUid
+            });
+            return;
+        }
+
+        const { workspaceId } = event.params;
+        const db = admin.firestore();
+
+        try {
+            await db
+                .collection("workspaces").doc(workspaceId)
+                .collection("projectionRequests")
+                .add({
+                    profiles: [profileName],
+                    requestedAt: admin.firestore.FieldValue.serverTimestamp(),
+                    source: "worker_link_created"
+                });
+
+            logger.info("proyeccion encolada al enlazar trabajador", {
+                workspaceId,
+                profile: profileName
+            });
+        } catch (error) {
+            logger.error("no se pudo encolar la proyeccion al enlazar", {
+                workspaceId,
+                error: error?.message || String(error)
+            });
+        }
+    }
+);
+
 exports.buildWorkerAppProjection = onDocumentCreated(
     {
         document: "workspaces/{workspaceId}/projectionRequests/{requestId}",
