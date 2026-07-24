@@ -22,22 +22,35 @@ function grab(name) {
 const missingProjectionProfiles = new Function(
   `${grab("missingProjectionProfiles")}\nreturn missingProjectionProfiles;`
 )();
+const projectedUidsFromDocs = new Function(
+  `${grab("projectedUidsFromDocs")}\nreturn projectedUidsFromDocs;`
+)();
 
-test("devuelve los perfiles enlazados sin workerAppData", () => {
-  const links = [
-    { uid: "u1", profileName: "Daniela Velarde" }, // sin data -> falta
-    { uid: "u2", profileName: "Joaquin Torres" },  // con data -> ok
-    { uid: "u3", profileName: "Sin Data" }         // sin data -> falta
+test("solo cuentan como proyectados los workerAppData con status", () => {
+  const docs = [
+    { id: "u1", status: "active" },        // proyectado
+    { id: "u2", status: "profile_not_found" }, // proyectado (aunque no calce)
+    { id: "u3" },                          // parcial (sin status) -> NO
+    { id: "u4", status: "  " }             // status vacio -> NO
   ];
-  const dataIds = ["u2"];
+  assert.deepEqual(projectedUidsFromDocs(docs).sort(), ["u1", "u2"]);
+});
+
+test("faltan los enlazados sin proyeccion real (incluye docs parciales)", () => {
+  const links = [
+    { uid: "u1", profileName: "Daniela Velarde" }, // proyectado -> ok
+    { uid: "u2", profileName: "Joaquin Torres" },  // doc parcial sin status -> falta
+    { uid: "u3", profileName: "Sin Data" }         // sin doc -> falta
+  ];
+  const projectedUids = ["u1"]; // solo u1 tiene status
 
   assert.deepEqual(
-    missingProjectionProfiles(links, dataIds).sort(),
-    ["Daniela Velarde", "Sin Data"]
+    missingProjectionProfiles(links, projectedUids).sort(),
+    ["Joaquin Torres", "Sin Data"]
   );
 });
 
-test("si todos tienen workerAppData no hay nada que reproyectar", () => {
+test("si todos tienen proyeccion real no hay nada que reproyectar", () => {
   const links = [{ uid: "u1", profileName: "A" }, { uid: "u2", profileName: "B" }];
   assert.deepEqual(missingProjectionProfiles(links, ["u1", "u2"]), []);
 });
@@ -59,9 +72,9 @@ test("no repite un mismo perfil", () => {
   assert.deepEqual(missingProjectionProfiles(links, []), ["Repetido"]);
 });
 
-test("la funcion programada usa select (solo IDs) y se auto-limita", () => {
-  // Lee solo IDs para no descargar proyecciones completas.
-  assert.match(src, /\.collection\("workerAppData"\)\.select\(\)\.get\(\)/);
+test("la funcion programada lee solo lo justo (select) y se auto-limita", () => {
+  // Lee solo el status de workerAppData (no descarga las proyecciones enteras).
+  assert.match(src, /\.collection\("workerAppData"\)\.select\("status"\)\.get\(\)/);
   assert.match(src, /\.collection\("workerLinks"\)\.select\("uid", "profileName"\)\.get\(\)/);
   // Encola un projectionRequest por workspace con los faltantes.
   assert.match(src, /source: "backfill_missing"/);

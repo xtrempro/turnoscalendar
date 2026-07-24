@@ -93,22 +93,37 @@ exports.requestProjectionOnWorkerLink = onDocumentCreated(
     }
 );
 
-// De un workspace: nombres de perfil de los trabajadores ENLAZADOS que aun no
-// tienen workerAppData. Puro (sin Firestore) para poder testearlo.
-function missingProjectionProfiles(linkDocs, dataIds) {
-    const haveData = new Set(dataIds);
+// De un workspace: nombres de perfil de los trabajadores ENLAZADOS que todavia
+// no tienen una proyeccion real. `projectedUids` son los uid cuyo workerAppData
+// YA fue proyectado (tiene status). No basta con que el doc exista: la propia
+// app del trabajador crea un workerAppData parcial (bloqueos/swap, SIN status ni
+// turnos) antes de la primera proyeccion; esos hay que proyectarlos igual. Puro
+// (sin Firestore) para poder testearlo.
+function missingProjectionProfiles(linkDocs, projectedUids) {
+    const projected = new Set(projectedUids);
     const missing = new Set();
 
     linkDocs.forEach(data => {
         const uid = String(data?.uid || "").trim();
         const profileName = String(data?.profileName || "").trim();
 
-        if (uid && profileName && !haveData.has(uid)) {
+        if (uid && profileName && !projected.has(uid)) {
             missing.add(profileName);
         }
     });
 
     return [...missing];
+}
+
+// uid con proyeccion real: su workerAppData tiene un status (la proyeccion lo
+// escribe). Un doc sin status es parcial y no cuenta como proyectado.
+function projectedUidsFromDocs(dataDocs) {
+    return dataDocs
+        .filter(doc => {
+            const status = doc?.status;
+            return typeof status === "string" && status.trim() !== "";
+        })
+        .map(doc => doc.id);
 }
 
 // Autocompleta las proyecciones faltantes: trabajadores enlazados que aun no
@@ -138,14 +153,17 @@ exports.backfillMissingWorkerProjections = onSchedule(
                 const wsRef = db.collection("workspaces").doc(workspaceId);
                 const [linksSnap, dataSnap] = await Promise.all([
                     wsRef.collection("workerLinks").select("uid", "profileName").get(),
-                    wsRef.collection("workerAppData").select().get()
+                    wsRef.collection("workerAppData").select("status").get()
                 ]);
 
                 if (linksSnap.empty) continue;
 
+                const projectedUids = projectedUidsFromDocs(
+                    dataSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() || {}) }))
+                );
                 const missing = missingProjectionProfiles(
                     linksSnap.docs.map(doc => ({ uid: doc.id, ...(doc.data() || {}) })),
-                    dataSnap.docs.map(doc => doc.id)
+                    projectedUids
                 );
 
                 if (!missing.length) continue;
