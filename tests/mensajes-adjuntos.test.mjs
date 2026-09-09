@@ -85,6 +85,23 @@ test("el mensaje viaja con sus adjuntos", () => {
     assert.match(messages, /text,\s*\n\s*attachments,\s*\n\s*sender: "supervisor"/);
 });
 
+test("el adjunto del mensaje guarda la URL de descarga", () => {
+    // Asi la PWA puede abrir por navegacion directa y no depende solo de pedir
+    // getDownloadURL desde el telefono al momento de tocar el archivo.
+    assert.match(
+        attachments,
+        /const storageRef = storageModule\.ref\(storage, storagePath\);/
+    );
+    assert.match(
+        attachments,
+        /if \(context\.moduleId === "messages"\) \{\s*\n\s*downloadURL = await storageModule\.getDownloadURL\(storageRef\);/
+    );
+    assert.match(
+        attachments,
+        /if \(downloadURL\) \{\s*\n\s*attachment\.downloadURL = downloadURL;/
+    );
+});
+
 test("el boton avisa mientras sube", () => {
     // Subir 10 MB no es instantaneo: sin esto parece que no paso nada.
     assert.match(messages, /submit\.textContent = file \? "Subiendo\.\.\." : "Enviando\.\.\.";/);

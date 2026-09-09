@@ -730,10 +730,12 @@ export async function readAttachmentFiles(files, options = {}) {
         ].join("/");
         const { storage, storageModule } =
             await getStorageServices("subir");
+        const storageRef = storageModule.ref(storage, storagePath);
+        let downloadURL = "";
 
         try {
             await storageModule.uploadBytes(
-                storageModule.ref(storage, storagePath),
+                storageRef,
                 file,
                 {
                     contentType: fileContentType(file),
@@ -747,11 +749,15 @@ export async function readAttachmentFiles(files, options = {}) {
                     }
                 }
             );
+
+            if (context.moduleId === "messages") {
+                downloadURL = await storageModule.getDownloadURL(storageRef);
+            }
         } catch (error) {
             throw attachmentStorageError(error, "subir");
         }
 
-        attachments.push({
+        const attachment = {
             id,
             name: file.name,
             type: fileContentType(file),
@@ -759,7 +765,13 @@ export async function readAttachmentFiles(files, options = {}) {
             addedAt: new Date().toISOString(),
             storagePath,
             uploadedByUid: context.userId
-        });
+        };
+
+        if (downloadURL) {
+            attachment.downloadURL = downloadURL;
+        }
+
+        attachments.push(attachment);
     }
 
     return attachments;
