@@ -162,6 +162,47 @@ test("dos rotativas Diurno ahora son compatibles entre si", () => {
     assert.equal(canSwapProfiles("Alexis", "Juan"), true);
 });
 
+test("un Diurno solo cambia con otro Diurno", () => {
+    // Lo que entrega un Diurno es su dia de extension horaria, y eso solo tiene
+    // contraparte en otro Diurno. La regla es mutua: el companero de otra
+    // rotativa tampoco lo ve a el.
+    saveRotativa({ type: "4turno", start: "2026-01-01" }, "Alexis");
+
+    assert.equal(canSwapProfiles("Juan", "Alexis"), false);
+    assert.equal(canSwapProfiles("Alexis", "Juan"), false);
+    assert.deepEqual(
+        getEligibleSwapReceivers("Juan", MIERCOLES).map(item => item.name),
+        []
+    );
+});
+
+test("dos rotativas que no son Diurno siguen como antes", () => {
+    saveRotativa({ type: "3turno", start: "2026-01-01" }, "Juan");
+    saveRotativa({ type: "4turno", start: "2026-01-01" }, "Alexis");
+
+    assert.equal(canSwapProfiles("Juan", "Alexis"), true);
+    assert.equal(canSwapProfiles("Alexis", "Juan"), true);
+});
+
+test("el menu Cambios de Turno ya no se apaga para los Diurno", async () => {
+    // Antes el menu quedaba gris para cualquier perfil Diurno, aunque la PWA ya
+    // les dejaba pedir el cambio. Quien decide con quien se puede cambiar es
+    // canSwapProfiles, no el menu.
+    const main = (await readFile(
+        new URL("../js/main.js", import.meta.url),
+        "utf8"
+    )).replace(/\r\n/g, "\n");
+    const start = main.indexOf("function updateTurnChangesNavState()");
+    const end = main.indexOf("function syncWorkspacePermissionUI(");
+
+    assert.ok(start > -1 && end > start, "no se encontro updateTurnChangesNavState");
+
+    const fn = main.slice(start, end);
+
+    assert.doesNotMatch(fn, /type === "diurno"/);
+    assert.doesNotMatch(fn, /con rotativa Diurno/);
+});
+
 test("la Larga por extension de horario se ve como turno entregable", () => {
     // Es un override en `data_`, no un reemplazo ni la rotativa.
     assert.equal(getSwapTurnState("Juan", MIERCOLES), TURNO.LARGA);

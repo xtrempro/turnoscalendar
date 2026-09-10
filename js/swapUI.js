@@ -911,7 +911,7 @@ function guardarCambioTurno(){
         !perfilTo ||
         !canSwapProfiles(from, to)
     ) {
-        alert("Los trabajadores no son compatibles para cambio de turno. Revisa estamento, profesi\u00f3n y que no tengan la misma rotativa base (salvo dos rotativas Diurno, que si pueden intercambiar su d\u00eda de extensi\u00f3n horaria).");
+        alert("Los trabajadores no son compatibles para cambio de turno. Revisa estamento, profesi\u00f3n y que no tengan la misma rotativa base. Un Diurno solo puede cambiar con otro Diurno (intercambian su d\u00eda de extensi\u00f3n horaria).");
         return;
     }
 

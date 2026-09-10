@@ -146,6 +146,14 @@ export function canSwapProfiles(fromName, toName) {
     if (!from || !to || from.name === to.name) return false;
     if (from.estamento !== to.estamento) return false;
 
+    // Un Diurno solo cambia con otro Diurno: lo que entrega es su dia de
+    // extension horaria, y eso solo tiene contraparte en otro Diurno. La regla
+    // es mutua, asi que un 3er o 4to turno tampoco ve a los Diurno.
+    if (
+        (getRotativa(fromName).type === "diurno") !==
+        (getRotativa(toName).type === "diurno")
+    ) return false;
+
     if (
         !bothUseDiurnoRotation(fromName, toName) &&
         haveSameBaseRotation(fromName, toName)

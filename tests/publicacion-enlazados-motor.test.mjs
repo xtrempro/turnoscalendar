@@ -130,6 +130,46 @@ test("canSwapProfiles corre en el servidor y respeta el estamento", { skip: !hay
     assert.deepEqual(candidatoDe("uid-carla").compatibleWorkerUids, []);
 });
 
+test("en el servidor, un Diurno solo es compatible con otro Diurno", { skip: !hayBundle && "falta el bundle" }, async () => {
+    // La PWA solo ofrece los colegas que el servidor pone en
+    // `compatibleWorkerUids`, y el backend rechaza el cambio si el par no esta
+    // ahi. Si el bundle quedara con la regla vieja, un Diurno seguiria viendo a
+    // un 4to turno en el telefono aunque el supervisor ya no pudiera registrarlo.
+    instalarGlobales();
+    globalThis.localStorage = memoria({
+        profiles: [
+            { id: "d1", name: "DANI DIURNO", rut: "4-3", estamento: "TM", profession: "TM Imagenologia", active: true },
+            { id: "d2", name: "EVA DIURNO", rut: "5-1", estamento: "TM", profession: "TM Imagenologia", active: true },
+            { id: "r1", name: "FEDE CUARTO", rut: "6-K", estamento: "TM", profession: "TM Imagenologia", active: true }
+        ],
+        "rotativa_DANI DIURNO": { type: "diurno", start: "2026-01-01" },
+        "rotativa_EVA DIURNO": { type: "diurno", start: "2026-01-01" },
+        "rotativa_FEDE CUARTO": { type: "4turno", start: "2026-01-01" },
+        turnChangeConfig: { allowSwaps: true, allowTwentyFourHourShifts: true }
+    });
+
+    const engine = await import(pathToFileURL(BUNDLE.pathname.replace(/^\//, "")).href);
+
+    engine.seedLinkedDocsContext({ blockedDays: [] });
+
+    const built = engine.buildLinkedWorkerDocuments(
+        { id: "ws", name: "Imagenologia" },
+        [
+            { uid: "uid-dani", profileName: "DANI DIURNO", profileRut: "4-3", updatedAtISO: "2026-09-01T00:00:00.000Z" },
+            { uid: "uid-eva", profileName: "EVA DIURNO", profileRut: "5-1", updatedAtISO: "2026-09-01T00:00:00.000Z" },
+            { uid: "uid-fede", profileName: "FEDE CUARTO", profileRut: "6-K", updatedAtISO: "2026-09-01T00:00:00.000Z" }
+        ],
+        "2026-09-10T01:00:00.000Z"
+    );
+    const candidatoDe = (uid) => built.documents.find(item =>
+        item.collection === "workerSwapCandidates" && item.uid === uid
+    ).payload;
+
+    assert.deepEqual(candidatoDe("uid-dani").compatibleWorkerUids, ["uid-eva"]);
+    assert.deepEqual(candidatoDe("uid-eva").compatibleWorkerUids, ["uid-dani"]);
+    assert.deepEqual(candidatoDe("uid-fede").compatibleWorkerUids, []);
+});
+
 test("el sello de la corrida es UNO solo para todos los documentos", { skip: !hayBundle && "falta el bundle" }, async () => {
     // Si cada documento se sellara con su propio `new Date()`, dos corridas
     // seguidas no se podrian comparar entre si.

@@ -5800,18 +5800,16 @@ function updateTurnChangesNavState() {
     if (!button) return;
 
     const currentProfile = getCurrentProfile();
-    const rotativa = currentProfile
-        ? getRotativa(currentProfile)
-        : { type: "" };
     const turnChangeConfig = getTurnChangeConfig();
     const permissionDisabled =
         !canViewTarget("turnChangesView");
+    // Los Diurno tambien entran: intercambian su dia de extension horaria, y
+    // solo con otro Diurno (lo decide canSwapProfiles, igual que en la PWA).
     const disabled =
         permissionDisabled ||
         !turnChangeConfig.allowSwaps ||
         !currentProfile ||
-        !isProfileActive(currentProfile) ||
-        rotativa.type === "diurno";
+        !isProfileActive(currentProfile);
 
     button.disabled = disabled;
     button.classList.toggle("is-disabled", disabled);
@@ -5821,7 +5819,7 @@ function updateTurnChangesNavState() {
                 ? "Tu usuario no tiene permiso para ver Cambios de Turno."
                 : !turnChangeConfig.allowSwaps
                 ? "Cambios de turno desactivados en Ajustes del sistema."
-                : "Cambios de turno no disponible para perfiles desactivados o con rotativa Diurno."
+                : "Cambios de turno no disponible para perfiles desactivados."
         )
         : "";
 
