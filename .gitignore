@@ -18,3 +18,4 @@ functions/engine/
 # Volcados de rescate: llevan datos de produccion, no van al repo.
 catalogo-tareas-rescatado.json
 asignaciones-rescatadas.json
+snapshot-*.json
