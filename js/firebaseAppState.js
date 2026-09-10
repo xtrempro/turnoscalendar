@@ -1825,12 +1825,46 @@ export async function startFirebaseAppStateSync(
                 moduleId
             )
         }));
-        const moduleDocs = await Promise.all(
-            moduleRefs.map(async ({ moduleId, ref }) => ({
-                moduleId,
-                docSnap: await firestoreModule.getDoc(ref)
-            }))
+        // Un modulo que se deniega NO puede tumbar la sincronizacion entera.
+        //
+        // Con Promise.all, un solo `permission-denied` rechazaba el lote, saltaba
+        // al catch de abajo y la app quedaba en SOLO ESCRITURA: publicaba sin
+        // leer nada, sin mas senal que un warning en consola. Paso el 2026-09-09
+        // con `medicalEquipment`, cuyas reglas no se habian desplegado todavia:
+        // basto ese modulo nuevo para que ningun supervisor volviera a recibir
+        // cambios de NINGUN modulo (y para que un borrado local se publicara sin
+        // que el estado remoto lo corrigiera).
+        //
+        // Ahora cada modulo responde por si mismo: los que se pueden leer se
+        // aplican, y el que falla se anota y se sigue.
+        const moduleReads = await Promise.all(
+            moduleRefs.map(async ({ moduleId, ref }) => {
+                try {
+                    return { moduleId, docSnap: await firestoreModule.getDoc(ref) };
+                } catch (error) {
+                    return { moduleId, error };
+                }
+            })
         );
+        const deniedModules = moduleReads.filter(item => item.error);
+        const moduleDocs = moduleReads.filter(item => !item.error);
+
+        if (deniedModules.length) {
+            // Se avisa por el canal de estado, no solo por consola: quedarse sin
+            // leer un modulo es un problema que hay que poder ver.
+            deniedModules.forEach(({ moduleId, error }) => {
+                dispatchStatus({
+                    type: "app-state-error",
+                    moduleId,
+                    message: error?.message || "No se pudo leer el modulo remoto"
+                });
+                console.warn(`No se pudo leer el modulo ${moduleId}.`, error);
+            });
+        }
+
+        if (!moduleDocs.length && deniedModules.length) {
+            throw deniedModules[0].error;
+        }
 
         await applyInitialModules(
             moduleDocs,
@@ -1845,7 +1879,12 @@ export async function startFirebaseAppStateSync(
             return;
         }
 
-        const unsubscribers = moduleRefs.map(({ moduleId, ref }) =>
+        const legibles = new Set(moduleDocs.map(item => item.moduleId));
+        const refsLegibles = moduleRefs.filter(({ moduleId }) =>
+            legibles.has(moduleId)
+        );
+
+        const unsubscribers = refsLegibles.map(({ moduleId, ref }) =>
             firestoreModule.onSnapshot(
                 ref,
                 docSnap =>
@@ -1875,7 +1914,7 @@ export async function startFirebaseAppStateSync(
                 }
             )
         );
-        const entryUnsubscribers = moduleRefs.map(({ moduleId }) =>
+        const entryUnsubscribers = refsLegibles.map(({ moduleId }) =>
             firestoreModule.onSnapshot(
                 moduleEntriesCollection(
                     db,
