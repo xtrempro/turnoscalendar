@@ -897,6 +897,7 @@ service cloud.firestore {
 
       match /workerSwapCandidates/{userId} {
         allow read: if canReadRequests(workspaceId) ||
+          canPublishWorkerData(workspaceId) ||
           (
             signedIn() &&
             exists(/databases/$(database)/documents/workspaces/$(workspaceId)/workerLinks/$(request.auth.uid))
@@ -907,6 +908,7 @@ service cloud.firestore {
 
       match /workerMessageDirectory/{userId} {
         allow read: if canReadRequests(workspaceId) ||
+          canPublishWorkerData(workspaceId) ||
           isCurrentLinkedWorker(workspaceId);
         allow create, update: if
           canPublishWorkerData(workspaceId) ||

@@ -10,6 +10,16 @@ import {
     getWorkerAppLinks,
     setWorkerAppLinks
 } from "./workerAppLinks.js";
+// Los constructores de los dos documentos livianos viven en un solo sitio, que
+// es el MISMO que empaqueta la Cloud Function. Antes habia una copia aqui y
+// otra en serverEngine.js, y cada campo nuevo habia que cablearlo dos veces.
+import {
+    buildLinkedWorkerDocuments,
+    buildWorkerMessageDirectoryPayload,
+    buildSwapCandidatePayload,
+    workerLinkRecency,
+    linkedDocChanged
+} from "./serverLinkedDocs.js";
 import { TURNO } from "./constants.js";
 import {
     getCurrentFirebaseUser,
@@ -1879,75 +1889,6 @@ function buildWorkerAppRootProjection(payload, availableMonths, monthHashes) {
     };
 }
 
-function blockedDatesForProfile(profileName) {
-    const profileKey = normalizeText(profileName);
-
-    if (!profileKey) return [];
-
-    return getWorkerBlockedDays()
-        .filter(item =>
-            normalizeText(item.profileName) === profileKey &&
-            item.status !== "canceled" &&
-            item.status !== "deleted" &&
-            item.status !== "inactive"
-        )
-        .map(item => item.date)
-        .filter(Boolean)
-        .sort();
-}
-
-function buildSwapCandidatePayload(
-    link,
-    profile,
-    workspace,
-    linkedProfiles,
-    schedule = null
-) {
-    const resolvedSchedule = schedule || computeProfileSchedule(profile);
-    const compatibleWorkerUids = linkedProfiles
-        .filter(item =>
-            item.link.uid !== link.uid &&
-            item.profile &&
-            canSwapProfiles(profile.name, item.profile.name)
-        )
-        .map(item => item.link.uid);
-
-    return {
-        uid: link.uid,
-        workspaceId: workspace.id,
-        workspaceName: workspace.name || link.workspaceName || "",
-        profileName: profile.name || link.profileName || "",
-        profileRut: profile.rut || link.profileRut || "",
-        status: isProfileActive(profile) ? "active" : "inactive",
-        worker: {
-            name: profile.name || link.profileName || "",
-            email: profile.email || link.workerEmail || "",
-            phone: profile.phone || "",
-            rut: profile.rut || "",
-            role: profile.estamento || "",
-            profession: profile.profession || "",
-            unit: workspace.name || link.workspaceName || "",
-            active: isProfileActive(profile)
-        },
-        rotativa: getRotativa(profile.name),
-        shiftAssigned: Boolean(getShiftAssigned(profile.name)),
-        // Config de la unidad para el cambio de turno: si permite dejar al receptor
-        // con turno 24 (Larga+Noche) y si permite el 24 invertido. La PWA las usa
-        // para aplicar las MISMAS reglas que el supervisor al armar el cambio (ademas
-        // de la regla fisica: nunca Larga tras un 24h ni Noche antes de un 24h).
-        allowTwentyFourHourShifts:
-            getTurnChangeConfig().allowTwentyFourHourShifts !== false,
-        allowInvertedTwentyFourHourShifts:
-            getTurnChangeConfig().allowInvertedTwentyFourHourShifts !== false,
-        compatibleWorkerUids,
-        blockedDayDates: blockedDatesForProfile(profile.name),
-        scheduleStart: resolvedSchedule.start,
-        scheduleEnd: resolvedSchedule.end,
-        days: resolvedSchedule.days,
-        updatedAtISO: new Date().toISOString()
-    };
-}
-
 async function readWorkerAppData(workspaceId, uid) {
     if (!workspaceId || !uid) return null;
 
@@ -1968,30 +1909,6 @@ async function readWorkerAppData(workspaceId, uid) {
         console.warn("No se pudo leer cache workerAppData previa.", error);
         return null;
     }
-}
-
-function buildWorkerMessageDirectoryPayload(link, profile, workspace) {
-    const active = profile ? isProfileActive(profile) : false;
-
-    return {
-        uid: link.uid,
-        workspaceId: workspace.id,
-        workspaceName: workspace.name || link.workspaceName || "",
-        profileName: profile?.name || link.profileName || "",
-        profileRut: profile?.rut || link.profileRut || "",
-        status: profile ? (active ? "active" : "inactive") : "profile_not_found",
-        worker: {
-            name: profile?.name || link.profileName || "Trabajador",
-            email: profile?.email || link.workerEmail || "",
-            phone: profile?.phone || "",
-            rut: profile?.rut || link.profileRut || "",
-            role: profile?.estamento || "",
-            profession: profile?.profession || "",
-            unit: workspace.name || link.workspaceName || "",
-            active
-        },
-        updatedAtISO: new Date().toISOString()
-    };
 }
 
 async function writeWorkerAppData(payload, workspaceId, uid) {
@@ -3055,18 +2972,6 @@ async function publishSharedScheduleNow() {
 //    (days) y la config del 24, para el cambio de turno directo.
 // Recencia de un enlace, para elegir la cuenta vigente cuando un mismo perfil
 // tiene mas de un uid enlazado (dos cuentas).
-function workerLinkRecency(link) {
-    const ts = link?.linkedAt || link?.claimedAt || link?.updatedAt;
-
-    if (ts && typeof ts.toMillis === "function") return ts.toMillis();
-
-    const parsed = Date.parse(
-        link?.updatedAtISO || link?.linkedAtISO || link?.updatedAt || ""
-    );
-
-    return Number.isNaN(parsed) ? 0 : parsed;
-}
-
 // Retira los docs derivados de un uid duplicado (misma persona, otra cuenta): el
 // directorio de mensajes queda "unlinked" y el candidato de cambio de turno pasa a
 // inactivo, para que la PWA no lo liste ni lo ofrezca dos veces. No toca workerLinks
@@ -3172,6 +3077,78 @@ function swapCompatibilitySignature(workspace, primaryProfiles) {
 
 let lastSwapCompatibilitySignature = "";
 
+/**
+ * Red de reparacion del arranque: comprueba que los documentos livianos que
+ * publica el servidor esten y coincidan, y repone SOLO los que falten o
+ * difieran.
+ *
+ * La comparacion ignora `updatedAtISO`, que cambia en cada armado aunque nada
+ * mas lo haga: sin eso los 132 documentos se verian distintos siempre y no
+ * habriamos ganado nada.
+ */
+async function verifyLinkedWorkerDocs() {
+    const workspace = currentWorkspace();
+
+    if (!workspace?.id || !getWorkerAppLinkList().length) return;
+
+    try {
+        const pending = await pendingLinkedWorkerDocs(workspace);
+
+        recordPerformanceEvent("worker-app:verify-linked-docs", {
+            type: "worker-app",
+            pendingCount: pending.length
+        });
+
+        if (!pending.length) return;
+
+        // Falta algo: el servidor no llego a publicar, o la unidad viene de
+        // antes de que lo hiciera. Se repone solo lo que falta.
+        await commitWorkerDocBatches(pending, workspace.id);
+    } catch (error) {
+        // Si la comprobacion falla se publica como antes: es la red, y una red
+        // que no se puede comprobar tiene que tender a reponer.
+        console.warn(
+            "No se pudo comprobar los documentos de los enlazados; se republican.",
+            error
+        );
+        void publishLinkedWorkerDocs();
+    }
+}
+
+/** Los mismos documentos que arma el servidor, calculados aqui para comparar. */
+function buildLinkedWorkerDocsForWorkspace(workspace) {
+    return buildLinkedWorkerDocuments(
+        workspace,
+        getWorkerAppLinkList(),
+        profile => computeProfileSchedule(profile)
+    ).documents;
+}
+
+/** Documentos que el servidor no publico, o publico distinto. */
+async function pendingLinkedWorkerDocs(workspace) {
+    const documents = buildLinkedWorkerDocsForWorkspace(workspace);
+
+    if (!documents.length) return [];
+
+    const { db, firestoreModule } = await getFirebaseServices();
+    const collections = [...new Set(documents.map(item => item.collection))];
+    const stored = new Map();
+
+    await Promise.all(collections.map(async name => {
+        const snap = await firestoreModule.getDocs(
+            firestoreModule.collection(db, "workspaces", workspace.id, name)
+        );
+
+        snap.forEach(docSnap => {
+            stored.set(`${name}/${docSnap.id}`, docSnap.data() || null);
+        });
+    }));
+
+    return documents.filter(({ collection, uid, payload }) =>
+        linkedDocChanged(stored.get(`${collection}/${uid}`), payload)
+    );
+}
+
 async function publishLinkedWorkerDocsNow(targetNames = null) {
     const workspace = currentWorkspace();
 
@@ -3252,7 +3229,8 @@ async function publishLinkedWorkerDocsNow(targetNames = null) {
                 payload: buildWorkerMessageDirectoryPayload(
                     item.link,
                     item.profile,
-                    workspace
+                    workspace,
+                    new Date().toISOString()
                 )
             });
         } catch (error) {
@@ -3272,7 +3250,9 @@ async function publishLinkedWorkerDocsNow(targetNames = null) {
                     workspace,
                     // El universo de compatibilidad tambien va sin duplicados, para
                     // que compatibleWorkerUids no repita a la misma persona.
-                    primaryProfiles
+                    primaryProfiles,
+                    new Date().toISOString(),
+                    computeProfileSchedule(item.profile)
                 )
             });
         } catch (error) {
@@ -3478,13 +3458,18 @@ export async function startWorkerAppDataSync(workspace) {
                     );
                 }
 
-                // El primer snapshot NO regenera la proyeccion (pesada, server),
-                // pero SI refresca los docs livianos (directorio de mensajes y
-                // candidatos de cambio de turno): su publicacion se habia perdido,
-                // por eso trabajadores nuevos no salian en Mensajes y no habia
-                // compatibles para cambiar turno.
+                // El primer snapshot NO regenera la proyeccion (pesada, server)
+                // y tampoco reescribe los docs livianos: desde que los publica
+                // la Cloud Function, aqui solo se COMPRUEBA que esten y esten
+                // al dia, y se repone lo que falte.
+                //
+                // Sigue siendo la red de reparacion que motivo este bootstrap
+                // -hubo un incidente en que se perdio la publicacion y los
+                // trabajadores nuevos no salian en Mensajes-, pero en regimen
+                // normal cuesta una lectura por coleccion en vez de 132
+                // escrituras, que era lo que se llevaba ~54 s de cada arranque.
                 if (initial) {
-                    void publishLinkedWorkerDocs();
+                    void verifyLinkedWorkerDocs();
                     // La programacion se republica al arrancar, no solo cuando
                     // el supervisor edita algo. Es UNA escritura O(1) por
                     // sesion, y es lo que hace que un documento publicado con

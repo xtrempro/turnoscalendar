@@ -8,20 +8,27 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const src = await readFile(new URL("../js/workerAppDataSync.js", import.meta.url), "utf8");
+// Los constructores de los dos documentos ya no viven en el cliente: se
+// comparten con la Cloud Function que ahora los publica, para no tener que
+// cablear cada campo nuevo en dos sitios.
+const compartido = await readFile(new URL("../js/serverLinkedDocs.js", import.meta.url), "utf8");
 
-function grab(name) {
-  let start = src.indexOf(`function ${name}(`);
+function grabFrom(source, name) {
+  let start = source.indexOf(`function ${name}(`);
   assert.notEqual(start, -1, `no se encontro ${name}`);
-  if (src.slice(start - 6, start) === "async ") start -= 6;
-  let paren = 0, i = src.indexOf("(", start);
-  for (; i < src.length; i += 1) { if (src[i] === "(") paren++; else if (src[i] === ")") { paren--; if (!paren) { i++; break; } } }
+  if (source.slice(start - 6, start) === "async ") start -= 6;
+  if (source.slice(start - 7, start) === "export ") start -= 7;
+  let paren = 0, i = source.indexOf("(", start);
+  for (; i < source.length; i += 1) { if (source[i] === "(") paren++; else if (source[i] === ")") { paren--; if (!paren) { i++; break; } } }
   let depth = 0;
-  for (let j = src.indexOf("{", i); j < src.length; j += 1) {
-    if (src[j] === "{") depth += 1;
-    else if (src[j] === "}") { depth -= 1; if (!depth) return src.slice(start, j + 1); }
+  for (let j = source.indexOf("{", i); j < source.length; j += 1) {
+    if (source[j] === "{") depth += 1;
+    else if (source[j] === "}") { depth -= 1; if (!depth) return source.slice(start, j + 1); }
   }
   throw new Error(`sin cierre: ${name}`);
 }
+
+const grab = (name) => grabFrom(src, name);
 
 test("publishLinkedWorkerDocs publica directorio de mensajes Y candidato por enlazado", () => {
   const fn = grab("publishLinkedWorkerDocsNow");
@@ -31,7 +38,9 @@ test("publishLinkedWorkerDocs publica directorio de mensajes Y candidato por enl
   // Candidato de cambio de turno.
   assert.match(fn, /collection: "workerSwapCandidates",[\s\S]{0,120}payload: buildSwapCandidatePayload\(/);
   // El universo de compatibilidad va deduplicado.
-  assert.match(fn, /primaryProfiles\s*\n/);
+  assert.match(fn, /primaryProfiles,\s*\n/);
+  // Y el armador compartido resuelve lo mismo del lado servidor.
+  assert.match(compartido, /findProfileForLink\(link, profiles\)/);
 });
 
 // Publicarlos de a uno costaba ~132 `setDoc` y mas de 60 s por una sola edicion
@@ -80,9 +89,12 @@ test("se dispara en el arranque (primer snapshot) y en cada publicacion", () => 
   // En el arranque tambien se republica la programacion del workspace, para
   // que un documento publicado con el formato anterior se corrija solo, sin
   // obligar al supervisor a editar el tablero.
+  // Desde que los publica la Cloud Function, el arranque ya no reescribe los
+  // 132 documentos: comprueba y repone SOLO lo que falte. Sigue siendo la red de
+  // reparacion que motivo este bootstrap, pero en regimen normal no escribe.
   assert.match(
     src,
-    /if \(initial\) \{\s*\n\s*void publishLinkedWorkerDocs\(\);[\s\S]{0,420}void publishSharedScheduleNow\(\);\s*\n\s*return;\s*\n\s*\}/
+    /if \(initial\) \{\s*\n\s*void verifyLinkedWorkerDocs\(\);[\s\S]{0,700}void publishSharedScheduleNow\(\);\s*\n\s*return;\s*\n\s*\}/
   );
   // El arranque publica a TODOS (sin objetivos); la publicacion caliente solo a
   // los perfiles tocados. Republicar los 66 enlazados por editar un turno
@@ -118,14 +130,14 @@ test("solo se republica a quien cambio, salvo que cambie la compatibilidad", () 
 });
 
 test("buildSwapCandidatePayload sigue publicando compatibilidad y la config del 24", () => {
-  const fn = grab("buildSwapCandidatePayload");
+  const fn = grabFrom(compartido, "buildSwapCandidatePayload");
   assert.match(fn, /compatibleWorkerUids/);
   assert.match(fn, /canSwapProfiles\(profile\.name, item\.profile\.name\)/);
-  assert.match(fn, /allowTwentyFourHourShifts:\s*\n\s*getTurnChangeConfig\(\)\.allowTwentyFourHourShifts !== false/);
+  assert.match(fn, /allowTwentyFourHourShifts:\s*\n\s*turnChange\.allowTwentyFourHourShifts !== false/);
 });
 
 test("buildWorkerMessageDirectoryPayload arma el doc del directorio", () => {
-  const fn = grab("buildWorkerMessageDirectoryPayload");
+  const fn = grabFrom(compartido, "buildWorkerMessageDirectoryPayload");
   assert.match(fn, /uid/);
   assert.match(fn, /profileName/);
 });

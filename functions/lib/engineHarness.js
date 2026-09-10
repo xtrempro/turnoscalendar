@@ -292,8 +292,47 @@ async function computeProjectionsForProfiles(db, {
     return results;
 }
 
+// Arma los dos documentos livianos de TODOS los enlazados de la unidad
+// (directorio de mensajes y candidato de cambio de turno). Devuelve lo que hay
+// que escribir; no escribe nada.
+//
+// Se arman todos siempre, aunque el cambio venga de un solo trabajador: el
+// campo `compatibleWorkerUids` de cada uno depende de los demas, asi que un
+// perfil que cambia de estamento o de rotativa mueve la compatibilidad del
+// resto. Quien escribe decide despues cuales cambiaron de verdad.
+async function buildLinkedWorkerDocs(db, {
+    workspace,
+    links = [],
+    blockedDays = [],
+    today = new Date()
+}) {
+    ensureEngineGlobals();
+
+    const state = await loadWorkspaceState(db, workspace.id);
+    await seedHolidays(state, relevantHolidayYears(today));
+
+    globalThis.localStorage = makeMemoryStorage(state);
+
+    const engine = await loadEngine();
+
+    if (typeof engine.clearHolidaysCache === "function") {
+        engine.clearHolidaysCache();
+    }
+
+    // Los dias bloqueados no viven en el estado del workspace: son su propia
+    // coleccion y en el navegador llegan por listener.
+    engine.seedLinkedDocsContext({ blockedDays });
+
+    return engine.buildLinkedWorkerDocuments(
+        workspace,
+        links,
+        today.toISOString()
+    );
+}
+
 module.exports = {
     STATE_MODULES,
+    buildLinkedWorkerDocs,
     computeProjectionsForProfiles,
     findWorkerLinkForProfile,
     findWorkerLinksForProfile,

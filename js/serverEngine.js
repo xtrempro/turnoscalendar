@@ -38,6 +38,12 @@ import { withManualBalance } from "./balanceUtils.js";
 import { activeMonthlySwapCount, getCambioTurnoCalendario } from "./swaps.js";
 import { addTaskAssignmentsToSchedule } from "./taskAssignmentProjection.js";
 import {
+    buildLinkedWorkerDocuments as buildLinkedWorkerDocumentsCore,
+    seedLinkedDocsContext,
+    linkedDocChanged,
+    withoutVolatileFields
+} from "./serverLinkedDocs.js";
+import {
     buildWorkerHheeSummaries,
     buildWorkerHheeMonthSummary,
     buildWorkerReportPreviewHTML,
@@ -1168,6 +1174,21 @@ export async function buildFullProjection(
         updatedAtISO: new Date().toISOString()
     };
 }
+
+// Los dos documentos livianos de cada enlazado (directorio de mensajes y
+// candidato de cambio de turno). Viven en su propio módulo, sin conocer el
+// motor; aquí se les inyecta el cálculo de agenda para que la banda de días que
+// viaja a la PWA sea EXACTAMENTE la misma que la de la proyección.
+export function buildLinkedWorkerDocuments(workspace, links, nowISO) {
+    return buildLinkedWorkerDocumentsCore(
+        workspace,
+        links,
+        profile => computeProfileSchedule(profile),
+        nowISO
+    );
+}
+
+export { seedLinkedDocsContext, linkedDocChanged, withoutVolatileFields };
 
 // Re-exportado para que el harness pueda resetear la cache de feriados de módulo
 // entre invocaciones (evita arrastrar feriados manuales de otro workspace).

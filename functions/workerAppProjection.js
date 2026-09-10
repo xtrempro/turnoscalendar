@@ -14,8 +14,13 @@ const {
 } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const logger = require("firebase-functions/logger");
-const { computeProjectionsForProfiles } = require("./lib/engineHarness");
+const {
+    computeProjectionsForProfiles,
+    buildLinkedWorkerDocs,
+    loadEngine
+} = require("./lib/engineHarness");
 const { writeProjection } = require("./lib/projectionWriter");
+const { writeLinkedWorkerDocs } = require("./lib/linkedDocsWriter");
 
 const REQUIRED_CONTRACT_PROFILE_VERSION = 2;
 
@@ -263,6 +268,57 @@ exports.backfillMissingWorkerProjections = onSchedule(
     }
 );
 
+async function loadWorkerBlockedDays(db, workspaceId) {
+    const snap = await db
+        .collection("workspaces").doc(workspaceId)
+        .collection("workerBlockedDays").get();
+
+    return snap.docs.map(docSnap => ({ id: docSnap.id, ...(docSnap.data() || {}) }));
+}
+
+// Publica el directorio de mensajes y los candidatos de cambio de turno.
+//
+// Va SIEMPRE junto a la proyeccion, aunque el marcador nombre a un solo
+// trabajador: `compatibleWorkerUids` es cruzado y un cambio de estamento o de
+// rotativa mueve la compatibilidad de los demas. Lo que evita que eso cueste
+// caro no es publicar menos, es escribir solo lo que cambio.
+//
+// Mejor-esfuerzo: un fallo aca NO puede tumbar la proyeccion, que es lo que
+// mueve los turnos en el telefono.
+async function publishLinkedWorkerDocs(db, workspaceId, workspace, links) {
+    if (!links.length) return;
+
+    try {
+        const blockedDays = await loadWorkerBlockedDays(db, workspaceId);
+        const built = await buildLinkedWorkerDocs(db, {
+            workspace,
+            links,
+            blockedDays
+        });
+        const engine = await loadEngine();
+        const result = await writeLinkedWorkerDocs(
+            db,
+            workspaceId,
+            built,
+            engine.linkedDocChanged
+        );
+
+        logger.info("worker-app linked docs published", {
+            workspaceId,
+            linked: links.length,
+            built: built.documents.length,
+            ...result,
+            failed: built.failed?.length || 0,
+            unmatchedLinks: built.unmatchedLinks?.length || 0
+        });
+    } catch (error) {
+        logger.error("worker-app linked docs failed", {
+            workspaceId,
+            error: error?.message || String(error)
+        });
+    }
+}
+
 exports.buildWorkerAppProjection = onDocumentCreated(
     {
         document: "workspaces/{workspaceId}/projectionRequests/{requestId}",
@@ -311,6 +367,8 @@ exports.buildWorkerAppProjection = onDocumentCreated(
                     projected: results.length
                 });
             }
+
+            await publishLinkedWorkerDocs(db, workspaceId, workspace, links);
         } catch (error) {
             // Mejor-esfuerzo: se registra y se descarta el marcador. La próxima
             // edición del supervisor crea uno nuevo y recomputa.
