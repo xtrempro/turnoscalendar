@@ -48,6 +48,9 @@ import {
     isSharedHomeTask,
     isValidHomeTaskVisibility
 } from "./homeSharedTasks.js";
+// El orden de las tarjetas del inicio vive en el mismo documento del usuario:
+// lo trae este mismo listener.
+import { receiveRemoteHomeLayout } from "./homeLayout.js";
 
 // Lista visible = las privadas de este usuario + las compartidas de la unidad.
 let cache = [];
@@ -482,6 +485,7 @@ function handleSnapshot(snapshot) {
     ownTasks = remoteTasks.map(task => ({ ...task }));
     setJSON(localKey(), ownTasks);
     setJSON(doneKey(), doneMap);
+    receiveRemoteHomeLayout(data.homeLayout, currentUid, currentWid);
 
     // Solo cuenta como sincronizado lo que vino del servidor. El SDK tambien
     // avisa con lo que tiene en memoria (por ejemplo, una escritura propia

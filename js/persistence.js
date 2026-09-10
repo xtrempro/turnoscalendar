@@ -29,6 +29,10 @@ const INTERNAL_KEY_PREFIXES = [
     // segun lo ultimo que hubiera subido cualquier otro equipo.
     "homeTasks_",
     "homeTasksDone_",
+    // Orden de las tarjetas del inicio: tambien es de UN usuario (vive en el
+    // mismo documento). Si viajara por la unidad, mover una tarjeta le
+    // reordenaria el inicio a todos los administradores.
+    "homeLayout_",
     "proturnos_ui_cache_"
 ];
 

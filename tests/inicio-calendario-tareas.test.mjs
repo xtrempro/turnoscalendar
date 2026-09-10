@@ -69,6 +69,9 @@ const homeTasks = (await readFile(
 const persistence = (await readFile(
     new URL("../js/persistence.js", import.meta.url), "utf8"
 )).replace(/\r\n/g, "\n");
+const css = (await readFile(
+    new URL("../styles.css", import.meta.url), "utf8"
+)).replace(/\r\n/g, "\n");
 
 // Agosto de 2026: el dia 1 cae sabado.
 const ANIO = 2026;
@@ -621,4 +624,35 @@ test("las tareas privadas no viajan por el estado compartido de la unidad", () =
     // tests/inicio-tareas-compartidas.test.mjs.)
     assert.match(persistence, /"homeTasks_",/);
     assert.match(persistence, /"homeTasksDone_",/);
+});
+
+/* =========================================================
+   Dias inhabiles y tamaño del calendario
+========================================================= */
+
+test("el calendario de tareas marca los dias inhabiles", () => {
+    // Fin de semana y feriado: los dos son inhabiles y se pintan igual, en rojo
+    // suave, como en el mini calendario del inicio.
+    const cells = buildTaskCalendarCells(ANIO, MES, [], FERIADOS, []);
+    const inhabil = dia => {
+        const cell = celda(cells, dia);
+        return cell.isWeekend || Boolean(cell.holiday);
+    };
+
+    assert.equal(inhabil(20), false, "jueves habil");
+    assert.equal(inhabil(21), true, "viernes feriado");
+    assert.equal(celda(cells, 21).holiday, "Feriado de prueba");
+    assert.equal(inhabil(22), true, "sabado");
+    assert.equal(inhabil(23), true, "domingo");
+    assert.match(home, /const nonWorking = cell\.isWeekend \|\| cell\.holiday;/);
+    assert.match(css, /\.hm-tc-cell\.is-nonworking \{/);
+});
+
+test("el calendario de tareas ocupa al menos un 30% mas", () => {
+    // Era de 1040 px de ancho y casillas de 92 px de alto.
+    assert.match(css, /\.hm-modal--taskcal \{ width: min\(1360px, 100%\);/);
+    assert.match(
+        css,
+        /\.hm-modal--taskcal \.hm-tc-cell \{ min-height: clamp\(120px, 13vh, 150px\); \}/
+    );
 });

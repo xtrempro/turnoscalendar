@@ -44,8 +44,11 @@ globalThis.alert = () => {};
 globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
 
 const { buildMiniCalendarCells } = await import("../js/home.js");
+const { HOME_LAYOUT_DEFAULT } = await import("../js/homeLayout.js");
 
 const home = (await readFile(new URL("../js/home.js", import.meta.url), "utf8"))
+    .replace(/\r\n/g, "\n");
+const css = (await readFile(new URL("../styles.css", import.meta.url), "utf8"))
     .replace(/\r\n/g, "\n");
 
 // Septiembre de 2026: el 1 cae martes. Los feriados se indexan como
@@ -93,24 +96,75 @@ test("un feriado sin nombre igual se marca", () => {
     assert.equal(dia(cells, 18).holiday, "Feriado");
 });
 
+test("marca los sabados y domingos", () => {
+    const cells = buildMiniCalendarCells(2026, SEPTIEMBRE, FERIADOS, HOY);
+
+    assert.deepEqual(
+        cells.filter(cell => cell?.isWeekend).map(cell => cell.day),
+        [5, 6, 12, 13, 19, 20, 26, 27]
+    );
+    // El 18 es viernes: feriado, no fin de semana. El 19 es las dos cosas.
+    assert.equal(dia(cells, 18).isWeekend, false);
+    assert.equal(dia(cells, 19).isWeekend, true);
+    assert.equal(dia(cells, 19).holiday, "Día de las Glorias del Ejército");
+});
+
+test("fin de semana y feriado se pintan igual", () => {
+    // Los dos son dias no habiles.
+    assert.match(
+        css,
+        /\.hm-minical-day\.is-weekend,\s*\n\.hm-minical-day\.is-holiday \{ color: var\(--red\)/
+    );
+    assert.match(css, /\.hm-minical-dow\.is-weekend \{ color: var\(--red\); \}/);
+    // Y la leyenda los nombra por lo que son.
+    assert.match(home, /hm-minical-key--holiday">Inhábiles</);
+});
+
+test("se mueve de mes con las flechas", () => {
+    assert.match(home, /data-hm="minical-prev"/);
+    assert.match(home, /data-hm="minical-next"/);
+    // Con Date, diciembre -> enero salta de año solo, y el año nuevo trae sus
+    // propios feriados.
+    assert.match(home, /const next = new Date\(miniCalYear, miniCalMonth \+ step, 1\);/);
+    assert.match(
+        home,
+        /miniCalYear = next\.getFullYear\(\);[\s\S]{0,260}ensureHolidaysLoaded\(\s*\n\s*miniCalYear,/
+    );
+});
+
 test("en otro mes no hay dia de hoy", () => {
     const cells = buildMiniCalendarCells(2026, SEPTIEMBRE + 1, {}, HOY);
 
     assert.equal(cells.some(cell => cell?.isToday), false);
 });
 
-test("la tarjeta abre el calendario de tareas", () => {
-    // Misma puerta que la fecha del encabezado: el clic y el teclado ya estan
-    // cableados para todo lo que lleve data-hm="open-taskcal".
+test("la grilla abre el calendario de tareas en el mes que se mira", () => {
+    // Misma puerta que la fecha del encabezado (data-hm="open-taskcal"), pero
+    // abre en el mes del mini calendario: si se avanzo a octubre, lo que se
+    // quiere ver son las tareas de octubre.
     assert.match(
         home,
-        /class="hm-card hm-col-4 hm-minical" data-hm="open-taskcal" role="button" tabindex="0"/
+        /class="hm-minical-open" data-hm="open-taskcal" data-taskcal-from="minical"/
     );
-    assert.match(home, /panel\.querySelectorAll\('\[data-hm="open-taskcal"\]'\)/);
+    assert.match(
+        home,
+        /trigger\.dataset\.taskcalFrom === "minical"\s*\n\s*\? openCalendarAtMiniMonth/
+    );
+    assert.match(
+        home,
+        /const openCalendarAtMiniMonth = \(\) => \{\s*\n\s*taskCalYear = miniCalYear;\s*\n\s*taskCalMonth = miniCalMonth;/
+    );
+    // Las flechas quedan FUERA de esa puerta: cambiar de mes no abre nada.
+    assert.doesNotMatch(
+        home,
+        /class="hm-card hm-col-4 hm-minical" data-hm="open-taskcal"/
+    );
 });
 
 test("va en la columna del turno, debajo del resumen rapido", () => {
-    assert.match(home, /\$\{resumenWidget\(\)\}\s*\n\s*\$\{miniCalendarWidget\(\)\}/);
+    // Es el orden de fabrica: cada administrador puede moverlo despues.
+    assert.deepEqual(HOME_LAYOUT_DEFAULT[2].slice(0, 2), ["resumen", "minical"]);
+    assert.match(home, /minical: miniCalendarWidget/);
 });
 
 test("cuando llegan los feriados, el mini calendario se repinta", () => {

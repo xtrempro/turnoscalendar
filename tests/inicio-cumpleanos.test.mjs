@@ -132,7 +132,8 @@ test("la tarjeta y el aviso del resumen estan cableados", async () => {
     )).replace(/\r\n/g, "\n");
 
     assert.match(home, /function cumpleanosWidget\(\)/);
-    assert.match(home, /\$\{cumpleanosWidget\(\)\}/);
+    // Es una de las tarjetas del inicio (el orden lo decide cada administrador).
+    assert.match(home, /\n    cumpleanos: cumpleanosWidget,\n/);
     assert.match(home, /Cumpleaños de <span data-hm="bday-month">/);
     // Estado vacio propio.
     assert.match(home, /Sin cumpleaños en \$\{esc\(monthName\.toLowerCase\(\)\)\}/);

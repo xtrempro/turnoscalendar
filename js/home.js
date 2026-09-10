@@ -71,6 +71,18 @@ import {
     toggleTaskDone
 } from "./homeTasks.js";
 import {
+    HOME_LAYOUT_EVENT,
+    getHomeLayout,
+    moveHomeCard,
+    sameHomeLayout,
+    saveHomeLayout
+} from "./homeLayout.js";
+import {
+    enableHomeCardDrag,
+    isHomeCardDragActive,
+    withDragHandle
+} from "./homeCardDrag.js";
+import {
     homeTaskVisibilityBadge,
     homeTaskVisibilityLabel,
     isSharedHomeTask
@@ -212,6 +224,11 @@ let weeklyScheduleWeek = weekStartMonday(new Date());
 // Calendario organizativo de tareas (se abre desde la fecha del encabezado).
 let taskCalYear = new Date().getFullYear();
 let taskCalMonth = new Date().getMonth();
+
+// Mes visible en el mini calendario del inicio. Arranca en el actual, se mueve
+// con sus flechas y se conserva entre repintados, como el de cumpleanos.
+let miniCalYear = new Date().getFullYear();
+let miniCalMonth = new Date().getMonth();
 
 // Mes visible del calendario de ausencias (independiente del de tareas).
 let absCalYear = new Date().getFullYear();
@@ -1422,6 +1439,17 @@ export function getTaskCalendarItemsForDay(
 
 // Las casillas del mes, con los blancos iniciales para que el dia 1 caiga en su
 // columna. null = casilla vacia antes del dia 1.
+// Nombre del feriado de un dia, o "" si no es feriado. Un feriado manual o de
+// una cache vieja puede venir como `true`, sin nombre: igual cuenta. Lo usan
+// el calendario de tareas y el mini calendario del inicio.
+function holidayNameFor(holidays, year, month, day) {
+    const holiday = holidays?.[`${year}-${month}-${day}`];
+
+    if (!holiday) return "";
+
+    return typeof holiday === "string" ? holiday : "Feriado";
+}
+
 export function buildTaskCalendarCells(
     year,
     month,
@@ -1440,6 +1468,8 @@ export function buildTaskCalendarCells(
         cells.push({
             day,
             iso: isoFromDate(date),
+            isWeekend: date.getDay() === 0 || date.getDay() === 6,
+            holiday: holidayNameFor(holidays, year, month, day),
             tasks: getTaskCalendarItemsForDay(date, tasks, holidays, calendarEvents)
         });
     }
@@ -1492,11 +1522,14 @@ function taskCalendarCellHTML(cell, todayIso) {
     // Todos los dias reales se pueden abrir: aunque no tengan tareas, desde el
     // listado del dia se pueden crear nuevas con el boton +.
     const clickable = true;
+    // Fin de semana y feriado se pintan igual: los dos son inhabiles. El nombre
+    // del feriado va en el title.
+    const nonWorking = cell.isWeekend || cell.holiday;
     const attrs = ` role="button" tabindex="0" data-hm="taskcal-day" data-iso="${esc(cell.iso)}"` +
-        ` title="Abrir tareas del día"`;
+        ` title="${esc(cell.holiday ? `${cell.holiday} · Abrir tareas del día` : "Abrir tareas del día")}"`;
 
     return `
-        <div class="hm-tc-cell ${isToday ? "is-today" : ""} ${clickable ? "is-clickable" : ""}"${attrs}>
+        <div class="hm-tc-cell ${isToday ? "is-today" : ""} ${nonWorking ? "is-nonworking" : ""} ${clickable ? "is-clickable" : ""}"${attrs}>
             <span class="hm-tc-day">${cell.day}</span>
             <div class="hm-tc-chips">
                 ${cell.tasks.slice(0, TASKS_PER_CELL).map(task => taskChipHTML(task, cell.iso)).join("")}
@@ -1517,7 +1550,7 @@ function taskCalendarBody() {
         heading: `${MESES[taskCalMonth]} ${taskCalYear}`,
         total,
         grid: `
-            ${DIAS_SEMANA.map(day => `<div class="hm-tc-dow">${day}</div>`).join("")}
+            ${DIAS_SEMANA.map((day, index) => `<div class="hm-tc-dow ${index >= 5 ? "is-weekend" : ""}">${day}</div>`).join("")}
             ${cells.map(cell => taskCalendarCellHTML(cell, todayIso)).join("")}`
     };
 }
@@ -1931,7 +1964,7 @@ function incidenciasWidget() {
                     <button type="button" data-hm="inc-next" aria-label="Mes siguiente">&#8250;</button>
                 </div>`
             )}
-            <div class="hm-listcol hm-inc-list hm-scroller" data-hm="inc-list">
+            <div class="hm-listcol hm-inc-list" data-hm="inc-list">
                 <div class="hm-empty">Revisando el mes...</div>
             </div>
             <div class="hm-inc-import">
@@ -2458,9 +2491,10 @@ function resumenWidget() {
         </div>`;
 }
 
-/* Mini calendario: el mes de hoy de un vistazo, con hoy y los feriados
-   marcados. No lleva tareas -para eso esta el calendario grande-: toda la
-   tarjeta es una puerta a el, la misma que la fecha del encabezado. */
+/* Mini calendario: un mes de un vistazo, con hoy, los fines de semana y los
+   feriados marcados. Se mueve de mes con sus flechas. No lleva tareas -para
+   eso esta el calendario grande-: la grilla es una puerta a el, y lo abre en
+   el mes que se esta mirando. */
 
 /**
  * Casillas del mini calendario: `null` para los huecos antes del dia 1 (la
@@ -2470,7 +2504,7 @@ function resumenWidget() {
  * @param {number} month 0-11
  * @param {Object} holidays mapa "año-mes(0)-dia" -> nombre (o true)
  * @param {Date} [today]
- * @returns {Array<null|{day: number, isToday: boolean, holiday: string}>}
+ * @returns {Array<null|{day: number, isToday: boolean, isWeekend: boolean, holiday: string}>}
  */
 export function buildMiniCalendarCells(year, month, holidays = {}, today = new Date()) {
     const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -2480,62 +2514,70 @@ export function buildMiniCalendarCells(year, month, holidays = {}, today = new D
         today.getFullYear() === year && today.getMonth() === month;
 
     for (let day = 1; day <= daysInMonth; day += 1) {
-        const holiday = holidays[`${year}-${month}-${day}`];
+        const weekday = new Date(year, month, day).getDay();
 
         cells.push({
             day,
             isToday: isCurrentMonth && today.getDate() === day,
-            // Un feriado manual o de una cache vieja puede venir como `true`,
-            // sin nombre: igual se marca.
-            holiday: holiday
-                ? (typeof holiday === "string" ? holiday : "Feriado")
-                : ""
+            isWeekend: weekday === 0 || weekday === 6,
+            holiday: holidayNameFor(holidays, year, month, day)
         });
     }
 
     return cells;
 }
 
-function miniCalendarGridHTML(now = new Date()) {
-    const year = now.getFullYear();
+function miniCalendarHeading() {
+    return `${MESES[miniCalMonth]} ${miniCalYear}`;
+}
+
+function miniCalendarGridHTML() {
     const cells = buildMiniCalendarCells(
-        year,
-        now.getMonth(),
-        getCachedHolidays(year),
-        now
+        miniCalYear,
+        miniCalMonth,
+        getCachedHolidays(miniCalYear)
     );
 
     return `
-        ${DIAS_SEMANA.map(day => `<span class="hm-minical-dow">${esc(day.charAt(0))}</span>`).join("")}
+        ${DIAS_SEMANA.map((day, index) => `<span class="hm-minical-dow ${index >= 5 ? "is-weekend" : ""}">${esc(day.charAt(0))}</span>`).join("")}
         ${cells.map(cell => cell
-            ? `<span class="hm-minical-day ${cell.isToday ? "is-today" : ""} ${cell.holiday ? "is-holiday" : ""}"${cell.holiday ? ` title="${esc(cell.holiday)}"` : ""}>${cell.day}</span>`
+            ? `<span class="hm-minical-day ${cell.isToday ? "is-today" : ""} ${cell.isWeekend ? "is-weekend" : ""} ${cell.holiday ? "is-holiday" : ""}"${cell.holiday ? ` title="${esc(cell.holiday)}"` : ""}>${cell.day}</span>`
             : `<span class="hm-minical-day hm-minical-day--blank" aria-hidden="true"></span>`
         ).join("")}`;
 }
 
+// Las flechas no pueden estar dentro de lo que abre el calendario de tareas:
+// cambiar de mes lo abriria. Por eso la puerta es la grilla (con la leyenda),
+// no la tarjeta entera.
 function miniCalendarWidget() {
-    const now = new Date();
-
     return `
-        <div class="hm-card hm-col-4 hm-minical" data-hm="open-taskcal" role="button" tabindex="0"
-            title="Ver el calendario de tareas" aria-label="Ver el calendario de tareas">
+        <div class="hm-card hm-col-4 hm-minical">
             ${panelHead(
                 IC.calendar,
-                esc(`${MESES[now.getMonth()]} ${now.getFullYear()}`),
-                `<span class="hm-minical-go">${svg(IC.chevron, 'stroke-width="2.4"')}</span>`
+                `<span data-hm="minical-month">${esc(miniCalendarHeading())}</span>`,
+                `<div class="hm-bday-nav">
+                    <button type="button" data-hm="minical-prev" aria-label="Mes anterior">&#8249;</button>
+                    <button type="button" data-hm="minical-next" aria-label="Mes siguiente">&#8250;</button>
+                </div>`
             )}
-            <div class="hm-minical-grid" data-hm="minical-grid">${miniCalendarGridHTML(now)}</div>
-            <div class="hm-minical-legend">
-                <span class="hm-minical-key hm-minical-key--today">Hoy</span>
-                <span class="hm-minical-key hm-minical-key--holiday">Feriado</span>
+            <div class="hm-minical-open" data-hm="open-taskcal" data-taskcal-from="minical"
+                role="button" tabindex="0" title="Ver el calendario de tareas">
+                <div class="hm-minical-grid" data-hm="minical-grid">${miniCalendarGridHTML()}</div>
+                <div class="hm-minical-legend">
+                    <span class="hm-minical-key hm-minical-key--today">Hoy</span>
+                    <span class="hm-minical-key hm-minical-key--holiday">Inhábiles</span>
+                </div>
             </div>
         </div>`;
 }
 
-// Solo la grilla: la tarjeta conserva sus listeners de "abrir calendario".
+// Solo el mes y la grilla: la tarjeta conserva sus listeners (abrir el
+// calendario de tareas y cambiar de mes).
 function reRenderMiniCalendar(panel) {
+    const month = panel.querySelector('[data-hm="minical-month"]');
     const grid = panel.querySelector('[data-hm="minical-grid"]');
 
+    if (month) month.textContent = miniCalendarHeading();
     if (grid) grid.innerHTML = miniCalendarGridHTML();
 }
 
@@ -3316,6 +3358,44 @@ function openDotacion(panel, est) {
     modal.querySelector(".hm-modal")?.focus();
 }
 
+// Las tarjetas que se pueden reordenar, por el id con que se guarda el orden
+// (ver HOME_LAYOUT_DEFAULT en homeLayout.js).
+const HOME_CARDS = {
+    tareas: tareasWidget,
+    ausencias: ausenciasWidget,
+    cambios: cambiosWidget,
+    solicitudes: solicitudesWidget,
+    incidencias: incidenciasWidget,
+    cumpleanos: cumpleanosWidget,
+    resumen: resumenWidget,
+    minical: miniCalendarWidget,
+    cobertura: coberturaWidget,
+    brecha: brechaWidget
+};
+
+// Cada tarjeta lleva su id en la raiz (lo que se arrastra y lo que dice que
+// tarjeta se solto) y la manija de cuatro puntos. Una tarjeta que hoy no se
+// muestra devuelve "".
+function homeCardHTML(id) {
+    return withDragHandle(HOME_CARDS[id]?.() || "", id);
+}
+
+function wireHomeCardOrder(panel) {
+    enableHomeCardDrag(
+        panel.querySelector('[data-hm="grid"]'),
+        ({ cardId, column, beforeId, card }) => {
+            const current = getHomeLayout();
+            const next = moveHomeCard(current, cardId, column, beforeId);
+
+            if (!sameHomeLayout(current, next)) void saveHomeLayout(next);
+
+            // Si el inicio se repinto mientras se arrastraba, lo que se solto
+            // ya no esta en pantalla: se vuelve a pintar con el orden nuevo.
+            if (!card.isConnected) renderHomePanel();
+        }
+    );
+}
+
 function homeHTML() {
     const supervisor = esc(getSupervisorName());
     const unit = esc(getUnitName());
@@ -3351,32 +3431,21 @@ function homeHTML() {
                 la vecina. Por eso el orden de lectura del DOM es por columna y
                 no por fila.
 
+                El orden de fabrica esta en HOME_LAYOUT_DEFAULT (homeLayout.js):
                   Columna 1 (el dia):  tareas -> ausencias -> cambios
                   Columna 2 (el mes):  solicitudes -> marcaje -> cumpleanos
-                  Columna 3 (el turno): resumen -> mini calendario -> cobertura,
-                                        y lo que sobra abajo es el sitio de la
-                                        proxima tarjeta.
+                  Columna 3 (el turno): resumen -> mini calendario -> cobertura
+                                        -> brecha
+                Cada administrador lo cambia arrastrando las tarjetas desde su
+                manija de cuatro puntos (ver homeCardDrag.js) y el suyo queda
+                en su propio documento de usuario.
 
                 Abajo de 1100px las pilas se disuelven (display: contents) y las
                 tarjetas vuelven a repartirse solas en la grilla de 12.
             -->
-            <section class="hm-grid">
-                <div class="hm-stack">
-                    ${tareasWidget()}
-                    ${ausenciasWidget()}
-                    ${cambiosWidget()}
-                </div>
-                <div class="hm-stack">
-                    ${solicitudesWidget()}
-                    ${incidenciasWidget()}
-                    ${cumpleanosWidget()}
-                </div>
-                <div class="hm-stack">
-                    ${resumenWidget()}
-                    ${miniCalendarWidget()}
-                    ${coberturaWidget()}
-                    ${brechaWidget()}
-                </div>
+            <section class="hm-grid" data-hm="grid">
+                ${getHomeLayout().map(column => `
+                    <div class="hm-stack">${column.map(homeCardHTML).join("")}</div>`).join("")}
             </section>
 
         </div>
@@ -3470,6 +3539,8 @@ function openTaskEdit(panel, id) {
 }
 
 function wire(panel) {
+    wireHomeCardOrder(panel);
+
     const tasksList = panel.querySelector('[data-hm="tasks-list"]');
     const refreshTasks = () => {
         // Las tres superficies muestran las mismas tareas: la tarjeta del dia,
@@ -4094,13 +4165,7 @@ function wire(panel) {
     const dayTasks = panel.querySelector('[data-hm="dayTasks-modal"]');
 
     if (taskCal) {
-        const openCalendar = () => {
-            // Siempre abre en el mes de hoy, no donde quedo la vez anterior:
-            // se entra por "Hoy es ...".
-            const now = new Date();
-
-            taskCalYear = now.getFullYear();
-            taskCalMonth = now.getMonth();
+        const showTaskCalendar = () => {
             reRenderTaskCalendar(panel);
             taskCal.hidden = false;
             void ensureHolidaysLoaded(
@@ -4108,19 +4173,58 @@ function wire(panel) {
                 () => reRenderTaskCalendar(panel)
             );
         };
+        const openCalendar = () => {
+            // Siempre abre en el mes de hoy, no donde quedo la vez anterior:
+            // se entra por "Hoy es ...".
+            const now = new Date();
 
-        // Dos puertas al mismo calendario: la fecha del encabezado y "Ver todas
-        // las tareas", que es donde uno busca la tarea que programo para otro
-        // dia y ya no ve en la tarjeta.
+            taskCalYear = now.getFullYear();
+            taskCalMonth = now.getMonth();
+            showTaskCalendar();
+        };
+        // El mini calendario abre en el mes que se esta mirando en el: si se
+        // avanzo a octubre, lo que se quiere ver son las tareas de octubre.
+        const openCalendarAtMiniMonth = () => {
+            taskCalYear = miniCalYear;
+            taskCalMonth = miniCalMonth;
+            showTaskCalendar();
+        };
+
+        // Dos puertas al mismo calendario: la fecha del encabezado y la grilla
+        // del mini calendario.
         panel.querySelectorAll('[data-hm="open-taskcal"]').forEach(trigger => {
-            trigger.addEventListener("click", openCalendar);
+            const open = trigger.dataset.taskcalFrom === "minical"
+                ? openCalendarAtMiniMonth
+                : openCalendar;
+
+            trigger.addEventListener("click", open);
             trigger.addEventListener("keydown", event => {
                 if (event.key !== "Enter" && event.key !== " ") return;
                 event.preventDefault();
-                openCalendar();
+                open();
             });
         });
     }
+
+    // --- Mini calendario: avanzar y retroceder de mes ---
+    panel
+        .querySelectorAll('[data-hm="minical-prev"], [data-hm="minical-next"]')
+        .forEach(button => {
+            button.addEventListener("click", () => {
+                const step = button.dataset.hm === "minical-next" ? 1 : -1;
+                // Con Date, diciembre -> enero salta de año solo.
+                const next = new Date(miniCalYear, miniCalMonth + step, 1);
+
+                miniCalYear = next.getFullYear();
+                miniCalMonth = next.getMonth();
+                reRenderMiniCalendar(panel);
+                // Un año nuevo trae sus propios feriados.
+                void ensureHolidaysLoaded(
+                    miniCalYear,
+                    () => reRenderMiniCalendar(panel)
+                );
+            });
+        });
 
     if (taskCal) {
         taskCal.addEventListener("click", event => {
@@ -4528,5 +4632,26 @@ export function renderHomePanel() {
         // El mini calendario tambien marca los feriados: si todavia no estaban
         // cargados, se pinto sin ellos.
         reRenderMiniCalendar(panel);
+    });
+
+    // Si el mini calendario quedo en otro año (se avanzo de diciembre a
+    // enero), sus feriados son otros.
+    if (miniCalYear !== year) {
+        void ensureHolidaysLoaded(miniCalYear, () => reRenderMiniCalendar(panel));
+    }
+}
+
+if (typeof window !== "undefined") {
+    // Otro equipo del mismo administrador cambio el orden de las tarjetas. No
+    // se reordena en la cara de quien esta arrastrando o tiene un modal
+    // abierto: en ese caso se aplica en el proximo pintado.
+    window.addEventListener(HOME_LAYOUT_EVENT, () => {
+        const panel = document.getElementById("homePanel");
+
+        if (!panel?.querySelector('[data-hm="grid"]')) return;
+        if (isHomeCardDragActive()) return;
+        if (panel.querySelector(".hm-modal-backdrop:not([hidden])")) return;
+
+        renderHomePanel();
     });
 }

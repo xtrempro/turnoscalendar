@@ -62,6 +62,7 @@
     "test:cobertura-automatica": "node --test tests/cobertura-automatica.test.mjs",
     "test:calendario-tareas": "node --test tests/inicio-calendario-tareas.test.mjs",
     "test:inicio-mini-calendario": "node --test tests/inicio-mini-calendario.test.mjs",
+    "test:inicio-orden-tarjetas": "node --test tests/inicio-orden-tarjetas.test.mjs",
     "test:cobertura-en-espera": "node --test tests/solicitud-cobertura-en-espera.test.mjs",
     "test:solicitud-aceptada": "node --test tests/solicitud-aceptada-no-vuelve-pendiente.test.mjs",
     "test:solicitud-perfil-renombrado": "node --test tests/solicitud-perfil-renombrado.test.mjs",

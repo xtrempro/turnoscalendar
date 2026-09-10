@@ -1594,10 +1594,9 @@ body[data-active-view="home"] .secondary-grid {
 .hm-req-list.hm-scroller,
 .hm-cob-list.hm-scroller { max-height: 460px; }
 /* Los tipos de incidencia se listan todos, incluso en cero: ver un "0" al lado
-   de "Sin marcaje entrada" dice algo. Son nueve y crecen cuando aparece una
-   regla nueva, asi que la tarjeta se acota igual que las de su fila en vez de
-   dejar a las otras dos flotando en blanco. */
-.hm-inc-list.hm-scroller { max-height: 330px; }
+   de "Sin marcaje entrada" dice algo. La tarjeta crece hasta mostrarlos todos,
+   sin barra de scroll: con las tarjetas apiladas por columna, crecer ya no deja
+   a las vecinas flotando en blanco. */
 
 .hm-gear { margin-left: auto; width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--border); background: var(--panel-alt); color: var(--text-soft); display: grid; place-items: center; cursor: pointer; }
 .hm-gear:hover { color: var(--accent); border-color: var(--accent); }
@@ -3013,14 +3012,16 @@ body.theme-light .tt-worker {
 .hm-date-go svg { width: 17px; height: 17px; }
 .hm-date[data-hm="open-taskcal"]:hover .hm-date-go { color: var(--accent); }
 
-/* Mini calendario del inicio: el mes de hoy de un vistazo. Toda la tarjeta
-   abre el calendario de tareas, igual que la fecha del encabezado. */
-.hm-minical { cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
-.hm-minical:hover { border-color: var(--accent); box-shadow: var(--shadow-panel); transform: translateY(-1px); }
-.hm-minical:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.hm-minical-go { margin-left: auto; display: grid; place-items: center; color: var(--text-muted); flex: none; }
-.hm-minical-go svg { width: 17px; height: 17px; }
-.hm-minical:hover .hm-minical-go { color: var(--accent); }
+/* Mini calendario del inicio: un mes de un vistazo, que se mueve con las
+   flechas. La grilla abre el calendario de tareas en ese mismo mes. */
+.hm-minical .hm-bday-nav { margin-left: auto; }
+.hm-minical-open {
+    display: flex; flex-direction: column; gap: 12px;
+    margin: -6px; padding: 6px; border-radius: 12px;
+    cursor: pointer; transition: background .15s;
+}
+.hm-minical-open:hover { background: var(--panel-alt); }
+.hm-minical-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .hm-minical-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; text-align: center; }
 .hm-minical-dow { font-size: 0.68rem; font-weight: 800; color: var(--text-muted); text-transform: uppercase; padding-bottom: 2px; }
 .hm-minical-day {
@@ -3029,6 +3030,9 @@ body.theme-light .tt-worker {
     font-variant-numeric: tabular-nums;
 }
 .hm-minical-day--blank { visibility: hidden; }
+/* Fin de semana y feriado: los dos son dias no habiles, y se pintan igual. */
+.hm-minical-dow.is-weekend { color: var(--red); }
+.hm-minical-day.is-weekend,
 .hm-minical-day.is-holiday { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 .hm-minical-day.is-today { color: #fff; background: var(--accent); }
 /* Hoy feriado: manda el fondo de hoy y el feriado queda como un punto. */
@@ -3042,9 +3046,44 @@ body.theme-light .tt-worker {
 .hm-minical-key--today::before { background: var(--accent); }
 .hm-minical-key--holiday::before { background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid var(--red); }
 
+/* Ordenar las tarjetas del inicio: la manija de cuatro puntos, arriba al
+   centro, dice que la tarjeta se puede arrastrar y es desde donde se arrastra
+   (ver homeCardDrag.js). Solo con las tres columnas a la vista. */
+.hm-grid [data-hm-card] { position: relative; }
+.hm-drag-handle { display: none; }
+@media (min-width: 1101px) {
+    .hm-drag-handle {
+        position: absolute; top: 2px; left: 50%; transform: translateX(-50%);
+        display: grid; place-items: center; width: 30px; height: 14px;
+        border-radius: 6px; color: var(--text-muted); opacity: 0.55;
+        cursor: grab; touch-action: none; user-select: none;
+        transition: opacity .15s, color .15s, background .15s;
+    }
+    .hm-drag-handle svg { width: 12px; height: 12px; }
+    .hm-grid [data-hm-card]:hover .hm-drag-handle { opacity: 0.9; }
+    .hm-drag-handle:hover { opacity: 1; color: var(--accent); background: var(--accent-soft); }
+}
+.hm-card.is-dragging {
+    position: fixed; z-index: 1300; margin: 0; box-sizing: border-box;
+    pointer-events: none; opacity: 0.96; transform: rotate(0.8deg);
+    box-shadow: 0 18px 40px rgba(6, 12, 22, 0.28);
+}
+.hm-card-placeholder {
+    flex: none; box-sizing: border-box; border-radius: 18px;
+    border: 2px dashed var(--accent); background: var(--accent-soft);
+}
+body.hm-arranging,
+body.hm-arranging * { cursor: grabbing !important; user-select: none; }
+/* Una columna vacia tiene que seguir siendo un lugar donde soltar. */
+.hm-grid.is-arranging .hm-stack { min-height: 140px; }
+
 /* El listado de un dia se abre ENCIMA del calendario, que queda visible detras. */
 .hm-modal-backdrop--over { z-index: 1210; }
-.hm-modal--taskcal { width: min(1040px, 100%); }
+/* Mas grande que el resto de los modales: al menos un 30% mas que los 1040 px
+   de ancho y 92 px por casilla de antes, para leer las tareas sin abrir cada
+   dia. Las casillas crecen con el alto de la pantalla. */
+.hm-modal--taskcal { width: min(1360px, 100%); max-height: 94vh; }
+.hm-modal--taskcal .hm-tc-cell { min-height: clamp(120px, 13vh, 150px); }
 /* Las flechas ya toman el margin-left:auto del encabezado; sin esto el boton de
    cerrar toma un segundo auto y el grupo queda repartido a lo ancho. */
 .hm-modal--taskcal .hm-modal-close { margin-left: 12px; }
@@ -3056,6 +3095,14 @@ body.theme-light .tt-worker {
     display: flex; flex-direction: column; gap: 4px; overflow: hidden;
 }
 .hm-tc-cell--blank { background: transparent; border-color: transparent; }
+/* Dias inhabiles (fin de semana y feriado): rojo suave, como en el mini
+   calendario del inicio. Van antes de "hoy" y del hover, que mandan. */
+.hm-tc-cell.is-nonworking {
+    background: color-mix(in srgb, var(--red) 8%, var(--panel-alt));
+    border-color: color-mix(in srgb, var(--red) 22%, var(--border));
+}
+.hm-tc-cell.is-nonworking .hm-tc-day { color: var(--red); }
+.hm-tc-dow.is-weekend { color: var(--red); }
 .hm-tc-cell.is-today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .hm-tc-cell.is-clickable { cursor: pointer; }
 .hm-tc-cell.is-clickable:hover { border-color: var(--accent); background: var(--accent-soft); }
@@ -3167,7 +3214,8 @@ body.theme-light .tt-worker {
    por encima del calendario. */
 .hm-modal-backdrop--top { z-index: 1220; }
 @media (max-width: 760px) {
-    .hm-tc-cell { min-height: 68px; }
+    .hm-tc-cell,
+    .hm-modal--taskcal .hm-tc-cell { min-height: 68px; }
     .hm-tc-chip { font-size: 0.64rem; }
 }
 .hm-modal-tasks { display: flex; flex-direction: column; gap: 8px; }
