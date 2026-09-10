@@ -37,6 +37,11 @@ const ENTRY_SYNC_DELAY_MS = 2500;
 const ENTRY_USER_QUIET_MS = 90000;
 const ENTRY_ACTIVE_RETRY_MS = 10000;
 const ENTRY_BLOCKED_RETRY_MS = 4000;
+// Reintento del arranque de la sincronizacion cuando falla. Sube hasta el techo
+// para no castigar una caida larga, pero empieza corto porque hasta que no
+// arranque la sesion NO PUEDE PUBLICAR (ver el catch de startFirebaseAppStateSync).
+const INITIAL_STATE_RETRY_MS = 5000;
+const INITIAL_STATE_RETRY_MAX_MS = 60000;
 const ENTRY_VISIBLE_RETRY_MS = 60000;
 // Techo duro de la cola de subida: ningun cambio local espera mas que esto,
 // aunque el usuario siga interactuando y la pestaña siga visible.
@@ -86,6 +91,8 @@ let stateSyncStarting = false;
 let entrySyncTimer = null;
 let applyingRemoteState = false;
 let waitingInitialState = false;
+let initialStateRetryTimer = null;
+let initialStateRetryDelay = INITIAL_STATE_RETRY_MS;
 // Modulos que se estan aplicando en este momento. El estado del entorno viene
 // partido en 13 modulos con un listener cada uno, y el turno de UNA casilla se
 // calcula con datos de tres de ellos (profile, turnos y swap). Aplicados de a
@@ -1675,6 +1682,9 @@ async function applyInitialModules(
 
     rememberAppliedStateEntries(initialEntries);
 
+    // Se leyo bien: se abre la compuerta y se olvida la espera acumulada.
+    clearInitialStateRetry();
+    initialStateRetryDelay = INITIAL_STATE_RETRY_MS;
     waitingInitialState = false;
     dispatchStatus({
         type: "app-state-applied",
@@ -1783,6 +1793,35 @@ async function handleModuleSnapshot(
 /** Modulos que se estan aplicando ahora. Lo usan las pruebas y el diagnostico. */
 export function pendingStateModuleCount() {
     return modulesApplying;
+}
+
+function clearInitialStateRetry() {
+    clearTimeout(initialStateRetryTimer);
+    initialStateRetryTimer = null;
+}
+
+// Reintenta el arranque con espera creciente. Mientras tanto la sesion sigue
+// sin publicar: es preferible que espere a que pise datos buenos con los suyos.
+function scheduleInitialStateRetry(workspace, options) {
+    const workspaceId = workspace?.id || "";
+
+    if (!workspaceId || initialStateRetryTimer) return;
+
+    const delay = initialStateRetryDelay;
+
+    initialStateRetryDelay = Math.min(
+        initialStateRetryDelay * 2,
+        INITIAL_STATE_RETRY_MAX_MS
+    );
+
+    initialStateRetryTimer = setTimeout(() => {
+        initialStateRetryTimer = null;
+
+        // Si mientras tanto se cambio de unidad o ya arranco, no se insiste.
+        if (activeWorkspaceId !== workspaceId || unsubscribeState) return;
+
+        void startFirebaseAppStateSync(workspace, options);
+    }, delay);
 }
 
 export async function startFirebaseAppStateSync(
@@ -1952,7 +1991,28 @@ export async function startFirebaseAppStateSync(
             unsubscribeStateEntries = null;
         };
     } catch (error) {
-        waitingInitialState = false;
+        // NO se abre la compuerta de publicacion.
+        //
+        // `waitingInitialState` bloquea las subidas, y ponerlo en false aqui
+        // convertia "no pude leer" en "puedo escribir": la sesion se quedaba
+        // con su copia local y la publicaba encima de la del servidor sin
+        // enterarse. Es lo que dejo pasar el borrado de la programacion de
+        // tareas del 2026-09-09, con dos dias de reglas sin desplegar.
+        //
+        // Quedandose cerrada, las ediciones NO se pierden: las tres compuertas
+        // reencolan (`scheduleEntrySyncRetry`) y salen cuando la lectura
+        // vuelva. Por eso hace falta reintentar, o la sesion quedaria muda.
+        scheduleInitialStateRetry(workspace, options);
+
+        dispatchStatus({
+            type: "app-state-blocked",
+            workspaceId,
+            message:
+                "Sin sincronizacion con el servidor: tus cambios quedan en " +
+                "espera y no se publican hasta recuperarla.",
+            error: error?.message || String(error),
+            retryInMs: initialStateRetryDelay
+        });
         console.warn(
             "No se pudo iniciar sincronizacion modular Firebase.",
             error
@@ -1963,6 +2023,7 @@ export async function startFirebaseAppStateSync(
 }
 
 export function stopFirebaseAppStateSync() {
+    clearInitialStateRetry();
     clearTimeout(settleTimer);
     settleTimer = null;
     settleStartedAt = 0;

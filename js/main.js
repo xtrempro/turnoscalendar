@@ -246,6 +246,9 @@ import {
     startTaskAlertScheduler,
     stopTaskAlertScheduler
 } from "./homeTasks.js";
+// Se importa por su efecto: monta el aviso de "sin sincronizacion" y se
+// suscribe solo. No exporta nada que main.js tenga que llamar.
+import "./syncBanner.js";
 import {
     formatCoverageTimeLeft,
     runAutoCoverageCycle,

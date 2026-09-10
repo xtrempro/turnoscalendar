@@ -25291,3 +25291,29 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 .ws-period small { color: var(--text-soft); font-size: 0.82rem; }
 .ws-validity legend { color: var(--text-soft); }
 
+
+/* Aviso de sesion sin sincronizacion. Va fijo abajo y ocupa poco: informa de
+   que los cambios estan en espera, sin tapar el trabajo ni pedir una accion
+   que el supervisor no puede tomar. */
+.sync-blocked-banner {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    z-index: 9000;
+    max-width: min(560px, calc(100vw - 32px));
+    transform: translateX(-50%);
+    padding: 11px 18px;
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    border-radius: 13px;
+    background: #fef2f2;
+    box-shadow: 0 10px 26px rgba(11, 18, 32, 0.16);
+    color: #991b1b;
+    font-size: 0.86rem;
+    font-weight: 600;
+    line-height: 1.35;
+    text-align: center;
+}
+
+.sync-blocked-banner[hidden] {
+    display: none !important;
+}
