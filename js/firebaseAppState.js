@@ -92,6 +92,9 @@ let entrySyncTimer = null;
 let applyingRemoteState = false;
 let waitingInitialState = false;
 let initialStateRetryTimer = null;
+// Ultimo estado conocido de "los datos vienen del servidor o de la cache".
+// null = todavia no se sabe.
+let servingFromCache = null;
 let initialStateRetryDelay = INITIAL_STATE_RETRY_MS;
 // Modulos que se estan aplicando en este momento. El estado del entorno viene
 // partido en 13 modulos con un listener cada uno, y el turno de UNA casilla se
@@ -1292,6 +1295,23 @@ async function flushPartialStateEntries() {
     }
 }
 
+// Firestore no avisa "me quede sin servidor": sigue sirviendo desde su cache y
+// encolando las escrituras. `metadata.fromCache` es la senal honesta de que lo
+// que se esta pintando no viene confirmado por el servidor.
+//
+// Solo se avisa en los CAMBIOS de estado, no en cada snapshot.
+function noteServerReachability(metadata) {
+    const fromCache = metadata?.fromCache;
+
+    if (typeof fromCache !== "boolean" || fromCache === servingFromCache) return;
+
+    servingFromCache = fromCache;
+
+    dispatchStatus({
+        type: fromCache ? "app-state-offline" : "app-state-online"
+    });
+}
+
 function dispatchStatus(detail) {
     if (typeof window === "undefined") return;
 
@@ -1499,6 +1519,10 @@ function handleEntriesSnapshot(
         workspaceId !== activeWorkspaceId ||
         generation !== syncGeneration
     ) return;
+
+    // Antes del corte por snapshot vacio: un snapshot sin cambios tambien dice
+    // de donde vienen los datos.
+    noteServerReachability(snap?.metadata);
 
     const changes = typeof snap.docChanges === "function"
         ? snap.docChanges()
@@ -2024,6 +2048,7 @@ export async function startFirebaseAppStateSync(
 
 export function stopFirebaseAppStateSync() {
     clearInitialStateRetry();
+    servingFromCache = null;
     clearTimeout(settleTimer);
     settleTimer = null;
     settleStartedAt = 0;

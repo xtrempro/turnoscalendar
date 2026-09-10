@@ -10,7 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { handleSyncStatus } from "../js/syncBanner.js";
+import { handleSyncStatus, handleBrowserConnectivity } from "../js/syncBanner.js";
 
 const src = await readFile(
     new URL("../js/firebaseAppState.js", import.meta.url),
@@ -121,32 +121,91 @@ globalThis.document = {
     body: { append() {} }
 };
 
-test("el aviso aparece al bloquearse y se retira al sincronizar", () => {
-    handleSyncStatus({ type: "app-state-blocked", message: "sin conexion" });
+test("el bloqueo aparece y se retira al aplicar el estado inicial", () => {
+    handleSyncStatus({ type: "app-state-blocked", message: "sin sincronizacion" });
 
-    assert.equal(falso.textContent, "sin conexion");
+    assert.equal(falso.textContent, "sin sincronizacion");
     assert.equal(falso.hidden, false);
+    assert.match(falso.className, /is-blocked/);
 
     handleSyncStatus({ type: "app-state-applied", modules: ["turnos"] });
 
     assert.equal(falso.hidden, true);
 });
 
-test("un evento cualquiera no retira el aviso", () => {
-    handleSyncStatus({ type: "app-state-blocked", message: "sin conexion" });
-    assert.equal(falso.hidden, false);
+test("la caida de conexion se avisa aparte, y no bloquea", () => {
+    handleSyncStatus({ type: "app-state-offline" });
 
-    // Un error de un modulo suelto no significa que la sincronizacion volvio.
-    handleSyncStatus({ type: "app-state-error", moduleId: "tasks" });
     assert.equal(falso.hidden, false);
+    assert.match(falso.className, /is-offline/);
+    // El texto dice lo importante: los cambios NO se pierden.
+    assert.match(falso.textContent, /se enviaran solos al reconectar/);
 
-    // Y las entradas por elemento si la retiran: son estado remoto llegando.
-    handleSyncStatus({ type: "app-state-entries-applied", keys: ["x"] });
+    handleSyncStatus({ type: "app-state-online" });
     assert.equal(falso.hidden, true);
+});
+
+test("aplicar estado NO retira el aviso de caida", () => {
+    // Estando offline se aplican datos de la CACHE igual. Si eso retirara el
+    // aviso, desapareceria justo cuando hace falta.
+    handleSyncStatus({ type: "app-state-offline" });
+    assert.equal(falso.hidden, false);
+
+    handleSyncStatus({ type: "app-state-entries-applied", keys: ["x"] });
+    assert.equal(falso.hidden, false, "la cache no prueba que haya servidor");
+
+    handleSyncStatus({ type: "app-state-online" });
+    assert.equal(falso.hidden, true);
+});
+
+test("el bloqueo manda sobre la caida", () => {
+    handleSyncStatus({ type: "app-state-offline" });
+    handleSyncStatus({ type: "app-state-blocked", message: "no se publica" });
+
+    // Lo grave es que no se puede publicar: eso es lo que hay que leer.
+    assert.equal(falso.textContent, "no se publica");
+    assert.match(falso.className, /is-blocked/);
+
+    handleSyncStatus({ type: "app-state-applied", modules: [] });
+    handleSyncStatus({ type: "app-state-online" });
+    assert.equal(falso.hidden, true);
+});
+
+test("el evento offline del navegador avisa sin esperar a Firestore", () => {
+    // Es la senal rapida: el SDK puede tardar en darse cuenta.
+    handleBrowserConnectivity(false);
+    assert.equal(falso.hidden, false);
+    assert.match(falso.className, /is-offline/);
+
+    handleBrowserConnectivity(true);
+    assert.equal(falso.hidden, true);
+});
+
+test("un error de un modulo suelto no toca el aviso", () => {
+    handleSyncStatus({ type: "app-state-offline" });
+    handleSyncStatus({ type: "app-state-error", moduleId: "tasks" });
+
+    assert.equal(falso.hidden, false);
+    handleSyncStatus({ type: "app-state-online" });
+});
+
+test("la caida se detecta por fromCache, no por adivinanza", () => {
+    // Firestore no avisa "me quede sin servidor": sigue sirviendo de su cache.
+    assert.match(src, /function noteServerReachability\(metadata\)/);
+    assert.match(src, /const fromCache = metadata\?\.fromCache;/);
+    // Solo se avisa en los CAMBIOS de estado.
+    assert.match(src, /fromCache === servingFromCache\) return;/);
+    // Y se lee ANTES del corte por snapshot vacio.
+    assert.match(
+        src,
+        /noteServerReachability\(snap\?\.metadata\);[\s\S]{0,200}const changes = typeof snap\.docChanges/
+    );
 });
 
 test("el aviso esta montado en la app y tiene estilo", () => {
     assert.match(main, /import "\.\/syncBanner\.js";/);
     assert.match(banner, /proturnos:firebaseAppState/);
+    assert.match(banner, /addEventListener\("offline"/);
     assert.match(estilos, /\.sync-blocked-banner \{/);
+    assert.match(estilos, /\.sync-blocked-banner\.is-offline \{/);
 });

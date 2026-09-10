@@ -25314,6 +25314,14 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
     text-align: center;
 }
 
+/* Sin conexion NO es lo mismo que bloqueado: aqui los cambios se guardan y
+   salen solos al reconectar, asi que el aviso es ambar y no rojo. */
+.sync-blocked-banner.is-offline {
+    border-color: rgba(245, 158, 11, 0.4);
+    background: #fffbeb;
+    color: #92400e;
+}
+
 .sync-blocked-banner[hidden] {
     display: none !important;
 }
