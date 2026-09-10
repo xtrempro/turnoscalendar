@@ -222,6 +222,12 @@ body.app-dialog-open {
     padding-top: 22px;
 }
 
+/* Con una tercera salida (p.ej. "eliminar igual" junto a "renombrar") los
+   botones se reparten en dos lineas antes que desbordar el dialogo. */
+.app-dialog__actions--multi {
+    flex-wrap: wrap;
+}
+
 .app-dialog__button {
     min-width: 122px;
     min-height: 44px;
@@ -283,7 +289,8 @@ body.app-dialog-open {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .app-dialog-backdrop[data-dialog-type="alert"] .app-dialog__actions {
+    .app-dialog-backdrop[data-dialog-type="alert"] .app-dialog__actions,
+    .app-dialog__actions--multi {
         grid-template-columns: 1fr;
     }
 

@@ -17,7 +17,7 @@ import { getHourReturn } from "./hourReturns.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import { fetchHolidays, getCachedHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
-import { showAlert, showConfirm } from "./dialogs.js";
+import { showAlert, showConfirm, showPrompt } from "./dialogs.js";
 import {
     buildTaskAutoScheduleHistory,
     planTaskAutoSchedule
@@ -2850,6 +2850,50 @@ function renderDefaultIntervalOptions(selectedValue, shift) {
     return [...normalOptions, ...habilOptions].join("");
 }
 
+export function taskAssignmentFootprint(taskId, assignments) {
+    const all = assignments || getAllAssignments();
+    const weeks = new Set();
+    let cells = 0;
+    let names = 0;
+
+    Object.entries(all || {}).forEach(([week, cellsOfWeek]) => {
+        Object.entries(cellsOfWeek || {}).forEach(([cellKey, entry]) => {
+            if (splitAssignmentKey(cellKey).taskId !== taskId) return;
+
+            const cuantos = (entry?.workers || []).filter(Boolean).length;
+
+            if (!cuantos) return;
+
+            weeks.add(week);
+            cells += 1;
+            names += cuantos;
+        });
+    });
+
+    return { names, cells, weeks: weeks.size };
+}
+
+// El texto del aviso. Aparte de la funcion que pregunta para poder probarlo sin
+// DOM: la cifra es lo unico que evita que la X se apriete a ciegas.
+export function taskDeleteWarning(title, footprint) {
+    const nombre = String(title || "esta tarea").trim() || "esta tarea";
+
+    if (!footprint.names) {
+        return `"${nombre}" no tiene asignaciones. Se eliminara la tarea.`;
+    }
+
+    const asignaciones = footprint.names === 1
+        ? "1 asignacion"
+        : `${footprint.names} asignaciones`;
+    const semanas = footprint.weeks === 1
+        ? "1 semana"
+        : `${footprint.weeks} semanas`;
+
+    return `"${nombre}" tiene ${asignaciones} en ${semanas}. ` +
+        "Si la eliminas se borran con ella, y no se pueden deshacer. " +
+        "Si solo cambio de nombre, renombrala: asi conserva su historial.";
+}
+
 function deleteTask(taskId) {
     const task = getTasks().find(item => item.id === taskId);
     const affectedWorkers = task ? [...taskWorkerNames(task)] : [];
@@ -3347,20 +3391,45 @@ function bindShellEvents(root) {
         .querySelectorAll("[data-task-delete]")
         .forEach(button => {
             button.onclick = async () => {
-                if (
-                    !await showConfirm(
-                        "Se eliminará la tarea junto con todas sus asignaciones.",
-                        {
-                            title: "Eliminar tarea",
-                            tone: "danger",
-                            confirmText: "Eliminar",
-                            destructive: true
-                        }
-                    )
-                ) {
+                const taskId = button.dataset.taskDelete;
+                const task = getTasks().find(item => item.id === taskId);
+
+                if (!task) return;
+
+                const footprint = taskAssignmentFootprint(taskId);
+                // Borrar y volver a crear con el mismo nombre parece un
+                // renombre y no lo es: la tarea nueva nace con otro id y las
+                // semanas pasadas quedan apuntando a una que ya no existe. Por
+                // eso el nombre viene editable, para que renombrar sea el
+                // camino corto y borrar el que cuesta.
+                const answer = await showPrompt(
+                    taskDeleteWarning(task.title, footprint),
+                    {
+                        title: "Eliminar tarea",
+                        tone: "danger",
+                        inputLabel: "Nombre de la tarea",
+                        value: task.title,
+                        confirmText: "Renombrar",
+                        cancelText: "Cancelar",
+                        extraActions: [
+                            { text: "Eliminar igual", value: "delete", tone: "danger" }
+                        ]
+                    }
+                );
+
+                if (!answer || answer.action === "cancel") return;
+
+                if (answer.action === "delete") {
+                    deleteTask(taskId);
+                    renderTaskAssignmentsPanel();
                     return;
                 }
-                deleteTask(button.dataset.taskDelete);
+
+                const nuevo = String(answer.value || "").trim();
+
+                if (!nuevo || nuevo === task.title) return;
+
+                updateTaskTitle(taskId, nuevo);
                 renderTaskAssignmentsPanel();
             };
         });

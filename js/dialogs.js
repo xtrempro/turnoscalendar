@@ -122,7 +122,13 @@ function createDialog({
     placeholder,
     inputLabel,
     inputType,
-    destructive
+    destructive,
+    // Botones ADEMAS de aceptar y cancelar, para las decisiones que no son un
+    // si/no: p.ej. "borrar igual" frente a "mejor renombrar". Cada uno es
+    // { text, value, tone }. Cuando hay alguno, el dialogo resuelve un OBJETO
+    // { action, value } en vez de un booleano o un texto, para que quien
+    // pregunta sepa cual de las salidas se tomo sin perder lo escrito.
+    extraActions = []
 }) {
     return new Promise(resolve => {
         const normalizedMessage = normalizeMessage(message);
@@ -196,6 +202,7 @@ function createDialog({
             body.append(field);
         }
 
+        const hasExtras = Array.isArray(extraActions) && extraActions.length > 0;
         const cancelButton = document.createElement("button");
         const confirmButton = document.createElement("button");
 
@@ -207,7 +214,7 @@ function createDialog({
         confirmButton.type = "button";
         confirmButton.className =
             "app-dialog__button app-dialog__button--primary";
-        if (destructive || normalizedTone === "danger") {
+        if (destructive || (normalizedTone === "danger" && !hasExtras)) {
             confirmButton.classList.add("app-dialog__button--danger");
         }
         confirmButton.textContent =
@@ -216,6 +223,25 @@ function createDialog({
         if (type !== "alert") {
             actions.append(cancelButton);
         }
+
+        // Tres botones no caben en una fila estrecha: la clase deja que se
+        // repartan en dos lineas en vez de desbordar.
+        if (hasExtras) actions.classList.add("app-dialog__actions--multi");
+
+        const extraButtons = (hasExtras ? extraActions : []).map(extra => {
+            const button = document.createElement("button");
+
+            button.type = "button";
+            button.className = "app-dialog__button app-dialog__button--secondary";
+            if (extra.tone === "danger") {
+                button.classList.add("app-dialog__button--danger");
+            }
+            button.textContent = extra.text || "Continuar";
+            actions.append(button);
+
+            return { button, value: extra.value };
+        });
+
         actions.append(confirmButton);
         backdrop.append(dialog);
         document.body.append(backdrop);
@@ -237,18 +263,22 @@ function createDialog({
             }, 150);
         };
 
-        const accept = () => {
-            if (type === "prompt") {
-                finish(input.value);
+        const settle = action => {
+            if (hasExtras) {
+                finish({ action, value: input ? input.value : undefined });
                 return;
             }
 
-            finish(true);
+            if (action === "cancel") {
+                finish(type === "alert" ? true : type === "prompt" ? null : false);
+                return;
+            }
+
+            finish(type === "prompt" ? input.value : true);
         };
 
-        const cancel = () => {
-            finish(type === "alert" ? true : type === "prompt" ? null : false);
-        };
+        const accept = () => settle("confirm");
+        const cancel = () => settle("cancel");
 
         function onKeydown(event) {
             if (event.key === "Escape") {
@@ -267,6 +297,9 @@ function createDialog({
 
         confirmButton.addEventListener("click", accept);
         cancelButton.addEventListener("click", cancel);
+        extraButtons.forEach(({ button, value }) => {
+            button.addEventListener("click", () => settle(value));
+        });
         backdrop.addEventListener("click", event => {
             if (event.target === backdrop) cancel();
         });
