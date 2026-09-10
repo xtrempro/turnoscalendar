@@ -72,7 +72,11 @@ test("Equipos Medicos queda enganchado a ProTurnos, permisos y PWA", async () =>
     assert.match(taskAssignments, /medicalEquipmentOutagesForRange/);
     assert.match(taskAssignments, /task-assignment-cell--maintenance/);
     assert.match(taskAssignments, /data-maintenance-blocked="true"/);
-    assert.match(taskAssignments, /cell\.dataset\.maintenanceBlocked === "true"/);
+    // El equipo en mantenimiento es UNA de las razones por las que una casilla
+    // no admite gente -la otra es cerrarla a mano-, y lo que las mira lee el
+    // flag comun.
+    assert.match(taskAssignments, /data-cell-blocked="true"/);
+    assert.match(taskAssignments, /cell\.dataset\.cellBlocked === "true"/);
     assert.match(home, /medicalEquipmentCalendarEventsForRange/);
     assert.match(home, /canViewMenu\("medicalEquipment"\) && canEditMenu\("medicalEquipment"\)/);
     assert.match(home, /data-hm="dt-medeq-row"/);

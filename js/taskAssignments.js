@@ -241,6 +241,23 @@ function outageScheduleNote(outages) {
     }).join(" | ");
 }
 
+// El rotulo de la casilla cerrada. Dice lo que el hueco vacio no dice solo:
+// que ahi no falta nadie, que es a proposito.
+function renderClosedCellNote() {
+    return `
+        <div class="task-assignment-closed-note">
+            <span>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="5" y="11" width="14" height="9" rx="2"></rect>
+                    <path d="M8.5 11V7.5a3.5 3.5 0 0 1 7 0V11"></path>
+                </svg>
+                Cerrada
+            </span>
+            <small>Esta tarea no va este turno.</small>
+        </div>
+    `;
+}
+
 function renderTaskMaintenanceNote(outages) {
     if (!outages?.length) return "";
 
@@ -919,6 +936,26 @@ function assignmentRemovedDefaults(entry) {
     );
 }
 
+// Casilla CERRADA: esa tarea ese dia y ese turno no va. No admite gente -ni a
+// mano, ni por regla de predefinido, ni por programacion automatica- y no
+// cuenta como hueco sin cubrir. Es lo mismo que hace el mantenimiento de un
+// equipo, pero decidido a mano y para una sola casilla.
+function assignmentClosed(entry) {
+    return entry?.closed === true;
+}
+
+// Si la casilla esta resuelta para la barra de cobertura del dia. Lo esta con
+// gente dentro, pero TAMBIEN cuando ese turno no va -equipo en mantenimiento o
+// cerrada a mano-: si eso contara como pendiente, el aviso de "sin cubrir"
+// pediria tapar algo que se decidio no hacer.
+function cellIsSettled(entry, outages = []) {
+    return Boolean(
+        outages.length ||
+        assignmentClosed(entry) ||
+        assignmentWorkers(entry).length
+    );
+}
+
 function taskDefaultWorkers(task) {
     return taskDefaultRules(task).map(rule => rule.workerName);
 }
@@ -1108,6 +1145,10 @@ function applyDefaultAssignments(days, tasks, assignments) {
                     );
                     const workers = assignmentWorkers(entry);
                     const removedDefaults = assignmentRemovedDefaults(entry);
+
+                    // La casilla cerrada no se llena sola: es lo que la
+                    // distingue de una vacia.
+                    if (assignmentClosed(entry)) return;
 
                     if (
                         workers.includes(rule.workerName) ||
@@ -1315,7 +1356,11 @@ function collapseGroupWorkers(assignments, shift, tasks, taskId, keyDay) {
         ...owner,
         workers: uniqueValues(workers),
         note: uniqueValues(notes).join(" | "),
-        removedDefaults: uniqueValues(removed)
+        removedDefaults: uniqueValues(removed),
+        // Una casilla cerrada nunca tiene gente dentro. Si al fusionar sube
+        // alguien de las de abajo, el grupo se abre: si no, la casilla diria
+        // "Cerrada" y mostraria a los que subieron al mismo tiempo.
+        closed: assignmentClosed(owner) && !workers.length
     });
 }
 
@@ -1885,6 +1930,9 @@ function setCellWorkers(shift, taskId, keyDay, nextWorkers) {
         workers: nextWorkers,
         note: entry.note || "",
         removedDefaults,
+        // Misma invariante que en la fusion: cerrada y con gente dentro no es
+        // un estado que la casilla sepa dibujar.
+        closed: assignmentClosed(entry) && !nextWorkers.length,
         mergedNextTaskId: entry.mergedNextTaskId
     });
 
@@ -1894,6 +1942,31 @@ function setCellWorkers(shift, taskId, keyDay, nextWorkers) {
         ...nextWorkers,
         ...removedDefaults
     ]));
+}
+
+// Cerrar la casilla: esa tarea ese dia no va. Se lleva por delante a quien
+// estuviera dentro -por eso quien pregunta avisa antes- y no hace falta anotar
+// nada en `removedDefaults`: mientras este cerrada, las reglas de predefinido
+// ni la miran. Al abrirla vuelven solas en el siguiente pintado.
+function setCellClosed(shift, taskId, keyDay, closed) {
+    const assignments = getWeekAssignments();
+    const cellKey = assignmentKey(shift, taskId, keyDay);
+    const entry = getCellEntry(assignments, shift, taskId, keyDay);
+
+    if (assignmentClosed(entry) === Boolean(closed)) return false;
+
+    const previousWorkers = assignmentWorkers(entry);
+
+    persistEntryOrDelete(assignments, cellKey, {
+        ...entry,
+        workers: closed ? [] : previousWorkers,
+        removedDefaults: closed ? [] : assignmentRemovedDefaults(entry),
+        closed: Boolean(closed)
+    });
+
+    saveWeekAssignments(assignments);
+    publishTaskAssignmentChanges(previousWorkers);
+    return true;
 }
 
 function renderCellPickerMarkup(shift, taskId, keyDay) {
@@ -1981,7 +2054,16 @@ function renderCellPickerMarkup(shift, taskId, keyDay) {
                     : `<p class="task-assignment-picker__empty">Sin personal disponible para este turno.</p>`
             }
         </div>
-        <button class="task-assignment-picker__more" type="button" data-picker-more>M&aacute;s opciones</button>
+        <div class="task-assignment-picker__foot">
+            <button class="task-assignment-picker__more" type="button" data-picker-more>M&aacute;s opciones</button>
+            <button class="task-assignment-picker__close-cell" type="button" data-picker-close-cell title="Esa tarea no va en este turno: la casilla deja de admitir gente y de contar como hueco">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <rect x="5" y="11" width="14" height="9" rx="2"></rect>
+                    <path d="M8.5 11V7.5a3.5 3.5 0 0 1 7 0V11"></path>
+                </svg>
+                Cerrar casilla
+            </button>
+        </div>
     `;
 }
 
@@ -2066,6 +2148,36 @@ function bindCellPickerEvents(node, { shift, taskId, keyDay }) {
             renderTaskAssignmentsPanel();
         });
 
+    node
+        .querySelector("[data-picker-close-cell]")
+        ?.addEventListener("click", async () => {
+            const current = workersNow();
+
+            closeCellPicker();
+
+            // Cerrar con gente dentro los saca de la casilla. Es lo que se
+            // quiere -la tarea ese turno no va- pero no puede pasar de callado.
+            if (
+                current.length &&
+                !await showConfirm(
+                    current.length === 1
+                        ? `${current[0]} queda fuera de esta casilla al cerrarla.`
+                        : `Las ${current.length} personas asignadas quedan fuera de esta casilla al cerrarla.`,
+                    {
+                        title: "Cerrar casilla",
+                        confirmText: "Cerrar igual",
+                        tone: "warning"
+                    }
+                )
+            ) {
+                renderTaskAssignmentsPanel();
+                return;
+            }
+
+            setCellClosed(shift, taskId, keyDay, true);
+            renderTaskAssignmentsPanel();
+        });
+
     const onPointerDown = event => {
         if (node.contains(event.target)) return;
 
@@ -2118,12 +2230,12 @@ function syncCellPicker(root) {
     );
 
     // Sin casilla -tarea borrada, semana cambiada-, con el panel oculto tras
-    // un cambio de vista o bloqueada por mantenimiento, el panel flotante no
-    // tiene a que anclarse.
+    // un cambio de vista o bloqueada -por mantenimiento o cerrada a mano-, el
+    // panel flotante no tiene a que anclarse.
     if (
         !cell ||
         !cell.getBoundingClientRect().width ||
-        cell.dataset.maintenanceBlocked === "true"
+        cell.dataset.cellBlocked === "true"
     ) {
         openCellPicker = null;
         return;
@@ -2166,6 +2278,11 @@ function renderAssignmentCell(assignments, task, day, holidays, placement) {
         ? placement.outages
         : [];
     const maintenanceBlocked = outages.length > 0;
+    const closed = assignmentClosed(entry);
+    // Las dos razones por las que una casilla no admite gente: el equipo en
+    // mantenimiento y el cierre a mano. Lo que las mira -arrastrar, el selector
+    // rapido- no necesita saber cual de las dos es.
+    const blocked = maintenanceBlocked || closed;
     // Fila y columna explicitas: con una casilla que ocupa varias filas, dejar
     // que la grilla las acomode sola correria las de abajo de lugar.
     const area = `grid-column: ${dayIndex + 2}; grid-row: ${taskIndex + 2} / span ${size};`;
@@ -2177,16 +2294,17 @@ function renderAssignmentCell(assignments, task, day, holidays, placement) {
         "task-assignment-cell",
         size > 1 ? " task-assignment-cell--merged" : "",
         inhabilClass(day, holidays, "task-assignment-cell--inhabil"),
-        uncovered && !maintenanceBlocked ? " task-assignment-cell--uncovered" : "",
+        uncovered && !blocked ? " task-assignment-cell--uncovered" : "",
         maintenanceBlocked ? " task-assignment-cell--maintenance" : "",
+        closed ? " task-assignment-cell--closed" : "",
         picking ? " task-assignment-cell--picking" : "",
-        onlyUncovered && (!uncovered || maintenanceBlocked) && !picking
+        onlyUncovered && (!uncovered || blocked) && !picking
             ? " task-assignment-cell--dimmed"
             : ""
     ].join("");
 
     return `
-        <div class="${classes}" style="${area}" data-task-cell="${escapeHTML(task.id)}" data-shift="${escapeHTML(task.shift)}" data-day="${escapeHTML(keyDay)}" data-merge-size="${size}" ${maintenanceBlocked ? 'data-maintenance-blocked="true"' : ""}>
+        <div class="${classes}" style="${area}" data-task-cell="${escapeHTML(task.id)}" data-shift="${escapeHTML(task.shift)}" data-day="${escapeHTML(keyDay)}" data-merge-size="${size}" ${blocked ? 'data-cell-blocked="true"' : ""} ${maintenanceBlocked ? 'data-maintenance-blocked="true"' : ""}>
             ${size > 1 ? `
                 <span class="task-assignment-cell-tag">
                     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -2201,13 +2319,27 @@ function renderAssignmentCell(assignments, task, day, holidays, placement) {
                 ${workers.join("")}
             </div>
             ${renderTaskMaintenanceNote(outages)}
-            <button class="task-assignment-add" type="button" data-cell-assign title="${maintenanceBlocked ? "Tarea inactiva por mantenimiento" : assigned.length ? "Agregar trabajadores" : "Asignar trabajadores"}" ${maintenanceBlocked ? "disabled" : ""}>
+            ${closed ? renderClosedCellNote() : ""}
+            <button class="task-assignment-add" type="button" data-cell-assign title="${blocked ? "Casilla cerrada: no admite trabajadores" : assigned.length ? "Agregar trabajadores" : "Asignar trabajadores"}" ${blocked ? "disabled" : ""}>
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path d="M12 5.5v13"></path>
                     <path d="M5.5 12h13"></path>
                 </svg>
-                <span>${maintenanceBlocked ? "Inactiva" : assigned.length ? "Agregar" : "Asignar"}</span>
+                <span>${blocked ? "Cerrada" : assigned.length ? "Agregar" : "Asignar"}</span>
             </button>
+            ${
+                closed
+                    ? `
+                        <button class="task-assignment-reopen" type="button" data-cell-open title="Volver a abrir la casilla">
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <rect x="5" y="11" width="14" height="9" rx="2"></rect>
+                                <path d="M8.5 11V7.8a3.5 3.5 0 0 1 6.8-1.2"></path>
+                            </svg>
+                            Abrir
+                        </button>
+                    `
+                    : ""
+            }
             ${entry.note ? `<p>${escapeHTML(entry.note)}</p>` : ""}
             ${renderMergePorts(task, keyDay, placement)}
         </div>
@@ -2449,16 +2581,18 @@ function renderBoard(shift, tasks, days, assignments, holidays = {}, equipmentOu
             // La casilla fusionada cuenta por las filas que ocupa: si cubre dos
             // tareas, cubrir la casilla cubre las dos.
             const size = group.taskIds.length;
-            const workers = assignmentWorkers(
-                getCellEntry(assignments, shift, group.taskIds[0], keyDay)
+            const groupEntry = getCellEntry(
+                assignments,
+                shift,
+                group.taskIds[0],
+                keyDay
             );
+            const workers = assignmentWorkers(groupEntry);
 
             total += size;
             people += workers.length;
 
-            if (groupOutages.length) {
-                done += size;
-            } else if (workers.length) {
+            if (cellIsSettled(groupEntry, groupOutages)) {
                 done += size;
             } else {
                 uncovered += 1;
@@ -3191,7 +3325,7 @@ function readDraggedWorker(event) {
 
 function canMoveWorkerToCell(cell, payload) {
     return Boolean(
-        cell.dataset.maintenanceBlocked !== "true" &&
+        cell.dataset.cellBlocked !== "true" &&
         payload?.workerName &&
         payload?.shift === cell.dataset.shift &&
         payload?.keyDay === cell.dataset.day &&
@@ -3206,12 +3340,22 @@ function persistEntryOrDelete(assignments, cellKey, entry) {
     // Una casilla fusionada sigue existiendo aunque este vacia: el enlace vive
     // en ella y borrarla desharia la fusion sola.
     const mergedNextTaskId = String(entry?.mergedNextTaskId || "");
+    // Y una casilla CERRADA tambien: vacia es justo como tiene que estar, y si
+    // se borrara el cierre se perderia en el siguiente pintado.
+    const closed = assignmentClosed(entry);
 
-    if (workers.length || note || removedDefaults.length || mergedNextTaskId) {
+    if (
+        workers.length ||
+        note ||
+        removedDefaults.length ||
+        mergedNextTaskId ||
+        closed
+    ) {
         assignments[cellKey] = {
             workers,
             note,
             removedDefaults,
+            ...(closed ? { closed: true } : {}),
             ...(mergedNextTaskId ? { mergedNextTaskId } : {})
         };
         return;
@@ -3892,13 +4036,29 @@ function bindShellEvents(root) {
     root
         .querySelectorAll("[data-task-cell]")
         .forEach(cell => {
+            // La casilla cerrada tiene su propio boton para volver a abrirla:
+            // el de asignar esta deshabilitado, asi que desde ahi no se puede.
+            cell.querySelector("[data-cell-open]")?.addEventListener(
+                "click",
+                event => {
+                    event.stopPropagation();
+                    setCellClosed(
+                        cell.dataset.shift,
+                        cell.dataset.taskCell,
+                        cell.dataset.day,
+                        false
+                    );
+                    renderTaskAssignmentsPanel();
+                }
+            );
+
             cell.querySelector("[data-cell-assign]")?.addEventListener(
                 "click",
                 event => {
                     event.stopPropagation();
 
                     if (
-                        cell.dataset.maintenanceBlocked === "true" ||
+                        cell.dataset.cellBlocked === "true" ||
                         event.currentTarget.disabled
                     ) {
                         closeCellPicker();
@@ -4481,6 +4641,9 @@ function cellExcelText(assignments, shift, taskId, day, tasks, equipmentOutages 
         taskId,
         keyFromDate(day)
     );
+
+    if (assignmentClosed(entry)) return "CERRADA";
+
     const workers = assignmentWorkers(entry)
         .map(name => {
             const partial = partialShiftText(
@@ -4603,6 +4766,15 @@ export function getTaskScheduleWeek(start = currentWeekStart) {
                         keyFromDate(day)
                     );
 
+                    if (assignmentClosed(entry)) {
+                        return {
+                            workers: [],
+                            note: "Cerrada",
+                            inactive: true,
+                            closed: true
+                        };
+                    }
+
                     return {
                         workers: assignmentWorkers(entry)
                             .map(name => scheduleWorkerName(
@@ -4616,7 +4788,13 @@ export function getTaskScheduleWeek(start = currentWeekStart) {
                 })
             }))
             .filter(row =>
-                row.cells.some(cell => cell.workers.length || cell.note)
+                row.cells.some(cell =>
+                    cell.workers.length ||
+                    // Una casilla cerrada NO basta para publicar la fila: si la
+                    // tarea no tiene a nadie en toda la semana, siete
+                    // "Cerrada" seguidos son ruido, no informacion.
+                    (cell.note && !cell.closed)
+                )
             )
     }));
 
@@ -4902,6 +5080,9 @@ function autoScheduleCells(days, tasks, assignments) {
                 const entry = getCellEntry(assignments, shift, taskId, keyDay);
 
                 if (outages.length) return;
+                // La casilla cerrada no es una casilla vacia que haya que
+                // llenar: el reparto automatico ni la mira.
+                if (assignmentClosed(entry)) return;
                 if (assignmentWorkers(entry).length) return;
 
                 cells.push({

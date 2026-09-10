@@ -14844,6 +14844,51 @@ body.theme-dark .task-assignment-picker__option--busy small {
     border-color: var(--accent);
 }
 
+/* Cerrar la casilla vive en el pie del selector, no en la casilla: es una
+   decision poco frecuente y una fila de candados sobre las 7 columnas seria
+   mas ruido que ayuda. Volver a abrirla si esta en la casilla, que es la unica
+   forma de alcanzarla con el boton de asignar deshabilitado. */
+.task-assignment-picker__foot {
+    display: grid;
+    gap: 6px;
+}
+
+.task-assignment-picker__close-cell {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--field);
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.task-assignment-picker__close-cell svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.task-assignment-picker__close-cell:hover {
+    color: #b45309;
+    border-color: rgba(180, 83, 9, 0.55);
+}
+
+body.theme-dark .task-assignment-picker__close-cell:hover {
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.5);
+}
+
 /* ==========================================================================
    ASIGNACION DE TAREAS - REMATES DEL MODAL
 ========================================================================== */
@@ -16603,6 +16648,90 @@ button.staffing-pill {
     color: inherit;
     opacity: 0.78;
     font-weight: 800;
+}
+
+/* Casilla cerrada a mano: esa tarea ese turno no va. Se lee distinto de "sin
+   cubrir" -que es un hueco por tapar- y distinto del mantenimiento, que no lo
+   decidio el supervisor. Gris apagado: esta resuelta, no reclama nada. */
+.task-assignment-cell--closed {
+    border-style: solid;
+    border-color: var(--border);
+    background: repeating-linear-gradient(
+        135deg,
+        rgba(120, 130, 145, 0.10) 0 6px,
+        rgba(120, 130, 145, 0.03) 6px 12px
+    );
+}
+
+.task-assignment-cell--closed .task-assignment-add {
+    display: none;
+}
+
+.task-assignment-closed-note {
+    display: grid;
+    gap: 2px;
+    padding: 6px 7px;
+    border-radius: 8px;
+    background: rgba(120, 130, 145, 0.14);
+    color: var(--text-soft);
+    font-size: 0.68rem;
+    font-weight: 900;
+    line-height: 1.25;
+}
+
+.task-assignment-closed-note span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.task-assignment-closed-note svg {
+    width: 13px;
+    height: 13px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.task-assignment-closed-note small {
+    color: inherit;
+    opacity: 0.75;
+    font-weight: 800;
+}
+
+.task-assignment-reopen {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    width: 100%;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--panel);
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.task-assignment-reopen svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.task-assignment-reopen:hover {
+    color: var(--accent);
+    border-color: var(--accent);
 }
 
 @media (max-width: 1180px) {

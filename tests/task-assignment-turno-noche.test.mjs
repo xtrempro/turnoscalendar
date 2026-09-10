@@ -33,9 +33,18 @@ test("la fila se agrega al armar la programacion", async () => {
     const source = await readSource();
 
     assert.match(source, /dutyLabel: "TURNO DE NOCHE"/);
+
+    // El cuerpo de getTaskScheduleWeek, acotado por la funcion exportada que
+    // sigue. Antes esto se medida en caracteres desde el nombre de la funcion
+    // ("los primeros 4000"), y cualquier linea que se agregara dentro dejaba la
+    // fila fuera de la ventana: la prueba fallaba sin que nada se hubiera roto.
+    const desde = source.indexOf("export function getTaskScheduleWeek");
+    const hasta = source.indexOf("export function", desde + 20);
+
+    assert.ok(desde !== -1 && hasta !== -1);
     assert.match(
-        source,
-        /function getTaskScheduleWeek[\s\S]{0,4000}section\.rows\.unshift\(\{\s*\n\s*taskId: `duty_\$\{section\.shift\}`,\s*\n\s*title: dutyLabel,/
+        source.slice(desde, hasta),
+        /section\.rows\.unshift\(\{\s*\n\s*taskId: `duty_\$\{section\.shift\}`,\s*\n\s*title: dutyLabel,/
     );
 });
 

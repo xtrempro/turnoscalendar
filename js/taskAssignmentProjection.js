@@ -158,6 +158,12 @@ function assignmentRemovedDefaults(entry) {
     );
 }
 
+// Casilla cerrada en el tablero del supervisor (js/taskAssignments.js): esa
+// tarea ese dia y turno no va para nadie.
+function assignmentClosed(entry) {
+    return entry?.closed === true;
+}
+
 function isoFromDate(date) {
     return [
         date.getFullYear(),
@@ -463,6 +469,13 @@ function dayTaskAssignments(profileName, keyDay, tasks, allEntries) {
                 group.ownerId,
                 keyDay
             );
+
+            // Casilla cerrada: esa tarea ese turno no va. Hay que mirarlo aqui
+            // -y no confiar en que la casilla quedo vacia- porque el
+            // predefinido no se lee de la casilla: se recalcula de la regla del
+            // catalogo, y sin esto seguiria apareciendo en el telefono.
+            if (assignmentClosed(entry)) return;
+
             const workers = assignmentWorkers(entry);
             const removedDefaults = assignmentRemovedDefaults(entry);
             const isManual = workers.includes(profileName);
