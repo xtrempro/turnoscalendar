@@ -2458,6 +2458,87 @@ function resumenWidget() {
         </div>`;
 }
 
+/* Mini calendario: el mes de hoy de un vistazo, con hoy y los feriados
+   marcados. No lleva tareas -para eso esta el calendario grande-: toda la
+   tarjeta es una puerta a el, la misma que la fecha del encabezado. */
+
+/**
+ * Casillas del mini calendario: `null` para los huecos antes del dia 1 (la
+ * semana arranca en lunes, como el calendario de tareas) y un objeto por dia.
+ *
+ * @param {number} year
+ * @param {number} month 0-11
+ * @param {Object} holidays mapa "año-mes(0)-dia" -> nombre (o true)
+ * @param {Date} [today]
+ * @returns {Array<null|{day: number, isToday: boolean, holiday: string}>}
+ */
+export function buildMiniCalendarCells(year, month, holidays = {}, today = new Date()) {
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const lead = (new Date(year, month, 1).getDay() + 6) % 7;
+    const cells = new Array(lead).fill(null);
+    const isCurrentMonth =
+        today.getFullYear() === year && today.getMonth() === month;
+
+    for (let day = 1; day <= daysInMonth; day += 1) {
+        const holiday = holidays[`${year}-${month}-${day}`];
+
+        cells.push({
+            day,
+            isToday: isCurrentMonth && today.getDate() === day,
+            // Un feriado manual o de una cache vieja puede venir como `true`,
+            // sin nombre: igual se marca.
+            holiday: holiday
+                ? (typeof holiday === "string" ? holiday : "Feriado")
+                : ""
+        });
+    }
+
+    return cells;
+}
+
+function miniCalendarGridHTML(now = new Date()) {
+    const year = now.getFullYear();
+    const cells = buildMiniCalendarCells(
+        year,
+        now.getMonth(),
+        getCachedHolidays(year),
+        now
+    );
+
+    return `
+        ${DIAS_SEMANA.map(day => `<span class="hm-minical-dow">${esc(day.charAt(0))}</span>`).join("")}
+        ${cells.map(cell => cell
+            ? `<span class="hm-minical-day ${cell.isToday ? "is-today" : ""} ${cell.holiday ? "is-holiday" : ""}"${cell.holiday ? ` title="${esc(cell.holiday)}"` : ""}>${cell.day}</span>`
+            : `<span class="hm-minical-day hm-minical-day--blank" aria-hidden="true"></span>`
+        ).join("")}`;
+}
+
+function miniCalendarWidget() {
+    const now = new Date();
+
+    return `
+        <div class="hm-card hm-col-4 hm-minical" data-hm="open-taskcal" role="button" tabindex="0"
+            title="Ver el calendario de tareas" aria-label="Ver el calendario de tareas">
+            ${panelHead(
+                IC.calendar,
+                esc(`${MESES[now.getMonth()]} ${now.getFullYear()}`),
+                `<span class="hm-minical-go">${svg(IC.chevron, 'stroke-width="2.4"')}</span>`
+            )}
+            <div class="hm-minical-grid" data-hm="minical-grid">${miniCalendarGridHTML(now)}</div>
+            <div class="hm-minical-legend">
+                <span class="hm-minical-key hm-minical-key--today">Hoy</span>
+                <span class="hm-minical-key hm-minical-key--holiday">Feriado</span>
+            </div>
+        </div>`;
+}
+
+// Solo la grilla: la tarjeta conserva sus listeners de "abrir calendario".
+function reRenderMiniCalendar(panel) {
+    const grid = panel.querySelector('[data-hm="minical-grid"]');
+
+    if (grid) grid.innerHTML = miniCalendarGridHTML();
+}
+
 function cambiosWidget() {
     const swaps = getMonthSwaps();
     const body = swaps.length
@@ -3272,8 +3353,9 @@ function homeHTML() {
 
                   Columna 1 (el dia):  tareas -> ausencias -> cambios
                   Columna 2 (el mes):  solicitudes -> marcaje -> cumpleanos
-                  Columna 3 (el turno): resumen -> cobertura, y lo que sobra
-                                        abajo es el sitio de la proxima tarjeta.
+                  Columna 3 (el turno): resumen -> mini calendario -> cobertura,
+                                        y lo que sobra abajo es el sitio de la
+                                        proxima tarjeta.
 
                 Abajo de 1100px las pilas se disuelven (display: contents) y las
                 tarjetas vuelven a repartirse solas en la grilla de 12.
@@ -3291,6 +3373,7 @@ function homeHTML() {
                 </div>
                 <div class="hm-stack">
                     ${resumenWidget()}
+                    ${miniCalendarWidget()}
                     ${coberturaWidget()}
                     ${brechaWidget()}
                 </div>
@@ -4442,5 +4525,8 @@ export function renderHomePanel() {
         const list = panel.querySelector('[data-hm="tasks-list"]');
 
         if (list) list.innerHTML = tasksListHTML();
+        // El mini calendario tambien marca los feriados: si todavia no estaban
+        // cargados, se pinto sin ellos.
+        reRenderMiniCalendar(panel);
     });
 }
