@@ -33,6 +33,13 @@ const PROJECT_ID = arg("--project", "calendarioturnos-7c4d9");
 const WORKSPACE_ID = arg("--workspace", "Boh7mvO5ku9quFFsPcIq");
 const FROM = arg("--desde", "2026-09-03T16:50:00Z");
 const OUT = arg("--salida", "asignaciones-rescatadas.json");
+// Acota la reposicion a semanas concretas. Sin esto, reponer desde una fecha
+// vieja para rescatar UNA semana arrastra a todas las demas a esa misma foto y
+// se pierde el trabajo posterior.
+const ONLY_WEEKS = arg("--semanas", "")
+    .split(",")
+    .map(value => value.trim())
+    .filter(Boolean);
 
 const DOCUMENTS_ROOT =
     `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}` +
@@ -134,6 +141,7 @@ function measure(week) {
 async function main() {
     console.log(`unidad ${WORKSPACE_ID}`);
     console.log(`bueno  ${FROM}`);
+    if (ONLY_WEEKS.length) console.log(`semanas ${ONLY_WEEKS.join(", ")}`);
     console.log(`modo   ${APPLY ? "ESCRITURA (--apply)" : "SOLO LECTURA"}\n`);
 
     const [goodDoc, liveDoc] = await Promise.all([
@@ -152,13 +160,17 @@ async function main() {
         const after = measure(live[week]);
         const lost = before.names - after.names;
 
-        if (lost > 0) damaged.push(week);
+        const inScope = !ONLY_WEEKS.length || ONLY_WEEKS.includes(week);
+
+        if (lost > 0 && inScope) damaged.push(week);
 
         console.log(
             `  ${week}  ` +
             `${String(before.cells).padStart(3)}c/${String(before.names).padStart(3)}n   ` +
             `${String(after.cells).padStart(3)}c/${String(after.names).padStart(3)}n   ` +
-            (lost > 0 ? `FALTAN ${lost} nombres` : "ok")
+            (lost > 0
+                ? (inScope ? `FALTAN ${lost} nombres` : `faltan ${lost}, fuera de alcance`)
+                : "ok")
         );
     });
 

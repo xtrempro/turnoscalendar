@@ -26,6 +26,11 @@ function arg(name, fallback = "") {
 }
 
 const APPLY = process.argv.includes("--apply");
+// La guarda de abajo protege el caso normal: no pisar un catalogo que sigue
+// teniendo tareas. Pero un borrado PARCIAL deja sobrevivientes, y entonces la
+// guarda impide justo el rescate que hace falta. --forzar es la salida
+// explicita, para que pisar sea siempre una decision escrita.
+const FORCE = process.argv.includes("--forzar");
 const PROJECT_ID = arg("--project", "calendarioturnos-7c4d9");
 const WORKSPACE_ID = arg("--workspace", "Boh7mvO5ku9quFFsPcIq");
 const FROM = arg("--desde", "");
@@ -242,10 +247,18 @@ async function main() {
     const live = await api(entryUrl(TASKS_KEY), {}, { allowMissing: true });
     const liveTasks = parsedValue(live);
 
-    if (Array.isArray(liveTasks) && liveTasks.length) {
+    if (Array.isArray(liveTasks) && liveTasks.length && !FORCE) {
         throw new Error(
             `El catalogo en vivo ya tiene ${liveTasks.length} tareas: ` +
-            "no se pisa. Revisa antes de forzar."
+            "no se pisa. Revisa y repite con --forzar si corresponde."
+        );
+    }
+
+    if (Array.isArray(liveTasks) && liveTasks.length) {
+        console.log(
+            `
+--forzar: se pisan las ${liveTasks.length} tareas en vivo ` +
+            `con las ${goodTasks.length} de ${lastGood}.`
         );
     }
 
