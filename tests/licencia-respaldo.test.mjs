@@ -172,6 +172,16 @@ test("se ofrece adjuntar apenas se aplica la licencia", () => {
     assert.match(main, /confirmText: "Adjuntar documento"/);
 });
 
+test("el aviso busca la licencia por el NOMBRE del trabajador", () => {
+    // getPerfilActual devuelve el perfil entero. Pasarlo tal cual comparaba
+    // "[object Object]" contra el LOG, no encontraba la licencia y el aviso
+    // no salia nunca.
+    assert.match(
+        main,
+        /async function offerLeaveDocumentPrompt\(fecha\) \{[\s\S]{0,400}const profile = getPerfilActual\(\)\?\.name \|\| "";/
+    );
+});
+
 test("el detalle del permiso muestra adjuntar o ver, segun corresponda", () => {
     // El texto lo decide un solo lugar, compartido por los tres cuadros que
     // ofrecen el boton (detalle del permiso, reemplazo y marcaje).

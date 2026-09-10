@@ -25267,6 +25267,11 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 .pf-v2 .pf-leave-item .lx b { display: block; font-size: 0.82rem; font-weight: 700; color: var(--text); }
 .pf-v2 .pf-leave-item .lx small { color: var(--text-muted); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
 .pf-v2 .pf-leave-item .ldays { flex: none; font-size: 0.74rem; font-weight: 800; color: var(--text-soft); background: var(--panel-alt); border: 1px solid var(--border); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+/* Documentos del permiso: abre el mismo cuadro que la casilla del calendario.
+   Si no cabe junto al periodo, baja a su propia linea en vez de apretarlo. */
+.pf-v2 .pf-leave-item { flex-wrap: wrap; row-gap: 6px; }
+.pf-v2 .pf-leave-item .lx { flex-basis: 140px; }
+.pf-v2 .pf-leave-item .pf-leave-docs { flex: none; margin-top: 0; white-space: nowrap; }
 .pf-v2 .pf-leave-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 0.8rem; border: 1px dashed var(--border-strong); border-radius: 11px; }
 
 .pf-v2 .profile-area--history { grid-column: 1 / -1; }

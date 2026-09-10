@@ -4246,7 +4246,8 @@ function leaveAttachmentRowHTML(attachment) {
  *   list: () => Array<Object>,
  *   add: (file: File) => Promise<any>,
  *   open: (attachment: Object) => Promise<any>,
- *   remove: (attachmentId: string) => Promise<any>
+ *   remove: (attachmentId: string) => Promise<any>,
+ *   onClose?: () => void
  * }} options
  */
 function openDocumentsDialog({
@@ -4260,7 +4261,8 @@ function openDocumentsDialog({
     list,
     add,
     open,
-    remove
+    remove,
+    onClose = null
 }) {
     const backdrop = document.createElement("div");
 
@@ -4293,9 +4295,12 @@ function openDocumentsDialog({
         bind();
     };
 
+    // onClose lo usa quien abre el cuadro desde fuera del calendario (el
+    // registro del perfil), para redibujar su boton con la cuenta nueva.
     const close = () => {
         document.removeEventListener("keydown", onKeydown);
         backdrop.remove();
+        onClose?.();
     };
     const onKeydown = event => {
         if (event.key === "Escape") close();
@@ -4391,13 +4396,14 @@ function openDocumentsDialog({
 /**
  * Cuadro de respaldos de una licencia.
  *
- * @param {{profile: string, logId: string, title?: string, canEdit?: boolean}} options
+ * @param {{profile: string, logId: string, title?: string, canEdit?: boolean, onClose?: () => void}} options
  */
 function openLeaveDocumentsDialog({
     profile,
     logId,
     title = "Respaldo de la licencia",
-    canEdit = true
+    canEdit = true,
+    onClose = null
 }) {
     if (!profile || !logId) {
         alert(
@@ -4420,7 +4426,8 @@ function openLeaveDocumentsDialog({
         add: file => addLeaveAttachment(profile, logId, file),
         open: attachment => openLeaveAttachment(attachment),
         remove: attachmentId =>
-            removeLeaveAttachment(profile, logId, attachmentId)
+            removeLeaveAttachment(profile, logId, attachmentId),
+        onClose
     });
 }
 
@@ -4431,13 +4438,14 @@ function openLeaveDocumentsDialog({
  * cualquiera de las casillas que abarca, y tambien desde el menu MEMOS. Por eso
  * lo que lo guarda es el memorandum y no el dia.
  *
- * @param {{profile: string, memoId: string, title?: string, canEdit?: boolean}} options
+ * @param {{profile: string, memoId: string, title?: string, canEdit?: boolean, onClose?: () => void}} options
  */
 function openMemoDocumentsDialog({
     profile,
     memoId,
     title = "Documento del memorandum",
-    canEdit = true
+    canEdit = true,
+    onClose = null
 }) {
     if (!profile || !memoId) {
         alert(
@@ -4461,7 +4469,8 @@ function openMemoDocumentsDialog({
         list: () => getMemoDocuments(memoId),
         add: file => addMemoDocument(memoId, file),
         open: attachment => openMemoDocument(memoId, attachment.id),
-        remove: documentId => removeMemoDocument(memoId, documentId)
+        remove: documentId => removeMemoDocument(memoId, documentId),
+        onClose
     });
 }
 
@@ -4562,17 +4571,21 @@ function clockDocumentsTarget(profile, keyDay) {
     );
 }
 
+// Un solo lugar decide el texto: los cuadros del calendario y el registro del
+// perfil tienen que decir lo mismo del mismo permiso.
+function documentsButtonLabel(target) {
+    return target.count
+        ? (target.count > 1 ? "Ver documentos" : "Ver documento")
+        : "Adjuntar documento";
+}
+
 function documentsButtonHTML(target) {
     if (!target) return "";
 
-    const label = target.count
-        ? (target.count > 1 ? "Ver documentos" : "Ver documento")
-        : "Adjuntar documento";
-
-    return `<button class="secondary-button" type="button" data-action="leave-docs">${label}</button>`;
+    return `<button class="secondary-button" type="button" data-action="leave-docs">${documentsButtonLabel(target)}</button>`;
 }
 
-function openDocumentsForTarget(target, profile) {
+function openDocumentsForTarget(target, profile, { onClose = null } = {}) {
     if (!target) return;
 
     if (target.kind === "leave") {
@@ -4580,7 +4593,8 @@ function openDocumentsForTarget(target, profile) {
             profile,
             logId: target.logId,
             title: `${target.label} · respaldo`,
-            canEdit: canEditTarget("calendarPanel")
+            canEdit: canEditTarget("calendarPanel"),
+            onClose
         });
         return;
     }
@@ -4591,8 +4605,70 @@ function openDocumentsForTarget(target, profile) {
         title: `${target.label} · documento`,
         // El archivo se guarda en el memorandum: manda el permiso de MEMOS, no
         // el del calendario desde el que se abrio el cuadro.
-        canEdit: canEditTarget("memosPanel")
+        canEdit: canEditTarget("memosPanel"),
+        onClose
     });
+}
+
+/* =========================================================
+   Documentos desde el registro del perfil
+
+   El registro de vacaciones/ausencias del perfil lista los mismos permisos que
+   el calendario, y cada uno tiene que llegar al MISMO documento que sus
+   casillas. Se resuelve con el primer dia del permiso, que es una casilla mas
+   de ese permiso: da la misma licencia o el mismo memorandum, y hereda las
+   mismas reglas (sin registro en el LOG o sin permiso de MEMOS, no hay boton).
+========================================================= */
+
+/**
+ * Texto del boton de documentos de cada permiso del registro.
+ *
+ * @param {string} profile
+ * @param {Array<string>} keyDays primer dia de cada permiso
+ * @returns {Map<string, string>} solo los dias que tienen a donde colgar un
+ *   documento
+ */
+export function getLeaveRecordDocumentButtons(profile, keyDays) {
+    const maps = leaveMapsForProfile(profile);
+    const buttons = new Map();
+
+    keyDays.forEach(keyDay => {
+        const target = dayDocumentsTarget(profile, keyDay, maps);
+
+        if (!target) return;
+
+        buttons.set(keyDay, documentsButtonLabel(target));
+    });
+
+    return buttons;
+}
+
+/**
+ * Abre el cuadro de documentos del permiso que empieza en keyDay.
+ *
+ * El destino se vuelve a resolver al hacer click, como en el cuadro de
+ * reemplazo: entre que se dibujo el registro y el click pudo llegar un
+ * documento, o anularse el permiso, desde otra sesion.
+ *
+ * @param {string} profile
+ * @param {string} keyDay
+ * @param {{onClose?: () => void}} [options]
+ */
+export function openLeaveRecordDocuments(
+    profile,
+    keyDay,
+    { onClose = null } = {}
+) {
+    const target = dayDocumentsTarget(profile, keyDay);
+
+    // El permiso ya no tiene a donde colgar un documento: se redibuja el
+    // registro y el boton desaparece.
+    if (!target) {
+        onClose?.();
+        return;
+    }
+
+    openDocumentsForTarget(target, profile, { onClose });
 }
 
 function openLeaveDetailDialog({

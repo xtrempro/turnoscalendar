@@ -132,6 +132,7 @@ import {
 } from "./clockMarkRecords.js";
 import { printReportPreviewHTML } from "./reportPrint.js";
 import {
+    CLIP_ICON,
     getRecordYear,
     renderRecordField,
     renderRecordEntry
@@ -200,7 +201,9 @@ import {
     openReplacementSuggestionsForLeaveBlock,
     updateDayCell,
     updateDayCells,
-    updateVisibleCalendarDays
+    updateVisibleCalendarDays,
+    getLeaveRecordDocumentButtons,
+    openLeaveRecordDocuments
 } from "./calendar.js";
 import {
     getAppFilters,
@@ -3262,7 +3265,9 @@ async function requestGradeEffectiveDate(previousSnapshot, nextProfile) {
 async function offerLeaveDocumentPrompt(fecha) {
     if (!leaveTypeNeedsDocument(licenseType)) return;
 
-    const profile = getPerfilActual();
+    // getPerfilActual devuelve el perfil entero, no el nombre. Usarlo tal cual
+    // comparaba "[object Object]" contra el LOG y este aviso tampoco salia.
+    const profile = getPerfilActual()?.name || "";
     const keyDay = keyFromDate(fecha);
     // getLeaveApplicationInfo recibe un objeto: pasarle los argumentos sueltos
     // devolvia siempre null y este aviso no salia nunca.
@@ -4342,6 +4347,13 @@ function availabilityHistoryHTML(profileName) {
         `
         : "";
 
+    // Cada permiso ofrece el mismo documento que sus casillas del calendario:
+    // la licencia medica su respaldo, y el resto el de su memorandum.
+    const documentButtons = getLeaveRecordDocumentButtons(
+        profileName,
+        records.map(record => record.startKey)
+    );
+
     const rowsHTML = records.length
         ? `
             <div class="pf-leave-grid">
@@ -4353,6 +4365,11 @@ function availabilityHistoryHTML(profileName) {
                         ? ""
                         : `<span class="ldays">${formatSaldo(record.amount)} ${record.amount === 1 ? "d\u00eda" : "d\u00edas"}</span>`;
 
+                    const docsLabel = documentButtons.get(record.startKey);
+                    const docsButton = docsLabel
+                        ? `<button class="pf-rec-clip pf-leave-docs" type="button" data-leave-record-docs="${escapeHTML(record.startKey)}">${CLIP_ICON}${escapeHTML(docsLabel)}</button>`
+                        : "";
+
                     return `
                         <div class="pf-leave-item" style="border-left-color:${pfLeaveColor(record.label)}">
                             <div class="lx">
@@ -4360,6 +4377,7 @@ function availabilityHistoryHTML(profileName) {
                                 <small>${escapeHTML(period)}</small>
                             </div>
                             ${days}
+                            ${docsButton}
                         </div>
                     `;
                 }).join("")}
@@ -4411,7 +4429,37 @@ function setLeaveHistoryHTML(html) {
 
     if (card) card.classList.toggle("hidden", !html);
     if (host) host.innerHTML = html || "";
-    if (html) bindAvailabilityHistoryYear();
+    if (html) {
+        bindAvailabilityHistoryYear();
+        bindLeaveRecordDocuments(host);
+    }
+}
+
+// Cada permiso del registro abre el mismo cuadro de documentos que su casilla
+// del calendario. Al cerrarlo se redibuja solo el registro, no el recuadro de
+// saldos, que puede estar a medio editar: si se subio el primer documento, el
+// boton pasa de "Adjuntar documento" a "Ver documento".
+function bindLeaveRecordDocuments(host) {
+    const profileName = availabilityHistoryProfile;
+
+    host
+        ?.querySelectorAll("[data-leave-record-docs]")
+        .forEach(button => {
+            button.onclick = () => {
+                openLeaveRecordDocuments(
+                    profileName,
+                    button.dataset.leaveRecordDocs,
+                    {
+                        onClose: () => {
+                            if (getPerfilActual()?.name !== profileName) return;
+                            setLeaveHistoryHTML(
+                                availabilityHistoryHTML(profileName)
+                            );
+                        }
+                    }
+                );
+            };
+        });
 }
 
 function renderDisponibilidadVacaciones() {
