@@ -877,6 +877,22 @@ export function getSwapDateBlockReason({
         return `${giver} no tiene turno Larga o Noche para entregar.`;
     }
 
+    // Entre dos Diurno solo se cambia Larga por Larga de dia habil: lo que se
+    // intercambia es el dia de extension horaria (el Diurno que el supervisor
+    // subio a Larga). Una Noche -aunque caiga en dia habil- o una Larga de fin
+    // de semana o feriado son turnos extra, no extensiones. El dia habil lo
+    // marca la propia rotativa: trae Diurno en dia habil y Libre en el resto.
+    // La PWA y la Cloud Function de solicitudes aplican la misma regla.
+    if (
+        bothUseDiurnoRotation(giver, receiver) &&
+        (
+            Number(giverTurn) !== TURNO.LARGA ||
+            Number(getSwapBaseRotationTurn(giver, keyDay)) !== TURNO.DIURNO
+        )
+    ) {
+        return `Entre Diurno solo se cambia Larga por Larga de dia habil, y ${giver} no tiene una Larga de dia habil ese dia.`;
+    }
+
     if (
         !config.allowDifferentTurnTypes &&
         isSwapExchangeableTurn(requiredTurn) &&

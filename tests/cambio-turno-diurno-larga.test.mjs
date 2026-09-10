@@ -203,6 +203,71 @@ test("el menu Cambios de Turno ya no se apaga para los Diurno", async () => {
     assert.doesNotMatch(fn, /con rotativa Diurno/);
 });
 
+test("entre Diurno no se entrega una Noche, aunque caiga en dia habil", () => {
+    // Una Noche sobre un dia Diurno es un turno extra, no la extension horaria:
+    // entre Diurno solo se cambia Larga por Larga de dia habil.
+    saveProfileData(
+        {
+            [LUNES]: TURNO.DIURNO,
+            [MARTES]: TURNO.DIURNO,
+            [MIERCOLES]: TURNO.DIURNO,
+            [JUEVES]: TURNO.NOCHE,
+            [VIERNES]: TURNO.LARGA
+        },
+        "Alexis"
+    );
+
+    assert.equal(getSwapTurnState("Alexis", JUEVES), TURNO.NOCHE);
+    assert.match(
+        getSwapDateBlockReason({
+            giver: "Alexis",
+            receiver: "Juan",
+            keyDay: JUEVES
+        }),
+        /Larga por Larga de dia habil/
+    );
+    // Su Larga de dia habil sigue sirviendo.
+    assert.equal(
+        getSwapDateBlockReason({
+            giver: "Alexis",
+            receiver: "Juan",
+            keyDay: VIERNES
+        }),
+        ""
+    );
+    assert.deepEqual(
+        getEligibleSwapReceivers("Alexis", JUEVES).map(item => item.name),
+        []
+    );
+});
+
+test("entre Diurno no se entrega una Larga de fin de semana", () => {
+    // El sabado la rotativa Diurno trae Libre: una Larga ese dia es un turno
+    // extra, no la extension de un dia habil.
+    const SABADO = "2026-5-13";
+
+    saveProfileData(
+        {
+            [LUNES]: TURNO.DIURNO,
+            [MARTES]: TURNO.DIURNO,
+            [MIERCOLES]: TURNO.DIURNO,
+            [JUEVES]: TURNO.DIURNO,
+            [VIERNES]: TURNO.LARGA,
+            [SABADO]: TURNO.LARGA
+        },
+        "Alexis"
+    );
+
+    assert.notEqual(
+        getSwapDateBlockReason({
+            giver: "Alexis",
+            receiver: "Juan",
+            keyDay: SABADO
+        }),
+        ""
+    );
+});
+
 test("la Larga por extension de horario se ve como turno entregable", () => {
     // Es un override en `data_`, no un reemplazo ni la rotativa.
     assert.equal(getSwapTurnState("Juan", MIERCOLES), TURNO.LARGA);

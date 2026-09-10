@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   chooseWorkerSwapProposalHandler,
+  createWorkerSwapOpenRequestHandler,
   createWorkerSwapRequestHandler,
   respondWorkerSwapRequestHandler
 } = require("../workerSwapRequests");
@@ -192,6 +193,151 @@ async function rejectsWithCode(promise, code) {
     return true;
   });
 }
+
+// Dos Diurno solo intercambian Larga por Larga de dia habil. baseTurn 4 es el
+// Diurno que la rotativa trae en dia habil; en fin de semana o feriado trae
+// Libre (0). Ana entrega su extension del viernes 10 de julio.
+function diurnoDocuments({ anaDays = {}, betoDays = {}, extra = {} } = {}) {
+  return baseDocuments({
+    [`workspaces/${WORKSPACE}/workerSwapCandidates/${UID_A}`]: {
+      uid: UID_A,
+      profileName: "Ana",
+      status: "active",
+      rotativa: { type: "diurno" },
+      compatibleWorkerUids: [UID_B],
+      blockedDayDates: [],
+      days: {
+        "2026-07-10": { label: "Larga", className: "larga", baseTurn: 4 },
+        "2026-07-14": { label: "Diurno", className: "diurno", baseTurn: 4 },
+        "2026-07-15": { label: "Diurno", className: "diurno", baseTurn: 4 },
+        "2026-07-18": { label: "Libre", className: "libre", baseTurn: 0 },
+        ...anaDays
+      }
+    },
+    [`workspaces/${WORKSPACE}/workerSwapCandidates/${UID_B}`]: {
+      uid: UID_B,
+      profileName: "Beto",
+      status: "active",
+      rotativa: { type: "diurno" },
+      compatibleWorkerUids: [UID_A],
+      blockedDayDates: [],
+      days: {
+        "2026-07-10": { label: "Diurno", className: "diurno", baseTurn: 4 },
+        "2026-07-14": { label: "Larga", className: "larga", baseTurn: 4 },
+        "2026-07-15": { label: "Noche", className: "noche", baseTurn: 4 },
+        "2026-07-18": { label: "Larga", className: "larga", baseTurn: 0 },
+        ...betoDays
+      }
+    },
+    ...extra
+  });
+}
+
+function createDiurnoSwap(db, ownDate, returnDate) {
+  return createWorkerSwapRequestHandler(
+    request(UID_A, {
+      workspaceId: WORKSPACE,
+      targetUid: UID_B,
+      ownDate,
+      returnDate
+    }),
+    dependencies(db)
+  );
+}
+
+async function rejectsWithDiurnoRule(promise) {
+  await assert.rejects(promise, (error) => {
+    assert.equal(error.code, "failed-precondition");
+    assert.match(error.message, /Larga por Larga de dia habil/);
+    return true;
+  });
+}
+
+function pendingDiurnoSwap(returnDate) {
+  return {
+    [`workspaces/${WORKSPACE}/workerSwapRequests/swap-diurno`]: {
+      id: "swap-diurno",
+      type: "swap",
+      source: "worker_app",
+      status: "pending_colleague",
+      createdByUid: UID_A,
+      targetUid: UID_B,
+      fecha: "2026-07-10",
+      returnDate,
+      ownTurnLabel: "Larga",
+      ownTurnClassName: "larga"
+    }
+  };
+}
+
+function respondAsBeto(db) {
+  return respondWorkerSwapRequestHandler(
+    request(UID_B, {
+      workspaceId: WORKSPACE,
+      requestId: "swap-diurno",
+      status: "colleague_accepted"
+    }),
+    dependencies(db)
+  );
+}
+
+test("entre Diurno se acepta Larga por Larga de dia habil", async () => {
+  const db = new FakeFirestore(diurnoDocuments());
+  const result = await createDiurnoSwap(db, "2026-07-10", "2026-07-14");
+
+  assert.equal(result.ok, true);
+});
+
+test("entre Diurno no se devuelve con una Noche, aunque sea dia habil", async () => {
+  const db = new FakeFirestore(diurnoDocuments());
+
+  await rejectsWithDiurnoRule(createDiurnoSwap(db, "2026-07-10", "2026-07-15"));
+});
+
+test("entre Diurno no se devuelve con una Larga de fin de semana", async () => {
+  const db = new FakeFirestore(diurnoDocuments());
+
+  await rejectsWithDiurnoRule(createDiurnoSwap(db, "2026-07-10", "2026-07-18"));
+});
+
+test("entre Diurno no se entrega una Larga de fin de semana", async () => {
+  const db = new FakeFirestore(diurnoDocuments({
+    anaDays: { "2026-07-18": { label: "Larga", className: "larga", baseTurn: 0 } },
+    betoDays: { "2026-07-18": { label: "Libre", className: "libre", baseTurn: 0 } }
+  }));
+
+  await rejectsWithDiurnoRule(createDiurnoSwap(db, "2026-07-18", "2026-07-14"));
+});
+
+test("un Diurno no abre una solicitud con una Larga de fin de semana", async () => {
+  // Sus colegas son solo Diurno: nadie podria tomarla.
+  const db = new FakeFirestore(diurnoDocuments({
+    anaDays: { "2026-07-18": { label: "Larga", className: "larga", baseTurn: 0 } }
+  }));
+
+  await rejectsWithDiurnoRule(
+    createWorkerSwapOpenRequestHandler(
+      request(UID_A, { workspaceId: WORKSPACE, ownDate: "2026-07-18" }),
+      dependencies(db)
+    )
+  );
+});
+
+test("al aceptar, entre Diurno tambien se exige la Larga de dia habil", async () => {
+  // Una solicitud creada antes de la regla no pasa al aceptarse con una Noche.
+  const rechazada = new FakeFirestore(diurnoDocuments({
+    extra: pendingDiurnoSwap("2026-07-15")
+  }));
+
+  await rejectsWithDiurnoRule(respondAsBeto(rechazada));
+
+  const aceptada = new FakeFirestore(diurnoDocuments({
+    extra: pendingDiurnoSwap("2026-07-14")
+  }));
+  const result = await respondAsBeto(aceptada);
+
+  assert.equal(result.ok, true);
+});
 
 test("rechaza crear cambio sin enlace activo", async () => {
   const db = new FakeFirestore(baseDocuments({

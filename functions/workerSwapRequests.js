@@ -220,6 +220,31 @@ function receiverCanCoverDay(receiverDay, giverTurn, allowTwentyFour) {
   );
 }
 
+// Entre dos Diurno solo se cambia Larga por Larga de dia habil. Lo que se
+// intercambia es el dia de extension horaria (el Diurno que el supervisor subio
+// a Larga), y el dia habil lo marca la propia rotativa: trae Diurno (baseTurn 4)
+// en dia habil y Libre en fin de semana o feriado. Una Noche, o una Larga de fin
+// de semana, es un turno extra y no entra en este cambio. Es la misma regla que
+// aplican el motor del supervisor y la PWA.
+const DIURNO_OWN_DATE_MESSAGE =
+  "Entre Diurno solo se cambia Larga por Larga de dia habil: el turno a cambiar debe ser una Larga de dia habil.";
+const DIURNO_RETURN_DATE_MESSAGE =
+  "Entre Diurno solo se cambia Larga por Larga de dia habil: la devolucion debe ser una Larga de dia habil.";
+
+function isDiurnoCandidate(candidate) {
+  return String(candidate?.rotativa?.type || "") === "diurno";
+}
+
+function isDiurnoExtensionDay(day) {
+  return swapTurnCodeFromDay(day) === 1 && Number(day?.baseTurn) === 4;
+}
+
+function assertDiurnoExtensionDay(day, HttpsError, message) {
+  if (!isDiurnoExtensionDay(day)) {
+    callableError(HttpsError, "failed-precondition", message);
+  }
+}
+
 function isBlocked(candidate, iso) {
   const blocked = Array.isArray(candidate?.blockedDayDates)
     ? candidate.blockedDayDates.map(normalizeISODate)
@@ -611,6 +636,13 @@ async function createWorkerSwapRequestHandler(request, dependencies) {
       "No puedes devolver un turno un dia en que tienes un permiso o vacaciones."
     );
   }
+  // Un Diurno solo es compatible con otro Diurno, y entre ellos las dos fechas
+  // tienen que ser una Larga de dia habil.
+  if (isDiurnoCandidate(requesterCandidate) && isDiurnoCandidate(targetCandidate)) {
+    assertDiurnoExtensionDay(ownDay, HttpsError, DIURNO_OWN_DATE_MESSAGE);
+    assertDiurnoExtensionDay(returnDay, HttpsError, DIURNO_RETURN_DATE_MESSAGE);
+  }
+
   const requestId = idFactory("swap", uid);
   const createdAt = nowISO(nowDate);
   const now = serverTimestamp();
@@ -718,6 +750,13 @@ async function createWorkerSwapOpenRequestHandler(request, dependencies) {
   );
 
   const ownDay = assertOwnSwapDate(candidate, ownDate, HttpsError, nowDate);
+
+  // Los colegas de un Diurno son solo Diurno: su oferta tiene que ser una Larga
+  // de dia habil, o nadie podria tomarla.
+  if (isDiurnoCandidate(candidate)) {
+    assertDiurnoExtensionDay(ownDay, HttpsError, DIURNO_OWN_DATE_MESSAGE);
+  }
+
   const openId = idFactory("open", uid);
   const now = serverTimestamp();
   const createdAtISO = nowISO(nowDate);
@@ -896,6 +935,8 @@ async function respondWorkerSwapRequestHandler(request, dependencies) {
         );
       }
 
+      let bothDiurno = false;
+
       if (swap.createdByUid && swap.createdByUid !== uid) {
         const requesterCandidateSnap = await transaction.get(
           workspaceRef.collection("workerSwapCandidates").doc(swap.createdByUid)
@@ -926,6 +967,20 @@ async function respondWorkerSwapRequestHandler(request, dependencies) {
           uid,
           HttpsError
         );
+
+        // Una solicitud creada antes de esta regla tambien la cumple al
+        // aceptarse: entre Diurno, Larga por Larga de dia habil.
+        bothDiurno =
+          isDiurnoCandidate(requesterCandidate) &&
+          isDiurnoCandidate(acceptedCandidate);
+
+        if (bothDiurno) {
+          assertDiurnoExtensionDay(
+            dayFor(requesterCandidate, changeDate),
+            HttpsError,
+            DIURNO_OWN_DATE_MESSAGE
+          );
+        }
       }
 
       assertReceiverCanCoverDate(
@@ -954,6 +1009,15 @@ async function respondWorkerSwapRequestHandler(request, dependencies) {
         HttpsError,
         nowDate
       );
+
+      if (bothDiurno) {
+        assertDiurnoExtensionDay(
+          returnDay,
+          HttpsError,
+          DIURNO_RETURN_DATE_MESSAGE
+        );
+      }
+
       const returnTurnLabel = shiftLabel(returnDay);
 
       if (isOpenSwap) {
