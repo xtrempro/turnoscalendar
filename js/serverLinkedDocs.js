@@ -107,7 +107,11 @@ export function buildSwapCandidatePayload(
             item.profile &&
             canSwapProfiles(profile.name, item.profile.name)
         )
-        .map(item => item.link.uid);
+        .map(item => item.link.uid)
+        // Es un CONJUNTO: el orden no significa nada, pero si varia entre dos
+        // corridas el comparador ve un cambio donde no lo hay y reescribe el
+        // documento. Ordenarlo lo hace estable.
+        .sort();
     const active = isProfileActive(profile);
     const turnChange = getTurnChangeConfig();
 
