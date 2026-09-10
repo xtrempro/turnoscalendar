@@ -13698,6 +13698,105 @@ body.theme-dark .task-assignment-section-gap.is-on { background: #a97800; color:
     transform: translateY(-1px);
 }
 
+/* En que turnos va la tarea nueva. Segmentado y no un <select> porque las tres
+   salidas tienen que estar a la vista al escribir el nombre: lo que se elige
+   aqui decide en cual de los dos tableros nace la tarea. */
+.task-assignment-scope-choice {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--panel-alt);
+}
+
+.task-assignment-scope-option {
+    display: inline-flex;
+    cursor: pointer;
+}
+
+/* El radio de verdad queda invisible pero enfocable: el pill es su etiqueta. */
+.task-assignment-task-form .task-assignment-scope-option input {
+    position: absolute;
+    width: 1px;
+    min-width: 0;
+    height: 1px;
+    min-height: 0;
+    padding: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.task-assignment-scope-option span {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 0 10px;
+    border-radius: 9px;
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.task-assignment-scope-option:hover span {
+    color: var(--text);
+}
+
+.task-assignment-scope-option input:checked + span {
+    background: var(--accent);
+    color: #fff;
+}
+
+.task-assignment-scope-option input:focus-visible + span {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* El turno de la tarea en la tarjeta: sol, luna, o los dos. Es tambien el boton
+   para cambiarlo, porque devolver al otro tablero una tarea que se quito de ahi
+   no puede obligar a crearla de nuevo -una tarea nueva pierde el historial. */
+.task-assignment-task-shift {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    height: 24px;
+    padding: 0 5px;
+    border-radius: 6px;
+    color: var(--text-muted);
+}
+
+.task-assignment-task-shift svg {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.9;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.task-assignment-task-shift--day {
+    color: #0b8853;
+}
+
+.task-assignment-task-shift--night {
+    color: var(--accent);
+}
+
+.task-assignment-task-shift:hover {
+    background: var(--panel-alt);
+}
+
+body.theme-dark .task-assignment-task-shift--day {
+    color: #34d399;
+}
+
+body.theme-dark .task-assignment-task-shift--night {
+    color: #7dabe8;
+}
+
 .task-assignment-event-day {
     display: grid;
     gap: 3px;

@@ -98,6 +98,7 @@
     "test:task-assignment-projection": "node --test tests/task-assignment-projection.test.mjs",
     "test:task-assignment-media-jornada": "node --test tests/task-assignment-media-jornada.test.mjs",
     "test:task-assignment-catalogo-vacio": "node --test tests/task-assignment-catalogo-vacio.test.mjs",
+    "test:task-assignment-turno-tarea": "node --test tests/task-assignment-turno-tarea.test.mjs tests/task-assignment-borrar-tarea.test.mjs",
     "test:programacion-automatica": "node --test tests/programacion-automatica-tareas.test.mjs",
     "test:ausencia-no-borra": "node --test tests/ausencia-local-no-es-borrado.test.mjs",
     "test:novedades-semana": "node --test tests/programacion-novedades-semana.test.mjs",

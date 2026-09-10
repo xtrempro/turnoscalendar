@@ -43,6 +43,19 @@ function normalizeTaskShift(value) {
     return "day";
 }
 
+// En que tableros va la tarea (js/taskAssignments.js): "both", "day" o
+// "night". Un catalogo viejo no trae `shiftScope` y ahi manda el `shift` con
+// el que se guardo, que significaba lo mismo.
+function normalizeTaskShiftScope(scope, legacyShift) {
+    const value = scope === undefined || scope === null || scope === ""
+        ? legacyShift
+        : scope;
+
+    if (value === "day" || value === "night") return value;
+
+    return GENERIC_TASK_SHIFT;
+}
+
 function uniqueValues(values) {
     return [...new Set(values.filter(Boolean))]
         .sort((a, b) => a.localeCompare(b, "es"));
@@ -101,6 +114,10 @@ function getTaskCatalog() {
             return {
                 id: String(task?.id || `task_${index}`),
                 shift: normalizeTaskShift(task?.shift),
+                shiftScope: normalizeTaskShiftScope(
+                    task?.shiftScope,
+                    task?.shift
+                ),
                 title: String(task?.title || "").trim(),
                 order: Number.isFinite(Number(task?.order))
                     ? Number(task.order)
@@ -185,7 +202,8 @@ function entryForCell(allEntries, shift, taskId, keyDay) {
 // abajo, que tiene que ser la siguiente del catalogo. Los trabajadores estan
 // todos en la de arriba, asi que para cada tarea del grupo hay que ir a
 // buscarlos ahi.
-function mergedGroupFor(allEntries, shift, tasks, taskId, keyDay) {
+function mergedGroupFor(allEntries, shift, catalog, taskId, keyDay) {
+    const tasks = tasksForShift(catalog, shift);
     const index = tasks.findIndex(task => task.id === taskId);
 
     if (index === -1) return { ownerId: taskId, size: 1 };
@@ -219,8 +237,14 @@ function isValidDate(date) {
     return date instanceof Date && !Number.isNaN(date.getTime());
 }
 
-function shiftOrderForRule(habilOnly) {
-    return habilOnly ? ["day"] : SHIFT_TYPES;
+// Mismo criterio que el tablero del supervisor: con la tarea en un solo
+// tablero, la secuencia de "cada N turnos" cuenta solo los turnos de ESE
+// tablero.
+function shiftOrderForRule(habilOnly, scope = GENERIC_TASK_SHIFT) {
+    if (habilOnly) return ["day"];
+    if (scope === "day" || scope === "night") return [scope];
+
+    return SHIFT_TYPES;
 }
 
 function turnScheduledForShift(turn, shift) {
@@ -296,11 +320,12 @@ function countBaseScheduledTurns(
     targetShift,
     startDate,
     endDate,
-    habilOnly = false
+    habilOnly = false,
+    scope = GENERIC_TASK_SHIFT
 ) {
     if (!isValidDate(startDate) || !isValidDate(endDate)) return 0;
     if (endDate < startDate) return 0;
-    if (habilOnly && targetShift !== "day") return 0;
+    if (!shiftOrderForRule(habilOnly, scope).includes(targetShift)) return 0;
 
     const cursor = new Date(
         startDate.getFullYear(),
@@ -313,7 +338,7 @@ function countBaseScheduledTurns(
         endDate.getDate()
     );
     const targetKey = keyFromDate(end);
-    const shifts = shiftOrderForRule(habilOnly);
+    const shifts = shiftOrderForRule(habilOnly, scope);
     let count = 0;
 
     while (cursor <= end) {
@@ -345,7 +370,13 @@ function countBaseScheduledTurns(
     return count;
 }
 
-function shouldApplyDefaultRule(rule, profileName, keyDay, shift) {
+function shouldApplyDefaultRule(
+    rule,
+    profileName,
+    keyDay,
+    shift,
+    scope = GENERIC_TASK_SHIFT
+) {
     if (!isBaseScheduledForShift(profileName, keyDay, shift)) return false;
     if (hasBlockingAbsence(profileName, keyDay, shift)) return false;
 
@@ -370,14 +401,23 @@ function shouldApplyDefaultRule(rule, profileName, keyDay, shift) {
         shift,
         anchor,
         target,
-        habilOnly
+        habilOnly,
+        scope
     );
 
     return scheduledCount > 0 && (scheduledCount - 1) % interval === 0;
 }
 
 function taskAppliesToShift(task, shift) {
-    return task.shift === GENERIC_TASK_SHIFT || task.shift === shift;
+    const scope = normalizeTaskShiftScope(task?.shiftScope, task?.shift);
+
+    return scope === GENERIC_TASK_SHIFT || scope === shift;
+}
+
+// La columna de un tablero: lo que va por indice -la fusion de casillas- mira
+// esta lista y no el catalogo entero, igual que en el tablero del supervisor.
+function tasksForShift(tasks, shift) {
+    return tasks.filter(task => taskAppliesToShift(task, shift));
 }
 
 function defaultTaskTargetsWorker(task, profileName, keyDay, shift) {
@@ -385,7 +425,13 @@ function defaultTaskTargetsWorker(task, profileName, keyDay, shift) {
 
     return task.defaultWorkerRules.some(rule =>
         rule.workerName === profileName &&
-        shouldApplyDefaultRule(rule, profileName, keyDay, shift)
+        shouldApplyDefaultRule(
+            rule,
+            profileName,
+            keyDay,
+            shift,
+            normalizeTaskShiftScope(task?.shiftScope, task?.shift)
+        )
     );
 }
 

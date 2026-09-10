@@ -36,9 +36,16 @@ function grab(source, name) {
 
 const api = new Function(`
     ${grab(src, "splitAssignmentKey")}
+    ${grab(src, "asignacionesLabel")}
+    ${grab(src, "semanasLabel")}
     ${grab(src, "taskAssignmentFootprint").replace(/^export /, "")}
     ${grab(src, "taskDeleteWarning").replace(/^export /, "")}
-    return { taskAssignmentFootprint, taskDeleteWarning };
+    ${grab(src, "taskShiftDeleteWarning").replace(/^export /, "")}
+    return {
+        taskAssignmentFootprint,
+        taskDeleteWarning,
+        taskShiftDeleteWarning
+    };
 `)();
 
 const CELDA = (workers) => ({ workers, note: "", removedDefaults: [] });
@@ -99,6 +106,43 @@ test("el aviso usa singular cuando corresponde", () => {
     assert.doesNotMatch(texto, /1 asignaciones/);
 });
 
+test("la huella se puede pedir de un solo turno", () => {
+    const noche = api.taskAssignmentFootprint("task_a", ASIGNACIONES, "night");
+    const dia = api.taskAssignmentFootprint("task_a", ASIGNACIONES, "day");
+
+    // Todas las casillas del ejemplo son diurnas: quitarla de noche no se
+    // lleva a nadie, y el aviso tiene que poder decirlo.
+    assert.deepEqual(noche, { names: 0, cells: 0, weeks: 0 });
+    assert.deepEqual(dia, { names: 6, cells: 3, weeks: 2 });
+});
+
+test("el aviso de una tarea en los dos turnos separa las dos salidas", () => {
+    const texto = api.taskShiftDeleteWarning(
+        "RESONADOR",
+        "day",
+        api.taskAssignmentFootprint("task_a", ASIGNACIONES),
+        api.taskAssignmentFootprint("task_a", ASIGNACIONES, "day")
+    );
+
+    assert.match(texto, /esta en tareas diurnas y en tareas de noche/);
+    // Lo que se lleva quitarla de ese turno...
+    assert.match(texto, /Quitarla de las tareas diurnas borra 6 asignaciones/);
+    // ...y lo que se lleva borrarla entera.
+    assert.match(texto, /Eliminarla en ambos se lleva 6 asignaciones en 2 semanas/);
+    assert.match(texto, /renombrala/i);
+});
+
+test("si en ese turno no hay nadie, el aviso lo dice en vez de amenazar", () => {
+    const texto = api.taskShiftDeleteWarning(
+        "RESONADOR",
+        "night",
+        api.taskAssignmentFootprint("task_a", ASIGNACIONES),
+        api.taskAssignmentFootprint("task_a", ASIGNACIONES, "night")
+    );
+
+    assert.match(texto, /Quitarla de las tareas de noche no borra ninguna asignacion/);
+});
+
 test("sin asignaciones el aviso no amenaza con perder nada", () => {
     const texto = api.taskDeleteWarning("NUEVA", { names: 0, cells: 0, weeks: 0 });
 
@@ -117,9 +161,23 @@ test("la X abre el dialogo con el nombre editable y las tres salidas", () => {
     assert.match(handler, /value: task\.title/);
     // Renombrar es la accion principal; borrar, la de escape.
     assert.match(handler, /confirmText: "Renombrar"/);
-    assert.match(handler, /text: "Eliminar igual", value: "delete", tone: "danger"/);
+    assert.match(handler, /text: enAmbos \? "Eliminar en ambos" : "Eliminar igual"/);
+    assert.match(handler, /value: "delete",/);
     // Y la cifra viaja al aviso.
     assert.match(handler, /taskDeleteWarning\(task\.title, footprint\)/);
+});
+
+test("la tarea que va en los dos turnos ofrece quitarla de uno solo", () => {
+    const desde = src.indexOf('querySelectorAll("[data-task-delete]")');
+    const handler = src.slice(desde, src.indexOf('data-filter-group', desde));
+
+    // La X se aprieta desde un tablero, y ese turno viaja en el boton.
+    assert.match(handler, /dataset\.taskDeleteShift === "night"/);
+    // La salida de en medio: la tarea sigue viva en el otro turno.
+    assert.match(handler, /value: "delete-shift"/);
+    assert.match(handler, /removeTaskFromShift\(taskId, shift\)/);
+    // Y solo se ofrece si la tarea esta en los dos.
+    assert.match(handler, /enAmbos\s*\n?\s*\? \[\{/);
 });
 
 test("renombrar al mismo nombre no publica nada", () => {

@@ -58,6 +58,15 @@ const SHIFT_CONFIG = {
 };
 const SHIFT_TYPES = Object.keys(SHIFT_CONFIG);
 const GENERIC_TASK_SHIFT = "both";
+// En que tablero va la tarea: en los dos, solo en el diurno o solo en el de
+// noche. Vive en `shiftScope` y NO en `shift`, que se sigue guardando como
+// "both": para un cliente sin actualizar un `shift` distinto significa
+// "catalogo viejo, uno por turno" y lo reescribe entero (migrateTaskCatalog).
+const TASK_SHIFT_SCOPE_LABEL = {
+    both: "Diurno y noche",
+    day: "Solo diurno",
+    night: "Solo noche"
+};
 
 let currentWeekStart = weekStartMonday(new Date());
 let selectedRoles = null;
@@ -300,6 +309,42 @@ function normalizeTaskShift(value) {
     return "day";
 }
 
+// El turno propio de la tarea. Un catalogo viejo no trae `shiftScope`: ahi el
+// alcance es el `shift` con el que se guardo, que es justo lo que significaba
+// antes de que el catalogo pasara a ser uno solo para los dos tableros.
+function normalizeTaskShiftScope(scope, legacyShift) {
+    const value = scope === undefined || scope === null || scope === ""
+        ? legacyShift
+        : scope;
+
+    if (value === "day" || value === "night") return value;
+
+    return GENERIC_TASK_SHIFT;
+}
+
+function taskShiftScope(task) {
+    return normalizeTaskShiftScope(task?.shiftScope, task?.shift);
+}
+
+function taskAppliesToShift(task, shift) {
+    const scope = taskShiftScope(task);
+
+    return scope === GENERIC_TASK_SHIFT || scope === shift;
+}
+
+// Las tareas que se dibujan en un tablero. Todo lo que va POR INDICE -fusionar
+// casillas, arrastrar- tiene que mirar esta lista y no el catalogo entero: en
+// el tablero diurno, la casilla de abajo de una es la de la siguiente tarea
+// DIURNA, no la de la siguiente del catalogo.
+function tasksForShift(tasks, shift) {
+    return tasks.filter(task => taskAppliesToShift(task, shift));
+}
+
+// El otro turno, para cuando se quita la tarea de uno de los dos tableros.
+function oppositeShift(shift) {
+    return shift === "night" ? "day" : "night";
+}
+
 // El catalogo de tareas es unico para los dos tableros, pero el detalle es
 // propio de cada turno: lo que se anota en diurna no debe aparecer en noche.
 // `detail` (plano) es el formato viejo; se sigue escribiendo con el valor
@@ -335,6 +380,7 @@ function normalizeStoredTask(task, index) {
     return {
         id: String(task?.id || `task_${Date.now()}_${index}`),
         shift: normalizeTaskShift(task?.shift),
+        shiftScope: normalizeTaskShiftScope(task?.shiftScope, task?.shift),
         title: String(task?.title || "").trim(),
         details,
         detail: details.day,
@@ -436,6 +482,13 @@ function migrateTaskCatalogIfNeeded(tasks) {
         const canonical = group.find(task => task.shift === GENERIC_TASK_SHIFT) ||
             group.find(task => task.shift === "day") ||
             group[0];
+        // La misma tarea repetida en los dos turnos pasa a ser UNA que va en
+        // los dos tableros. La que solo existia en uno conserva ese turno: es
+        // lo que el catalogo viejo queria decir al guardarla ahi.
+        const scopes = new Set(group.map(task => taskShiftScope(task)));
+        const shiftScope = scopes.size > 1
+            ? GENERIC_TASK_SHIFT
+            : [...scopes][0] || GENERIC_TASK_SHIFT;
         const defaultWorkerRules = normalizeTaskDefaultRules({
             defaultWorkers: group.flatMap(task => task.defaultWorkers),
             defaultWorkerRules: group.flatMap(task =>
@@ -450,6 +503,7 @@ function migrateTaskCatalogIfNeeded(tasks) {
         return {
             ...canonical,
             shift: GENERIC_TASK_SHIFT,
+            shiftScope,
             order: Math.min(...group.map(task => task.order)),
             defaultWorkers: uniqueValues(
                 defaultWorkerRules.map(rule => rule.workerName)
@@ -491,7 +545,13 @@ function saveTasks(tasks) {
         TASKS_KEY,
         tasks.map((task, index) => ({
             ...task,
+            // `shift` sale SIEMPRE como "both" -formato viejo- y el turno de
+            // verdad viaja en `shiftScope`. Un cliente sin actualizar dibuja la
+            // tarea en los dos tableros, que es lo que hacia hasta ahora; si
+            // aqui saliera "day" la tomaria por un catalogo viejo y lo
+            // reescribiria entero.
             shift: GENERIC_TASK_SHIFT,
+            shiftScope: taskShiftScope(task),
             order: index
         }))
     );
@@ -873,8 +933,15 @@ function isValidDate(date) {
     return date instanceof Date && !Number.isNaN(date.getTime());
 }
 
-function shiftOrderForRule(habilOnly) {
-    return habilOnly ? ["day"] : SHIFT_TYPES;
+// Los turnos que cuenta la secuencia de "cada N turnos". Si la tarea va en un
+// solo tablero, "turno" es turno DE ESE TABLERO: para una tarea solo diurna,
+// las noches del trabajador no cuentan ni corren la cuenta. Asi "cada turno"
+// en una tarea diurna es "todos los turnos que le toque venir de dia".
+function shiftOrderForRule(habilOnly, scope = GENERIC_TASK_SHIFT) {
+    if (habilOnly) return ["day"];
+    if (scope === "day" || scope === "night") return [scope];
+
+    return SHIFT_TYPES;
 }
 
 function countBaseScheduledTurns(
@@ -882,11 +949,12 @@ function countBaseScheduledTurns(
     targetShift,
     startDate,
     endDate,
-    habilOnly = false
+    habilOnly = false,
+    scope = GENERIC_TASK_SHIFT
 ) {
     if (!isValidDate(startDate) || !isValidDate(endDate)) return 0;
     if (endDate < startDate) return 0;
-    if (habilOnly && targetShift !== "day") return 0;
+    if (!shiftOrderForRule(habilOnly, scope).includes(targetShift)) return 0;
 
     const cursor = new Date(
         startDate.getFullYear(),
@@ -899,7 +967,7 @@ function countBaseScheduledTurns(
         endDate.getDate()
     );
     const targetKey = keyFromDate(end);
-    const shifts = shiftOrderForRule(habilOnly);
+    const shifts = shiftOrderForRule(habilOnly, scope);
     let count = 0;
 
     while (cursor <= end) {
@@ -931,7 +999,13 @@ function countBaseScheduledTurns(
     return count;
 }
 
-function shouldApplyDefaultRule(rule, profile, keyDay, shift) {
+function shouldApplyDefaultRule(
+    rule,
+    profile,
+    keyDay,
+    shift,
+    scope = GENERIC_TASK_SHIFT
+) {
     if (!isBaseScheduledForShift(profile, keyDay, shift)) return false;
     if (hasBlockingAbsence(profile.name, keyDay, shift)) return false;
 
@@ -958,13 +1032,20 @@ function shouldApplyDefaultRule(rule, profile, keyDay, shift) {
         shift,
         anchor,
         target,
-        habilOnly
+        habilOnly,
+        scope
     );
 
     return scheduledCount > 0 && (scheduledCount - 1) % interval === 0;
 }
 
 function defaultWorkersForCell(task, keyDay, shift = task.shift) {
+    // Una tarea que no va en ese tablero no tiene predefinidos ahi, aunque la
+    // regla del trabajador siga guardada: el turno de la tarea manda.
+    if (!taskAppliesToShift(task, shift)) return [];
+
+    const scope = taskShiftScope(task);
+
     return taskDefaultRules(task)
         .filter(rule => {
             const profile = profileByName(rule.workerName);
@@ -973,7 +1054,8 @@ function defaultWorkersForCell(task, keyDay, shift = task.shift) {
                 rule,
                 profile,
                 keyDay,
-                shift
+                shift,
+                scope
             ) && isAvailableForShift(profile, keyDay, shift);
         })
         .map(rule => rule.workerName);
@@ -984,6 +1066,10 @@ function applyDefaultAssignments(days, tasks, assignments) {
 
     tasks.forEach(task => {
         SHIFT_TYPES.forEach(shift => {
+            if (!taskAppliesToShift(task, shift)) return;
+
+            const scope = taskShiftScope(task);
+
             taskDefaultRules(task).forEach(rule => {
                 const profile = profileByName(rule.workerName);
 
@@ -997,7 +1083,8 @@ function applyDefaultAssignments(days, tasks, assignments) {
                             rule,
                             profile,
                             keyDay,
-                            shift
+                            shift,
+                            scope
                         ) ||
                         !isAvailableForShift(profile, keyDay, shift)
                     ) return;
@@ -1055,6 +1142,12 @@ function cleanAssignmentsForWeek(days, tasks, start = currentWeekStart) {
     if (!tasks.length) return assignments;
 
     const taskIds = new Set(tasks.map(task => task.id));
+    // El catalogo de cada tablero, que es contra el que se mide la fusion: la
+    // tarea de abajo es la siguiente DE ESE TURNO.
+    const shiftTasks = {
+        day: tasksForShift(tasks, "day"),
+        night: tasksForShift(tasks, "night")
+    };
     let changed = false;
 
     Object.entries(assignments).forEach(([cellKey, entry]) => {
@@ -1070,8 +1163,9 @@ function cleanAssignmentsForWeek(days, tasks, start = currentWeekStart) {
         // El enlace apunta por id: si la tarea de abajo ya no es esa -se
         // reordeno o se borro- la fusion deja de tener sentido.
         if (entry?.mergedNextTaskId) {
-            const index = tasks.findIndex(task => task.id === taskId);
-            const next = tasks[index + 1];
+            const board = shiftTasks[shift] || tasks;
+            const index = board.findIndex(task => task.id === taskId);
+            const next = board[index + 1];
 
             if (!next || next.id !== entry.mergedNextTaskId) {
                 changed = true;
@@ -1158,15 +1252,19 @@ function isMergedWithNext(assignments, shift, tasks, index, keyDay) {
     return mergedNextIdOf(assignments, shift, current.id, keyDay) === next.id;
 }
 
+// Los indices de los grupos son los de la COLUMNA -la lista de tareas de ese
+// tablero-, no los del catalogo: filtrar aqui es lo que deja que cualquiera
+// llame con el catalogo entero y siga cuadrando con lo que se dibuja.
 function columnGroups(assignments, shift, tasks, keyDay) {
+    const column = tasksForShift(tasks, shift);
     const groups = [];
     let current = null;
 
-    tasks.forEach((task, index) => {
+    column.forEach((task, index) => {
         if (!current) current = { start: index, taskIds: [task.id] };
 
-        if (isMergedWithNext(assignments, shift, tasks, index, keyDay)) {
-            current.taskIds.push(tasks[index + 1].id);
+        if (isMergedWithNext(assignments, shift, column, index, keyDay)) {
+            current.taskIds.push(column[index + 1].id);
             return;
         }
 
@@ -1232,7 +1330,9 @@ function groupOwnerEntry(assignments, shift, tasks, taskId, keyDay) {
 // la casilla de arriba, que es la unica que se dibuja.
 function mergeCellRange(shift, keyDay, startIndex, endIndex) {
     const assignments = getWeekAssignments();
-    const tasks = getTasks();
+    // Los indices vienen del tablero, asi que la lista tiene que ser la de ese
+    // tablero: en el catalogo entero apuntarian a otra tarea.
+    const tasks = tasksForShift(getTasks(), shift);
 
     if (
         startIndex < 0 ||
@@ -2114,13 +2214,30 @@ function renderAssignmentCell(assignments, task, day, holidays, placement) {
     `;
 }
 
+// El turno de la tarea, en la tarjeta: sol, luna, o los dos. Es tambien el
+// boton para cambiarlo, porque si no la unica forma de devolver al otro
+// tablero una tarea que se quito de ahi seria crearla de nuevo -y una tarea
+// nueva nace con otro id, sin el historial de la que reemplaza.
+function renderTaskShiftScopeButton(task) {
+    const scope = taskShiftScope(task);
+    const shifts = scope === GENERIC_TASK_SHIFT ? SHIFT_TYPES : [scope];
+    const label = TASK_SHIFT_SCOPE_LABEL[scope];
+
+    return `
+        <button class="ghost-button task-assignment-task-shift task-assignment-task-shift--${escapeHTML(scope)}" type="button" data-task-shift-scope="${escapeHTML(task.id)}" title="${escapeHTML(label)} | Cambiar los turnos de la tarea" aria-label="${escapeHTML(label)}. Cambiar los turnos de la tarea">
+            ${shifts.map(item => renderShiftIcon(item)).join("")}
+        </button>
+    `;
+}
+
 function renderTaskControl(task) {
     return `
         <div class="task-assignment-task-card" draggable="true" data-task-drag="${escapeHTML(task.id)}" data-shift="${escapeHTML(task.shift)}">
             <div class="task-assignment-task-card__top">
                 <span class="task-assignment-drag" aria-hidden="true">::</span>
                 <span class="task-assignment-task-actions">
-                    <button class="ghost-button task-assignment-delete" type="button" data-task-delete="${escapeHTML(task.id)}" title="Eliminar tarea">
+                    ${renderTaskShiftScopeButton(task)}
+                    <button class="ghost-button task-assignment-delete" type="button" data-task-delete="${escapeHTML(task.id)}" data-task-delete-shift="${escapeHTML(task.shift)}" title="Eliminar tarea">
                         &times;
                     </button>
                 </span>
@@ -2138,6 +2255,28 @@ function taskForShift(task, shift) {
     };
 }
 
+// Al crear la tarea hay que decir en que turnos va. Sale marcado "Ambos", que
+// es lo que hacian todas hasta ahora: quien no se fije en el selector obtiene
+// exactamente la tarea de siempre.
+function renderTaskScopeChoice() {
+    const options = [
+        { value: GENERIC_TASK_SHIFT, label: "Ambos", hint: "En los dos tableros" },
+        { value: "day", label: "D&iacute;a", hint: "Solo en tareas diurnas" },
+        { value: "night", label: "Noche", hint: "Solo en tareas de noche" }
+    ];
+
+    return `
+        <div class="task-assignment-scope-choice" role="radiogroup" aria-label="Turnos de la tarea nueva">
+            ${options.map(option => `
+                <label class="task-assignment-scope-option" title="${option.hint}">
+                    <input type="radio" name="shiftScope" value="${escapeHTML(option.value)}" ${option.value === GENERIC_TASK_SHIFT ? "checked" : ""}>
+                    <span>${option.label}</span>
+                </label>
+            `).join("")}
+        </div>
+    `;
+}
+
 function renderTaskAddForm() {
     return `
         <form class="task-assignment-global-task-form" data-task-add-form autocomplete="off">
@@ -2147,6 +2286,7 @@ function renderTaskAddForm() {
                     <path d="M5.5 12h13"></path>
                 </svg>
                 <input name="title" type="text" maxlength="80" placeholder="Nueva tarea (ej: Revisar insumos)" aria-label="Nueva tarea">
+                ${renderTaskScopeChoice()}
                 <button class="task-assignment-task-add" type="submit">Agregar</button>
             </div>
         </form>
@@ -2258,7 +2398,9 @@ function renderShiftIcon(shift) {
 function unassignedOnShift(shift, keyDay, tasks, assignments) {
     const assigned = new Set();
 
-    tasks.forEach(task => {
+    // Solo las tareas de ESTE tablero: una casilla que quedo escrita en el
+    // turno que la tarea ya no tiene no puede dar por repartido a nadie.
+    tasksForShift(tasks, shift).forEach(task => {
         assignmentWorkers(
             getCellEntry(assignments, shift, task.id, keyDay)
         ).forEach(name => assigned.add(name));
@@ -2278,7 +2420,8 @@ function unassignedOnShift(shift, keyDay, tasks, assignments) {
 
 function renderBoard(shift, tasks, days, assignments, holidays = {}, equipmentOutages = []) {
     const config = SHIFT_CONFIG[shift];
-    const sectionTasks = tasks.map(task => taskForShift(task, shift));
+    const sectionTasks = tasksForShift(tasks, shift)
+        .map(task => taskForShift(task, shift));
     // Cada dia se agrupa por su cuenta: la misma tarea puede ir fusionada el
     // sabado y suelta el lunes.
     const columns = days.map(day => {
@@ -2602,7 +2745,7 @@ function renderShell(holidays = {}) {
     `;
 }
 
-function addTask(title) {
+function addTask(title, shiftScope = GENERIC_TASK_SHIFT) {
     const cleanTitle = String(title || "").trim();
 
     if (!cleanTitle) return;
@@ -2613,6 +2756,7 @@ function addTask(title) {
     tasks.push({
         id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         shift: GENERIC_TASK_SHIFT,
+        shiftScope: normalizeTaskShiftScope(shiftScope),
         title: cleanTitle,
         details: { day: "", night: "" },
         detail: "",
@@ -2815,13 +2959,22 @@ function syncWorkerDefaultForCurrentWeek(taskId, workerName, preserveKeyDay) {
     if (changed) saveWeekAssignments(assignments);
 }
 
-function renderDefaultIntervalOptions(selectedValue, shift) {
+// Las periodicidades que se ofrecen dependen del turno de la tarea: en una
+// tarea solo diurna "cada turno" es cada turno QUE LE TOQUE DE DIA -sus noches
+// no entran en la cuenta-, y el rotulo tiene que decirlo. En una de solo noche
+// no se ofrece la serie de turnos diurnos habiles, que ahi no aplica a nada.
+function renderDefaultIntervalOptions(selectedValue, scope = GENERIC_TASK_SHIFT) {
     const selected = String(selectedValue || "1");
+    const turno = scope === "day"
+        ? { one: "Cada turno diurno", many: "turnos diurnos" }
+        : (scope === "night"
+            ? { one: "Cada turno de noche", many: "turnos de noche" }
+            : { one: "Cada turno", many: "turnos" });
     const normalOptions = Array.from({ length: 10 }, (_item, index) => {
         const value = String(index + 1);
         const label = value === "1"
-            ? "Cada turno"
-            : `Cada ${value} turnos`;
+            ? turno.one
+            : `Cada ${value} ${turno.many}`;
 
         return `
             <option value="${value}" ${value === selected ? "selected" : ""}>
@@ -2830,7 +2983,7 @@ function renderDefaultIntervalOptions(selectedValue, shift) {
         `;
     });
 
-    const habilOptions = Array.from(
+    const habilOptions = scope === "night" ? [] : Array.from(
         { length: MAX_HABIL_INTERVAL },
         (_item, index) => {
             const n = index + 1;
@@ -2850,7 +3003,7 @@ function renderDefaultIntervalOptions(selectedValue, shift) {
     return [...normalOptions, ...habilOptions].join("");
 }
 
-export function taskAssignmentFootprint(taskId, assignments) {
+export function taskAssignmentFootprint(taskId, assignments, shift = "") {
     const all = assignments || getAllAssignments();
     const weeks = new Set();
     let cells = 0;
@@ -2858,7 +3011,12 @@ export function taskAssignmentFootprint(taskId, assignments) {
 
     Object.entries(all || {}).forEach(([week, cellsOfWeek]) => {
         Object.entries(cellsOfWeek || {}).forEach(([cellKey, entry]) => {
-            if (splitAssignmentKey(cellKey).taskId !== taskId) return;
+            const parts = splitAssignmentKey(cellKey);
+
+            if (parts.taskId !== taskId) return;
+            // Con turno, la cuenta es la de ESE tablero: es lo que se lleva
+            // quitar la tarea de ahi y dejarla en el otro.
+            if (shift && parts.shift !== shift) return;
 
             const cuantos = (entry?.workers || []).filter(Boolean).length;
 
@@ -2873,6 +3031,14 @@ export function taskAssignmentFootprint(taskId, assignments) {
     return { names, cells, weeks: weeks.size };
 }
 
+function asignacionesLabel(count) {
+    return count === 1 ? "1 asignacion" : `${count} asignaciones`;
+}
+
+function semanasLabel(count) {
+    return count === 1 ? "1 semana" : `${count} semanas`;
+}
+
 // El texto del aviso. Aparte de la funcion que pregunta para poder probarlo sin
 // DOM: la cifra es lo unico que evita que la X se apriete a ciegas.
 export function taskDeleteWarning(title, footprint) {
@@ -2882,16 +3048,45 @@ export function taskDeleteWarning(title, footprint) {
         return `"${nombre}" no tiene asignaciones. Se eliminara la tarea.`;
     }
 
-    const asignaciones = footprint.names === 1
-        ? "1 asignacion"
-        : `${footprint.names} asignaciones`;
-    const semanas = footprint.weeks === 1
-        ? "1 semana"
-        : `${footprint.weeks} semanas`;
-
-    return `"${nombre}" tiene ${asignaciones} en ${semanas}. ` +
+    return `"${nombre}" tiene ${asignacionesLabel(footprint.names)} en ${semanasLabel(footprint.weeks)}. ` +
         "Si la eliminas se borran con ella, y no se pueden deshacer. " +
         "Si solo cambio de nombre, renombrala: asi conserva su historial.";
+}
+
+// La tarea que va en los DOS tableros no se puede borrar a secas: la X puede
+// querer decir "esta tarea ya no va" o "de noche no se hace". El aviso dice
+// cuanto se lleva cada salida, no solo el total.
+export function taskShiftDeleteWarning(
+    title,
+    shift,
+    footprint,
+    shiftFootprint
+) {
+    const nombre = String(title || "esta tarea").trim() || "esta tarea";
+    const turno = shift === "night" ? "las tareas de noche" : "las tareas diurnas";
+    const soloEste = shiftFootprint.names
+        ? `Quitarla de ${turno} borra ${asignacionesLabel(shiftFootprint.names)} de ese turno; en el otro sigue igual.`
+        : `Quitarla de ${turno} no borra ninguna asignacion: ahi no hay nadie repartido.`;
+    const ambos = footprint.names
+        ? `Eliminarla en ambos se lleva ${asignacionesLabel(footprint.names)} en ${semanasLabel(footprint.weeks)}, y no se puede deshacer.`
+        : "Eliminarla en ambos la saca del catalogo.";
+
+    return `"${nombre}" esta en tareas diurnas y en tareas de noche. ` +
+        `${soloEste} ${ambos} ` +
+        "Si solo cambio de nombre, renombrala: asi conserva su historial.";
+}
+
+// El aviso del boton de turnos de la tarjeta. Dejarla en un solo turno la saca
+// del otro tablero con todo lo repartido ahi, asi que las dos cifras tienen que
+// estar a la vista ANTES de elegir.
+export function taskShiftScopeMessage(title, scope, footprints) {
+    const nombre = String(title || "esta tarea").trim() || "esta tarea";
+    const actual = TASK_SHIFT_SCOPE_LABEL[scope] || TASK_SHIFT_SCOPE_LABEL.both;
+
+    return `"${nombre}" va hoy en: ${actual.toLowerCase()}. ` +
+        `Repartido en tareas diurnas: ${asignacionesLabel(footprints.day.names)}; ` +
+        `en tareas de noche: ${asignacionesLabel(footprints.night.names)}. ` +
+        "Dejarla en un solo turno borra lo repartido en el otro, y no se puede deshacer.";
 }
 
 function deleteTask(taskId) {
@@ -2910,6 +3105,55 @@ function deleteTask(taskId) {
     });
     setJSON(ASSIGNMENTS_KEY, all);
     publishTaskAssignmentChanges(affectedWorkers);
+}
+
+// Cambiar en que turnos va la tarea. Salir de un tablero SE LLEVA las casillas
+// de ese turno -no hay donde dibujarlas- y por eso quien pregunta tiene que
+// avisar antes cuanta gente hay repartida ahi. Las del otro turno no se tocan:
+// la tarea es la misma, con su id y su historial.
+function setTaskShiftScope(taskId, nextScope) {
+    const tasks = getTasks();
+    const task = tasks.find(item => item.id === taskId);
+    const scope = normalizeTaskShiftScope(nextScope);
+
+    if (!task || taskShiftScope(task) === scope) return false;
+
+    const dropped = SHIFT_TYPES.filter(shift =>
+        taskAppliesToShift(task, shift) &&
+        !taskAppliesToShift({ shiftScope: scope }, shift)
+    );
+    const affectedWorkers = [...taskWorkerNames(task)];
+
+    saveTasks(tasks.map(item =>
+        item.id === taskId
+            ? { ...item, shiftScope: scope }
+            : item
+    ));
+
+    if (dropped.length) {
+        const all = getAllAssignments();
+
+        Object.keys(all).forEach(week => {
+            Object.keys(all[week] || {}).forEach(cellKey => {
+                const parts = splitAssignmentKey(cellKey);
+
+                if (
+                    parts.taskId === taskId &&
+                    dropped.includes(parts.shift)
+                ) {
+                    delete all[week][cellKey];
+                }
+            });
+        });
+        setJSON(ASSIGNMENTS_KEY, all);
+    }
+
+    publishTaskAssignmentChanges(affectedWorkers);
+    return true;
+}
+
+function removeTaskFromShift(taskId, shift) {
+    return setTaskShiftScope(taskId, oppositeShift(shift));
 }
 
 function reorderTask(draggedId, targetId) {
@@ -3069,7 +3313,7 @@ function openWorkerDefaultDialog({ taskId, workerName, shift, keyDay }) {
                 <select data-worker-default-interval>
                     ${renderDefaultIntervalOptions(
                         encodeIntervalValue(rule?.interval || 1, rule?.habilOnly === true),
-                        shift
+                        taskShiftScope(task)
                     )}
                 </select>
             </label>
@@ -3132,7 +3376,7 @@ function mergeRangeFor(from, to) {
     if (!from || !to) return null;
     if (from.shift !== to.shift || from.day !== to.day) return null;
 
-    const tasks = getTasks();
+    const tasks = tasksForShift(getTasks(), from.shift);
     const assignments = getWeekAssignments();
     const sourceIndex = tasks.findIndex(task => task.id === from.mergeTask);
     const targetIndex = tasks.findIndex(task => task.id === to.mergeTask);
@@ -3359,8 +3603,10 @@ function bindShellEvents(root) {
         .querySelectorAll("[data-task-add-form]")
         .forEach(form => {
             form.onsubmit = event => {
+                const data = new FormData(form);
+
                 event.preventDefault();
-                addTask(new FormData(form).get("title"));
+                addTask(data.get("title"), data.get("shiftScope"));
                 renderTaskAssignmentsPanel();
             };
         });
@@ -3396,14 +3642,34 @@ function bindShellEvents(root) {
 
                 if (!task) return;
 
-                const footprint = taskAssignmentFootprint(taskId);
+                const all = getAllAssignments();
+                const footprint = taskAssignmentFootprint(taskId, all);
+                // La X se aprieta desde UN tablero. Si la tarea esta en los
+                // dos, borrarla entera no es lo unico que se puede querer: casi
+                // siempre lo que sobra es la tarea en ESE turno.
+                const shift = button.dataset.taskDeleteShift === "night"
+                    ? "night"
+                    : "day";
+                const enAmbos = taskShiftScope(task) === GENERIC_TASK_SHIFT;
+                const shiftFootprint = taskAssignmentFootprint(
+                    taskId,
+                    all,
+                    shift
+                );
                 // Borrar y volver a crear con el mismo nombre parece un
                 // renombre y no lo es: la tarea nueva nace con otro id y las
                 // semanas pasadas quedan apuntando a una que ya no existe. Por
                 // eso el nombre viene editable, para que renombrar sea el
                 // camino corto y borrar el que cuesta.
                 const answer = await showPrompt(
-                    taskDeleteWarning(task.title, footprint),
+                    enAmbos
+                        ? taskShiftDeleteWarning(
+                            task.title,
+                            shift,
+                            footprint,
+                            shiftFootprint
+                        )
+                        : taskDeleteWarning(task.title, footprint),
                     {
                         title: "Eliminar tarea",
                         tone: "danger",
@@ -3412,12 +3678,31 @@ function bindShellEvents(root) {
                         confirmText: "Renombrar",
                         cancelText: "Cancelar",
                         extraActions: [
-                            { text: "Eliminar igual", value: "delete", tone: "danger" }
+                            ...(enAmbos
+                                ? [{
+                                    text: shift === "night"
+                                        ? "Quitar de tareas de noche"
+                                        : "Quitar de tareas diurnas",
+                                    value: "delete-shift",
+                                    tone: "danger"
+                                }]
+                                : []),
+                            {
+                                text: enAmbos ? "Eliminar en ambos" : "Eliminar igual",
+                                value: "delete",
+                                tone: "danger"
+                            }
                         ]
                     }
                 );
 
                 if (!answer || answer.action === "cancel") return;
+
+                if (answer.action === "delete-shift") {
+                    removeTaskFromShift(taskId, shift);
+                    renderTaskAssignmentsPanel();
+                    return;
+                }
 
                 if (answer.action === "delete") {
                     deleteTask(taskId);
@@ -3431,6 +3716,45 @@ function bindShellEvents(root) {
 
                 updateTaskTitle(taskId, nuevo);
                 renderTaskAssignmentsPanel();
+            };
+        });
+
+    root
+        .querySelectorAll("[data-task-shift-scope]")
+        .forEach(button => {
+            button.onclick = async () => {
+                const taskId = button.dataset.taskShiftScope;
+                const task = getTasks().find(item => item.id === taskId);
+
+                if (!task) return;
+
+                const all = getAllAssignments();
+                const answer = await showConfirm(
+                    taskShiftScopeMessage(task.title, taskShiftScope(task), {
+                        day: taskAssignmentFootprint(taskId, all, "day"),
+                        night: taskAssignmentFootprint(taskId, all, "night")
+                    }),
+                    {
+                        title: "Turnos de la tarea",
+                        tone: "warning",
+                        confirmText: "Diurno y noche",
+                        cancelText: "Cancelar",
+                        extraActions: [
+                            { text: "Solo diurno", value: "day", tone: "danger" },
+                            { text: "Solo noche", value: "night", tone: "danger" }
+                        ]
+                    }
+                );
+
+                if (!answer || answer.action === "cancel") return;
+
+                const scope = answer.action === "confirm"
+                    ? GENERIC_TASK_SHIFT
+                    : answer.action;
+
+                if (setTaskShiftScope(taskId, scope)) {
+                    renderTaskAssignmentsPanel();
+                }
             };
         });
 
@@ -4175,7 +4499,8 @@ function cellExcelText(assignments, shift, taskId, day, tasks, equipmentOutages 
 
 function excelTableForShift(shift, tasks, days, assignments) {
     const title = SHIFT_CONFIG[shift].label;
-    const rows = tasks.map(task => taskForShift(task, shift));
+    const rows = tasksForShift(tasks, shift)
+        .map(task => taskForShift(task, shift));
     const equipmentOutages = equipmentOutagesForDays(days);
 
     return `
@@ -4240,7 +4565,7 @@ export function getTaskScheduleWeek(start = currentWeekStart) {
     let sections = SHIFT_TYPES.map(shift => ({
         shift,
         label: SHIFT_CONFIG[shift].label,
-        rows: tasks
+        rows: tasksForShift(tasks, shift)
             .map(task => taskForShift(task, shift))
             .map(task => ({
                 taskId: task.id,
@@ -4538,7 +4863,7 @@ export function goToTaskScheduleToday() {
 function autoScheduleCandidates(assignments, tasks, shift, keyDay) {
     const busy = new Set();
 
-    tasks.forEach(task => {
+    tasksForShift(tasks, shift).forEach(task => {
         assignmentWorkers(
             getCellEntry(assignments, shift, task.id, keyDay)
         ).forEach(name => busy.add(name));
