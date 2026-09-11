@@ -73,13 +73,26 @@ test("la publicacion sigue siendo diferida y agrupada", async () => {
     const tasks = await readTasks();
     const sync = await readSync();
 
-    // No hace falta un boton de publicar: cada cambio reprograma el mismo
-    // temporizador, asi que una tanda de ediciones sale en UNA publicacion.
+    // Los cambios manuales reprograman el mismo temporizador, asi que una
+    // tanda de ediciones sale en UNA publicacion.
     assert.match(tasks, /const TASK_ASSIGNMENT_PUBLISH_DELAY_MS = 3000;/);
     assert.match(
         sync,
         /clearTimeout\(hotPublishTimer\);\s*\n\s*hotPublishTimer = setTimeout\(\(\) => publishHotNow\(\), delay\);/
     );
+});
+
+test("la programacion automatica se publica solo al aceptar la propuesta", async () => {
+    const tasks = await readTasks();
+
+    assert.match(tasks, /openTaskAutoSchedulePreviewDialog/);
+    assert.match(tasks, /data-auto-schedule-regenerate/);
+    assert.match(tasks, /data-auto-schedule-publish/);
+    assert.match(
+        tasks,
+        /function applyTaskAutoSchedulePlan[\s\S]{0,1800}saveWeekAssignments\(next\);[\s\S]{0,300}publishTaskAssignmentChanges/
+    );
+    assert.doesNotMatch(tasks, /showConfirm\(autoSchedulePlanSummary/);
 });
 
 test("el documento compartido se reemplaza, no se fusiona", async () => {

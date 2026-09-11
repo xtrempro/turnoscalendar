@@ -5227,8 +5227,8 @@ export function goToTaskScheduleToday() {
 // devuelve.
 //
 // SOLO RELLENA. Cada chip que el supervisor puso a mano se queda donde esta:
-// el motor ni siquiera recibe esas casillas. Por eso apretar el boton dos
-// veces seguidas no rehace nada, solo completa lo que falte.
+// el motor ni siquiera recibe esas casillas. El boton primero muestra una
+// propuesta; recien al publicarla se guarda y se envia a la PWA.
 // ---------------------------------------------------------------------------
 
 // Los que ese dia y turno pueden trabajar y todavia no estan en ninguna tarea.
@@ -5302,6 +5302,19 @@ function countSkipped(plan, ...reasons) {
     return plan.skipped.filter(item => reasons.includes(item.reason)).length;
 }
 
+function createTaskAutoScheduleAttempt(days, tasks) {
+    const assignments = cleanAssignmentsForWeek(days, tasks);
+    const cells = autoScheduleCells(days, tasks, assignments);
+    const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
+        beforeWeekKey: weekKey()
+    });
+    const plan = cells.length
+        ? planTaskAutoSchedule({ cells, history })
+        : { filled: [], skipped: [], assignments: 0, workers: [] };
+
+    return { assignments, cells, history, plan };
+}
+
 function autoSchedulePlanSummary(plan, days) {
     const cells = plan.filled.length;
     const shortCells = plan.filled.filter(item => item.short).length;
@@ -5313,7 +5326,7 @@ function autoSchedulePlanSummary(plan, days) {
         "",
         "El reparto es al azar entre los que están de turno, pero solo entra quien ya ha hecho esa tarea en semanas anteriores, y a los que hacen varias se les va cambiando la tarea a lo largo de la semana.",
         "",
-        "Lo que ya está asignado no se toca."
+        "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];
 
     if (noHistory || takenElsewhere || shortCells) lines.push("");
@@ -5339,6 +5352,250 @@ function autoSchedulePlanSummary(plan, days) {
     return lines.join("\n");
 }
 
+function taskTitleForAutoSchedule(tasks, taskId) {
+    return tasks.find(task => task.id === taskId)?.title || taskId;
+}
+
+function autoSchedulePreviewDayLabel(keyDay) {
+    const date = parseKey(keyDay);
+
+    return `${formatWeekday(date)} ${formatShortDate(date)}`;
+}
+
+function autoSchedulePreviewRows(plan, tasks) {
+    const rows = [...plan.filled].sort((a, b) =>
+        parseKey(a.keyDay).getTime() - parseKey(b.keyDay).getTime() ||
+        String(a.shift).localeCompare(String(b.shift)) ||
+        taskTitleForAutoSchedule(tasks, a.taskId)
+            .localeCompare(taskTitleForAutoSchedule(tasks, b.taskId), "es")
+    );
+
+    if (!rows.length) {
+        return `<div class="empty-state empty-state--compact">No hay casillas que la programación automática pueda completar con el historial actual.</div>`;
+    }
+
+    return rows.map(item => {
+        const title = taskTitleForAutoSchedule(tasks, item.taskId);
+        const count = `${item.workers.length}/${item.headcount}`;
+
+        return `
+            <article class="task-auto-preview-row${item.short ? " is-short" : ""}">
+                <div class="task-auto-preview-row__main">
+                    <span>${escapeHTML(autoSchedulePreviewDayLabel(item.keyDay))} &middot; ${escapeHTML(SHIFT_CONFIG[item.shift]?.shortLabel || item.shift)}</span>
+                    <strong>${escapeHTML(title)}</strong>
+                </div>
+                <div class="task-auto-preview-workers">
+                    ${item.workers.map(name => `
+                        <span class="task-auto-preview-chip">
+                            ${renderWorkerAvatar(name)}
+                            <span>${escapeHTML(name)}</span>
+                        </span>
+                    `).join("")}
+                </div>
+                <em class="task-auto-preview-count">${escapeHTML(count)}</em>
+            </article>
+        `;
+    }).join("");
+}
+
+function autoScheduleSkipSummary(plan) {
+    const noHistory = countSkipped(plan, "sin-historial", "sin-turno");
+    const takenElsewhere = countSkipped(plan, "sin-gente");
+    const withoutPattern = countSkipped(plan, "sin-cupo");
+    const shortCells = plan.filled.filter(item => item.short).length;
+    const lines = [];
+
+    if (shortCells) {
+        lines.push(`${shortCells} ${shortCells === 1 ? "casilla queda" : "casillas quedan"} con menos personal que el patrón habitual.`);
+    }
+
+    if (noHistory) {
+        lines.push(`${noHistory} ${noHistory === 1 ? "casilla queda" : "casillas quedan"} sin cubrir por falta de alguien de turno con historial en esa tarea.`);
+    }
+
+    if (takenElsewhere) {
+        lines.push(`${takenElsewhere} ${takenElsewhere === 1 ? "casilla queda" : "casillas quedan"} sin cubrir porque sus candidatos ya fueron usados ese día.`);
+    }
+
+    if (withoutPattern) {
+        lines.push(`${withoutPattern} ${withoutPattern === 1 ? "casilla no tiene" : "casillas no tienen"} patrón suficiente para programarse solas.`);
+    }
+
+    if (!lines.length) return "";
+
+    return `
+        <div class="task-auto-preview-notes">
+            ${lines.map(line => `<p>${escapeHTML(line)}</p>`).join("")}
+        </div>
+    `;
+}
+
+function busyWorkersForShiftDay(assignments, tasks, shift, keyDay, exceptTaskId) {
+    const busy = new Set();
+
+    columnGroups(assignments, shift, tasks, keyDay).forEach(group => {
+        const ownerId = group.taskIds[0];
+
+        if (ownerId === exceptTaskId) return;
+
+        assignmentWorkers(
+            getCellEntry(assignments, shift, ownerId, keyDay)
+        ).forEach(name => busy.add(name));
+    });
+
+    return busy;
+}
+
+function applyTaskAutoSchedulePlan(plan, tasks) {
+    const next = getWeekAssignments();
+    const affectedWorkers = new Set();
+    let assignments = 0;
+    let cells = 0;
+    let skippedWorkers = 0;
+
+    plan.filled.forEach(item => {
+        const cellKey = assignmentKey(item.shift, item.taskId, item.keyDay);
+        const entry = next[cellKey] || {};
+
+        if (assignmentClosed(entry) || assignmentWorkers(entry).length) {
+            skippedWorkers += item.workers.length;
+            return;
+        }
+
+        const busy = busyWorkersForShiftDay(
+            next,
+            tasks,
+            item.shift,
+            item.keyDay,
+            item.taskId
+        );
+        const workers = uniqueValues(item.workers.filter(name => {
+            const profile = profileByName(name);
+
+            return profile &&
+                !busy.has(name) &&
+                isAvailableForShift(profile, item.keyDay, item.shift);
+        }));
+
+        if (!workers.length) {
+            skippedWorkers += item.workers.length;
+            return;
+        }
+
+        persistEntryOrDelete(next, cellKey, {
+            workers,
+            note: entry.note || "",
+            removedDefaults: assignmentRemovedDefaults(entry),
+            mergedNextTaskId: entry.mergedNextTaskId
+        });
+
+        cells += 1;
+        assignments += workers.length;
+        skippedWorkers += Math.max(item.workers.length - workers.length, 0);
+        workers.forEach(name => affectedWorkers.add(name));
+    });
+
+    if (assignments) {
+        saveWeekAssignments(next);
+        publishTaskAssignmentChanges([...affectedWorkers]);
+    }
+
+    return {
+        assignments,
+        cells,
+        skippedWorkers,
+        workers: [...affectedWorkers]
+    };
+}
+
+function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
+    let currentAttempt = attempt;
+    let publishing = false;
+    const backdrop = document.createElement("div");
+
+    backdrop.className = "task-assignment-dialog-backdrop";
+    document.body.appendChild(backdrop);
+
+    const close = () => {
+        backdrop.remove();
+    };
+    const refreshAttempt = () => {
+        currentAttempt = createTaskAutoScheduleAttempt(days, tasks);
+    };
+    const render = () => {
+        const plan = currentAttempt.plan;
+
+        backdrop.innerHTML = `
+            <section class="task-assignment-dialog task-auto-preview-dialog">
+                <div class="task-assignment-dialog__head">
+                    <div>
+                        <h3>Programación automática</h3>
+                        <span>${escapeHTML(formatShortDate(days[0]))} al ${escapeHTML(formatShortDate(days[6]))}</span>
+                    </div>
+                    <button class="icon-button" type="button" data-auto-schedule-close aria-label="Cerrar">&times;</button>
+                </div>
+                <div class="task-auto-preview-summary">
+                    ${escapeHTML(autoSchedulePlanSummary(plan, days)).replace(/\n/g, "<br>")}
+                </div>
+                <div class="task-auto-preview-list">
+                    ${autoSchedulePreviewRows(plan, tasks)}
+                </div>
+                ${autoScheduleSkipSummary(plan)}
+                <div class="task-assignment-dialog__actions task-auto-preview-actions">
+                    <button class="secondary-button" type="button" data-auto-schedule-regenerate ${publishing ? "disabled" : ""}>Nueva distribución</button>
+                    <button class="secondary-button" type="button" data-auto-schedule-cancel ${publishing ? "disabled" : ""}>Cancelar</button>
+                    <button class="primary-button" type="button" data-auto-schedule-publish ${publishing || !plan.assignments ? "disabled" : ""}>Publicar</button>
+                </div>
+            </section>
+        `;
+
+        backdrop
+            .querySelector("[data-auto-schedule-close]")
+            ?.addEventListener("click", close);
+        backdrop
+            .querySelector("[data-auto-schedule-cancel]")
+            ?.addEventListener("click", close);
+        backdrop
+            .querySelector("[data-auto-schedule-regenerate]")
+            ?.addEventListener("click", () => {
+                if (publishing) return;
+                refreshAttempt();
+                render();
+            });
+        backdrop
+            .querySelector("[data-auto-schedule-publish]")
+            ?.addEventListener("click", async () => {
+                if (publishing) return;
+
+                publishing = true;
+                render();
+
+                const result = applyTaskAutoSchedulePlan(
+                    currentAttempt.plan,
+                    tasks
+                );
+
+                closeCellPicker();
+                close();
+                renderTaskAssignmentsPanel();
+
+                if (!result.assignments) {
+                    await showAlert(
+                        "La propuesta ya no tenía casillas disponibles para publicar. Revisa la semana y vuelve a generar una distribución.",
+                        { title: "Programación automática", tone: "warning" }
+                    );
+                } else if (result.skippedWorkers) {
+                    await showAlert(
+                        `Se publicó la programación automática con ${result.assignments} ${result.assignments === 1 ? "persona" : "personas"}. Algunas asignaciones de la propuesta ya no estaban disponibles y no se aplicaron.`,
+                        { title: "Programación automática", tone: "info" }
+                    );
+                }
+            });
+    };
+
+    render();
+}
+
 async function runTaskAutoSchedule() {
     const days = weekDays();
     const tasks = getTasks();
@@ -5351,64 +5608,25 @@ async function runTaskAutoSchedule() {
         return;
     }
 
-    const assignments = cleanAssignmentsForWeek(days, tasks);
-    const cells = autoScheduleCells(days, tasks, assignments);
+    const attempt = createTaskAutoScheduleAttempt(days, tasks);
 
-    if (!cells.length) {
+    if (!attempt.cells.length) {
         await showAlert(
-            "Esta semana no tiene casillas vacías: ya está toda programada.",
+            "Esta semana no tiene casillas vacías que la programación automática pueda revisar.",
             { title: "Programación automática", tone: "info" }
         );
         return;
     }
 
-    const plan = planTaskAutoSchedule({
-        cells,
-        history: buildTaskAutoScheduleHistory(getAllAssignments(), {
-            beforeWeekKey: weekKey()
-        })
-    });
-
-    if (!plan.assignments) {
+    if (!attempt.plan.assignments) {
         await showAlert(
-            "No quedó nadie para repartir: los que están de turno esos días o ya tienen tarea, o nunca han trabajado en las que faltan por cubrir.",
+            "No quedó nadie para repartir: los que están de turno esos días o ya tienen tarea, o no tienen historial en las tareas que faltan por cubrir.",
             { title: "Programación automática", tone: "warning" }
         );
         return;
     }
 
-    if (
-        !await showConfirm(autoSchedulePlanSummary(plan, days), {
-            title: "Programación automática",
-            tone: "info",
-            confirmText: "Repartir"
-        })
-    ) {
-        return;
-    }
-
-    // Se relee: el dialogo estuvo abierto y otra sesion pudo llenar alguna de
-    // estas casillas mientras tanto. La que ya tenga gente se respeta.
-    const next = getWeekAssignments();
-
-    plan.filled.forEach(item => {
-        const cellKey = assignmentKey(item.shift, item.taskId, item.keyDay);
-        const entry = next[cellKey] || {};
-
-        if (assignmentWorkers(entry).length) return;
-
-        persistEntryOrDelete(next, cellKey, {
-            workers: item.workers,
-            note: entry.note || "",
-            removedDefaults: assignmentRemovedDefaults(entry),
-            mergedNextTaskId: entry.mergedNextTaskId
-        });
-    });
-
-    saveWeekAssignments(next);
-    publishTaskAssignmentChanges(plan.workers);
-    closeCellPicker();
-    renderTaskAssignmentsPanel();
+    openTaskAutoSchedulePreviewDialog({ days, tasks, attempt });
 }
 
 function exportTaskAssignmentsExcel() {

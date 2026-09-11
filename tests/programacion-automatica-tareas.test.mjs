@@ -139,15 +139,14 @@ test("nadie entra en una tarea que nunca ha hecho", () => {
 
     assert.deepEqual(resonador.workers.sort(), ["Ana", "Bruno"]);
     assert.ok(["Bruno", "Carla"].includes(rayos.workers[0]));
-    // Dario solo puede caer en MAMOGRAFIA, que no tiene historial: ahi el
-    // filtro no aplica porque no hay patron que respetar.
     assert.ok(
-        !resonador.workers.includes("Dario") &&
-        !rayos.workers.includes("Dario")
+        !plan.workers.includes("Dario"),
+        "Dario no tiene historial en ninguna tarea, asi que no puede ser asignado"
     );
+    assert.equal(plan.filled.some(item => item.taskId === "mamografia"), false);
 });
 
-test("una tarea sin historial acepta a cualquiera de turno", () => {
+test("una tarea sin historial no acepta trabajadores al azar", () => {
     const history = buildTaskAutoScheduleHistory(baseHistory(), {
         beforeWeekKey: PLAN_WEEK
     });
@@ -158,8 +157,12 @@ test("una tarea sin historial acepta a cualquiera de turno", () => {
     });
     const mamografia = plan.filled.find(item => item.taskId === "mamografia");
 
-    assert.equal(mamografia.workers.length, 1);
-    assert.ok(mamografia.workers.length > 0);
+    assert.equal(mamografia, undefined);
+    assert.ok(
+        plan.skipped.some(item =>
+            item.taskId === "mamografia" && item.reason === "sin-cupo"
+        )
+    );
 });
 
 test("el cupo sale del historial de ese dia de la semana", () => {
@@ -180,10 +183,9 @@ test("el dia que nunca se programo no cuenta como dia vacio", () => {
         beforeWeekKey: PLAN_WEEK
     });
 
-    // Ningun sabado del historial se programo. Eso no dice que el sabado las
-    // tareas vayan vacias, dice que no hay dato: se parte con una persona.
-    // Contar esos dias como ceros dejaba el tablero entero en cupo 0.
-    assert.equal(headcountForCell(history, "day", "rayos", "2026-8-5"), 1);
+    // Ningun sabado del historial se programo. Sin patron de cantidad, la
+    // automatica no inventa dotacion.
+    assert.equal(headcountForCell(history, "day", "rayos", "2026-8-5"), 0);
 });
 
 test("la tarea que ese dia siempre estuvo vacia se queda vacia", () => {
@@ -220,6 +222,32 @@ test("una tarea nueva no arrastra los ceros de cuando no existia", () => {
     // Sin el corte por primera semana, las tres semanas en que no existia
     // pesarian mas que la unica en que se uso y el cupo saldria 0.
     assert.equal(headcountForCell(history, "day", "ecografia", PLAN_MONDAY), 2);
+});
+
+test("puede asignar menos gente que el cupo historico si no alcanza el personal", () => {
+    const history = buildTaskAutoScheduleHistory(
+        weekHistory({
+            rayos: () => ["Ana", "Bruno", "Carla"]
+        }),
+        { beforeWeekKey: PLAN_WEEK }
+    );
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId: "rayos",
+            taskIds: ["rayos"],
+            candidates: ["Ana", "Bruno"],
+            blocked: []
+        }],
+        history,
+        rng: seededRng(9)
+    });
+
+    assert.equal(headcountForCell(history, "day", "rayos", PLAN_MONDAY), 3);
+    assert.equal(plan.filled[0].workers.length, 2);
+    assert.equal(plan.filled[0].headcount, 3);
+    assert.equal(plan.filled[0].short, 1);
 });
 
 test("el que hace varias tareas va rotando a lo largo de la semana", () => {
@@ -341,7 +369,7 @@ test("el predefinido que el supervisor saco a mano no vuelve solo", () => {
     assert.ok(!plan.filled[0].workers.includes("Ana"));
 });
 
-test("sin historial ninguno el reparto es puro azar entre los de turno", () => {
+test("sin historial ninguno no inventa programacion", () => {
     const history = buildTaskAutoScheduleHistory({}, {
         beforeWeekKey: PLAN_WEEK
     });
@@ -352,10 +380,9 @@ test("sin historial ninguno el reparto es puro azar entre los de turno", () => {
     });
 
     assert.equal(history.weeksSeen, 0);
-    assert.equal(plan.filled.length, 3);
-    plan.filled.forEach(item => {
-        assert.equal(item.workers.length, 1);
-    });
+    assert.equal(plan.assignments, 0);
+    assert.equal(plan.filled.length, 0);
+    assert.ok(plan.skipped.every(item => item.reason === "sin-cupo"));
 });
 
 test("la semana que se esta programando no es patron de si misma", () => {
@@ -405,6 +432,11 @@ test("el boton esta cableado en el panel", async () => {
 
     assert.match(source, /data-task-auto-schedule/);
     assert.match(source, /runTaskAutoSchedule/);
+    assert.match(source, /openTaskAutoSchedulePreviewDialog/);
+    assert.match(source, /data-auto-schedule-regenerate/);
+    assert.match(source, /data-auto-schedule-publish/);
+    assert.match(source, /applyTaskAutoSchedulePlan/);
+    assert.doesNotMatch(source, /showConfirm\(autoSchedulePlanSummary/);
     // El reparto solo rellena: si esto se pierde, el boton empieza a pisar lo
     // que el supervisor puso a mano.
     assert.match(source, /assignmentWorkers\(entry\)\.length/);

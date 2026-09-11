@@ -12,12 +12,11 @@
 //
 // Como se lee el historial (semanas ANTERIORES a la que se programa):
 //
-//   1. QUIEN puede ir a cada tarea. Si la tarea tiene historial, solo entra
-//      quien ya aparecio en ella alguna vez. Si nadie de esos esta de turno,
-//      la casilla se queda vacia a proposito: es un hueco real que el
-//      supervisor tiene que ver, no una invitacion a inventar una asignacion.
-//      Una tarea SIN historial -recien creada, o primera vez que se usa el
-//      tablero- no filtra a nadie: ahi el reparto es puro azar.
+//   1. QUIEN puede ir a cada tarea. Solo entra quien ya aparecio en ella alguna
+//      vez. Si nadie de esos esta de turno, la casilla se queda vacia a
+//      proposito: es un hueco real que el supervisor tiene que ver, no una
+//      invitacion a inventar una asignacion. Una tarea SIN historial no se
+//      autorrellena.
 //
 //   2. CUANTOS van en cada casilla. Se mira cuanta gente llevo esa tarea ese
 //      mismo dia de la semana y se toma el valor que mas se repite. Por eso
@@ -37,9 +36,12 @@ import { keyToDate } from "./dateUtils.js";
 // Cuantas semanas hacia atras se miran. Mas atras que esto el patron ya no
 // describe como se trabaja hoy: la gente entra, sale y cambia de turno.
 export const AUTO_SCHEDULE_HISTORY_WEEKS = 8;
-// Cupo de una tarea sin historial: una persona. Ni cero -no se programaria
-// nunca- ni mas, que seria inventar una dotacion que nadie pidio.
-export const AUTO_SCHEDULE_DEFAULT_HEADCOUNT = 1;
+// Cupo de una tarea sin historial: cero. La programacion automatica aprende
+// de lo que ya ocurrio; una tarea que nadie ha hecho todavia queda para
+// decision manual del supervisor.
+export const AUTO_SCHEDULE_DEFAULT_HEADCOUNT = 0;
+// Valor base para desempatar/modar cupos cuando SI hay historial presente.
+const AUTO_SCHEDULE_FALLBACK_HEADCOUNT = 1;
 // Techo del cupo aprendido. Protege de una semana rara del historial -una
 // casilla fusionada, una jornada con todo el mundo dentro- que dejaria un cupo
 // absurdo repitiendose para siempre.
@@ -237,8 +239,8 @@ export function headcountForCell(history, shift, taskId, keyDay) {
     const weeks = (history?.activeColumns?.get(`${shift}|${weekday}`) || [])
         .filter(week => week >= firstWeek);
 
-    // Tarea nueva, o columna que nunca se programo: no hay patron, va una
-    // persona. Dejarla en 0 seria no programarla nunca.
+    // Tarea nueva, o columna que nunca se programo: no hay patron suficiente
+    // para inventar dotacion.
     if (!firstWeek || !weeks.length) return AUTO_SCHEDULE_DEFAULT_HEADCOUNT;
 
     const counts = new Map();
@@ -257,7 +259,7 @@ export function headcountForCell(history, shift, taskId, keyDay) {
 
     if (present / weeks.length < AUTO_SCHEDULE_PRESENCE_RATE) return 0;
 
-    let best = AUTO_SCHEDULE_DEFAULT_HEADCOUNT;
+    let best = AUTO_SCHEDULE_FALLBACK_HEADCOUNT;
     let bestTimes = -1;
 
     counts.forEach((times, value) => {
@@ -349,12 +351,8 @@ function candidateWeight(name, {
     planDay,
     runTotal,
     runOnTask,
-    openTask
 }) {
     const load = 1 + runTotal * LOAD_PENALTY;
-
-    // Tarea sin historial: no hay patron que seguir, solo se reparte parejo.
-    if (openTask) return 1 / load;
 
     const stat = taskWorkers.get(name);
     const worker = workerStats.get(name);
@@ -408,7 +406,6 @@ export function planTaskAutoSchedule({
     // Para medir la rotacion el peso tiene que saltar de una tarea a otra de la
     // misma persona, asi que necesita el indice por tarea a mano.
     const taskIndex = stats.tasks || new Map();
-    const noHistory = !stats.weeksSeen;
     // Una persona por turno y dia: si ya quedo en una tarea del lunes diurno,
     // no puede aparecer en otra del mismo lunes diurno.
     const takenByDay = new Map();
@@ -422,7 +419,6 @@ export function planTaskAutoSchedule({
     const prepared = cells.map(cell => {
         const taskIds = cell.taskIds?.length ? cell.taskIds : [cell.taskId];
         const taskWorkers = taskHistoryFor(stats, taskIds);
-        const openTask = noHistory || taskWorkers.size === 0;
         const headcount = Math.max(
             ...taskIds.map(taskId => headcountForCell(
                 stats,
@@ -436,14 +432,12 @@ export function planTaskAutoSchedule({
             cell,
             taskIds,
             taskWorkers,
-            openTask,
             headcount,
             // Cuantos podrian entrar hoy. Ordenar por esto es lo que evita que
             // una tarea con dos personas posibles se quede sin nadie porque
             // otra tarea, que podia elegir entre veinte, se los llevo.
-            reach: openTask
-                ? (cell.candidates?.length || 0)
-                : (cell.candidates || []).filter(name => taskWorkers.has(name)).length,
+            reach: (cell.candidates || [])
+                .filter(name => taskWorkers.has(name)).length,
             // Desempate al azar entre casillas igual de apretadas. Sin esto el
             // orden del catalogo decide siempre lo mismo: al que solo alcanza
             // para una de dos tareas se lo lleva la que este mas arriba, y esa
@@ -469,7 +463,7 @@ export function planTaskAutoSchedule({
 
     for (let round = 0; round < rounds; round += 1) {
         ordered.forEach(item => {
-            const { cell, taskIds, taskWorkers, openTask, headcount } = item;
+            const { cell, taskIds, taskWorkers, headcount } = item;
 
             if (item.chosen.length > round || headcount <= round) return;
 
@@ -485,7 +479,7 @@ export function planTaskAutoSchedule({
             const pool = (cell.candidates || [])
                 .map(name => String(name))
                 .filter(name => !taken.has(name) && !blocked.has(name))
-                .filter(name => openTask || taskWorkers.has(name))
+                .filter(name => taskWorkers.has(name))
                 .map(name => ({
                     name,
                     weight: candidateWeight(name, {
@@ -498,8 +492,7 @@ export function planTaskAutoSchedule({
                             (sum, taskId) =>
                                 sum + (runByTask.get(`${taskId}|${name}`) || 0),
                             0
-                        ),
-                        openTask
+                        )
                     })
                 }));
 
