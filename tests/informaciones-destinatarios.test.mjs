@@ -222,6 +222,29 @@ test("la PWA filtra por destinatarios y por fecha antes de pintar", async () => 
     assert.match(app, /if \(!value\) return true;/);
 });
 
+test("el switch de avisar crea notificaciones solo al publicar", async () => {
+    const [panel, functions] = await Promise.all([
+        read("../js/informations.js"),
+        read("../functions/index.js")
+    ]);
+
+    assert.match(panel, /function shouldNotifyInformationPublish/);
+    assert.match(panel, /!nextItem\?\.notify \|\| status !== "published"/);
+    assert.match(panel, /effectiveStatus\(current\) !== "published"/);
+    assert.match(panel, /function informationNotificationRecipientUids/);
+    assert.match(panel, /notifyInformationPublished\(nextItem\)/);
+    assert.match(panel, /"notifyInformationPublished"/);
+    assert.match(panel, /recipientUids/);
+
+    assert.match(functions, /exports\.notifyInformationPublished = onCall/);
+    assert.match(functions, /memberCanPublishInformations\(member\)/);
+    assert.match(functions, /"workerNotifications"/);
+    assert.match(functions, /type:\s*"information_published"/);
+    assert.match(functions, /category:\s*"informations"/);
+    assert.match(functions, /screen:\s*"informaciones"/);
+    assert.match(functions, /informationId/);
+});
+
 test("la confirmacion la escribe el trabajador en su propio documento", async () => {
     const [app, rules] = await Promise.all([
         read("../../APP TurnoPlus/www/js/app.js"),

@@ -344,6 +344,49 @@ async function saveInformations(items, options = {}) {
     return normalized;
 }
 
+function informationNotificationRecipientUids(item) {
+    return [...new Set(
+        audienceProfiles(item?.audience)
+            .map(profile => uidOf(profile))
+            .filter(Boolean)
+    )];
+}
+
+function shouldNotifyInformationPublish(current, nextItem, status) {
+    if (!nextItem?.notify || status !== "published") return false;
+
+    // Una informacion que ya estaba publicada no vuelve a sonar por una edicion:
+    // el switch avisa el alta/publicacion, no cada correccion de texto.
+    return !current || effectiveStatus(current) !== "published";
+}
+
+async function notifyInformationPublished(item) {
+    const workspace = getActiveWorkspace();
+    const recipientUids = informationNotificationRecipientUids(item);
+
+    if (!item?.id || !workspace?.id || !recipientUids.length) {
+        return { ok: true, recipients: recipientUids.length, notified: 0 };
+    }
+
+    if (!isFirebaseConfigured()) {
+        return { ok: false, recipients: recipientUids.length, notified: 0 };
+    }
+
+    const { functions, functionsModule } = await getFirebaseServices();
+    const callable = functionsModule.httpsCallable(
+        functions,
+        "notifyInformationPublished"
+    );
+    const response = await callable({
+        workspaceId: workspace.id,
+        informationId: item.id,
+        recipientUids,
+        clientCreatedAtISO: new Date().toISOString()
+    });
+
+    return response.data || {};
+}
+
 /* ==========================================================================
    Formato
    ========================================================================== */
@@ -1310,8 +1353,27 @@ async function persistDraft(form, { asDraft = false } = {}) {
         const nextItems = current
             ? items.map(item => item.id === current.id ? nextItem : item)
             : [nextItem, ...items];
+        const shouldNotify = shouldNotifyInformationPublish(
+            current,
+            nextItem,
+            status
+        );
+        let notificationFailed = false;
 
         await saveInformations(nextItems);
+
+        if (shouldNotify) {
+            try {
+                const result = await notifyInformationPublished(nextItem);
+                notificationFailed = result?.ok === false;
+            } catch (error) {
+                notificationFailed = true;
+                console.warn(
+                    "La informacion se publico, pero no se pudo notificar.",
+                    error
+                );
+            }
+        }
 
         // Los adjuntos que se quitaron en el compositor se borran de Storage
         // AQUI y no al quitarlos: hasta que no se guarda, el supervisor puede
@@ -1332,6 +1394,13 @@ async function persistDraft(form, { asDraft = false } = {}) {
         activeTab = status === "draft"
             ? "borradores"
             : status === "scheduled" ? "programadas" : "publicadas";
+
+        if (notificationFailed) {
+            await showAlert(
+                "La informacion quedo publicada, pero no se pudo enviar la notificacion de la campanita. Revisa la conexion e intenta recordar lectura mas tarde.",
+                { title: "Informaciones", tone: "warning" }
+            );
+        }
     } catch (error) {
         console.error("No se pudo publicar la informacion.", error);
         await showAlert(

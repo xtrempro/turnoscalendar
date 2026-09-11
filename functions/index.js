@@ -1670,6 +1670,291 @@ function scheduleNotificationAttachment(data = {}) {
   };
 }
 
+function informationNotificationEventId(informationId, publishedAt) {
+  const source = `${cleanCallableText(informationId, 180)}:${cleanCallableText(publishedAt, 80)}`;
+  const hash = createHash("sha256").update(source).digest("hex").slice(0, 24);
+
+  return `information_${hash}`;
+}
+
+function publishedInformationItems(data = {}) {
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.informations)) return data.informations;
+
+  return [];
+}
+
+function isInformationVisibleForNotification(item = {}, now = Date.now()) {
+  const status = String(item.status || "published").trim().toLowerCase();
+
+  if (status === "draft" || status === "archived") return false;
+
+  const publishAt = Date.parse(String(item.publishAt || ""));
+  const expiresAt = Date.parse(String(item.expiresAt || ""));
+
+  if (!Number.isNaN(publishAt) && publishAt > now) return false;
+  if (!Number.isNaN(expiresAt) && expiresAt <= now) return false;
+
+  return true;
+}
+
+function informationNotificationBody(item = {}) {
+  const title = cleanCallableText(item.title || "Nueva informacion", 180);
+  const body = cleanCallableText(item.body || item.message, 180);
+
+  return body && body !== title
+    ? `${title}: ${body}`
+    : title;
+}
+
+function informationDeepLink(informationId) {
+  const params = new URLSearchParams({
+    screen: "informaciones",
+    informationId: cleanCallableText(informationId, 180)
+  });
+
+  return `${WORKER_APP_BASE_URL}?${params.toString()}`;
+}
+
+exports.notifyInformationPublished = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 120,
+    memory: "512MiB"
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para notificar la informacion."
+      );
+    }
+
+    const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    const informationId = cleanCallableText(request.data?.informationId, 180);
+
+    if (!workspaceId || !informationId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Selecciona una unidad y una informacion para notificar."
+      );
+    }
+
+    const member = await requireWorkspaceMember(
+      workspaceId,
+      uid,
+      request.auth.token || {}
+    );
+
+    if (!memberCanPublishInformations(member)) {
+      throw new HttpsError(
+        "permission-denied",
+        "No tienes permisos para notificar informaciones en esta unidad."
+      );
+    }
+
+    const requestedRecipientUids = new Set(
+      Array.isArray(request.data?.recipientUids)
+        ? uniqueValues(request.data.recipientUids)
+        : []
+    );
+
+    if (!requestedRecipientUids.size) {
+      return {
+        ok: true,
+        informationId,
+        recipients: 0,
+        notified: 0,
+        sent: 0,
+        skippedReason: "no_recipients"
+      };
+    }
+
+    const workspaceRef = db.collection("workspaces").doc(workspaceId);
+    const [workspaceSnap, informationsSnap, linksSnap] = await Promise.all([
+      workspaceRef.get(),
+      workspaceRef.collection("published").doc("informations").get(),
+      workspaceRef.collection("workerLinks").get()
+    ]);
+    const informationsDoc = informationsSnap.data() || {};
+    const information = publishedInformationItems(informationsDoc)
+      .find((item) => cleanCallableText(item?.id, 180) === informationId);
+
+    if (!information || !isInformationVisibleForNotification(information)) {
+      return {
+        ok: true,
+        informationId,
+        recipients: 0,
+        notified: 0,
+        sent: 0,
+        skippedReason: information ? "not_visible" : "not_published"
+      };
+    }
+
+    const workspace = workspaceSnap.data() || {};
+    const workspaceName = cleanCallableText(
+      workspace.name || workspace.displayName || informationsDoc.workspaceName,
+      160
+    );
+    const publishedAt = cleanCallableText(
+      information.publishedAt ||
+      information.updatedAt ||
+      informationsDoc.updatedAtISO,
+      80
+    );
+    const eventId = informationNotificationEventId(informationId, publishedAt);
+    const title = "Nueva informacion";
+    const body = informationNotificationBody(information);
+    const deepLink = informationDeepLink(informationId);
+    const activeLinks = linksSnap.docs
+      .map((docSnap) => {
+        const link = docSnap.data() || {};
+        const workerUid = cleanCallableText(link.uid || docSnap.id, 160);
+
+        return workerUid &&
+          requestedRecipientUids.has(workerUid) &&
+          String(link.status || "active") === "active"
+          ? {
+              uid: workerUid,
+              profileName: cleanCallableText(link.profileName, 180),
+              profileRut: cleanCallableText(link.profileRut, 32),
+              workerEmail: cleanCallableText(link.workerEmail, 254)
+            }
+          : null;
+      })
+      .filter(Boolean);
+    const uniqueLinks = Array.from(
+      new Map(activeLinks.map((link) => [link.uid, link])).values()
+    );
+    const notificationRefs = uniqueLinks.map((link) => ({
+      link,
+      ref: workspaceRef
+        .collection("workerNotifications")
+        .doc(link.uid)
+        .collection("items")
+        .doc(eventId)
+    }));
+    const existingSnaps = notificationRefs.length
+      ? await db.getAll(...notificationRefs.map((item) => item.ref))
+      : [];
+    const missing = notificationRefs.filter((item, index) =>
+      !existingSnaps[index]?.exists
+    );
+    const createdAt = admin.firestore.FieldValue.serverTimestamp();
+
+    for (let index = 0; index < missing.length; index += 400) {
+      const batch = db.batch();
+
+      missing.slice(index, index + 400).forEach(({ link, ref }) => {
+        batch.set(ref, {
+          type: "information_published",
+          category: "informations",
+          title,
+          message: body,
+          workspaceId,
+          workspaceName,
+          workerId: link.profileName,
+          profileName: link.profileName,
+          profileRut: link.profileRut,
+          workerEmail: link.workerEmail,
+          affectedDates: [],
+          changeType: "information_published",
+          source: "informations_publish",
+          informationId,
+          informationTitle: cleanCallableText(information.title, 180),
+          categoryId: cleanCallableText(information.category, 80),
+          publishedAt,
+          createdAt,
+          clientCreatedAtISO: cleanCallableText(
+            request.data?.clientCreatedAtISO,
+            40
+          ),
+          readAt: null,
+          isRead: false,
+          eventId,
+          entityId: informationId,
+          batchId: eventId,
+          operationId: eventId,
+          createdByUid: uid,
+          createdByName: cleanCallableText(
+            request.auth.token?.name || member.displayName || member.name,
+            160
+          ),
+          deepLink,
+          tag: `information-${eventId}`,
+          pushStatus: "pending"
+        }, { merge: false });
+      });
+
+      await batch.commit();
+    }
+
+    const results = await Promise.all(missing.map(({ link }) =>
+      sendWorkerPush({
+        workspaceId,
+        uid: link.uid,
+        category: "informations",
+        title,
+        body,
+        data: {
+          type: "worker_information_published",
+          category: "informations",
+          eventId,
+          informationId,
+          informationTitle: cleanCallableText(information.title, 180),
+          workspaceId,
+          workspaceName,
+          workerId: link.profileName,
+          profileName: link.profileName,
+          screen: "informaciones",
+          url: deepLink,
+          tag: `information-${eventId}`,
+          requireInteraction: "false",
+          vibrate: "true"
+        }
+      })
+    ));
+    const sentByUid = new Map(
+      missing.map((item, index) => [item.link.uid, results[index] || {}])
+    );
+
+    for (let index = 0; index < missing.length; index += 400) {
+      const batch = db.batch();
+
+      missing.slice(index, index + 400).forEach(({ link, ref }) => {
+        const result = sentByUid.get(link.uid) || {};
+        batch.set(ref, {
+          pushStatus: Number(result.sent) > 0 ? "push_sent" : "push_not_sent",
+          pushSentAt: admin.firestore.FieldValue.serverTimestamp(),
+          pushSentCount: Number(result.sent) || 0,
+          pushError: cleanCallableText(result.error, 240)
+        }, { merge: true });
+      });
+
+      await batch.commit();
+    }
+
+    logger.info("Notificacion de informacion procesada.", {
+      workspaceId,
+      informationId,
+      recipients: uniqueLinks.length,
+      created: missing.length,
+      sent: results.reduce((total, result) => total + (Number(result.sent) || 0), 0)
+    });
+
+    return {
+      ok: true,
+      eventId,
+      informationId,
+      recipients: uniqueLinks.length,
+      notified: missing.length,
+      sent: results.reduce((total, result) => total + (Number(result.sent) || 0), 0)
+    };
+  }
+);
+
 exports.notifyScheduleAttachmentUpdated = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,
