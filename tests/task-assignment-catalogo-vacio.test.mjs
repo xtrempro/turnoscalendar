@@ -56,8 +56,12 @@ test("quien borra una tarea de verdad sigue limpiando sus casillas", async () =>
 
     // El saneado ya no borra huerfanas, asi que deleteTask es el unico camino:
     // si esto se cayera, las casillas quedarian para siempre.
+    //
+    // La ventana es holgada a proposito: desde el 2026-09-10 deleteTask mide la
+    // huella de la tarea ANTES de borrarla (para la bitacora), y con 600 el test
+    // se caia por la distancia sin que cambiara nada de lo que protege.
     assert.match(
         source,
-        /function deleteTask\(taskId\)[\s\S]{0,600}delete all\[week\]\[cellKey\];/
+        /function deleteTask\(taskId\)[\s\S]{0,1200}delete all\[week\]\[cellKey\];/
     );
 });

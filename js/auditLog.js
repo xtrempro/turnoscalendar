@@ -74,7 +74,8 @@ export const AUDIT_CATEGORY = {
     PROFILE_STATUS: "profile_status",
     STAFFING: "staffing",
     SYSTEM_SETTINGS: "system_settings",
-    WORKER_REQUESTS: "worker_requests"
+    WORKER_REQUESTS: "worker_requests",
+    TASKS: "tasks"
 };
 
 const CATEGORY_DEFS = [
@@ -127,6 +128,14 @@ const CATEGORY_DEFS = [
         key: AUDIT_CATEGORY.WORKER_REQUESTS,
         title: "Solicitudes de Trabajadores",
         tone: "green"
+    },
+    // Hasta el 2026-09-10 la asignacion de tareas no dejaba rastro: dos
+    // supervisores editaban la misma semana y no habia forma de saber quien
+    // habia cambiado que sin ir a la nube con Point-in-Time Recovery.
+    {
+        key: AUDIT_CATEGORY.TASKS,
+        title: "Asignacion de Tareas",
+        tone: "violet"
     }
 ];
 

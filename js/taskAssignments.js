@@ -1,7 +1,7 @@
 import { keyFromDate, keyToDate as parseKey } from "./dateUtils.js";
 import { stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
-import { getJSON, setJSON } from "./persistence.js";
+import { getJSON, getRaw, setJSON } from "./persistence.js";
 import {
     getProfiles,
     isProfileActive
@@ -33,12 +33,24 @@ import {
 } from "./partialShift.js";
 import { commemorativeDaysForDate } from "./commemorativeDays.js";
 import { medicalEquipmentOutagesForRange } from "./medicalEquipment.js";
+import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
+import {
+    accumulateWeekChanges,
+    createWeekChangeAccumulator,
+    describeWeekChanges,
+    diffWeekAssignments
+} from "./taskAssignmentAudit.js";
+import { getActiveWorkspace } from "./workspaces.js";
 
 const TASKS_KEY = "weekly_task_assignment_tasks";
 const ASSIGNMENTS_KEY = "weekly_task_assignment_entries";
 const TASK_SCHEDULE_UPDATED_KEY = "weekly_task_assignment_updated";
 const TASK_ASSIGNMENT_PUBLISH_DELAY_MS = 3000;
 const TASK_DETAIL_MAX_LENGTH = 240;
+// Tras la ultima edicion deliberada de una semana, cuanto se espera para dejar UN
+// resumen en la bitacora. Una sesion de edicion son decenas de clics, y cada
+// entrada de bitacora es una escritura a la nube.
+const TASK_AUDIT_QUIET_MS = 60000;
 
 const SHIFT_CONFIG = {
     day: {
@@ -86,6 +98,11 @@ let onlyUncovered = false;
 let openCellPicker = null;
 let cellPickerNode = null;
 let unbindCellPicker = null;
+// Cambios deliberados de asignacion aun sin volcar a la bitacora, por semana, y
+// la unidad donde se hicieron.
+const pendingTaskAudits = new Map();
+let taskAuditTimer = null;
+let taskAuditWorkspaceId = "";
 
 
 
@@ -672,12 +689,129 @@ export function taskScheduleUpdatedAt(start = currentWeekStart) {
 // fecha saltaria sola con solo MIRAR el tablero. La marca es de ediciones
 // deliberadas.
 function saveWeekAssignments(assignments, start = currentWeekStart, { touch = true } = {}) {
+    // Solo las ediciones deliberadas van a la bitacora: el saneado de cada
+    // pintado guarda con touch: false, y eso no lo hizo nadie.
+    const before = touch ? storedWeekAssignments(start) : null;
     const all = getAllAssignments();
 
     all[weekKey(start)] = assignments;
     setJSON(ASSIGNMENTS_KEY, all);
 
-    if (touch) markTaskScheduleUpdated(start);
+    if (touch) {
+        markTaskScheduleUpdated(start);
+        noteDeliberateWeekEdit(start, before, assignments);
+    }
+}
+
+// La semana tal como esta GUARDADA, leida del texto y no de getJSON. La cache de
+// persistence clona solo la raiz: las semanas son el MISMO objeto que quien
+// llama ya modifico en su sitio antes de guardar. Leida por ahi, la foto de
+// antes saldria igual a la de despues y la bitacora no veria ningun cambio.
+function storedWeekAssignments(start = currentWeekStart) {
+    try {
+        const parsed = JSON.parse(getRaw(ASSIGNMENTS_KEY, "{}") || "{}");
+        const week = parsed && typeof parsed === "object"
+            ? parsed[weekKey(start)]
+            : null;
+
+        return week && typeof week === "object" && !Array.isArray(week)
+            ? week
+            : {};
+    } catch {
+        return {};
+    }
+}
+
+function activeWorkspaceIdForAudit() {
+    return String(getActiveWorkspace()?.id || "");
+}
+
+function auditDayLabel(keyDay) {
+    const date = parseKey(keyDay);
+
+    return Number.isNaN(date.getTime())
+        ? keyDay
+        : `${formatWeekdayShort(date)} ${date.getDate()}`;
+}
+
+function noteDeliberateWeekEdit(start, before, after) {
+    const workspaceId = activeWorkspaceIdForAudit();
+
+    // Lo pendiente es de la unidad donde se edito. Si entretanto se cambio de
+    // unidad, volcarlo ahora lo dejaria en la bitacora de OTRA.
+    if (taskAuditWorkspaceId && taskAuditWorkspaceId !== workspaceId) {
+        pendingTaskAudits.clear();
+    }
+
+    taskAuditWorkspaceId = workspaceId;
+
+    const key = weekKey(start);
+    const pending = pendingTaskAudits.get(key) || {
+        start: start instanceof Date ? new Date(start.getTime()) : new Date(start),
+        changes: createWeekChangeAccumulator()
+    };
+
+    accumulateWeekChanges(pending.changes, diffWeekAssignments(before, after));
+    pendingTaskAudits.set(key, pending);
+
+    clearTimeout(taskAuditTimer);
+    taskAuditTimer = setTimeout(flushTaskAssignmentAudit, TASK_AUDIT_QUIET_MS);
+}
+
+function flushTaskAssignmentAudit() {
+    clearTimeout(taskAuditTimer);
+    taskAuditTimer = null;
+
+    if (!pendingTaskAudits.size) return;
+
+    const pending = [...pendingTaskAudits.values()];
+    const sameWorkspace = taskAuditWorkspaceId === activeWorkspaceIdForAudit();
+
+    pendingTaskAudits.clear();
+
+    // Se cambio de unidad antes del volcado: la bitacora local ya es la de la
+    // otra. Mejor perder este resumen que dejarlo firmado en una unidad ajena.
+    if (!sameWorkspace) return;
+
+    const tasks = getTasks();
+    const titleOf = taskId =>
+        tasks.find(task => task.id === taskId)?.title || "(tarea eliminada)";
+
+    pending.forEach(({ start, changes }) => {
+        const summary = describeWeekChanges(changes, {
+            taskTitle: titleOf,
+            workerLabel: name => shortWorkerName(name) || name,
+            dayLabel: auditDayLabel
+        });
+
+        if (!summary) return;
+
+        addAuditLog(
+            AUDIT_CATEGORY.TASKS,
+            "Modificó la asignación de tareas",
+            `${scheduleWeekLabel(start)}: ${summary.text}.`,
+            {
+                profile: "",
+                week: scheduleWeekStartISO(start),
+                ...summary.counts
+            }
+        );
+    });
+}
+
+// Sin `profile`, addAuditLog firmaria con el perfil seleccionado en el
+// calendario, y la entrada quedaria colgada de una trabajadora cualquiera.
+function logTaskCatalogChange(action, details, meta = {}) {
+    addAuditLog(AUDIT_CATEGORY.TASKS, action, details, { ...meta, profile: "" });
+}
+
+// Al ocultar o cerrar la pestana se vuelca lo pendiente: esperar el minuto de
+// calma ahi seria perder el registro.
+if (typeof document !== "undefined" && typeof window !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") flushTaskAssignmentAudit();
+    });
+    window.addEventListener("pagehide", () => flushTaskAssignmentAudit());
 }
 
 function assignmentKey(shift, taskId, keyDay) {
@@ -2899,6 +3033,10 @@ function addTask(title, shiftScope = GENERIC_TASK_SHIFT) {
     });
 
     saveTasks(tasks);
+    logTaskCatalogChange(
+        "Creó una tarea",
+        `"${cleanTitle}" (${TASK_SHIFT_SCOPE_LABEL[normalizeTaskShiftScope(shiftScope)] || "Diurno y noche"}).`
+    );
 }
 
 function updateTaskTitle(taskId, title) {
@@ -2919,6 +3057,13 @@ function updateTaskTitle(taskId, title) {
         )
     );
     publishTaskAssignmentChanges(affectedWorkers);
+
+    if (currentTask && currentTask.title !== cleanTitle) {
+        logTaskCatalogChange(
+            "Renombró una tarea",
+            `"${currentTask.title}" pasó a llamarse "${cleanTitle}".`
+        );
+    }
 }
 
 function updateTaskDetail(taskId, shift, detail) {
@@ -2944,6 +3089,10 @@ function updateTaskDetail(taskId, shift, detail) {
 
             return { ...task, details, detail: details.day };
         })
+    );
+    logTaskCatalogChange(
+        "Editó el detalle de una tarea",
+        `"${currentTask.title}"${cleanShift === "night" ? " de noche" : ""}: ${cleanDetail ? `"${cleanDetail}"` : "sin detalle"}.`
     );
 }
 
@@ -3017,6 +3166,13 @@ function updateTaskDefaultWorkerRule(
         )
     );
     publishTaskAssignmentChanges(affectedWorkers);
+
+    if (task) {
+        logTaskCatalogChange(
+            "Cambió un trabajador predefinido",
+            `${shortWorkerName(cleanWorker) || cleanWorker} ${enabled ? "queda como predefinido en" : "deja de ser predefinido en"} "${task.title}".`
+        );
+    }
 }
 
 function clearRemovedDefaultForCell(shift, taskId, keyDay, workerName) {
@@ -3226,6 +3382,10 @@ export function taskShiftScopeMessage(title, scope, footprints) {
 function deleteTask(taskId) {
     const task = getTasks().find(item => item.id === taskId);
     const affectedWorkers = task ? [...taskWorkerNames(task)] : [];
+    // La huella se mide ANTES: borrar la tarea se lleva sus casillas de todas las
+    // semanas, y es lo que la bitacora tiene que poder contar despues. El
+    // 2026-09-09 se borraron 18 tareas una a una y no quedo rastro de nada.
+    const footprint = taskAssignmentFootprint(taskId, getAllAssignments());
 
     saveTasks(getTasks().filter(task => task.id !== taskId));
 
@@ -3239,6 +3399,16 @@ function deleteTask(taskId) {
     });
     setJSON(ASSIGNMENTS_KEY, all);
     publishTaskAssignmentChanges(affectedWorkers);
+
+    if (task) {
+        logTaskCatalogChange(
+            "Eliminó una tarea",
+            footprint.names
+                ? `"${task.title}". Se borraron ${asignacionesLabel(footprint.names)} en ${semanasLabel(footprint.weeks)}.`
+                : `"${task.title}". No tenía asignaciones.`,
+            { removedAssignments: footprint.names, weeks: footprint.weeks }
+        );
+    }
 }
 
 // Cambiar en que turnos va la tarea. Salir de un tablero SE LLEVA las casillas
@@ -3257,6 +3427,12 @@ function setTaskShiftScope(taskId, nextScope) {
         !taskAppliesToShift({ shiftScope: scope }, shift)
     );
     const affectedWorkers = [...taskWorkerNames(task)];
+    // Lo que se va a llevar, medido ANTES de borrarlo.
+    const droppedNames = dropped.reduce(
+        (total, shift) =>
+            total + taskAssignmentFootprint(taskId, getAllAssignments(), shift).names,
+        0
+    );
 
     saveTasks(tasks.map(item =>
         item.id === taskId
@@ -3283,6 +3459,11 @@ function setTaskShiftScope(taskId, nextScope) {
     }
 
     publishTaskAssignmentChanges(affectedWorkers);
+    logTaskCatalogChange(
+        "Cambió el turno de una tarea",
+        `"${task.title}": ${TASK_SHIFT_SCOPE_LABEL[taskShiftScope(task)] || "Diurno y noche"} → ${TASK_SHIFT_SCOPE_LABEL[scope] || scope}.` +
+            (droppedNames ? ` Se borraron ${asignacionesLabel(droppedNames)}.` : "")
+    );
     return true;
 }
 
@@ -3303,6 +3484,12 @@ function reorderTask(draggedId, targetId) {
     tasks.splice(to, 0, moved);
     saveTasks(tasks);
     publishTaskAssignmentChanges();
+    // Reordenar puede deshacer combinaciones: la fusion enlaza cada casilla con
+    // la tarea de ABAJO por id, y si abajo queda otra, el saneado la separa.
+    logTaskCatalogChange(
+        "Cambió el orden de las tareas",
+        `"${moved.title}" pasó al lugar ${to + 1} de ${tasks.length}.`
+    );
 }
 
 function readDraggedWorker(event) {
