@@ -508,7 +508,8 @@ function openMedicalEquipmentFromKanban(equipmentId) {
 
     if (!id) return;
 
-    selectMedicalEquipment(id);
+    // La tarjeta es de renovacion: se abre directo el contrato del equipo.
+    selectMedicalEquipment(id, "contrato");
     document
         .querySelector('.nav-tile[data-target="medicalEquipmentPanel"]')
         ?.click();

@@ -245,6 +245,15 @@ function outageTimeLabel(outage) {
 
 function outageScheduleNote(outages) {
     return (outages || []).map(outage => {
+        // Un equipo marcado fuera de servicio bloquea sus tareas aunque nadie
+        // haya registrado todavia la reparacion.
+        if (outage.type === "outOfService") {
+            return [
+                "Tarea inactiva: equipo fuera de servicio",
+                outage.equipmentName
+            ].filter(Boolean).join(" - ");
+        }
+
         const type = String(outage.type || "") === "corrective"
             ? "correctiva"
             : "preventiva";

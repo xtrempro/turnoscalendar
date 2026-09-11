@@ -46,6 +46,9 @@ const EXACT_KEY_MODULES = new Map([
     ["memos", "memos"],
     ["informations", "informations"],
     ["medicalEquipment", "medicalEquipment"],
+    // Contratos de mantencion: uno puede cubrir varios equipos. Viaja en el
+    // mismo modulo que los equipos, asi que usa las reglas ya desplegadas.
+    ["medicalEquipmentContracts", "medicalEquipment"],
     ["agenda_contacts", "agenda"],
     // Tareas diarias del inicio que un administrador comparte con la unidad o
     // con los trabajadores. Las privadas NO pasan por aca: viven en el

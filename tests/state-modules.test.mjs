@@ -25,6 +25,7 @@ test("clasifica las claves persistidas por modulo de seguridad", () => {
         memos: "memos",
         informations: "informations",
         medicalEquipment: "medicalEquipment",
+        medicalEquipmentContracts: "medicalEquipment",
         qualifications: "qualifications",
         shiftMoves: "swap",
         carry_worker_1: "hours",

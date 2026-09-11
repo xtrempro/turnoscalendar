@@ -806,6 +806,15 @@ async function storedAttachmentDownloadURL(attachment) {
     }
 }
 
+// URL para mostrar o imprimir un adjunto (miniaturas, historial impreso). Los
+// antiguos que solo guardan el contenido local se devuelven como data URL.
+export async function resolveAttachmentURL(attachment) {
+    if (attachment?.downloadURL) return String(attachment.downloadURL);
+    if (attachment?.dataUrl) return String(attachment.dataUrl);
+
+    return storedAttachmentDownloadURL(attachment);
+}
+
 export async function openAttachmentFile(
     attachment,
     { newTab = false } = {}
