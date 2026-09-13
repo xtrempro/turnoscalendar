@@ -84,14 +84,19 @@ test("la publicacion sigue siendo diferida y agrupada", async () => {
 
 test("la programacion automatica se publica solo al aceptar la propuesta", async () => {
     const tasks = await readTasks();
+    const applyStart = tasks.indexOf("function applyTaskAutoSchedulePlan");
+    const applyEnd = tasks.indexOf(
+        "function openTaskAutoSchedulePreviewDialog",
+        applyStart
+    );
+    const applySource = tasks.slice(applyStart, applyEnd);
 
     assert.match(tasks, /openTaskAutoSchedulePreviewDialog/);
     assert.match(tasks, /data-auto-schedule-regenerate/);
     assert.match(tasks, /data-auto-schedule-publish/);
-    assert.match(
-        tasks,
-        /function applyTaskAutoSchedulePlan[\s\S]{0,1800}saveWeekAssignments\(next\);[\s\S]{0,300}publishTaskAssignmentChanges/
-    );
+    assert.ok(applyStart >= 0 && applyEnd > applyStart);
+    assert.match(applySource, /saveWeekAssignments\(next\);/);
+    assert.match(applySource, /publishTaskAssignmentChanges/);
     assert.doesNotMatch(tasks, /showConfirm\(autoSchedulePlanSummary/);
 });
 

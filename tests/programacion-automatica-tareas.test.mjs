@@ -464,7 +464,7 @@ test("la casilla se queda sin cubrir antes que inventar una asignacion", () => {
     }]);
 });
 
-test("nadie queda en dos tareas del mismo turno y dia", () => {
+test("nadie queda en dos tareas del mismo turno y dia sin patron multitarea", () => {
     const history = buildTaskAutoScheduleHistory(baseHistory(), {
         beforeWeekKey: PLAN_WEEK
     });
@@ -481,6 +481,187 @@ test("nadie queda en dos tareas del mismo turno y dia", () => {
             seen.add(name);
         });
     });
+});
+
+test("replica una combinacion multitarea repetida del mismo turno", () => {
+    const entries = {};
+
+    WEEKS.forEach((week, index) => {
+        const day = MONDAYS[index];
+
+        entries[week] = {
+            [`day|rayos|${day}`]: cell(["Ana"]),
+            [`day|ronda_rx|${day}`]: cell(["Ana"])
+        };
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK
+    });
+    const cells = ["rayos", "ronda_rx"].map(taskId => ({
+        shift: "day",
+        keyDay: PLAN_MONDAY,
+        taskId,
+        taskIds: [taskId],
+        candidates: ["Ana"],
+        blocked: []
+    }));
+    const plan = planTaskAutoSchedule({
+        cells,
+        history,
+        rng: seededRng(61)
+    });
+
+    assert.equal(plan.assignments, 2);
+    assert.deepEqual(
+        plan.filled.map(item => item.taskId).sort(),
+        ["rayos", "ronda_rx"]
+    );
+    assert.ok(plan.filled.every(item => item.workers.includes("Ana")));
+});
+
+test("usa primero a disponibles sin tarea antes de repetir multitarea", () => {
+    const entries = {};
+
+    WEEKS.forEach((week, index) => {
+        const day = MONDAYS[index];
+
+        entries[week] = {
+            [`day|rayos|${day}`]: cell(["Ana"]),
+            [`day|ronda_rx|${day}`]: cell(index < 2 ? ["Ana"] : ["Bruno"])
+        };
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK
+    });
+    const cells = ["rayos", "ronda_rx"].map(taskId => ({
+        shift: "day",
+        keyDay: PLAN_MONDAY,
+        taskId,
+        taskIds: [taskId],
+        candidates: ["Ana", "Bruno"],
+        blocked: []
+    }));
+    const plan = planTaskAutoSchedule({
+        cells,
+        history,
+        rng: seededRng(62)
+    });
+    const ronda = plan.filled.find(item => item.taskId === "ronda_rx");
+
+    assert.equal(plan.assignments, 2);
+    assert.deepEqual(ronda.workers, ["Bruno"]);
+});
+
+test("maximiza trabajadores distintos cuando existe una distribucion posible", () => {
+    const entries = {};
+
+    WEEKS.forEach((week, index) => {
+        const day = MONDAYS[index];
+
+        entries[week] = index % 2 === 0
+            ? {
+                [`day|tarea_a|${day}`]: cell(["Ana"]),
+                [`day|tarea_b|${day}`]: cell(["Carla"]),
+                [`day|tarea_c|${day}`]: cell(["Bruno"])
+            }
+            : {
+                [`day|tarea_a|${day}`]: cell(["Bruno"]),
+                [`day|tarea_b|${day}`]: cell(["Ana"]),
+                [`day|tarea_c|${day}`]: cell(["Carla"])
+            };
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK
+    });
+    const cells = ["tarea_a", "tarea_b", "tarea_c"].map(taskId => ({
+        shift: "day",
+        keyDay: PLAN_MONDAY,
+        taskId,
+        taskIds: [taskId],
+        candidates: ["Ana", "Bruno", "Carla"],
+        blocked: []
+    }));
+    const plan = planTaskAutoSchedule({
+        cells,
+        history,
+        rng: seededRng(10)
+    });
+
+    assert.equal(plan.assignments, 3);
+    assert.deepEqual(
+        [...new Set(plan.filled.flatMap(item => item.workers))].sort(),
+        ["Ana", "Bruno", "Carla"]
+    );
+});
+
+test("una coincidencia aislada no autoriza multitarea", () => {
+    const entries = {};
+
+    WEEKS.forEach((week, index) => {
+        const day = MONDAYS[index];
+
+        entries[week] = index < 2
+            ? { [`day|rayos|${day}`]: cell(["Ana"]) }
+            : { [`day|ronda_rx|${day}`]: cell(["Ana"]) };
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK
+    });
+    const cells = ["rayos", "ronda_rx"].map(taskId => ({
+        shift: "day",
+        keyDay: PLAN_MONDAY,
+        taskId,
+        taskIds: [taskId],
+        candidates: ["Ana"],
+        blocked: []
+    }));
+    const plan = planTaskAutoSchedule({
+        cells,
+        history,
+        rng: seededRng(63)
+    });
+
+    assert.equal(plan.assignments, 1);
+    assert.equal(plan.filled.length, 1);
+    assert.ok(plan.skipped.some(item => item.reason === "sin-gente"));
+});
+
+test("puede completar una segunda tarea si la primera ya estaba asignada", () => {
+    const entries = {};
+
+    WEEKS.forEach((week, index) => {
+        const day = MONDAYS[index];
+
+        entries[week] = {
+            [`day|rayos|${day}`]: cell(["Ana"]),
+            [`day|ronda_rx|${day}`]: cell(["Ana"])
+        };
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK
+    });
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId: "ronda_rx",
+            taskIds: ["ronda_rx"],
+            candidates: ["Ana"],
+            existingTaskIdsByWorker: { Ana: ["rayos"] },
+            blocked: []
+        }],
+        history,
+        rng: seededRng(65)
+    });
+
+    assert.equal(plan.assignments, 1);
+    assert.equal(plan.filled[0].taskId, "ronda_rx");
+    assert.deepEqual(plan.filled[0].workers, ["Ana"]);
 });
 
 test("el predefinido que el supervisor saco a mano no vuelve solo", () => {
@@ -553,6 +734,7 @@ test("la casilla fusionada suma el historial de las tareas que cubre", () => {
 
     // Carla solo ha hecho RAYOS, pero la casilla tambien cubre RAYOS: entra.
     assert.equal(plan.filled[0].headcount, 2);
+    assert.equal(plan.filled[0].workers.length, 2);
     plan.filled[0].workers.forEach(name => {
         assert.ok(["Ana", "Bruno", "Carla"].includes(name));
     });

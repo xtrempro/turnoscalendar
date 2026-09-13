@@ -20,6 +20,7 @@ import { isBusinessDay } from "./calculations.js";
 import { showAlert, showConfirm, showPrompt } from "./dialogs.js";
 import {
     buildTaskAutoScheduleHistory,
+    canWorkerShareShiftTasks,
     planTaskAutoSchedule
 } from "./taskAutoSchedule.js";
 import {
@@ -5231,23 +5232,46 @@ export function goToTaskScheduleToday() {
 // propuesta; recien al publicarla se guarda y se envia a la PWA.
 // ---------------------------------------------------------------------------
 
-// Los que ese dia y turno pueden trabajar y todavia no estan en ninguna tarea.
-// El motor reparte entre estos, y el que ya tiene tarea no vuelve a entrar en
-// el sorteo: nadie termina en dos casillas del mismo dia.
-function autoScheduleCandidates(assignments, tasks, shift, keyDay) {
-    const busy = new Set();
-
-    tasksForShift(tasks, shift).forEach(task => {
-        assignmentWorkers(
-            getCellEntry(assignments, shift, task.id, keyDay)
-        ).forEach(name => busy.add(name));
-    });
-
+// Los que ese dia y turno pueden trabajar. Si alguien ya esta en otra tarea
+// del mismo turno, igual se manda al motor: el decide si puede repetirse segun
+// el patron historico multitarea.
+function autoScheduleCandidates(shift, keyDay) {
     return getProfiles()
         .filter(isProfileActive)
-        .filter(profile => !busy.has(profile.name))
         .filter(profile => isAvailableForShift(profile, keyDay, shift))
         .map(profile => profile.name);
+}
+
+function workerTaskIdsForShiftDay(assignments, tasks, shift, keyDay, exceptTaskId = "") {
+    const byWorker = new Map();
+
+    columnGroups(assignments, shift, tasks, keyDay).forEach(group => {
+        const ownerId = group.taskIds[0];
+
+        if (ownerId === exceptTaskId) return;
+
+        assignmentWorkers(
+            getCellEntry(assignments, shift, ownerId, keyDay)
+        ).forEach(name => {
+            const taskIds = byWorker.get(name) || new Set();
+
+            group.taskIds.forEach(taskId => taskIds.add(taskId));
+            byWorker.set(name, taskIds);
+        });
+    });
+
+    return byWorker;
+}
+
+function serializeWorkerTaskMap(map) {
+    return Object.fromEntries(
+        [...(map || new Map()).entries()]
+            .map(([name, taskIds]) => [
+                name,
+                [...(taskIds || new Set())].filter(Boolean)
+            ])
+            .filter(([, taskIds]) => taskIds.length)
+    );
 }
 
 function autoScheduleCells(days, tasks, assignments) {
@@ -5258,8 +5282,6 @@ function autoScheduleCells(days, tasks, assignments) {
         days.forEach(day => {
             const keyDay = keyFromDate(day);
             const candidates = autoScheduleCandidates(
-                assignments,
-                tasks,
                 shift,
                 keyDay
             );
@@ -5287,6 +5309,15 @@ function autoScheduleCells(days, tasks, assignments) {
                     taskId,
                     taskIds: group.taskIds,
                     candidates,
+                    existingTaskIdsByWorker: serializeWorkerTaskMap(
+                        workerTaskIdsForShiftDay(
+                            assignments,
+                            tasks,
+                            shift,
+                            keyDay,
+                            taskId
+                        )
+                    ),
                     // Un predefinido que el supervisor saco a mano de ESTA
                     // casilla no puede volver por la puerta de atras.
                     blocked: assignmentRemovedDefaults(entry)
@@ -5327,7 +5358,7 @@ function autoSchedulePlanSummary(plan, days) {
     const lines = [
         `Se repartirán ${plan.assignments} ${plan.assignments === 1 ? "persona" : "personas"} en ${cells} ${cells === 1 ? "casilla vacía" : "casillas vacías"} de la semana del ${formatShortDate(days[0])} al ${formatShortDate(days[6])}.`,
         "",
-        "El reparto es al azar entre los que están de turno, pero solo entra quien tiene participación repetida en esa tarea, respeta la mezcla habitual de estamentos y a los que hacen varias se les va cambiando la tarea a lo largo de la semana.",
+        "El reparto es al azar entre los que están de turno, pero solo entra quien tiene participación repetida en esa tarea, respeta la mezcla habitual de estamentos, intenta usar primero a quienes siguen sin tarea y puede repetir a una persona en el mismo turno solo cuando el historial muestra ese patrón multitarea.",
         "",
         "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];
@@ -5350,7 +5381,7 @@ function autoSchedulePlanSummary(plan, days) {
 
     if (takenElsewhere) {
         lines.push(
-            `${takenElsewhere} ${takenElsewhere === 1 ? "casilla queda" : "casillas quedan"} sin cubrir: los que podían ya quedaron en otra tarea ese día.`
+            `${takenElsewhere} ${takenElsewhere === 1 ? "casilla queda" : "casillas quedan"} sin cubrir: los que podían ya estaban o quedaron en otra tarea sin patrón multitarea suficiente.`
         );
     }
 
@@ -5430,7 +5461,7 @@ function autoScheduleSkipSummary(plan) {
     }
 
     if (takenElsewhere) {
-        lines.push(`${takenElsewhere} ${takenElsewhere === 1 ? "casilla queda" : "casillas quedan"} sin cubrir porque sus candidatos ya fueron usados ese día.`);
+        lines.push(`${takenElsewhere} ${takenElsewhere === 1 ? "casilla queda" : "casillas quedan"} sin cubrir porque sus candidatos ya estaban o quedaron en otra tarea sin patrón multitarea suficiente.`);
     }
 
     if (withoutPattern) {
@@ -5446,24 +5477,13 @@ function autoScheduleSkipSummary(plan) {
     `;
 }
 
-function busyWorkersForShiftDay(assignments, tasks, shift, keyDay, exceptTaskId) {
-    const busy = new Set();
-
-    columnGroups(assignments, shift, tasks, keyDay).forEach(group => {
-        const ownerId = group.taskIds[0];
-
-        if (ownerId === exceptTaskId) return;
-
-        assignmentWorkers(
-            getCellEntry(assignments, shift, ownerId, keyDay)
-        ).forEach(name => busy.add(name));
-    });
-
-    return busy;
-}
-
 function applyTaskAutoSchedulePlan(plan, tasks) {
     const next = getWeekAssignments();
+    const profiles = getProfiles();
+    const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
+        beforeWeekKey: weekKey(),
+        profiles
+    });
     const affectedWorkers = new Set();
     let assignments = 0;
     let cells = 0;
@@ -5478,7 +5498,8 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
             return;
         }
 
-        const busy = busyWorkersForShiftDay(
+        const taskIds = item.taskIds?.length ? item.taskIds : [item.taskId];
+        const existingByWorker = workerTaskIdsForShiftDay(
             next,
             tasks,
             item.shift,
@@ -5487,10 +5508,18 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
         );
         const workers = uniqueValues(item.workers.filter(name => {
             const profile = profileByName(name);
+            const currentTaskIds = [
+                ...(existingByWorker.get(name) || new Set())
+            ];
 
             return profile &&
-                !busy.has(name) &&
-                isAvailableForShift(profile, item.keyDay, item.shift);
+                isAvailableForShift(profile, item.keyDay, item.shift) &&
+                canWorkerShareShiftTasks(history, {
+                    name,
+                    shift: item.shift,
+                    currentTaskIds,
+                    taskIds
+                });
         }));
 
         if (!workers.length) {

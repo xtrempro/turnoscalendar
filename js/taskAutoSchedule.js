@@ -32,6 +32,12 @@
 //      tiempo que no toca y se le baja en la que acaba de hacer, asi que a lo
 //      largo de la semana va girando entre las suyas en vez de quedarse
 //      clavado en una.
+//
+//   4. MULTITAREA EN UN MISMO TURNO. Por defecto una persona no se repite en
+//      dos casillas del mismo turno y dia. Solo se permite cuando el historial
+//      muestra repetidamente que esa misma persona suele cubrir juntas esas
+//      tareas en el mismo turno. Aun asi, antes de repetir a alguien, se
+//      intenta usar a quienes siguen disponibles sin tarea en ese turno.
 
 import { keyToDate } from "./dateUtils.js";
 
@@ -56,6 +62,9 @@ export const AUTO_SCHEDULE_PRESENCE_RATE = 1 / 3;
 // patron y no una aparicion aislada. Evita casos como una fila importada con un
 // nombre accidental que despues se vuelve elegible para siempre.
 export const AUTO_SCHEDULE_MIN_WORKER_TASK_DAYS = 2;
+// Lo mismo para repetir a una persona en mas de una tarea del mismo turno: una
+// coincidencia aislada no basta para aprender que ese doble rol es normal.
+export const AUTO_SCHEDULE_MIN_MULTITASK_DAYS = 2;
 
 const DAY_MS = 86400000;
 // Piso del peso en el sorteo: con peso 0 la raiz 1/peso se va al infinito y el
@@ -103,6 +112,81 @@ function dayNumber(keyDay) {
     return Number.isNaN(date.getTime())
         ? 0
         : Math.floor(date.getTime() / DAY_MS);
+}
+
+function normalizedTaskIds(taskIds = []) {
+    return [...new Set(
+        (Array.isArray(taskIds) ? taskIds : [taskIds])
+            .map(taskId => String(taskId || "").trim())
+            .filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b, "es"));
+}
+
+function taskBundleSignature(taskIds = []) {
+    return normalizedTaskIds(taskIds).join("\u001f");
+}
+
+function multitaskComboKey(shift, name, signature) {
+    return `${String(shift || "")}|${String(name || "")}|${signature}`;
+}
+
+function taskSubsets(taskIds = []) {
+    const ids = normalizedTaskIds(taskIds);
+    const subsets = [];
+
+    function visit(start, selected) {
+        if (selected.length >= 2) subsets.push([...selected]);
+
+        for (let index = start; index < ids.length; index += 1) {
+            selected.push(ids[index]);
+            visit(index + 1, selected);
+            selected.pop();
+        }
+    }
+
+    visit(0, []);
+
+    return subsets;
+}
+
+function normalizeWorkerTaskMap(value) {
+    const result = new Map();
+    const entries = value instanceof Map
+        ? [...value.entries()]
+        : Object.entries(value || {});
+
+    entries.forEach(([name, taskIds]) => {
+        const cleanName = String(name || "").trim();
+        const ids = taskIds instanceof Set
+            ? [...taskIds]
+            : Array.isArray(taskIds)
+                ? taskIds
+                : [taskIds];
+        const normalized = normalizedTaskIds(ids);
+
+        if (cleanName && normalized.length) {
+            result.set(cleanName, new Set(normalized));
+        }
+    });
+
+    return result;
+}
+
+function addWorkerTaskIds(target, name, taskIds) {
+    const cleanName = String(name || "").trim();
+    const ids = normalizedTaskIds(taskIds);
+
+    if (!cleanName || !ids.length) return;
+
+    const current = target.get(cleanName) || new Set();
+
+    ids.forEach(taskId => current.add(taskId));
+    target.set(cleanName, current);
+}
+
+function taskIdsForWorker(value, name) {
+    return normalizeWorkerTaskMap(value).get(String(name || "").trim()) ||
+        new Set();
 }
 
 function normalizeTextKey(value) {
@@ -234,6 +318,10 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     // semanas arrastraria los ceros de las seis anteriores -cuando ni existia-
     // y su cupo saldria 0 para siempre.
     const taskFirstWeek = new Map();
+    // Persona + turno + dia historico -> tareas que hizo juntas ese dia.
+    // Se resume despues en combinaciones repetidas, porque con una sola tarea
+    // por dia no hay nada especial que aprender.
+    const workerDayTasks = new Map();
 
     weekKeys.forEach(weekKey => {
         const week = entriesByWeek[weekKey];
@@ -282,6 +370,17 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
                 worker.taskIds.add(taskId);
                 workers.set(name, worker);
 
+                const dayTaskKey = `${weekKey}|${shift}|${keyDay}|${name}`;
+                const dayTasks = workerDayTasks.get(dayTaskKey) || {
+                    shift,
+                    name,
+                    day,
+                    taskIds: new Set()
+                };
+
+                dayTasks.taskIds.add(taskId);
+                workerDayTasks.set(dayTaskKey, dayTasks);
+
                 if (group) {
                     cellGroups.set(group, (cellGroups.get(group) || 0) + 1);
                 }
@@ -302,6 +401,29 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         });
     });
 
+    const multiTaskCombos = new Map();
+
+    workerDayTasks.forEach(dayTasks => {
+        if (!dayTasks?.taskIds || dayTasks.taskIds.size < 2) return;
+
+        taskSubsets([...dayTasks.taskIds]).forEach(taskIds => {
+            const signature = taskBundleSignature(taskIds);
+            const key = multitaskComboKey(
+                dayTasks.shift,
+                dayTasks.name,
+                signature
+            );
+            const current = multiTaskCombos.get(key) || {
+                days: 0,
+                lastDay: 0
+            };
+
+            current.days += 1;
+            current.lastDay = Math.max(current.lastDay, dayTasks.day || 0);
+            multiTaskCombos.set(key, current);
+        });
+    });
+
     return {
         weeksSeen: weekKeys.length,
         weekKeys,
@@ -311,7 +433,8 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         groupCounts,
         workerGroups,
         activeColumns,
-        taskFirstWeek
+        taskFirstWeek,
+        multiTaskCombos
     };
 }
 
@@ -474,7 +597,53 @@ function taskHistoryFor(history, taskIds) {
     return merged;
 }
 
-function groupSlotsForCell(groups, cell, taskWorkers, workerGroups) {
+export function canWorkerShareShiftTasks(history, {
+    name = "",
+    shift = "",
+    currentTaskIds = [],
+    taskIds = []
+} = {}) {
+    const cleanName = String(name || "").trim();
+    const current = normalizedTaskIds(currentTaskIds);
+    const next = normalizedTaskIds(taskIds);
+
+    if (!cleanName || !shift || !next.length) return false;
+    if (!current.length) return true;
+    if (next.some(taskId => current.includes(taskId))) return false;
+
+    const bundle = normalizedTaskIds([...current, ...next]);
+
+    if (bundle.length <= 1) return true;
+
+    const signature = taskBundleSignature(bundle);
+    const stat = history?.multiTaskCombos?.get(
+        multitaskComboKey(shift, cleanName, signature)
+    );
+
+    return (stat?.days || 0) >= AUTO_SCHEDULE_MIN_MULTITASK_DAYS;
+}
+
+function currentTaskIdsForCell(cell, name, taken = new Map()) {
+    const current = new Set();
+
+    taskIdsForWorker(cell?.existingTaskIdsByWorker, name)
+        .forEach(taskId => current.add(taskId));
+    (taken.get(String(name || "").trim()) || new Set())
+        .forEach(taskId => current.add(taskId));
+
+    return current;
+}
+
+function canCandidateUseCell(history, cell, name, taskIds, taken = new Map()) {
+    return canWorkerShareShiftTasks(history, {
+        name,
+        shift: cell.shift,
+        currentTaskIds: [...currentTaskIdsForCell(cell, name, taken)],
+        taskIds
+    });
+}
+
+function groupSlotsForCell(groups, cell, taskIds, history, taskWorkers, workerGroups) {
     const slots = [];
 
     groups.forEach(item => {
@@ -492,6 +661,7 @@ function groupSlotsForCell(groups, cell, taskWorkers, workerGroups) {
         .map(name => String(name || "").trim())
         .filter(Boolean)
         .filter(name => !blocked.has(name) && taskWorkers.has(name))
+        .filter(name => canCandidateUseCell(history, cell, name, taskIds))
         .forEach(name => {
             const group = workerGroups.get(name) || "";
 
@@ -510,7 +680,7 @@ function groupSlotsForCell(groups, cell, taskWorkers, workerGroups) {
         .map(item => item.group);
 }
 
-function groupReachForCell(groupSlots, cell, taskWorkers, workerGroups) {
+function groupReachForCell(groupSlots, cell, taskIds, history, taskWorkers, workerGroups) {
     if (!groupSlots.length) return 0;
 
     const required = new Set(groupSlots);
@@ -520,6 +690,7 @@ function groupReachForCell(groupSlots, cell, taskWorkers, workerGroups) {
         .map(name => String(name || "").trim())
         .filter(Boolean)
         .filter(name => !blocked.has(name) && taskWorkers.has(name))
+        .filter(name => canCandidateUseCell(history, cell, name, taskIds))
         .filter(name => required.has(workerGroups.get(name) || ""))
         .length;
 }
@@ -601,6 +772,228 @@ function candidateWeight(name, {
     return affinity * staleness / ((1 + runOnTask * REPEAT_PENALTY) * load);
 }
 
+function candidatePoolForSlot(item, round, {
+    stats,
+    workerStats,
+    taskIndex,
+    workerGroups,
+    taken,
+    runTotals,
+    runByTask,
+    firstTaskOnly = false
+}) {
+    const { cell, taskIds, taskWorkers, groupSlots } = item;
+    const blocked = new Set(
+        (cell.blocked || []).map(name => String(name))
+    );
+    const planDay = dayNumber(cell.keyDay);
+    const slotGroup = groupSlots[round] || "";
+
+    return [...new Set(
+        (cell.candidates || [])
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+    )]
+        .filter(name => !item.chosen.includes(name))
+        .filter(name => !blocked.has(name))
+        .filter(name => taskWorkers.has(name))
+        .filter(name =>
+            canCandidateUseCell(stats, cell, name, taskIds, taken)
+        )
+        .filter(name =>
+            !slotGroup || workerGroups.get(name) === slotGroup
+        )
+        .filter(name =>
+            !firstTaskOnly || !currentTaskIdsForCell(cell, name, taken).size
+        )
+        .map(name => ({
+            name,
+            weight: candidateWeight(name, {
+                taskWorkers,
+                workerStats,
+                taskIndex,
+                planDay,
+                runTotal: runTotals?.get(name) || 0,
+                runOnTask: taskIds.reduce(
+                    (sum, taskId) =>
+                        sum + (runByTask?.get(`${taskId}|${name}`) || 0),
+                    0
+                )
+            })
+        }));
+}
+
+function seedTakenForCell(takenByDay, dayKey, cell) {
+    const taken = takenByDay.get(dayKey) || new Map();
+
+    takenByDay.set(dayKey, taken);
+    normalizeWorkerTaskMap(cell.existingTaskIdsByWorker)
+        .forEach((taskSet, name) => {
+            addWorkerTaskIds(taken, name, [...taskSet]);
+        });
+
+    return taken;
+}
+
+function recordSlotAssignment({
+    item,
+    round,
+    name,
+    taken,
+    touched,
+    runTotals,
+    runByTask
+}) {
+    item.slotAssignments[round] = name;
+    item.chosen = item.slotAssignments.filter(Boolean);
+    addWorkerTaskIds(taken, name, item.taskIds);
+    touched.add(name);
+    runTotals.set(name, (runTotals.get(name) || 0) + 1);
+    item.taskIds.forEach(taskId => {
+        const key = `${taskId}|${name}`;
+
+        runByTask.set(key, (runByTask.get(key) || 0) + 1);
+    });
+}
+
+function maximumSlotMatching(slotRows) {
+    const matchByWorker = new Map();
+    const matchBySlot = new Map();
+    const order = slotRows
+        .map((_slot, index) => index)
+        .sort((left, right) =>
+            slotRows[left].edges.length - slotRows[right].edges.length ||
+            slotRows[left].order - slotRows[right].order
+        );
+
+    function trySlot(slotIndex, seenWorkers) {
+        const row = slotRows[slotIndex];
+
+        for (const edge of row.edges) {
+            const name = edge.name;
+
+            if (seenWorkers.has(name)) continue;
+            seenWorkers.add(name);
+
+            const previousSlot = matchByWorker.get(name);
+
+            if (
+                previousSlot === undefined ||
+                trySlot(previousSlot, seenWorkers)
+            ) {
+                matchByWorker.set(name, slotIndex);
+                matchBySlot.set(slotIndex, name);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    order.forEach(slotIndex => {
+        if (matchBySlot.has(slotIndex)) return;
+
+        trySlot(slotIndex, new Set());
+    });
+
+    return matchBySlot;
+}
+
+function assignFirstTasksForDay({
+    items,
+    stats,
+    workerStats,
+    taskIndex,
+    workerGroups,
+    takenByDay,
+    touched,
+    runTotals,
+    runByTask
+}) {
+    const dayKey = `${items[0]?.cell?.shift}|${items[0]?.cell?.keyDay}`;
+    const taken = takenByDay.get(dayKey) || new Map();
+    const rounds = Math.max(...items.map(item => item.headcount), 0);
+    let assignments = 0;
+
+    takenByDay.set(dayKey, taken);
+    items.forEach(item => {
+        seedTakenForCell(takenByDay, dayKey, item.cell);
+    });
+
+    for (let round = 0; round < rounds; round += 1) {
+        const slots = [];
+
+        items.forEach(item => {
+            if (round >= item.headcount || item.slotAssignments[round]) return;
+
+            slots.push({
+                item,
+                round,
+                order: slots.length
+            });
+        });
+
+        const slotRows = slots
+            .map(slot => ({
+                ...slot,
+                edges: candidatePoolForSlot(slot.item, slot.round, {
+                    stats,
+                    workerStats,
+                    taskIndex,
+                    workerGroups,
+                    taken,
+                    runTotals,
+                    runByTask,
+                    firstTaskOnly: true
+                })
+            }))
+            .filter(row => row.edges.length);
+        const optionsByWorker = new Map();
+
+        slotRows.forEach(row => {
+            row.edges.forEach(edge => {
+                optionsByWorker.set(
+                    edge.name,
+                    (optionsByWorker.get(edge.name) || 0) + 1
+                );
+            });
+        });
+        slotRows.forEach(row => {
+            row.edges.sort((left, right) =>
+                (optionsByWorker.get(left.name) || 0) -
+                    (optionsByWorker.get(right.name) || 0) ||
+                right.weight - left.weight ||
+                left.name.localeCompare(right.name, "es")
+            );
+        });
+
+        const matching = maximumSlotMatching(slotRows);
+
+        [...matching.entries()]
+            .sort(([left], [right]) =>
+                slotRows[left].order - slotRows[right].order
+            )
+            .forEach(([slotIndex, name]) => {
+                const slot = slotRows[slotIndex];
+
+                if (!slot || slot.item.slotAssignments[slot.round]) return;
+
+                recordSlotAssignment({
+                    item: slot.item,
+                    round: slot.round,
+                    name,
+                    taken,
+                    touched,
+                    runTotals,
+                    runByTask
+                });
+                assignments += 1;
+            });
+    }
+
+    return assignments;
+}
+
 /* ==========================================================================
    El reparto
    ========================================================================== */
@@ -610,13 +1003,14 @@ function candidateWeight(name, {
  *
  * @param {Object} options
  * @param {Array} options.cells casillas a llenar. Cada una:
- *   `{ shift, keyDay, taskId, taskIds, candidates, blocked }`.
+ *   `{ shift, keyDay, taskId, taskIds, candidates, existingTaskIdsByWorker, blocked }`.
  *   - `taskIds`: las tareas que cubre la casilla (una sola, o todas las del
  *     grupo si esta fusionada). El historial de todas suma para decidir quien
  *     puede entrar.
- *   - `candidates`: nombres que ESE dia y turno pueden trabajar y no estan ya
- *     en otra tarea. El motor no sabe de turnos ni de licencias; eso lo
- *     resuelve quien llama.
+ *   - `candidates`: nombres que ESE dia y turno pueden trabajar. El motor no
+ *     sabe de turnos ni de licencias; eso lo resuelve quien llama.
+ *   - `existingTaskIdsByWorker`: tareas donde esa persona ya esta asignada en
+ *     el mismo dia y turno. Solo se le agrega otra si hay patron multitarea.
  *   - `blocked`: nombres que no deben volver a esa casilla (un predefinido que
  *     el supervisor saco a mano).
  * @param {Object} options.history salida de `buildTaskAutoScheduleHistory`.
@@ -634,8 +1028,9 @@ export function planTaskAutoSchedule({
     // Para medir la rotacion el peso tiene que saltar de una tarea a otra de la
     // misma persona, asi que necesita el indice por tarea a mano.
     const taskIndex = stats.tasks || new Map();
-    // Una persona por turno y dia: si ya quedo en una tarea del lunes diurno,
-    // no puede aparecer en otra del mismo lunes diurno.
+    // Tareas que lleva cada persona en el turno/dia que se esta armando. Si se
+    // repite en otra casilla, tiene que calzar con un patron multitarea
+    // aprendido del historial.
     const takenByDay = new Map();
     const runTotals = new Map();
     const runByTask = new Map();
@@ -656,11 +1051,25 @@ export function planTaskAutoSchedule({
         const groupSlots = groupSlotsForCell(
             staffing.groups,
             cell,
+            taskIds,
+            stats,
             taskWorkers,
             workerGroups
         );
+        const blocked = new Set(
+            (cell.blocked || []).map(name => String(name))
+        );
+        const historyReach = (cell.candidates || [])
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+            .filter(name => !blocked.has(name) && taskWorkers.has(name))
+            .length;
         const reach = (cell.candidates || [])
-            .filter(name => taskWorkers.has(name)).length;
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+            .filter(name => !blocked.has(name) && taskWorkers.has(name))
+            .filter(name => canCandidateUseCell(stats, cell, name, taskIds))
+            .length;
 
         return {
             cell,
@@ -671,6 +1080,8 @@ export function planTaskAutoSchedule({
             groupReach: groupReachForCell(
                 groupSlots,
                 cell,
+                taskIds,
+                stats,
                 taskWorkers,
                 workerGroups
             ),
@@ -683,7 +1094,9 @@ export function planTaskAutoSchedule({
             // para una de dos tareas se lo lleva la que este mas arriba, y esa
             // persona no rota nunca, por mucho peso que se le calcule.
             jitter: rng(),
-            chosen: []
+            chosen: [],
+            slotAssignments: Array(staffing.headcount).fill(""),
+            historyReach
         };
     });
 
@@ -695,6 +1108,29 @@ export function planTaskAutoSchedule({
             a.reach - b.reach ||
             a.jitter - b.jitter
         );
+    const orderedByDay = new Map();
+
+    ordered.forEach(item => {
+        const dayKey = `${item.cell.shift}|${item.cell.keyDay}`;
+        const list = orderedByDay.get(dayKey) || [];
+
+        list.push(item);
+        orderedByDay.set(dayKey, list);
+    });
+    orderedByDay.forEach(items => {
+        assignments += assignFirstTasksForDay({
+            items,
+            stats,
+            workerStats,
+            taskIndex,
+            workerGroups,
+            takenByDay,
+            touched,
+            runTotals,
+            runByTask
+        });
+    });
+
     // Se reparte POR VUELTAS, no casilla por casilla hasta llenarla: primero
     // una persona a cada casilla, despues la segunda, y asi. Llenando de una
     // sola pasada, dos casillas que se pelean a la misma gente terminaban con
@@ -705,60 +1141,53 @@ export function planTaskAutoSchedule({
         ordered.forEach(item => {
             const { cell, taskIds, taskWorkers, headcount, groupSlots } = item;
 
-            if (item.chosen.length > round || headcount <= round) return;
+            if (item.slotAssignments[round] || headcount <= round) return;
 
             const dayKey = `${cell.shift}|${cell.keyDay}`;
-            const taken = takenByDay.get(dayKey) || new Set();
-
-            takenByDay.set(dayKey, taken);
-
-            const blocked = new Set(
-                (cell.blocked || []).map(name => String(name))
+            const taken = seedTakenForCell(takenByDay, dayKey, cell);
+            const pool = candidatePoolForSlot(item, round, {
+                stats,
+                workerStats,
+                taskIndex,
+                workerGroups,
+                taken,
+                runTotals,
+                runByTask
+            });
+            const workersWithoutTask = pool.filter(candidate =>
+                !currentTaskIdsForCell(cell, candidate.name, taken).size
             );
-            const planDay = dayNumber(cell.keyDay);
-            const slotGroup = groupSlots[round] || "";
-            const pool = (cell.candidates || [])
-                .map(name => String(name))
-                .filter(name => !taken.has(name) && !blocked.has(name))
-                .filter(name => taskWorkers.has(name))
-                .filter(name =>
-                    !slotGroup || workerGroups.get(name) === slotGroup
-                )
-                .map(name => ({
-                    name,
-                    weight: candidateWeight(name, {
-                        taskWorkers,
-                        workerStats,
-                        taskIndex,
-                        planDay,
-                        runTotal: runTotals.get(name) || 0,
-                        runOnTask: taskIds.reduce(
-                            (sum, taskId) =>
-                                sum + (runByTask.get(`${taskId}|${name}`) || 0),
-                            0
-                        )
-                    })
-                }));
+            const drawPool = workersWithoutTask.length
+                ? workersWithoutTask
+                : pool;
 
-            if (!pool.length) return;
+            if (!drawPool.length) return;
 
-            const [name] = drawWeighted(pool, 1, rng);
+            const [name] = drawWeighted(drawPool, 1, rng);
 
-            item.chosen.push(name);
-            taken.add(name);
-            touched.add(name);
-            runTotals.set(name, (runTotals.get(name) || 0) + 1);
-            taskIds.forEach(taskId => {
-                const key = `${taskId}|${name}`;
-
-                runByTask.set(key, (runByTask.get(key) || 0) + 1);
+            recordSlotAssignment({
+                item,
+                round,
+                name,
+                taken,
+                touched,
+                runTotals,
+                runByTask
             });
             assignments += 1;
         });
     }
 
     prepared.forEach(item => {
-        const { cell, headcount, chosen, reach, groupReach, groupSlots } = item;
+        const {
+            cell,
+            headcount,
+            chosen,
+            historyReach,
+            groupReach,
+            groupSlots,
+            taskIds
+        } = item;
 
         if (!headcount) {
             skipped.push({ ...cellRef(cell), reason: "sin-cupo" });
@@ -774,14 +1203,21 @@ export function planTaskAutoSchedule({
                 //   sin-historial los que habia nunca hicieron esta tarea;
                 //   sin-estamento los que habia no calzan con la mezcla usual;
                 //   sin-gente     si los habia, pero se los llevaron otras
-                //                 casillas del mismo dia.
-                reason: reasonFor(cell, reach, groupReach, groupSlots.length)
+                //                 casillas del mismo dia, o no tenian patron
+                //                 multitarea para repetirse ahi.
+                reason: reasonFor(
+                    cell,
+                    historyReach,
+                    groupReach,
+                    groupSlots.length
+                )
             });
             return;
         }
 
         filled.push({
             ...cellRef(cell),
+            taskIds,
             workers: chosen,
             headcount,
             // Una casilla que pedia tres y consiguio una no es un exito
