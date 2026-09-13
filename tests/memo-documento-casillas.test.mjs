@@ -270,11 +270,14 @@ test("subir exige que el archivo haya quedado guardado", () => {
 
 test("el panel de memos ofrece eliminar el documento", () => {
     // Antes solo se podia adjuntar: un documento equivocado quedaba para
-    // siempre.
-    assert.match(memos, /data-memo-doc-remove="\$\{escapeHTML\(document\.id\)\}"/);
-    assert.match(memos, /\[data-memo-doc-remove\]/);
+    // siempre. En el visor es el boton del tacho, al lado del zoom.
+    assert.match(
+        memos,
+        /data-mem-act="remove-doc" data-mem-doc-id="\$\{attr\(doc\.id\)\}"/
+    );
+    assert.match(memos, /case "remove-doc": \{/);
     assert.match(memos, /confirmText: "Eliminar"/);
-    assert.match(styles, /\.memo-document-remove \{/);
+    assert.match(styles, /\.mem-iconbtn--danger/);
 });
 
 /* =========================================================

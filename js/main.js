@@ -13482,6 +13482,23 @@ window.addEventListener("proturnos:memosChanged", () => {
     }
 });
 
+// Desde un memorandum hasta la casilla que lo origino. El menu Memorandum no
+// puede importar el calendario -el calendario ya lo importa a el-, asi que
+// avisa por evento y aca, que conoce a los dos, se hace la navegacion. La clave
+// del dia ya trae el mes en base 0, igual que lo espera goToCalendarMonth.
+window.addEventListener("proturnos:openCalendarDay", event => {
+    const match = String(event.detail?.keyDay || "")
+        .match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+
+    if (!match) return;
+
+    document
+        .querySelector('.nav-tile[data-target="calendarPanel"]')
+        ?.click();
+
+    void goToCalendarMonth(Number(match[1]), Number(match[2]));
+});
+
 function cancelLinkedInterUnitLoans(canceledReplacements = []) {
     canceledReplacements.forEach(replacement => {
         if (!replacement?.interUnitLoanId) return;
