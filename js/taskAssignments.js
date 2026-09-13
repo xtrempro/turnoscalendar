@@ -5303,10 +5303,12 @@ function countSkipped(plan, ...reasons) {
 }
 
 function createTaskAutoScheduleAttempt(days, tasks) {
+    const profiles = getProfiles();
     const assignments = cleanAssignmentsForWeek(days, tasks);
     const cells = autoScheduleCells(days, tasks, assignments);
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
-        beforeWeekKey: weekKey()
+        beforeWeekKey: weekKey(),
+        profiles
     });
     const plan = cells.length
         ? planTaskAutoSchedule({ cells, history })
@@ -5320,20 +5322,29 @@ function autoSchedulePlanSummary(plan, days) {
     const shortCells = plan.filled.filter(item => item.short).length;
     // "sin-cupo" no se cuenta: no es un hueco, es la tarea que ese dia no va.
     const noHistory = countSkipped(plan, "sin-historial", "sin-turno");
+    const noStaffingGroup = countSkipped(plan, "sin-estamento");
     const takenElsewhere = countSkipped(plan, "sin-gente");
     const lines = [
         `Se repartirán ${plan.assignments} ${plan.assignments === 1 ? "persona" : "personas"} en ${cells} ${cells === 1 ? "casilla vacía" : "casillas vacías"} de la semana del ${formatShortDate(days[0])} al ${formatShortDate(days[6])}.`,
         "",
-        "El reparto es al azar entre los que están de turno, pero solo entra quien ya ha hecho esa tarea en semanas anteriores, y a los que hacen varias se les va cambiando la tarea a lo largo de la semana.",
+        "El reparto es al azar entre los que están de turno, pero solo entra quien ya ha hecho esa tarea en semanas anteriores, respeta la mezcla habitual de estamentos y a los que hacen varias se les va cambiando la tarea a lo largo de la semana.",
         "",
         "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];
 
-    if (noHistory || takenElsewhere || shortCells) lines.push("");
+    if (noHistory || noStaffingGroup || takenElsewhere || shortCells) {
+        lines.push("");
+    }
 
     if (noHistory) {
         lines.push(
             `${noHistory} ${noHistory === 1 ? "casilla queda" : "casillas quedan"} sin cubrir: ese día no hay nadie de turno que haya hecho esa tarea antes.`
+        );
+    }
+
+    if (noStaffingGroup) {
+        lines.push(
+            `${noStaffingGroup} ${noStaffingGroup === 1 ? "casilla queda" : "casillas quedan"} sin cubrir: falta alguien de turno del estamento habitual para esa tarea.`
         );
     }
 
@@ -5400,6 +5411,7 @@ function autoSchedulePreviewRows(plan, tasks) {
 
 function autoScheduleSkipSummary(plan) {
     const noHistory = countSkipped(plan, "sin-historial", "sin-turno");
+    const noStaffingGroup = countSkipped(plan, "sin-estamento");
     const takenElsewhere = countSkipped(plan, "sin-gente");
     const withoutPattern = countSkipped(plan, "sin-cupo");
     const shortCells = plan.filled.filter(item => item.short).length;
@@ -5411,6 +5423,10 @@ function autoScheduleSkipSummary(plan) {
 
     if (noHistory) {
         lines.push(`${noHistory} ${noHistory === 1 ? "casilla queda" : "casillas quedan"} sin cubrir por falta de alguien de turno con historial en esa tarea.`);
+    }
+
+    if (noStaffingGroup) {
+        lines.push(`${noStaffingGroup} ${noStaffingGroup === 1 ? "casilla queda" : "casillas quedan"} sin cubrir por falta de alguien de turno del estamento habitual.`);
     }
 
     if (takenElsewhere) {

@@ -5,7 +5,8 @@ import test from "node:test";
 import {
     buildTaskAutoScheduleHistory,
     headcountForCell,
-    planTaskAutoSchedule
+    planTaskAutoSchedule,
+    staffingForCell
 } from "../js/taskAutoSchedule.js";
 
 // El boton de Programacion automatica reparte al azar, y lo que hay que
@@ -37,6 +38,29 @@ const PLAN_DAYS = ["2026-7-31", "2026-8-1", "2026-8-2", "2026-8-3", "2026-8-4"];
 
 function cell(entries) {
     return { workers: entries, note: "", removedDefaults: [] };
+}
+
+function profile(name, estamento) {
+    return {
+        name,
+        estamento,
+        profession: estamento === "Profesional"
+            ? "Tecnología Médica"
+            : "Técnico en Imagenología"
+    };
+}
+
+function estamentoCounts(names, profiles) {
+    const byName = new Map(profiles.map(item => [item.name, item.estamento]));
+    const counts = new Map();
+
+    names.forEach(name => {
+        const estamento = byName.get(name) || "Sin estamento";
+
+        counts.set(estamento, (counts.get(estamento) || 0) + 1);
+    });
+
+    return counts;
 }
 
 // Los cinco dias habiles de una semana del historial, en clave de calendario
@@ -250,6 +274,84 @@ test("puede asignar menos gente que el cupo historico si no alcanza el personal"
     assert.equal(plan.filled[0].short, 1);
 });
 
+test("respeta la mezcla habitual de profesionales y tecnicos", () => {
+    const profiles = [
+        profile("Pro Uno", "Profesional"),
+        profile("Pro Dos", "Profesional"),
+        profile("Tec Uno", "Técnico"),
+        profile("Tec Dos", "Técnico")
+    ];
+    const history = buildTaskAutoScheduleHistory(
+        weekHistory({
+            resonador: weekday => weekday % 2
+                ? ["Pro Uno", "Tec Dos"]
+                : ["Pro Dos", "Tec Uno"]
+        }),
+        { beforeWeekKey: PLAN_WEEK, profiles }
+    );
+    const staffing = staffingForCell(
+        history,
+        "day",
+        "resonador",
+        PLAN_MONDAY
+    );
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId: "resonador",
+            taskIds: ["resonador"],
+            candidates: ["Tec Uno", "Tec Dos", "Pro Uno", "Pro Dos"],
+            blocked: []
+        }],
+        history,
+        rng: seededRng(9)
+    });
+    const counts = estamentoCounts(plan.filled[0].workers, profiles);
+
+    assert.deepEqual(staffing.groups, [
+        { group: "Profesional", count: 1 },
+        { group: "Técnico", count: 1 }
+    ]);
+    assert.equal(plan.filled[0].workers.length, 2);
+    assert.equal(counts.get("Profesional"), 1);
+    assert.equal(counts.get("Técnico"), 1);
+});
+
+test("si falta un estamento habitual no lo rellena con otro", () => {
+    const profiles = [
+        profile("Pro Uno", "Profesional"),
+        profile("Tec Uno", "Técnico"),
+        profile("Tec Dos", "Técnico")
+    ];
+    const history = buildTaskAutoScheduleHistory(
+        weekHistory({
+            resonador: weekday => weekday % 2
+                ? ["Pro Uno", "Tec Dos"]
+                : ["Pro Uno", "Tec Uno"]
+        }),
+        { beforeWeekKey: PLAN_WEEK, profiles }
+    );
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId: "resonador",
+            taskIds: ["resonador"],
+            candidates: ["Tec Uno", "Tec Dos"],
+            blocked: []
+        }],
+        history,
+        rng: seededRng(10)
+    });
+    const counts = estamentoCounts(plan.filled[0].workers, profiles);
+
+    assert.equal(plan.filled[0].workers.length, 1);
+    assert.equal(plan.filled[0].short, 1);
+    assert.equal(counts.get("Técnico"), 1);
+    assert.equal(counts.get("Profesional") || 0, 0);
+});
+
 test("el que hace varias tareas va rotando a lo largo de la semana", () => {
     // Eva y Gabriel hacen las dos tareas por igual, todos los dias. Sin
     // rotacion se quedarian los cinco dias clavados en la misma.
@@ -440,4 +542,20 @@ test("el boton esta cableado en el panel", async () => {
     // El reparto solo rellena: si esto se pierde, el boton empieza a pisar lo
     // que el supervisor puso a mano.
     assert.match(source, /assignmentWorkers\(entry\)\.length/);
+});
+
+test("el modal de propuesta tiene un solo scroll y deja acciones visibles", async () => {
+    const source = await readFile(
+        new URL("../styles.css", import.meta.url),
+        "utf8"
+    );
+
+    assert.match(
+        source,
+        /\.task-auto-preview-dialog\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) auto auto;[\s\S]*?overflow:\s*hidden;/
+    );
+    assert.match(
+        source,
+        /\.task-auto-preview-list\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?max-height:\s*none;[\s\S]*?overflow:\s*auto;/
+    );
 });

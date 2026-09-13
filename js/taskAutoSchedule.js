@@ -21,9 +21,9 @@
 //   2. CUANTOS van en cada casilla. Se mira cuanta gente llevo esa tarea ese
 //      mismo dia de la semana y se toma el valor que mas se repite. Por eso
 //      una tarea que los martes siempre estuvo vacia sigue vacia: su cupo es 0
-//      y el motor ni la mira. La medida es contra los dias que SE PROGRAMARON,
-//      no contra las semanas: media semana suele venir a medio programar, y un
-//      jueves que nadie toco no es un jueves sin dotacion.
+//      y el motor ni la mira. Cuando hay perfiles, tambien aprende la mezcla de
+//      estamentos de ese cupo: si historicamente era 1 Profesional + 1 Tecnico,
+//      no lo reemplaza por 2 Tecnicos solo porque habia disponibles.
 //
 //   3. LA ROTACION. Al que solo ha hecho una tarea se lo deja tranquilo en la
 //      suya. Al que ha hecho varias se le sube el peso en la que hace mas
@@ -81,7 +81,7 @@ function cellParts(cellKey) {
 
 function entryWorkers(entry) {
     return Array.isArray(entry?.workers)
-        ? entry.workers.filter(Boolean).map(String)
+        ? entry.workers.map(worker => String(worker || "").trim()).filter(Boolean)
         : [];
 }
 
@@ -99,6 +99,89 @@ function dayNumber(keyDay) {
         : Math.floor(date.getTime() / DAY_MS);
 }
 
+function normalizeTextKey(value) {
+    return String(value || "")
+        .trim()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase();
+}
+
+function profileStaffingGroup(profile = {}) {
+    const raw = String(profile?.estamento || "").trim();
+    const key = normalizeTextKey(raw);
+
+    if (key === "profesional") return "Profesional";
+    if (key === "tecnico") return "T\u00e9cnico";
+    if (key === "administrativo") return "Administrativo";
+    if (key === "auxiliar") return "Auxiliar";
+
+    return raw;
+}
+
+function workerStaffingGroups(profiles = []) {
+    const groups = new Map();
+
+    if (!Array.isArray(profiles)) return groups;
+
+    profiles.forEach(profile => {
+        const name = String(profile?.name || "").trim();
+        const group = profileStaffingGroup(profile);
+
+        if (name && group) groups.set(name, group);
+    });
+
+    return groups;
+}
+
+function groupCountTotal(groups) {
+    if (groups instanceof Map) {
+        return [...groups.values()]
+            .reduce((sum, value) => sum + Math.max(Number(value) || 0, 0), 0);
+    }
+
+    if (Array.isArray(groups)) {
+        return groups.reduce(
+            (sum, item) => sum + Math.max(Number(item?.count) || 0, 0),
+            0
+        );
+    }
+
+    return 0;
+}
+
+function encodeGroupCounts(groups) {
+    const entries = [...(groups || new Map()).entries()]
+        .map(([group, count]) => [String(group || "").trim(), Number(count) || 0])
+        .filter(([group, count]) => group && count > 0)
+        .sort((a, b) => a[0].localeCompare(b[0], "es"));
+
+    return entries.length ? JSON.stringify(entries) : "";
+}
+
+function decodeGroupCounts(signature) {
+    try {
+        return JSON.parse(signature)
+            .map(([group, count]) => ({
+                group: String(group || "").trim(),
+                count: Math.max(Number(count) || 0, 0)
+            }))
+            .filter(item => item.group && item.count > 0);
+    } catch (_error) {
+        return [];
+    }
+}
+
+function weeksForCell(history, shift, taskId, keyDay) {
+    const firstWeek = history?.taskFirstWeek?.get(taskId) || "";
+    const weekday = weekdayOf(keyDay);
+
+    if (!firstWeek) return [];
+
+    return (history?.activeColumns?.get(`${shift}|${weekday}`) || [])
+        .filter(week => week >= firstWeek);
+}
+
 /**
  * Resume las semanas anteriores en el patron que usa el reparto.
  *
@@ -113,13 +196,15 @@ function dayNumber(keyDay) {
  */
 export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     beforeWeekKey = "",
-    weeks = AUTO_SCHEDULE_HISTORY_WEEKS
+    weeks = AUTO_SCHEDULE_HISTORY_WEEKS,
+    profiles = []
 } = {}) {
     const limit = String(beforeWeekKey || "");
     const weekKeys = Object.keys(entriesByWeek || {})
         .filter(key => !limit || key < limit)
         .sort()
         .slice(-Math.max(Number(weeks) || 0, 1));
+    const workerGroups = workerStaffingGroups(profiles);
     // Quien hizo cada tarea: tareaId -> nombre -> { veces, ultimo dia }.
     const tasks = new Map();
     // Quien es cada persona en el conjunto: nombre -> { veces, tareas }.
@@ -127,6 +212,9 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     // Cuanta gente hubo en cada casilla, semana por semana. NO se resume aqui:
     // el cupo se calcula despues, cuando se sabe contra que semanas comparar.
     const counts = new Map();
+    // Mezcla de estamentos en cada casilla historica:
+    // semana + turno + tarea + dia -> estamento -> cantidad.
+    const groupCounts = new Map();
     // Columnas del tablero que ESTUVIERON programadas: turno + dia de la
     // semana -> semanas en que ese dia tuvo gente en alguna tarea.
     //
@@ -171,9 +259,11 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
 
             const task = tasks.get(taskId) || new Map();
             const day = dayNumber(keyDay);
+            const cellGroups = new Map();
 
             names.forEach(name => {
                 const stat = task.get(name) || { days: 0, lastDay: 0 };
+                const group = workerGroups.get(name) || "";
 
                 stat.days += 1;
                 stat.lastDay = Math.max(stat.lastDay, day);
@@ -185,7 +275,16 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
                 worker.days += 1;
                 worker.taskIds.add(taskId);
                 workers.set(name, worker);
+
+                if (group) {
+                    cellGroups.set(group, (cellGroups.get(group) || 0) + 1);
+                }
             });
+
+            if (groupCountTotal(cellGroups) === names.length) {
+                groupCounts.set(countKey, cellGroups);
+            }
+
             tasks.set(taskId, task);
         });
 
@@ -203,6 +302,8 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         tasks,
         workers,
         counts,
+        groupCounts,
+        workerGroups,
         activeColumns,
         taskFirstWeek
     };
@@ -234,14 +335,12 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
  * @returns {number} 0 si esa tarea ese dia suele ir vacia.
  */
 export function headcountForCell(history, shift, taskId, keyDay) {
-    const firstWeek = history?.taskFirstWeek?.get(taskId) || "";
     const weekday = weekdayOf(keyDay);
-    const weeks = (history?.activeColumns?.get(`${shift}|${weekday}`) || [])
-        .filter(week => week >= firstWeek);
+    const weeks = weeksForCell(history, shift, taskId, keyDay);
 
     // Tarea nueva, o columna que nunca se programo: no hay patron suficiente
     // para inventar dotacion.
-    if (!firstWeek || !weeks.length) return AUTO_SCHEDULE_DEFAULT_HEADCOUNT;
+    if (!weeks.length) return AUTO_SCHEDULE_DEFAULT_HEADCOUNT;
 
     const counts = new Map();
     let present = 0;
@@ -272,6 +371,72 @@ export function headcountForCell(history, shift, taskId, keyDay) {
     return Math.min(Math.max(best, 0), AUTO_SCHEDULE_MAX_HEADCOUNT);
 }
 
+export function staffingForCell(history, shift, taskId, keyDay) {
+    const headcount = headcountForCell(history, shift, taskId, keyDay);
+
+    if (!headcount) return { headcount, groups: [] };
+
+    const weekday = weekdayOf(keyDay);
+    const weeks = weeksForCell(history, shift, taskId, keyDay);
+    const signatures = new Map();
+
+    weeks.forEach(week => {
+        const countKey = `${week}|${shift}|${taskId}|${weekday}`;
+        const value = history?.counts?.get(countKey) || 0;
+        const groups = history?.groupCounts?.get(countKey);
+
+        if (value !== headcount || groupCountTotal(groups) !== value) return;
+
+        const signature = encodeGroupCounts(groups);
+
+        if (!signature) return;
+
+        signatures.set(signature, (signatures.get(signature) || 0) + 1);
+    });
+
+    let best = "";
+    let bestTimes = -1;
+
+    signatures.forEach((times, signature) => {
+        if (
+            times > bestTimes ||
+            (times === bestTimes && signature.localeCompare(best, "es") < 0)
+        ) {
+            best = signature;
+            bestTimes = times;
+        }
+    });
+
+    const groups = best ? decodeGroupCounts(best) : [];
+
+    return {
+        headcount,
+        groups: groupCountTotal(groups) === headcount ? groups : []
+    };
+}
+
+function staffingForTaskIds(history, shift, taskIds, keyDay) {
+    const options = taskIds.map(taskId => ({
+        taskId,
+        ...staffingForCell(history, shift, taskId, keyDay)
+    }));
+    const headcount = Math.max(...options.map(item => item.headcount), 0);
+    const grouped = options
+        .filter(item =>
+            item.headcount === headcount &&
+            groupCountTotal(item.groups) === headcount
+        )
+        .sort((a, b) =>
+            b.groups.length - a.groups.length ||
+            String(a.taskId).localeCompare(String(b.taskId), "es")
+        )[0];
+
+    return {
+        headcount,
+        groups: grouped?.groups || []
+    };
+}
+
 /* ==========================================================================
    Quien puede ir a cada tarea
    ========================================================================== */
@@ -295,6 +460,56 @@ function taskHistoryFor(history, taskIds) {
     });
 
     return merged;
+}
+
+function groupSlotsForCell(groups, cell, taskWorkers, workerGroups) {
+    const slots = [];
+
+    groups.forEach(item => {
+        for (let index = 0; index < item.count; index += 1) {
+            slots.push(item.group);
+        }
+    });
+
+    if (!slots.length) return [];
+
+    const blocked = new Set((cell.blocked || []).map(name => String(name)));
+    const reachByGroup = new Map();
+
+    (cell.candidates || [])
+        .map(name => String(name || "").trim())
+        .filter(Boolean)
+        .filter(name => !blocked.has(name) && taskWorkers.has(name))
+        .forEach(name => {
+            const group = workerGroups.get(name) || "";
+
+            if (!group) return;
+
+            reachByGroup.set(group, (reachByGroup.get(group) || 0) + 1);
+        });
+
+    return slots
+        .map((group, index) => ({
+            group,
+            index,
+            reach: reachByGroup.get(group) || 0
+        }))
+        .sort((a, b) => a.reach - b.reach || a.index - b.index)
+        .map(item => item.group);
+}
+
+function groupReachForCell(groupSlots, cell, taskWorkers, workerGroups) {
+    if (!groupSlots.length) return 0;
+
+    const required = new Set(groupSlots);
+    const blocked = new Set((cell.blocked || []).map(name => String(name)));
+
+    return (cell.candidates || [])
+        .map(name => String(name || "").trim())
+        .filter(Boolean)
+        .filter(name => !blocked.has(name) && taskWorkers.has(name))
+        .filter(name => required.has(workerGroups.get(name) || ""))
+        .length;
 }
 
 /* ==========================================================================
@@ -403,6 +618,7 @@ export function planTaskAutoSchedule({
 } = {}) {
     const stats = history || buildTaskAutoScheduleHistory({});
     const workerStats = stats.workers || new Map();
+    const workerGroups = stats.workerGroups || new Map();
     // Para medir la rotacion el peso tiene que saltar de una tarea a otra de la
     // misma persona, asi que necesita el indice por tarea a mano.
     const taskIndex = stats.tasks || new Map();
@@ -419,25 +635,37 @@ export function planTaskAutoSchedule({
     const prepared = cells.map(cell => {
         const taskIds = cell.taskIds?.length ? cell.taskIds : [cell.taskId];
         const taskWorkers = taskHistoryFor(stats, taskIds);
-        const headcount = Math.max(
-            ...taskIds.map(taskId => headcountForCell(
-                stats,
-                cell.shift,
-                taskId,
-                cell.keyDay
-            ))
+        const staffing = staffingForTaskIds(
+            stats,
+            cell.shift,
+            taskIds,
+            cell.keyDay
         );
+        const groupSlots = groupSlotsForCell(
+            staffing.groups,
+            cell,
+            taskWorkers,
+            workerGroups
+        );
+        const reach = (cell.candidates || [])
+            .filter(name => taskWorkers.has(name)).length;
 
         return {
             cell,
             taskIds,
             taskWorkers,
-            headcount,
+            headcount: staffing.headcount,
+            groupSlots,
+            groupReach: groupReachForCell(
+                groupSlots,
+                cell,
+                taskWorkers,
+                workerGroups
+            ),
             // Cuantos podrian entrar hoy. Ordenar por esto es lo que evita que
             // una tarea con dos personas posibles se quede sin nadie porque
             // otra tarea, que podia elegir entre veinte, se los llevo.
-            reach: (cell.candidates || [])
-                .filter(name => taskWorkers.has(name)).length,
+            reach,
             // Desempate al azar entre casillas igual de apretadas. Sin esto el
             // orden del catalogo decide siempre lo mismo: al que solo alcanza
             // para una de dos tareas se lo lleva la que este mas arriba, y esa
@@ -463,7 +691,7 @@ export function planTaskAutoSchedule({
 
     for (let round = 0; round < rounds; round += 1) {
         ordered.forEach(item => {
-            const { cell, taskIds, taskWorkers, headcount } = item;
+            const { cell, taskIds, taskWorkers, headcount, groupSlots } = item;
 
             if (item.chosen.length > round || headcount <= round) return;
 
@@ -476,10 +704,14 @@ export function planTaskAutoSchedule({
                 (cell.blocked || []).map(name => String(name))
             );
             const planDay = dayNumber(cell.keyDay);
+            const slotGroup = groupSlots[round] || "";
             const pool = (cell.candidates || [])
                 .map(name => String(name))
                 .filter(name => !taken.has(name) && !blocked.has(name))
                 .filter(name => taskWorkers.has(name))
+                .filter(name =>
+                    !slotGroup || workerGroups.get(name) === slotGroup
+                )
                 .map(name => ({
                     name,
                     weight: candidateWeight(name, {
@@ -514,7 +746,7 @@ export function planTaskAutoSchedule({
     }
 
     prepared.forEach(item => {
-        const { cell, headcount, chosen, reach } = item;
+        const { cell, headcount, chosen, reach, groupReach, groupSlots } = item;
 
         if (!headcount) {
             skipped.push({ ...cellRef(cell), reason: "sin-cupo" });
@@ -528,9 +760,10 @@ export function planTaskAutoSchedule({
                 // distintos y el resumen los cuenta por separado:
                 //   sin-turno     ese dia no habia nadie disponible;
                 //   sin-historial los que habia nunca hicieron esta tarea;
+                //   sin-estamento los que habia no calzan con la mezcla usual;
                 //   sin-gente     si los habia, pero se los llevaron otras
                 //                 casillas del mismo dia.
-                reason: reasonFor(cell, reach)
+                reason: reasonFor(cell, reach, groupReach, groupSlots.length)
             });
             return;
         }
@@ -561,8 +794,10 @@ function cellRef(cell) {
     };
 }
 
-function reasonFor(cell, reach) {
+function reasonFor(cell, reach, groupReach = 0, hasGroupSlots = false) {
     if (!cell.candidates?.length) return "sin-turno";
+    if (!reach) return "sin-historial";
+    if (hasGroupSlots && !groupReach) return "sin-estamento";
 
-    return reach ? "sin-gente" : "sin-historial";
+    return "sin-gente";
 }

@@ -14519,6 +14519,8 @@ body.theme-light .task-assignment-event-day--inhabil {
 
 .task-auto-preview-dialog {
     width: min(880px, 100%);
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+    overflow: hidden;
 }
 
 .task-auto-preview-summary {
@@ -14535,7 +14537,8 @@ body.theme-light .task-assignment-event-day--inhabil {
 .task-auto-preview-list {
     display: grid;
     gap: 8px;
-    max-height: min(420px, 48vh);
+    min-height: 0;
+    max-height: none;
     overflow: auto;
     padding-right: 2px;
 }
