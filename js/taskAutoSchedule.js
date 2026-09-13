@@ -21,9 +21,11 @@
 //   2. CUANTOS van en cada casilla. Se mira cuanta gente llevo esa tarea ese
 //      mismo dia de la semana y se toma el valor que mas se repite. Por eso
 //      una tarea que los martes siempre estuvo vacia sigue vacia: su cupo es 0
-//      y el motor ni la mira. Cuando hay perfiles, tambien aprende la mezcla de
-//      estamentos de ese cupo: si historicamente era 1 Profesional + 1 Tecnico,
-//      no lo reemplaza por 2 Tecnicos solo porque habia disponibles.
+//      y el motor ni la mira. Una sola aparicion de una persona en una tarea no
+//      basta: eso puede ser una correccion puntual o una importacion rara, no
+//      un patron. Cuando hay perfiles, tambien aprende la mezcla de estamentos
+//      de ese cupo: si historicamente era 1 Profesional + 1 Tecnico, no lo
+//      reemplaza por 2 Tecnicos solo porque habia disponibles.
 //
 //   3. LA ROTACION. Al que solo ha hecho una tarea se lo deja tranquilo en la
 //      suya. Al que ha hecho varias se le sube el peso en la que hace mas
@@ -50,6 +52,10 @@ export const AUTO_SCHEDULE_MAX_HEADCOUNT = 12;
 // se hace. Un tercio de los dias programados: por debajo de eso es una tarea
 // que ese dia normalmente no va -MAMOGRAFIA los martes- y el cupo queda en 0.
 export const AUTO_SCHEDULE_PRESENCE_RATE = 1 / 3;
+// Minimo de veces que una persona debe haber hecho una tarea para que eso sea
+// patron y no una aparicion aislada. Evita casos como una fila importada con un
+// nombre accidental que despues se vuelve elegible para siempre.
+export const AUTO_SCHEDULE_MIN_WORKER_TASK_DAYS = 2;
 
 const DAY_MS = 86400000;
 // Piso del peso en el sorteo: con peso 0 la raiz 1/peso se va al infinito y el
@@ -457,6 +463,12 @@ function taskHistoryFor(history, taskIds) {
                 lastDay: Math.max(current.lastDay, stat.lastDay)
             });
         });
+    });
+
+    [...merged.entries()].forEach(([name, stat]) => {
+        if ((stat?.days || 0) < AUTO_SCHEDULE_MIN_WORKER_TASK_DAYS) {
+            merged.delete(name);
+        }
     });
 
     return merged;

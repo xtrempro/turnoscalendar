@@ -5327,7 +5327,7 @@ function autoSchedulePlanSummary(plan, days) {
     const lines = [
         `Se repartirán ${plan.assignments} ${plan.assignments === 1 ? "persona" : "personas"} en ${cells} ${cells === 1 ? "casilla vacía" : "casillas vacías"} de la semana del ${formatShortDate(days[0])} al ${formatShortDate(days[6])}.`,
         "",
-        "El reparto es al azar entre los que están de turno, pero solo entra quien ya ha hecho esa tarea en semanas anteriores, respeta la mezcla habitual de estamentos y a los que hacen varias se les va cambiando la tarea a lo largo de la semana.",
+        "El reparto es al azar entre los que están de turno, pero solo entra quien tiene participación repetida en esa tarea, respeta la mezcla habitual de estamentos y a los que hacen varias se les va cambiando la tarea a lo largo de la semana.",
         "",
         "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];

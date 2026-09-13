@@ -189,6 +189,38 @@ test("una tarea sin historial no acepta trabajadores al azar", () => {
     );
 });
 
+test("una aparicion aislada en una tarea no vuelve elegible al trabajador", () => {
+    const entries = baseHistory();
+
+    entries[WEEKS[0]][`day|ronda_rx|${MONDAYS[0]}`] = cell(["Javiera"]);
+    entries[WEEKS[1]][`day|ronda_rx|${MONDAYS[1]}`] = cell(["Patricia"]);
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK
+    });
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId: "ronda_rx",
+            taskIds: ["ronda_rx"],
+            candidates: ["Javiera", "Patricia"],
+            blocked: []
+        }],
+        history,
+        rng: seededRng(17)
+    });
+
+    assert.equal(headcountForCell(history, "day", "ronda_rx", PLAN_MONDAY), 1);
+    assert.equal(plan.filled.length, 0);
+    assert.deepEqual(plan.skipped, [{
+        shift: "day",
+        taskId: "ronda_rx",
+        keyDay: PLAN_MONDAY,
+        reason: "sin-historial"
+    }]);
+});
+
 test("el cupo sale del historial de ese dia de la semana", () => {
     const history = buildTaskAutoScheduleHistory(mixedHistory(), {
         beforeWeekKey: PLAN_WEEK
