@@ -3,6 +3,7 @@ import { stripAccents } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, getRaw, setJSON } from "./persistence.js";
 import {
+    getRotativa,
     getProfiles,
     isProfileActive
 } from "./storage.js";
@@ -12,7 +13,7 @@ import {
     normalizeProfileSearch
 } from "./profileSearchUtils.js";
 import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
-import { getAbsenceType } from "./rulesEngine.js";
+import { getAbsenceType, getTurnoExtraAgregado } from "./rulesEngine.js";
 import { getHourReturn } from "./hourReturns.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import { fetchHolidays, getCachedHolidays } from "./holidays.js";
@@ -21,7 +22,8 @@ import { showAlert, showConfirm, showPrompt } from "./dialogs.js";
 import {
     buildTaskAutoScheduleHistory,
     canWorkerShareShiftTasks,
-    planTaskAutoSchedule
+    planTaskAutoSchedule,
+    workerMatchesTurnSignature
 } from "./taskAutoSchedule.js";
 import {
     registerTaskScheduleGridProvider,
@@ -972,6 +974,26 @@ function profileByName(name) {
 
 function getProfileShift(profile, keyDay) {
     return getTurnoReal(profile.name, keyDay);
+}
+
+function autoScheduleWorkerTurnContext(profileOrName, keyDay) {
+    const profile = typeof profileOrName === "object"
+        ? profileOrName
+        : profileByName(profileOrName);
+    const name = String(profile?.name || profileOrName || "").trim();
+
+    if (!name) return {};
+
+    const baseTurn = getTurnoBase(name, keyDay);
+    const actualTurn = getTurnoReal(name, keyDay);
+
+    return {
+        rotativaType: getRotativa(name).type,
+        baseTurn,
+        actualTurn,
+        extraTurn: getTurnoExtraAgregado(baseTurn, actualTurn),
+        profession: profileProfession(profile)
+    };
 }
 
 function readMap(prefix, profileName) {
@@ -5274,6 +5296,18 @@ function serializeWorkerTaskMap(map) {
     );
 }
 
+function serializeWorkerTurnContexts(names, keyDay) {
+    return Object.fromEntries(
+        [...new Set(names || [])]
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+            .map(name => [
+                name,
+                autoScheduleWorkerTurnContext(name, keyDay)
+            ])
+    );
+}
+
 function autoScheduleCells(days, tasks, assignments) {
     const cells = [];
     const equipmentOutages = equipmentOutagesForDays(days);
@@ -5309,6 +5343,10 @@ function autoScheduleCells(days, tasks, assignments) {
                     taskId,
                     taskIds: group.taskIds,
                     candidates,
+                    candidateTurnContextByWorker: serializeWorkerTurnContexts(
+                        candidates,
+                        keyDay
+                    ),
                     existingTaskIdsByWorker: serializeWorkerTaskMap(
                         workerTaskIdsForShiftDay(
                             assignments,
@@ -5339,7 +5377,9 @@ function createTaskAutoScheduleAttempt(days, tasks) {
     const cells = autoScheduleCells(days, tasks, assignments);
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
         beforeWeekKey: weekKey(),
-        profiles
+        profiles,
+        workerTurnContextForDay: (name, keyDay) =>
+            autoScheduleWorkerTurnContext(name, keyDay)
     });
     const plan = cells.length
         ? planTaskAutoSchedule({ cells, history })
@@ -5358,7 +5398,7 @@ function autoSchedulePlanSummary(plan, days) {
     const lines = [
         `Se repartirán ${plan.assignments} ${plan.assignments === 1 ? "persona" : "personas"} en ${cells} ${cells === 1 ? "casilla vacía" : "casillas vacías"} de la semana del ${formatShortDate(days[0])} al ${formatShortDate(days[6])}.`,
         "",
-        "El reparto es al azar entre los que están de turno, pero solo entra quien tiene participación repetida en esa tarea, respeta la mezcla habitual de estamentos, intenta usar primero a quienes siguen sin tarea y puede repetir a una persona en el mismo turno solo cuando el historial muestra ese patrón multitarea.",
+        "El reparto es al azar entre los que están de turno, pero solo entra quien tiene participación repetida en esa tarea, respeta la mezcla habitual de estamentos y patrones de turno, intenta usar primero a quienes siguen sin tarea y puede repetir a una persona en el mismo turno solo cuando el historial muestra ese patrón multitarea.",
         "",
         "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];
@@ -5482,7 +5522,9 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
     const profiles = getProfiles();
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
         beforeWeekKey: weekKey(),
-        profiles
+        profiles,
+        workerTurnContextForDay: (name, keyDay) =>
+            autoScheduleWorkerTurnContext(name, keyDay)
     });
     const affectedWorkers = new Set();
     let assignments = 0;
@@ -5506,14 +5548,25 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
             item.keyDay,
             item.taskId
         );
-        const workers = uniqueValues(item.workers.filter(name => {
+        const plannedTurnSlots = Array.isArray(item.turnSlots)
+            ? item.turnSlots
+            : [];
+        const workers = uniqueValues(item.workers.filter((name, index) => {
             const profile = profileByName(name);
             const currentTaskIds = [
                 ...(existingByWorker.get(name) || new Set())
             ];
+            const turnSignature = plannedTurnSlots[index] || "";
 
             return profile &&
                 isAvailableForShift(profile, item.keyDay, item.shift) &&
+                (
+                    !turnSignature ||
+                    workerMatchesTurnSignature(
+                        autoScheduleWorkerTurnContext(profile, item.keyDay),
+                        turnSignature
+                    )
+                ) &&
                 canWorkerShareShiftTasks(history, {
                     name,
                     shift: item.shift,

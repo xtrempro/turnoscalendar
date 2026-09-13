@@ -8,6 +8,7 @@ import {
     planTaskAutoSchedule,
     staffingForCell
 } from "../js/taskAutoSchedule.js";
+import { TURNO } from "../js/constants.js";
 
 // El boton de Programacion automatica reparte al azar, y lo que hay que
 // comprobar es justamente lo que el azar NO puede hacer: meter a alguien en una
@@ -61,6 +62,28 @@ function estamentoCounts(names, profiles) {
     });
 
     return counts;
+}
+
+function turnContext({
+    rotativaType = "diurno",
+    baseTurn = TURNO.DIURNO,
+    actualTurn = TURNO.LARGA,
+    extraTurn = TURNO.MEDIA_TARDE,
+    profession = "Tecnologia Medica"
+} = {}) {
+    return {
+        rotativaType,
+        baseTurn,
+        actualTurn,
+        extraTurn,
+        profession
+    };
+}
+
+function workerTurnContextFrom(map) {
+    return (name, keyDay) =>
+        map.get(`${String(name || "").trim()}|${String(keyDay || "").trim()}`) ||
+        {};
 }
 
 // Los cinco dias habiles de una semana del historial, en clave de calendario
@@ -382,6 +405,141 @@ test("si falta un estamento habitual no lo rellena con otro", () => {
     assert.equal(plan.filled[0].short, 1);
     assert.equal(counts.get("Técnico"), 1);
     assert.equal(counts.get("Profesional") || 0, 0);
+});
+
+test("prioriza el patron de turno habitual de una tarea", () => {
+    const weeks = [
+        "2026-08-03",
+        "2026-08-10",
+        "2026-08-17",
+        "2026-08-24",
+        "2026-08-31"
+    ];
+    const mondays = [
+        "2026-7-3",
+        "2026-7-10",
+        "2026-7-17",
+        "2026-7-24",
+        "2026-7-31"
+    ];
+    const entries = {};
+    const contexts = new Map();
+
+    weeks.forEach((week, index) => {
+        const day = mondays[index];
+        const worker = index < 3 ? "Ana" : "Bruno";
+
+        entries[week] = {
+            [`day|apoyo_turno|${day}`]: cell([worker])
+        };
+        contexts.set(
+            `${worker}|${day}`,
+            worker === "Ana"
+                ? turnContext()
+                : turnContext({
+                    rotativaType: "4turno",
+                    baseTurn: TURNO.LARGA,
+                    actualTurn: TURNO.LARGA,
+                    extraTurn: TURNO.LIBRE
+                })
+        );
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: "2026-09-07",
+        workerTurnContextForDay: workerTurnContextFrom(contexts)
+    });
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: "2026-8-7",
+            taskId: "apoyo_turno",
+            taskIds: ["apoyo_turno"],
+            candidates: ["Ana", "Bruno"],
+            candidateTurnContextByWorker: {
+                Ana: turnContext(),
+                Bruno: turnContext({
+                    rotativaType: "4turno",
+                    baseTurn: TURNO.LARGA,
+                    actualTurn: TURNO.LARGA,
+                    extraTurn: TURNO.LIBRE
+                })
+            },
+            blocked: []
+        }],
+        history,
+        rng: seededRng(44)
+    });
+
+    assert.equal(plan.assignments, 1);
+    assert.deepEqual(plan.filled[0].workers, ["Ana"]);
+});
+
+test("si no hay alguien con el patron de turno, usa historial de tarea", () => {
+    const weeks = [
+        "2026-08-03",
+        "2026-08-10",
+        "2026-08-17",
+        "2026-08-24",
+        "2026-08-31"
+    ];
+    const mondays = [
+        "2026-7-3",
+        "2026-7-10",
+        "2026-7-17",
+        "2026-7-24",
+        "2026-7-31"
+    ];
+    const entries = {};
+    const contexts = new Map();
+
+    weeks.forEach((week, index) => {
+        const day = mondays[index];
+        const worker = index < 3 ? "Ana" : "Bruno";
+
+        entries[week] = {
+            [`day|apoyo_turno|${day}`]: cell([worker])
+        };
+        contexts.set(
+            `${worker}|${day}`,
+            worker === "Ana"
+                ? turnContext()
+                : turnContext({
+                    rotativaType: "4turno",
+                    baseTurn: TURNO.LARGA,
+                    actualTurn: TURNO.LARGA,
+                    extraTurn: TURNO.LIBRE
+                })
+        );
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: "2026-09-07",
+        workerTurnContextForDay: workerTurnContextFrom(contexts)
+    });
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: "2026-8-7",
+            taskId: "apoyo_turno",
+            taskIds: ["apoyo_turno"],
+            candidates: ["Bruno"],
+            candidateTurnContextByWorker: {
+                Bruno: turnContext({
+                    rotativaType: "4turno",
+                    baseTurn: TURNO.LARGA,
+                    actualTurn: TURNO.LARGA,
+                    extraTurn: TURNO.LIBRE
+                })
+            },
+            blocked: []
+        }],
+        history,
+        rng: seededRng(45)
+    });
+
+    assert.equal(plan.assignments, 1);
+    assert.deepEqual(plan.filled[0].workers, ["Bruno"]);
 });
 
 test("el que hace varias tareas va rotando a lo largo de la semana", () => {

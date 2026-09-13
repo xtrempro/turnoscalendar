@@ -65,6 +65,9 @@ export const AUTO_SCHEDULE_MIN_WORKER_TASK_DAYS = 2;
 // Lo mismo para repetir a una persona en mas de una tarea del mismo turno: una
 // coincidencia aislada no basta para aprender que ese doble rol es normal.
 export const AUTO_SCHEDULE_MIN_MULTITASK_DAYS = 2;
+// Minimo de dias para aprender que una tarea suele cubrirse con una condicion
+// de turno concreta, por ejemplo rotativa diurno + turno real Larga.
+export const AUTO_SCHEDULE_MIN_TURN_PATTERN_DAYS = 2;
 
 const DAY_MS = 86400000;
 // Piso del peso en el sorteo: con peso 0 la raiz 1/peso se va al infinito y el
@@ -224,6 +227,82 @@ function workerStaffingGroups(profiles = []) {
     return groups;
 }
 
+function cleanTurnValue(value) {
+    const numberValue = Number(value);
+
+    return Number.isFinite(numberValue) ? String(numberValue) : "";
+}
+
+function normalizeTurnContext(context = {}) {
+    return {
+        rotativaType: normalizeTextKey(context.rotativaType || context.rotativa),
+        baseTurn: cleanTurnValue(context.baseTurn ?? context.base),
+        actualTurn: cleanTurnValue(
+            context.actualTurn ?? context.actual ?? context.turn
+        ),
+        extraTurn: cleanTurnValue(context.extraTurn ?? context.extra),
+        profession: normalizeTextKey(context.profession)
+    };
+}
+
+function turnContextSignature(context = {}) {
+    const normalized = normalizeTurnContext(context);
+    const parts = [
+        ["rotativa", normalized.rotativaType],
+        ["base", normalized.baseTurn],
+        ["actual", normalized.actualTurn],
+        ["extra", normalized.extraTurn],
+        ["profesion", normalized.profession]
+    ]
+        .filter(([, value]) => value !== "")
+        .map(([key, value]) => `${key}:${value}`);
+
+    return parts.length ? parts.join("|") : "";
+}
+
+function turnSignatureSlots(groups) {
+    const slots = [];
+
+    (Array.isArray(groups) ? groups : decodeGroupCounts(groups))
+        .forEach(item => {
+            for (let index = 0; index < item.count; index += 1) {
+                slots.push(item.group);
+            }
+        });
+
+    return slots;
+}
+
+function workerTurnContextFor(options, name, keyDay) {
+    if (typeof options?.workerTurnContextForDay === "function") {
+        return options.workerTurnContextForDay(name, keyDay) || {};
+    }
+
+    const contexts = options?.workerTurnContexts;
+    const key = `${String(name || "").trim()}|${String(keyDay || "").trim()}`;
+
+    if (contexts instanceof Map) return contexts.get(key) || {};
+
+    return contexts?.[key] || {};
+}
+
+function candidateTurnContextFor(cell, name) {
+    const contexts = cell?.candidateTurnContextByWorker ||
+        cell?.candidateTurnContextsByWorker ||
+        {};
+    const cleanName = String(name || "").trim();
+
+    if (contexts instanceof Map) return contexts.get(cleanName) || {};
+
+    return contexts[cleanName] || {};
+}
+
+export function workerMatchesTurnSignature(context, signature) {
+    const expected = String(signature || "").trim();
+
+    return Boolean(expected && turnContextSignature(context) === expected);
+}
+
 function groupCountTotal(groups) {
     if (groups instanceof Map) {
         return [...groups.values()]
@@ -287,7 +366,9 @@ function weeksForCell(history, shift, taskId, keyDay) {
 export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     beforeWeekKey = "",
     weeks = AUTO_SCHEDULE_HISTORY_WEEKS,
-    profiles = []
+    profiles = [],
+    workerTurnContextForDay = null,
+    workerTurnContexts = null
 } = {}) {
     const limit = String(beforeWeekKey || "");
     const weekKeys = Object.keys(entriesByWeek || {})
@@ -322,6 +403,10 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     // Se resume despues en combinaciones repetidas, porque con una sola tarea
     // por dia no hay nada especial que aprender.
     const workerDayTasks = new Map();
+    // Mezcla de condiciones de turno en cada casilla historica. Permite
+    // aprender casos como "APOYO TURNO lo toma un diurno con Larga agregada".
+    const turnCounts = new Map();
+    const contextOptions = { workerTurnContextForDay, workerTurnContexts };
 
     weekKeys.forEach(weekKey => {
         const week = entriesByWeek[weekKey];
@@ -354,10 +439,14 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
             const task = tasks.get(taskId) || new Map();
             const day = dayNumber(keyDay);
             const cellGroups = new Map();
+            const cellTurnSignatures = new Map();
 
             names.forEach(name => {
                 const stat = task.get(name) || { days: 0, lastDay: 0 };
                 const group = workerGroups.get(name) || "";
+                const turnSignature = turnContextSignature(
+                    workerTurnContextFor(contextOptions, name, keyDay)
+                );
 
                 stat.days += 1;
                 stat.lastDay = Math.max(stat.lastDay, day);
@@ -384,10 +473,21 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
                 if (group) {
                     cellGroups.set(group, (cellGroups.get(group) || 0) + 1);
                 }
+
+                if (turnSignature) {
+                    cellTurnSignatures.set(
+                        turnSignature,
+                        (cellTurnSignatures.get(turnSignature) || 0) + 1
+                    );
+                }
             });
 
             if (groupCountTotal(cellGroups) === names.length) {
                 groupCounts.set(countKey, cellGroups);
+            }
+
+            if (groupCountTotal(cellTurnSignatures) === names.length) {
+                turnCounts.set(countKey, cellTurnSignatures);
             }
 
             tasks.set(taskId, task);
@@ -431,6 +531,7 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         workers,
         counts,
         groupCounts,
+        turnCounts,
         workerGroups,
         activeColumns,
         taskFirstWeek,
@@ -566,6 +667,85 @@ function staffingForTaskIds(history, shift, taskIds, keyDay) {
     };
 }
 
+function turnPatternForCell(history, shift, taskId, keyDay) {
+    const headcount = headcountForCell(history, shift, taskId, keyDay);
+
+    if (!headcount) return { headcount, signatures: [] };
+
+    const weekday = weekdayOf(keyDay);
+    const weeks = weeksForCell(history, shift, taskId, keyDay);
+    const signatures = new Map();
+
+    weeks.forEach(week => {
+        const countKey = `${week}|${shift}|${taskId}|${weekday}`;
+        const value = history?.counts?.get(countKey) || 0;
+        const turns = history?.turnCounts?.get(countKey);
+
+        if (value !== headcount || groupCountTotal(turns) !== value) return;
+
+        const signature = encodeGroupCounts(turns);
+
+        if (!signature) return;
+
+        signatures.set(signature, (signatures.get(signature) || 0) + 1);
+    });
+
+    let best = "";
+    let bestTimes = -1;
+    let tiedBest = 0;
+
+    signatures.forEach((times, signature) => {
+        if (times > bestTimes) {
+            best = signature;
+            bestTimes = times;
+            tiedBest = 1;
+            return;
+        }
+
+        if (times === bestTimes) {
+            tiedBest += 1;
+        }
+    });
+
+    if (
+        !best ||
+        bestTimes < AUTO_SCHEDULE_MIN_TURN_PATTERN_DAYS ||
+        tiedBest > 1
+    ) {
+        return { headcount, signatures: [] };
+    }
+
+    const decoded = decodeGroupCounts(best);
+
+    return {
+        headcount,
+        signatures: groupCountTotal(decoded) === headcount
+            ? turnSignatureSlots(decoded)
+            : []
+    };
+}
+
+function turnPatternForTaskIds(history, shift, taskIds, keyDay) {
+    const options = taskIds.map(taskId => ({
+        taskId,
+        ...turnPatternForCell(history, shift, taskId, keyDay)
+    }));
+    const headcount = Math.max(...options.map(item => item.headcount), 0);
+    const patterned = options
+        .filter(item =>
+            item.headcount === headcount &&
+            item.signatures.length === headcount
+        )
+        .sort((a, b) =>
+            String(a.taskId).localeCompare(String(b.taskId), "es")
+        )[0];
+
+    return {
+        headcount,
+        signatures: patterned?.signatures || []
+    };
+}
+
 /* ==========================================================================
    Quien puede ir a cada tarea
    ========================================================================== */
@@ -695,6 +875,52 @@ function groupReachForCell(groupSlots, cell, taskIds, history, taskWorkers, work
         .length;
 }
 
+function turnSlotsForCell(turnSignatures, cell, taskIds, history, taskWorkers) {
+    if (!turnSignatures.length) return [];
+
+    const blocked = new Set((cell.blocked || []).map(name => String(name)));
+    const reachBySignature = new Map();
+
+    (cell.candidates || [])
+        .map(name => String(name || "").trim())
+        .filter(Boolean)
+        .filter(name => !blocked.has(name) && taskWorkers.has(name))
+        .filter(name => canCandidateUseCell(history, cell, name, taskIds))
+        .forEach(name => {
+            const signature = turnContextSignature(
+                candidateTurnContextFor(cell, name)
+            );
+
+            if (!signature) return;
+
+            reachBySignature.set(
+                signature,
+                (reachBySignature.get(signature) || 0) + 1
+            );
+        });
+
+    const usedBySignature = new Map();
+
+    return turnSignatures
+        .map((signature, index) => ({
+            signature,
+            index,
+            reach: reachBySignature.get(signature) || 0
+        }))
+        .filter(item => {
+            if (!item.reach) return false;
+
+            const used = usedBySignature.get(item.signature) || 0;
+
+            if (used >= item.reach) return false;
+
+            usedBySignature.set(item.signature, used + 1);
+            return true;
+        })
+        .sort((a, b) => a.reach - b.reach || a.index - b.index)
+        .map(item => item.signature);
+}
+
 /* ==========================================================================
    Sorteo con peso
    ========================================================================== */
@@ -788,8 +1014,9 @@ function candidatePoolForSlot(item, round, {
     );
     const planDay = dayNumber(cell.keyDay);
     const slotGroup = groupSlots[round] || "";
+    const slotTurnSignature = item.turnSlots?.[round] || "";
 
-    return [...new Set(
+    const pool = [...new Set(
         (cell.candidates || [])
             .map(name => String(name || "").trim())
             .filter(Boolean)
@@ -805,7 +1032,17 @@ function candidatePoolForSlot(item, round, {
         )
         .filter(name =>
             !firstTaskOnly || !currentTaskIdsForCell(cell, name, taken).size
+        );
+    const turnMatchedPool = slotTurnSignature
+        ? pool.filter(name =>
+            workerMatchesTurnSignature(
+                candidateTurnContextFor(cell, name),
+                slotTurnSignature
+            )
         )
+        : [];
+
+    return (turnMatchedPool.length ? turnMatchedPool : pool)
         .map(name => ({
             name,
             weight: candidateWeight(name, {
@@ -1048,6 +1285,12 @@ export function planTaskAutoSchedule({
             taskIds,
             cell.keyDay
         );
+        const turnPattern = turnPatternForTaskIds(
+            stats,
+            cell.shift,
+            taskIds,
+            cell.keyDay
+        );
         const groupSlots = groupSlotsForCell(
             staffing.groups,
             cell,
@@ -1055,6 +1298,13 @@ export function planTaskAutoSchedule({
             stats,
             taskWorkers,
             workerGroups
+        );
+        const turnSlots = turnSlotsForCell(
+            turnPattern.signatures,
+            cell,
+            taskIds,
+            stats,
+            taskWorkers
         );
         const blocked = new Set(
             (cell.blocked || []).map(name => String(name))
@@ -1089,6 +1339,7 @@ export function planTaskAutoSchedule({
             // una tarea con dos personas posibles se quede sin nadie porque
             // otra tarea, que podia elegir entre veinte, se los llevo.
             reach,
+            turnSlots,
             // Desempate al azar entre casillas igual de apretadas. Sin esto el
             // orden del catalogo decide siempre lo mismo: al que solo alcanza
             // para una de dos tareas se lo lleva la que este mas arriba, y esa
@@ -1186,7 +1437,8 @@ export function planTaskAutoSchedule({
             historyReach,
             groupReach,
             groupSlots,
-            taskIds
+            taskIds,
+            turnSlots
         } = item;
 
         if (!headcount) {
@@ -1215,11 +1467,16 @@ export function planTaskAutoSchedule({
             return;
         }
 
+        const chosenTurnSlots = item.slotAssignments
+            .map((name, index) => name ? (turnSlots[index] || "") : null)
+            .filter(value => value !== null);
+
         filled.push({
             ...cellRef(cell),
             taskIds,
             workers: chosen,
             headcount,
+            turnSlots: chosenTurnSlots,
             // Una casilla que pedia tres y consiguio una no es un exito
             // callado: el resumen tiene que poder decirlo.
             short: Math.max(headcount - chosen.length, 0)
