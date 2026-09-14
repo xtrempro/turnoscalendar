@@ -1,5 +1,7 @@
 import { keyFromDate, keyToDate as parseKey } from "./dateUtils.js";
 import { getJSON } from "./persistence.js";
+import { stripAccents } from "./stringUtils.js";
+import { getProfiles } from "./storage.js";
 import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
 import { getCachedHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
@@ -59,6 +61,46 @@ function normalizeTaskShiftScope(scope, legacyShift) {
 function uniqueValues(values) {
     return [...new Set(values.filter(Boolean))]
         .sort((a, b) => a.localeCompare(b, "es"));
+}
+
+const TASK_WORKER_ROLE_ORDER = new Map([
+    ["profesional", 0],
+    ["tecnico", 1],
+    ["administrativo", 2],
+    ["auxiliar", 3]
+]);
+
+function normalizeWorkerRole(value) {
+    return stripAccents(String(value || "")).toLowerCase();
+}
+
+function taskWorkerProfileMap() {
+    return new Map(
+        getProfiles().map(profile => [
+            String(profile?.name || "").trim(),
+            profile
+        ])
+    );
+}
+
+function sortTaskWorkersByRole(values) {
+    const profilesByName = taskWorkerProfileMap();
+
+    return [...new Set(
+        (Array.isArray(values) ? values : [])
+            .map(item => String(item || "").trim())
+            .filter(Boolean)
+    )].sort((left, right) => {
+        const leftRank = TASK_WORKER_ROLE_ORDER.get(
+            normalizeWorkerRole(profilesByName.get(left)?.estamento)
+        ) ?? 99;
+        const rightRank = TASK_WORKER_ROLE_ORDER.get(
+            normalizeWorkerRole(profilesByName.get(right)?.estamento)
+        ) ?? 99;
+
+        return leftRank - rightRank ||
+            left.localeCompare(right, "es");
+    });
 }
 
 function normalizeTaskDefaultRules(task) {
@@ -146,7 +188,7 @@ function assignmentKey(shift, taskId, keyDay) {
 
 function assignmentWorkers(entry) {
     return Array.isArray(entry?.workers)
-        ? entry.workers.map(item => String(item || "").trim()).filter(Boolean)
+        ? sortTaskWorkersByRole(entry.workers)
         : [];
 }
 

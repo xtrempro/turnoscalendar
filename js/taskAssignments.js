@@ -451,7 +451,7 @@ function mergeAssignmentEntries(current = {}, next = {}) {
     const notes = uniqueValues([currentNote, nextNote]);
 
     return {
-        workers: uniqueValues([
+        workers: sortTaskWorkersByRole([
             ...assignmentWorkers(current),
             ...assignmentWorkers(next)
         ]),
@@ -845,6 +845,35 @@ function uniqueValues(values) {
         .sort((a, b) => a.localeCompare(b, "es"));
 }
 
+const TASK_WORKER_ROLE_ORDER = new Map([
+    ["profesional", 0],
+    ["tecnico", 1],
+    ["administrativo", 2],
+    ["auxiliar", 3]
+]);
+
+function uniqueWorkerNames(values) {
+    return [...new Set(
+        (Array.isArray(values) ? values : [])
+            .map(value => String(value || "").trim())
+            .filter(Boolean)
+    )];
+}
+
+function taskWorkerRoleRank(name) {
+    const profile = profileByName(name);
+    const role = normalizeText(profile?.estamento || "");
+
+    return TASK_WORKER_ROLE_ORDER.get(role) ?? 99;
+}
+
+function sortTaskWorkersByRole(values) {
+    return uniqueWorkerNames(values).sort((left, right) =>
+        taskWorkerRoleRank(left) - taskWorkerRoleRank(right) ||
+        left.localeCompare(right, "es")
+    );
+}
+
 function normalizeDefaultInterval(value) {
     const numberValue = Math.floor(Number(value));
 
@@ -900,6 +929,12 @@ function isBusinessKeyDay(keyDay) {
     if (!isValidDate(date)) return false;
 
     return isBusinessDay(date, getCachedHolidays(date.getFullYear()));
+}
+
+function autoScheduleFillsAllEligible(shift, day, group) {
+    return shift === "day" &&
+        (group?.taskIds?.length || 0) > 1 &&
+        !isBusinessDay(day, getCachedHolidays(day.getFullYear()));
 }
 
 function normalizeTaskDefaultRules(task) {
@@ -1088,7 +1123,7 @@ function isAvailableForShift(profile, keyDay, shift) {
 
 function assignmentWorkers(entry) {
     return Array.isArray(entry?.workers)
-        ? entry.workers.filter(Boolean)
+        ? sortTaskWorkersByRole(entry.workers)
         : [];
 }
 
@@ -1323,7 +1358,10 @@ function applyDefaultAssignments(days, tasks, assignments) {
 
                     assignments[cellKey] = {
                         ...entry,
-                        workers: [...workers, rule.workerName]
+                        workers: sortTaskWorkersByRole([
+                            ...workers,
+                            rule.workerName
+                        ])
                     };
                     changed = true;
                 });
@@ -1409,7 +1447,7 @@ function cleanAssignmentsForWeek(days, tasks, start = currentWeekStart) {
             changed = true;
             persistEntryOrDelete(assignments, cellKey, {
                 ...entry,
-                workers: availableWorkers
+                workers: sortTaskWorkersByRole(availableWorkers)
             });
         }
     });
@@ -1520,7 +1558,7 @@ function collapseGroupWorkers(assignments, shift, tasks, taskId, keyDay) {
 
     persistEntryOrDelete(assignments, assignmentKey(shift, ownerId, keyDay), {
         ...owner,
-        workers: uniqueValues(workers),
+        workers: sortTaskWorkersByRole(workers),
         note: uniqueValues(notes).join(" | "),
         removedDefaults: uniqueValues(removed),
         // Una casilla cerrada nunca tiene gente dentro. Si al fusionar sube
@@ -2093,7 +2131,7 @@ function setCellWorkers(shift, taskId, keyDay, nextWorkers) {
         .filter(worker => !nextWorkers.includes(worker));
 
     persistEntryOrDelete(assignments, cellKey, {
-        workers: nextWorkers,
+        workers: sortTaskWorkersByRole(nextWorkers),
         note: entry.note || "",
         removedDefaults,
         // Misma invariante que en la fusion: cerrada y con gente dentro no es
@@ -3254,7 +3292,7 @@ function syncWorkerDefaultForCurrentWeek(taskId, workerName, preserveKeyDay) {
             const shouldApply = defaultWorkersForCell(task, keyDay, shift)
                 .includes(workerName);
             const nextWorkers = shouldApply
-                ? uniqueValues([...workers, workerName])
+                ? sortTaskWorkersByRole([...workers, workerName])
                 : workers.filter(name => name !== workerName);
             const nextRemovedDefaults = shouldApply
                 ? removedDefaults.filter(name => name !== workerName)
@@ -3271,7 +3309,7 @@ function syncWorkerDefaultForCurrentWeek(taskId, workerName, preserveKeyDay) {
 
             persistEntryOrDelete(assignments, cellKey, {
                 ...entry,
-                workers: nextWorkers,
+                workers: sortTaskWorkersByRole(nextWorkers),
                 removedDefaults: nextRemovedDefaults
             });
             changed = true;
@@ -4419,7 +4457,7 @@ function repeatAssignmentForWeek(
         const entry = assignments[cellKey] || {};
 
         persistEntryOrDelete(assignments, cellKey, {
-            workers: available,
+            workers: sortTaskWorkersByRole(available),
             note: entry.note || "",
             removedDefaults: defaultWorkersForCell(task, nextKey, shift)
                 .filter(worker => !available.includes(worker)),
@@ -4789,7 +4827,7 @@ function openAssignmentDialog({ shift, taskId, keyDay }) {
         backdrop.querySelector("[data-dialog-save]")?.addEventListener("click", () => {
             const previousWorkers = assignmentWorkers(entry);
             collectVisibleWorkers();
-            const nextWorkers = [...selectedWorkers];
+            const nextWorkers = sortTaskWorkersByRole([...selectedWorkers]);
             const nextNote = note.trim();
             const nextRemovedDefaults = defaultWorkersForCell(task, keyDay, shift)
                 .filter(worker => !selectedWorkers.has(worker));
@@ -5342,6 +5380,11 @@ function autoScheduleCells(days, tasks, assignments) {
                     keyDay,
                     taskId,
                     taskIds: group.taskIds,
+                    fillAllEligible: autoScheduleFillsAllEligible(
+                        shift,
+                        day,
+                        group
+                    ),
                     candidates,
                     candidateTurnContextByWorker: serializeWorkerTurnContexts(
                         candidates,
@@ -5398,7 +5441,7 @@ function autoSchedulePlanSummary(plan, days) {
     const lines = [
         `Se repartirán ${plan.assignments} ${plan.assignments === 1 ? "persona" : "personas"} en ${cells} ${cells === 1 ? "casilla vacía" : "casillas vacías"} de la semana del ${formatShortDate(days[0])} al ${formatShortDate(days[6])}.`,
         "",
-        "El reparto es al azar entre los que están de turno, pero solo entra quien tiene participación repetida en esa tarea, respeta la mezcla habitual de estamentos y patrones de turno, intenta usar primero a quienes siguen sin tarea y puede repetir a una persona en el mismo turno solo cuando el historial muestra ese patrón multitarea.",
+        "El reparto es al azar entre los que están de turno, pero solo entra quien tiene participación repetida en esa tarea, respeta la mezcla habitual de estamentos y patrones de turno, intenta usar primero a quienes siguen sin tarea y puede repetir a una persona en el mismo turno solo cuando el historial muestra ese patrón multitarea. En casillas unidas de días inhábiles intenta incluir a todos los disponibles con historial dentro del grupo.",
         "",
         "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];
@@ -5467,7 +5510,7 @@ function autoSchedulePreviewRows(plan, tasks) {
                     <strong>${escapeHTML(title)}</strong>
                 </div>
                 <div class="task-auto-preview-workers">
-                    ${item.workers.map(name => `
+                    ${sortTaskWorkersByRole(item.workers).map(name => `
                         <span class="task-auto-preview-chip">
                             ${renderWorkerAvatar(name)}
                             <span>${escapeHTML(name)}</span>
@@ -5551,7 +5594,7 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
         const plannedTurnSlots = Array.isArray(item.turnSlots)
             ? item.turnSlots
             : [];
-        const workers = uniqueValues(item.workers.filter((name, index) => {
+        const workers = sortTaskWorkersByRole(item.workers.filter((name, index) => {
             const profile = profileByName(name);
             const currentTaskIds = [
                 ...(existingByWorker.get(name) || new Set())

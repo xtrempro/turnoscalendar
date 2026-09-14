@@ -138,6 +138,21 @@ test("los candidatos ya asignados en otra tarea van al final y se marcan", async
     );
 });
 
+test("los trabajadores de una tarea se ordenan por estamento", async () => {
+    const source = await readSource();
+
+    assert.match(source, /const TASK_WORKER_ROLE_ORDER = new Map/);
+    assert.match(source, /\["profesional", 0\]/);
+    assert.match(source, /\["tecnico", 1\]/);
+    assert.match(source, /\["administrativo", 2\]/);
+    assert.match(source, /\["auxiliar", 3\]/);
+    assert.match(
+        source,
+        /function assignmentWorkers\(entry\) \{[\s\S]{0,180}sortTaskWorkersByRole\(entry\.workers\)/
+    );
+    assert.match(source, /sortTaskWorkersByRole\(item\.workers\)/);
+});
+
 test("el selector se ancla al boton, no a la casilla", async () => {
     const source = await readSource();
 

@@ -921,6 +921,11 @@ function turnSlotsForCell(turnSignatures, cell, taskIds, history, taskWorkers) {
         .map(item => item.signature);
 }
 
+function fillAllEligibleCell(cell) {
+    return cell?.fillAllEligible === true ||
+        cell?.fillEligibleCandidates === true;
+}
+
 /* ==========================================================================
    Sorteo con peso
    ========================================================================== */
@@ -1240,7 +1245,7 @@ function assignFirstTasksForDay({
  *
  * @param {Object} options
  * @param {Array} options.cells casillas a llenar. Cada una:
- *   `{ shift, keyDay, taskId, taskIds, candidates, existingTaskIdsByWorker, blocked }`.
+ *   `{ shift, keyDay, taskId, taskIds, candidates, existingTaskIdsByWorker, blocked, fillAllEligible }`.
  *   - `taskIds`: las tareas que cubre la casilla (una sola, o todas las del
  *     grupo si esta fusionada). El historial de todas suma para decidir quien
  *     puede entrar.
@@ -1250,6 +1255,8 @@ function assignFirstTasksForDay({
  *     el mismo dia y turno. Solo se le agrega otra si hay patron multitarea.
  *   - `blocked`: nombres que no deben volver a esa casilla (un predefinido que
  *     el supervisor saco a mano).
+ *   - `fillAllEligible`: llena hasta incluir a todos los candidatos elegibles
+ *     por historial, pensado para casillas unidas de dias inhabiles.
  * @param {Object} options.history salida de `buildTaskAutoScheduleHistory`.
  * @param {Function} options.rng fuente de azar, inyectable para las pruebas.
  * @returns {{filled: Array, skipped: Array, assignments: number, workers: Array}}
@@ -1306,6 +1313,7 @@ export function planTaskAutoSchedule({
             stats,
             taskWorkers
         );
+        const fillAllEligible = fillAllEligibleCell(cell);
         const blocked = new Set(
             (cell.blocked || []).map(name => String(name))
         );
@@ -1320,15 +1328,19 @@ export function planTaskAutoSchedule({
             .filter(name => !blocked.has(name) && taskWorkers.has(name))
             .filter(name => canCandidateUseCell(stats, cell, name, taskIds))
             .length;
+        const effectiveGroupSlots = fillAllEligible ? [] : groupSlots;
+        const effectiveTurnSlots = fillAllEligible ? [] : turnSlots;
+        const effectiveHeadcount = fillAllEligible ? reach : staffing.headcount;
 
         return {
             cell,
             taskIds,
             taskWorkers,
-            headcount: staffing.headcount,
-            groupSlots,
+            headcount: effectiveHeadcount,
+            fillAllEligible,
+            groupSlots: effectiveGroupSlots,
             groupReach: groupReachForCell(
-                groupSlots,
+                effectiveGroupSlots,
                 cell,
                 taskIds,
                 stats,
@@ -1339,14 +1351,14 @@ export function planTaskAutoSchedule({
             // una tarea con dos personas posibles se quede sin nadie porque
             // otra tarea, que podia elegir entre veinte, se los llevo.
             reach,
-            turnSlots,
             // Desempate al azar entre casillas igual de apretadas. Sin esto el
             // orden del catalogo decide siempre lo mismo: al que solo alcanza
             // para una de dos tareas se lo lleva la que este mas arriba, y esa
             // persona no rota nunca, por mucho peso que se le calcule.
             jitter: rng(),
             chosen: [],
-            slotAssignments: Array(staffing.headcount).fill(""),
+            turnSlots: effectiveTurnSlots,
+            slotAssignments: Array(effectiveHeadcount).fill(""),
             historyReach
         };
     });
@@ -1437,12 +1449,18 @@ export function planTaskAutoSchedule({
             historyReach,
             groupReach,
             groupSlots,
+            fillAllEligible,
             taskIds,
             turnSlots
         } = item;
 
         if (!headcount) {
-            skipped.push({ ...cellRef(cell), reason: "sin-cupo" });
+            skipped.push({
+                ...cellRef(cell),
+                reason: fillAllEligible
+                    ? reasonFor(cell, historyReach, groupReach, groupSlots.length)
+                    : "sin-cupo"
+            });
             return;
         }
 

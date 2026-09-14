@@ -373,6 +373,43 @@ test("respeta la mezcla habitual de profesionales y tecnicos", () => {
     assert.equal(counts.get("Técnico"), 1);
 });
 
+test("casilla unida inhabil usa todos los elegibles del grupo", () => {
+    const history = buildTaskAutoScheduleHistory(
+        weekHistory({
+            resonador: () => ["Ana", "Bruno", "Carla", "Dario"],
+            rayos: () => ["Eva"]
+        }),
+        { beforeWeekKey: PLAN_WEEK }
+    );
+    const plan = planTaskAutoSchedule({
+        cells: [{
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId: "resonador",
+            taskIds: ["resonador", "rayos"],
+            fillAllEligible: true,
+            candidates: [
+                "Ana",
+                "Bruno",
+                "Carla",
+                "Dario",
+                "Eva",
+                "Sin Historial"
+            ],
+            blocked: []
+        }],
+        history,
+        rng: seededRng(99)
+    });
+    const [filled] = plan.filled;
+
+    assert.equal(headcountForCell(history, "day", "resonador", PLAN_MONDAY), 4);
+    assert.equal(filled.headcount, 5);
+    assert.equal(filled.workers.length, 5);
+    assert.ok(filled.workers.includes("Eva"));
+    assert.ok(!filled.workers.includes("Sin Historial"));
+});
+
 test("si falta un estamento habitual no lo rellena con otro", () => {
     const profiles = [
         profile("Pro Uno", "Profesional"),
