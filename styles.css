@@ -16895,6 +16895,7 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 .mem-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
 .mem-link { background: none; border: 0; padding: 0; color: var(--mem-brand-ink); font-weight: 800; font-size: 12.5px; }
 .mem-link:hover { text-decoration: underline; }
+.mem-link--danger { color: var(--mem-danger); }
 .mem-iconbtn { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--mem-muted); border: 1px solid transparent; }
 .mem-iconbtn:hover { background: var(--mem-hover); color: var(--mem-text); }
 .mem-iconbtn:disabled { opacity: 0.5; cursor: default; }

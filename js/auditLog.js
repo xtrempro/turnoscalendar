@@ -1426,6 +1426,10 @@ export function addAuditLog(category, action, details = "", meta = {}) {
     if (document.body.dataset.activeView === "log") {
         renderAuditLogPanel();
     }
+
+    // Quien registra puede necesitar el id: la licencia medica cuelga sus
+    // documentos (y su memorandum) del registro que la aplico.
+    return entry;
 }
 
 export async function undoAuditLogEntry(logId, options = {}) {

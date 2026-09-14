@@ -45,6 +45,13 @@ import {
     todayISO
 } from "./memosInsights.js";
 import { memoListPrintHTML, printDocument } from "./memosPrint.js";
+import {
+    LEAVE_ATTACHMENT_ACCEPT,
+    addLeaveAttachment,
+    getLeaveAttachments,
+    leaveTypeNeedsDocument,
+    removeLeaveAttachment
+} from "./leaveAttachments.js";
 
 const MEMOS_KEY = "memos";
 const DAY_KEY_PATTERN = /^(\d{4})-(\d{1,2})-(\d{1,2})$/;
@@ -83,7 +90,7 @@ function normalizeDocument(doc = {}) {
         resolution: String(doc.resolution || "").trim(),
         issuedAt: String(doc.issuedAt || "").trim(),
         uploadedByUid: String(doc.uploadedByUid || ""),
-        attachedAt: doc.attachedAt || new Date().toISOString()
+        attachedAt: doc.attachedAt || doc.addedAt || new Date().toISOString()
     };
 }
 
@@ -120,6 +127,9 @@ function normalizeMemo(memo = {}) {
         // startKey/endKey (ver memoLeaveType y memoCoversDay).
         leaveType: String(memo.leaveType || ""),
         keys: normalizeKeyList(memo.keys),
+        // Solo la licencia medica: el registro del LOG que la aplico, que es
+        // donde viven sus documentos (leaveAttachments).
+        logId: String(memo.logId || ""),
         status,
         createdAt,
         // Cuando se le pidio el documento al trabajador. Queda anotado aca para
@@ -193,22 +203,56 @@ function sortMemos(a, b) {
     return new Date(b.createdAt) - new Date(a.createdAt);
 }
 
+// Aplicar una licencia (leaveEngine) ahora escribe memorandum: estas dos
+// funciones corren tambien donde no hay pagina completa, y no pueden romper la
+// aplicacion del permiso por un contador.
 function dispatchMemosChanged() {
-    if (typeof window === "undefined") return;
+    if (
+        typeof window === "undefined" ||
+        typeof window.dispatchEvent !== "function" ||
+        typeof CustomEvent !== "function"
+    ) {
+        return;
+    }
 
     window.dispatchEvent(
         new CustomEvent("proturnos:memosChanged")
     );
 }
 
+// Una licencia medica no guarda su documento en el memorandum: usa el mismo
+// respaldo que se adjunta desde la casilla del calendario (leaveAttachments,
+// por el registro del LOG que la aplico). Lo que se adjunta en un lado se ve en
+// el otro, y el estado sale de ahi.
+function isLicenseMemo(memo) {
+    return Boolean(memo?.logId) && leaveTypeNeedsDocument(memo?.leaveType);
+}
+
+function withLicenseDocuments(memo) {
+    return isLicenseMemo(memo)
+        ? normalizeMemo({
+            ...memo,
+            documents: getLeaveAttachments(memo.profile, memo.logId)
+        })
+        : memo;
+}
+
 export function getMemos() {
-    return Array.isArray(getJSON(MEMOS_KEY, []))
-        ? getJSON(MEMOS_KEY, []).map(normalizeMemo).sort(sortMemos)
+    const stored = getJSON(MEMOS_KEY, []);
+
+    return Array.isArray(stored)
+        ? stored.map(normalizeMemo).map(withLicenseDocuments).sort(sortMemos)
         : [];
 }
 
 function persistMemos(memos, { emit = true } = {}) {
-    setJSON(MEMOS_KEY, memos.map(normalizeMemo));
+    // Los documentos de una licencia viven en leaveAttachments: no se copian
+    // aca, o habria dos versiones del mismo archivo.
+    setJSON(MEMOS_KEY, memos.map(normalizeMemo).map(memo =>
+        isLicenseMemo(memo)
+            ? { ...memo, documents: [], status: STATUS_PENDING, completedAt: "" }
+            : memo
+    ));
     updateMemosNavBadge();
 
     if (emit) dispatchMemosChanged();
@@ -221,7 +265,12 @@ export function pendingMemosCount() {
 }
 
 export function updateMemosNavBadge(count = pendingMemosCount()) {
-    if (typeof document === "undefined") return;
+    if (
+        typeof document === "undefined" ||
+        typeof document.querySelector !== "function"
+    ) {
+        return;
+    }
 
     const tile = document.querySelector(
         ".nav-tile[data-target='memosPanel']"
@@ -308,7 +357,10 @@ export function createLeaveMemoTask({
     // casillas seguidas -salta fines de semana y festivos-, asi que el rango
     // startKey..endKey no alcanza para saber que casilla pertenece a este
     // memorandum. Cuando no llega, la busqueda cae al rango.
-    keys = []
+    keys = [],
+    // Solo la licencia medica: el id de su registro del LOG. Sus documentos son
+    // los respaldos de ese registro (leaveAttachments).
+    logId = ""
 } = {}) {
     if (!profile || !typeLabel || !startKey) return null;
 
@@ -335,7 +387,8 @@ export function createLeaveMemoTask({
         startKey,
         endKey: finalEndKey,
         leaveType: sourceType || "",
-        keys
+        keys,
+        logId
     });
 }
 
@@ -606,6 +659,37 @@ export function cancelLeaveMemos({ profile, leaveType, keys = [] } = {}) {
     return removed;
 }
 
+/**
+ * Quita a mano un memorandum que todavia no tiene documento.
+ *
+ * Para los que quedaron de un permiso anulado antes de que la anulacion los
+ * quitara sola, o los que se crearon por error. Con documento adjunto no se
+ * puede: primero hay que eliminar el documento, que es lo que borra el archivo.
+ *
+ * @param {string} memoId
+ * @returns {boolean}
+ */
+export function removePendingMemo(memoId) {
+    const memo = getMemoById(memoId);
+
+    if (!memo || memo.documents.length) return false;
+
+    persistMemos(getMemos().filter(item => item.id !== memo.id));
+
+    addAuditLog(
+        AUDIT_CATEGORY.WORKER_REQUESTS,
+        "Quito memorandum pendiente",
+        `${memo.profile || "Sin trabajador"}: ${memo.typeLabel}.`,
+        {
+            profile: memo.profile,
+            memoId: memo.id,
+            memoType: memo.typeLabel
+        }
+    );
+
+    return true;
+}
+
 // La anulacion desde el LOG (auditLog.js) avisa por evento: la bitacora no
 // puede importar este modulo, porque este ya la importa a ella.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
@@ -734,10 +818,36 @@ async function fileToMemoDocument(file, memoId, meta = {}) {
  * @returns {Promise<Object>} el documento guardado
  */
 export async function addMemoDocument(memoId, file, meta = {}) {
-    if (!getMemoById(memoId)) {
+    const target = getMemoById(memoId);
+
+    if (!target) {
         throw new Error(
             "No se pudo identificar el memorandum al que pertenece el documento."
         );
+    }
+
+    // La licencia medica: el archivo va a su respaldo, el mismo de la casilla.
+    if (isLicenseMemo(target)) {
+        const attachment = await addLeaveAttachment(
+            target.profile,
+            target.logId,
+            file
+        );
+
+        addAuditLog(
+            AUDIT_CATEGORY.WORKER_REQUESTS,
+            "Adjunto documento a memorandum",
+            `${target.profile || "Sin trabajador"}: ${attachment?.name || "licencia"}.`,
+            {
+                profile: target.profile,
+                memoId: target.id,
+                memoType: target.typeLabel
+            }
+        );
+        updateMemosNavBadge();
+        dispatchMemosChanged();
+
+        return attachment;
     }
 
     const document = await fileToMemoDocument(file, memoId, meta);
@@ -763,6 +873,34 @@ export async function addMemoDocument(memoId, file, meta = {}) {
  * @returns {Promise<boolean>}
  */
 export async function removeMemoDocument(memoId, documentId) {
+    const target = getMemoById(memoId);
+
+    // La licencia medica: se quita de su respaldo, el mismo de la casilla.
+    if (isLicenseMemo(target)) {
+        const removed = await removeLeaveAttachment(
+            target.profile,
+            target.logId,
+            documentId
+        );
+
+        if (removed) {
+            addAuditLog(
+                AUDIT_CATEGORY.WORKER_REQUESTS,
+                "Elimino documento de memorandum",
+                `${target.profile || "Sin trabajador"}: ${target.typeLabel}.`,
+                {
+                    profile: target.profile,
+                    memoId: target.id,
+                    memoType: target.typeLabel
+                }
+            );
+            updateMemosNavBadge();
+            dispatchMemosChanged();
+        }
+
+        return removed;
+    }
+
     const documents = getMemoDocuments(memoId);
     const document = documents.find(item =>
         String(item.id) === String(documentId)
@@ -1424,7 +1562,9 @@ function timelineHTML(memo) {
     const steps = [
         {
             done: true,
-            title: ORIGIN_STEP[memoKind(memo)],
+            title: leaveTypeNeedsDocument(memo.leaveType)
+                ? "Licencia aplicada en TurnoPlus"
+                : ORIGIN_STEP[memoKind(memo)],
             detail: `${formatISO(timestampISO(memo.createdAt))} ${timestampTime(memo.createdAt)} · desde ${MEMO_KINDS[memoKind(memo)].label.toLowerCase()}`,
             icon: "memo"
         },
@@ -1460,7 +1600,7 @@ function matchHTML(memo, doc) {
             <span class="mem-match__ic">${ic("check")}</span>
             <span class="mem-match__txt">
                 <strong>Documento adjunto</strong>
-                <span>${esc(memo.typeLabel)} · ${esc(memoRangeLabel(memo))}. Anota el N° de resolución al adjuntar para poder buscarlo después.</span>
+                <span>${esc(memo.typeLabel)} · ${esc(memoRangeLabel(memo))}.${leaveTypeNeedsDocument(memo.leaveType) ? "" : " Anota el N° de resolución al adjuntar para poder buscarlo después."}</span>
             </span>
         </div>`;
     }
@@ -1483,6 +1623,7 @@ function viewerHTML(memo, ctx) {
 
     const documents = memoDocuments(memo);
     const doc = documents[ui.docIndex] || documents[0];
+    const license = leaveTypeNeedsDocument(memo.leaveType);
     const state = MEMO_STATES[memoStatus(memo)];
     const year = ctx.today.slice(0, 4);
     const fromWorker = ctx.memos.filter(item =>
@@ -1517,8 +1658,10 @@ function viewerHTML(memo, ctx) {
             <button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="attach" data-mem-id="${attr(memo.id)}">${ic("plus")}Agregar otro documento</button>`
         : `<div class="mem-dropzone">
                 ${ic("clip")}
-                <strong>Todavía no está el documento</strong>
-                <p>Descárgalo del sistema de personal y adjúntalo aquí, o toma una foto del papel visado. Apenas se adjunta, el memorándum queda realizado.</p>
+                <strong>${license ? "Todavía no está la licencia" : "Todavía no está el documento"}</strong>
+                <p>${license
+                    ? "Escanea o fotografía la licencia médica y adjúntala aquí. Apenas se adjunta, el memorándum queda realizado."
+                    : "Descárgalo del sistema de personal y adjúntalo aquí, o toma una foto del papel visado. Apenas se adjunta, el memorándum queda realizado."}</p>
                 <span class="mem-dropzone__acts">
                     <button class="mem-btn mem-btn--primary mem-btn--sm" type="button" data-mem-act="attach" data-mem-id="${attr(memo.id)}">${ic("clip")}Adjuntar documento</button>
                     ${memoWasRequested(memo) ? "" : `<button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="request" data-mem-id="${attr(memo.id)}">${ic("send")}Marcar que se lo pedí</button>`}
@@ -1527,7 +1670,7 @@ function viewerHTML(memo, ctx) {
 
     return `<div class="mem-viewer-head">
             <div class="mem-viewer-file">
-                <span class="mem-kicker">${esc(VIEWER_KICKER[memoKind(memo)])}</span>
+                <span class="mem-kicker">${esc(license ? "Documento de la licencia" : VIEWER_KICKER[memoKind(memo)])}</span>
                 <strong>${esc(doc ? doc.name : shortName(memo.profile))}</strong>
                 <small>${doc
                     ? `${doc.resolution ? `Res. exenta N° ${esc(doc.resolution)} · ` : ""}${doc.issuedAt ? `${esc(formatISO(doc.issuedAt))} · ` : ""}${documentKindLabel(doc)}`
@@ -1543,30 +1686,40 @@ function viewerHTML(memo, ctx) {
                 <strong>${esc(plural(fromWorker.length, "memorándum", "memorándums"))}</strong>
                 <span class="mem-hint">${pending ? `${pending} pendiente${pending > 1 ? "s" : ""}` : "Todos realizados"}</span>
             </div>
-            <button class="mem-link" type="button" data-mem-act="open-calendar" data-mem-id="${attr(memo.id)}">Ver el permiso en el calendario</button>
+            <button class="mem-link" type="button" data-mem-act="open-calendar" data-mem-id="${attr(memo.id)}">${license ? "Ver la licencia en el calendario" : "Ver el permiso en el calendario"}</button>
+            ${documents.length ? "" : `<button class="mem-link mem-link--danger" type="button" data-mem-act="remove-memo" data-mem-id="${attr(memo.id)}">Quitar memorándum</button>`}
         </div>`;
 }
 
 /* ---------- dialogos ---------- */
 
 function attachDialog(memo) {
+    // La licencia medica no trae resolucion exenta: se escanea la licencia, y
+    // queda en el mismo respaldo que la casilla del calendario.
+    const license = leaveTypeNeedsDocument(memo.leaveType);
+    const dropText = license
+        ? "Elige el PDF o la foto de la licencia médica"
+        : "Elige el PDF o la foto del papel firmado";
+
     openDialog({
-        title: "Adjuntar el documento",
+        title: license ? "Adjuntar la licencia médica" : "Adjuntar el documento",
         subtitle: `${memo.typeLabel} · ${shortName(memo.profile)}`,
         submitLabel: "Adjuntar documento",
         body: `<div class="mem-field">
-                <span>Documento del sistema de personal</span>
+                <span>${license ? "Licencia médica escaneada" : "Documento del sistema de personal"}</span>
                 <label class="mem-drop">
-                    ${ic("clip")}<span data-mem-droplabel data-default="Elige el PDF o la foto del papel firmado">Elige el PDF o la foto del papel firmado</span>
-                    <input type="file" name="file" accept="${attr(MEMO_ATTACHMENT_ACCEPT)}" required>
+                    ${ic("clip")}<span data-mem-droplabel data-default="${attr(dropText)}">${esc(dropText)}</span>
+                    <input type="file" name="file" accept="${attr(license ? LEAVE_ATTACHMENT_ACCEPT : MEMO_ATTACHMENT_ACCEPT)}" required>
                 </label>
-                <small>Sirve el PDF descargado del sistema o una foto del documento visado. Queda en esta ficha y en la casilla del calendario.</small>
+                <small>${license
+                    ? "Imagen o PDF, hasta 10 MB. Queda en esta ficha y en la casilla de la licencia en el calendario."
+                    : "Sirve el PDF descargado del sistema o una foto del documento visado. Queda en esta ficha y en la casilla del calendario."}</small>
             </div>
-            <div class="mem-fgrid">
+            ${license ? "" : `<div class="mem-fgrid">
                 <label class="mem-field"><span>N° de resolución exenta</span><input type="text" name="resolution" placeholder="Ej: 2026051601029209"><small>Se lee del documento; sirve para buscarlo después.</small></label>
                 <label class="mem-field"><span>Fecha del documento</span><input type="date" name="issuedAt"></label>
-            </div>
-            <p class="mem-hint">Apenas quede adjunto, el memorándum pasa a <b>Realizado</b>. Si después llega otro documento (la visación firmada, por ejemplo), se agrega al mismo memorándum.</p>`,
+            </div>`}
+            <p class="mem-hint">Apenas quede adjunto, el memorándum pasa a <b>Realizado</b>. Si después llega otro documento${license ? "" : " (la visación firmada, por ejemplo)"}, se agrega al mismo memorándum.</p>`,
         onSubmit: async form => {
             const file = form.querySelector('input[name="file"]')?.files?.[0];
 
@@ -1740,6 +1893,31 @@ async function removeCurrentDocument(memo, documentId) {
         toast(error?.message || "No se pudo eliminar el documento.");
         console.error(error);
     }
+}
+
+async function confirmRemoveMemo(memo) {
+    const confirmed = await showConfirm(
+        `¿Quitar el memorándum de ${memo.typeLabel} de ${shortName(memo.profile)}? ` +
+        "Se deja de pedir su documento. Úsalo cuando el permiso ya no existe " +
+        "o el memorándum se creó por error.",
+        {
+            title: "Quitar memorándum",
+            confirmText: "Quitar",
+            destructive: true
+        }
+    );
+
+    if (!confirmed) return;
+
+    if (!removePendingMemo(memo.id)) {
+        toast("Solo se puede quitar un memorándum sin documento adjunto.");
+        return;
+    }
+
+    ui.openId = "";
+    ui.docIndex = 0;
+    toast("Memorándum quitado.");
+    renderMemosPanel();
 }
 
 function requestDocuments(memos, message) {
@@ -1928,6 +2106,12 @@ async function onPanelClick(event) {
             ui.estado = "pending";
             renderMemosPanel();
             return;
+        case "remove-memo": {
+            const memo = memoById(data.memId);
+
+            if (memo) await confirmRemoveMemo(memo);
+            return;
+        }
         case "open-calendar": {
             const memo = memoById(data.memId);
 

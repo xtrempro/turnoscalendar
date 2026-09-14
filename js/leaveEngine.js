@@ -1335,7 +1335,7 @@ export async function aplicarLicencia(
     saveAbsences(abs);
     saveBlockedDays(blocked);
 
-    addAuditLog(
+    const applicationLog = addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
         `Aplic\u00f3 ${label}`,
         `${profile}: ${total} d\u00eda(s) corridos desde ${formatKey(startKey)}.`,
@@ -1363,6 +1363,22 @@ export async function aplicarLicencia(
             endKey: keys[keys.length - 1],
             sourceType: "unpaid_leave",
             keys
+        });
+    }
+
+    // La licencia medica tambien pide su documento: aparece en Memorandum para
+    // escanearla y adjuntarla. Su archivo es el mismo respaldo que se abre desde
+    // la casilla (leaveAttachments, por el registro del LOG), no una copia.
+    if ((type === "license" || type === "professional_license") && applicationLog?.id) {
+        createLeaveMemoTask({
+            profile,
+            typeLabel: label,
+            amount: total,
+            startKey,
+            endKey: keys[keys.length - 1],
+            sourceType: type,
+            keys,
+            logId: applicationLog.id
         });
     }
 

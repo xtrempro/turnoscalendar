@@ -108,6 +108,21 @@ export function validateLeaveAttachment(file) {
     return file;
 }
 
+// El memorandum de la licencia muestra estos mismos archivos (memos.js): se
+// avisa para que su lista y el contador del menu se actualicen cuando se
+// adjunta o se quita desde la casilla del calendario.
+function notifyMemos() {
+    if (
+        typeof window === "undefined" ||
+        typeof window.dispatchEvent !== "function" ||
+        typeof CustomEvent !== "function"
+    ) {
+        return;
+    }
+
+    window.dispatchEvent(new CustomEvent("proturnos:memosChanged"));
+}
+
 /**
  * Sube un archivo y lo deja asociado a la licencia.
  *
@@ -139,6 +154,7 @@ export async function addLeaveAttachment(profile, logId, file) {
         ...getLeaveAttachments(profile, logId),
         attachment
     ]);
+    notifyMemos();
 
     return attachment;
 }
@@ -170,6 +186,7 @@ export async function removeLeaveAttachment(profile, logId, attachmentId) {
         attachments.filter(item => item !== attachment)
     );
     void forgetCachedAttachment(attachment);
+    notifyMemos();
 
     return true;
 }
