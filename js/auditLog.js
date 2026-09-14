@@ -1039,6 +1039,15 @@ async function undoLeaveAbsenceLog(log) {
     const canceledReplacements =
         cancelReplacementsForAbsence(profile, removedKeys, log);
 
+    // El memorandum que pedia el documento de este permiso ya no corresponde.
+    // memos.js escucha el aviso: importarlo aca seria circular (el importa la
+    // bitacora).
+    if (typeof window !== "undefined" && typeof CustomEvent === "function") {
+        window.dispatchEvent(new CustomEvent("proturnos:leaveCanceled", {
+            detail: { profile, leaveType: type, keys: removedKeys, logId: log.id }
+        }));
+    }
+
     queueWorkerNotification(
         profile,
         `Se anuló ${log.action || "una ausencia/permiso"} desde el sistema. Revisa tu calendario actualizado.`,

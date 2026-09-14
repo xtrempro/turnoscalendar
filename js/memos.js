@@ -20,6 +20,7 @@ import {
     MEMO_KINDS,
     MEMO_STATES,
     OVERDUE_DAYS,
+    dayKeyToISO,
     formatISO,
     groupByWorker,
     initials,
@@ -524,6 +525,93 @@ export function findClockMemoForDay({ profile, keyDay } = {}) {
         sameProfileName(memo.profile, profile) &&
         memo.dateKey === keyDay
     ) || null;
+}
+
+/**
+ * Quita los memorandum pendientes de un permiso que se anulo.
+ *
+ * Si el permiso ya no existe, el documento que se pedia tampoco corresponde:
+ * dejarlo en la lista era cobrarle al trabajador un papel de algo que no paso.
+ *
+ * Reglas:
+ * - Solo los del mismo trabajador y el mismo tipo de permiso que tocan alguno
+ *   de los dias anulados.
+ * - Si se anularon solo algunos de sus dias, el memorandum se queda con los
+ *   otros.
+ * - Si ya tenia un documento adjunto, se queda: borrarlo eliminaria el archivo
+ *   de Storage, y si la anulacion fue un error se perderia.
+ *
+ * Se llama al anular, NO comparando memorandum contra permisos: en otra sesion
+ * los permisos pueden no haber llegado todavia, y ese "falta el permiso"
+ * borraria memorandum validos en todos lados (ver el incidente de tareas
+ * borradas).
+ *
+ * @param {{profile: string, leaveType: string, keys: string[]}} options
+ * @returns {Array<Object>} los memorandum quitados
+ */
+export function cancelLeaveMemos({ profile, leaveType, keys = [] } = {}) {
+    const cancelled = new Set(normalizeKeyList(keys));
+
+    if (!profile || !leaveType || !cancelled.size) return [];
+
+    const removed = [];
+    let changed = false;
+    const next = [];
+
+    getMemos().forEach(memo => {
+        const affected =
+            sameProfileName(memo.profile, profile) &&
+            leaveTypeMatches(memoLeaveType(memo), leaveType) &&
+            [...cancelled].some(keyDay => memoCoversDay(memo, keyDay));
+
+        if (!affected || memo.documents.length) {
+            next.push(memo);
+            return;
+        }
+
+        const remaining = memo.keys.filter(keyDay => !cancelled.has(keyDay));
+
+        if (memo.keys.length && remaining.length) {
+            next.push(normalizeMemo({
+                ...memo,
+                keys: remaining,
+                startKey: remaining[0],
+                endKey: remaining[remaining.length - 1]
+            }));
+            changed = true;
+            return;
+        }
+
+        removed.push(memo);
+        changed = true;
+    });
+
+    if (!changed) return [];
+
+    persistMemos(next);
+
+    removed.forEach(memo => {
+        addAuditLog(
+            AUDIT_CATEGORY.WORKER_REQUESTS,
+            "Quito memorandum de permiso anulado",
+            `${memo.profile || "Sin trabajador"}: ${memo.typeLabel}.`,
+            {
+                profile: memo.profile,
+                memoId: memo.id,
+                memoType: memo.typeLabel
+            }
+        );
+    });
+
+    return removed;
+}
+
+// La anulacion desde el LOG (auditLog.js) avisa por evento: la bitacora no
+// puede importar este modulo, porque este ya la importa a ella.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("proturnos:leaveCanceled", event => {
+        cancelLeaveMemos(event?.detail || {});
+    });
 }
 
 export function getMemoDocuments(memoId) {
@@ -1667,7 +1755,9 @@ function requestDocuments(memos, message) {
 }
 
 // El calendario no se puede importar desde aca (el calendario ya importa este
-// modulo): se avisa y main.js, que conoce a los dos, hace la navegacion.
+// modulo): se avisa a main.js por el mismo camino que usa "Ver en calendario"
+// de Solicitudes, que selecciona al trabajador ANTES de abrir el mes. Solo
+// cambiar el mes dejaba a la vista el calendario de la ultima persona abierta.
 function openInCalendar(memo) {
     const keyDay = memo.keys[0] || memo.dateKey || memo.startKey;
 
@@ -1676,8 +1766,8 @@ function openInCalendar(memo) {
         return;
     }
 
-    window.dispatchEvent(new CustomEvent("proturnos:openCalendarDay", {
-        detail: { profile: memo.profile, keyDay }
+    window.dispatchEvent(new CustomEvent("proturnos:viewWorkerRequestInCalendar", {
+        detail: { profile: memo.profile, date: dayKeyToISO(keyDay) }
     }));
 }
 

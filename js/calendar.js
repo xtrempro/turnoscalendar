@@ -11,6 +11,7 @@ import {
 import {
     MEMO_ATTACHMENT_ACCEPT,
     addMemoDocument,
+    cancelLeaveMemos,
     findClockMemoForDay,
     findLeaveMemoForDay,
     getMemoDocuments,
@@ -5882,6 +5883,10 @@ async function cancelReplacedProfileLeave(profileName, keyDay) {
 
     // El permiso ya no existe: su espera de cobertura tampoco.
     removeLeaveHoldKeys(profileName, cancelKeys);
+
+    // Ni el memorandum que pedia su documento. (Por el LOG lo quita el aviso
+    // proturnos:leaveCanceled; esta limpieza manual no pasa por ahi.)
+    cancelLeaveMemos({ profile: profileName, leaveType: type, keys: cancelKeys });
 
     if (
         type === "admin" ||

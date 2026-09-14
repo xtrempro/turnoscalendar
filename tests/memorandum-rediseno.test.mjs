@@ -443,6 +443,31 @@ test("las filas no tienen casillas de seleccion ni barra de acciones en lote", (
     assert.match(styles, /\.mem-memo \{ display: grid; grid-template-columns: auto minmax\(0, 1fr\) auto;/);
 });
 
+test("ver el permiso en el calendario abre al trabajador del memorandum", async () => {
+    // Antes solo se cambiaba el mes y quedaba a la vista el calendario de la
+    // ultima persona abierta. Ahora usa el mismo camino que "Ver en
+    // calendario" de Solicitudes, que selecciona el perfil antes de abrir.
+    const main = await read("../js/main.js");
+
+    assert.match(
+        memosSource,
+        /new CustomEvent\("proturnos:viewWorkerRequestInCalendar", \{\n\s*detail: \{ profile: memo\.profile, date: dayKeyToISO\(keyDay\) \}/
+    );
+    assert.match(
+        main,
+        /"proturnos:viewWorkerRequestInCalendar",[\s\S]{0,900}selectProfileByName\(profileName/
+    );
+    // El camino viejo, que no seleccionaba al trabajador, ya no existe.
+    assert.doesNotMatch(main, /proturnos:openCalendarDay/);
+    assert.doesNotMatch(memosSource, /proturnos:openCalendarDay/);
+});
+
+test("la fecha del salto sale en ISO con el mes real, no en base 0", () => {
+    // parseCalendarJumpDate (main.js) espera "2026-09-19" y le resta 1 al mes.
+    // La clave del calendario "2026-8-19" es el 19 de SEPTIEMBRE.
+    assert.equal(insights.dayKeyToISO("2026-8-19"), "2026-09-19");
+});
+
 test("el panel se dibuja con el bloque mem-, aislado del resto", () => {
     assert.match(memosSource, /<div class="mem mem-root">/);
     assert.match(styles, /\.mem-root \{/);
