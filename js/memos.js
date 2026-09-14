@@ -912,6 +912,17 @@ function bindLayer(layer) {
         }
 
         if (event.target.closest("[data-mem-dlg='close']")) closeDialog();
+
+        // El mismo enlace de respaldo del PDF, dentro de la pantalla completa.
+        if (event.target.closest("[data-mem-act='open-doc']")) {
+            const doc = memoDocuments(getMemoById(ui.openId) || {})[ui.docIndex];
+
+            if (doc) {
+                openAttachmentFile(doc, { newTab: true }).catch(error =>
+                    toast(error?.message || "No se pudo abrir el documento.")
+                );
+            }
+        }
     });
 
     layer.addEventListener("submit", event => {
@@ -982,7 +993,12 @@ function previewHTML(doc, url) {
     }
 
     if (isPdfDocument(doc)) {
-        return `<iframe src="${attr(url)}#toolbar=0&navpanes=0" title="${attr(doc.name)}" loading="lazy"></iframe>`;
+        // El iframe apunta a firebasestorage.googleapis.com, que tiene que estar
+        // en el frame-src de la CSP (firebase.json). Y hay navegadores -Chrome en
+        // Android, Safari en iPhone- que no dibujan un PDF dentro de la pagina:
+        // para esos queda el enlace para abrirlo aparte.
+        return `<iframe src="${attr(url)}#toolbar=0&navpanes=0" title="${attr(doc.name)}" loading="lazy"></iframe>
+            <button class="mem-link mem-docwrap__alt" type="button" data-mem-act="open-doc">¿No se ve el PDF? Ábrelo en otra pestaña</button>`;
     }
 
     return `<div class="mem-docfile">${ic("file")}<strong>${esc(doc.name)}</strong><span>Este formato se revisa fuera de TurnoPlus.</span>

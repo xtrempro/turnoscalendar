@@ -372,6 +372,31 @@ test("TurnoPlus no dibuja el documento: lo emite el sistema de personal", () => 
     assert.match(memosSource, /Documento del sistema de personal/);
 });
 
+test("la CSP deja mostrar el PDF de Storage dentro de la pagina", async () => {
+    // El visor es un iframe a firebasestorage.googleapis.com. Con un frame-src
+    // sin ese dominio el navegador lo bloquea y el visor queda en gris: paso en
+    // prod el 2026-09-14, y el banco de pruebas no lo vio porque servia el
+    // documento desde el mismo origen.
+    for (const file of ["../firebase.json", "../firebase.test.json"]) {
+        const frameSrcs = (await read(file)).match(/frame-src [^;"]*/g) || [];
+
+        assert.ok(frameSrcs.length, `${file} no define frame-src`);
+        frameSrcs.forEach(src => {
+            assert.match(
+                src,
+                /https:\/\/firebasestorage\.googleapis\.com(\s|$)/,
+                `${file}: ${src}`
+            );
+        });
+    }
+});
+
+test("si el navegador no dibuja el PDF, queda como abrirlo aparte", () => {
+    assert.match(memosSource, /¿No se ve el PDF\? Ábrelo en otra pestaña/);
+    // Tambien desde la pantalla completa, que vive fuera del panel.
+    assert.match(memosSource, /event\.target\.closest\("\[data-mem-act='open-doc'\]"\)/);
+});
+
 test("la pantalla completa carga el documento en su propio cuadro", () => {
     // El visor del panel tambien tiene un [data-mem-stage] y esta antes en el
     // documento: sin separar los dos, el dialogo se quedaba en "Cargando".

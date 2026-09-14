@@ -16846,6 +16846,7 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 .mem-docwrap { display: grid; justify-items: center; width: 100%; }
 .mem-docwrap img { max-width: 100%; border-radius: 6px; background: #fff; box-shadow: 0 10px 24px rgba(17, 32, 56, 0.18); }
 .mem-docwrap iframe { width: 100%; height: 480px; border: 0; border-radius: 6px; background: #fff; }
+.mem-docwrap__alt { margin-top: 8px; text-align: center; }
 .mem-docfile { display: grid; gap: 8px; justify-items: center; text-align: center; padding: 26px 18px; color: var(--mem-muted); font-weight: 700; font-size: 12.5px; }
 .mem-docfile .mem-i { width: 26px; height: 26px; color: var(--mem-brand-ink); }
 .mem-dropzone { display: grid; gap: 10px; justify-items: center; text-align: center; padding: 24px 18px; border: 1.5px dashed var(--mem-brand-ring); border-radius: 14px; background: var(--mem-brand-soft); color: var(--mem-brand-ink); }
