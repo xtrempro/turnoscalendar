@@ -1,14 +1,18 @@
 // Copia local, en cada computador, de los adjuntos que se abren.
 //
-// Un PDF de resolucion o la foto de un permiso se revisan muchas veces: con el
-// zoom, al volver a la lista, al dia siguiente. Sin copia, cada vista le pide
-// la URL a Storage y baja el archivo entero. Con copia se baja una sola vez.
+// Un PDF de resolucion, la foto de una falla o el respaldo de una licencia se
+// revisan muchas veces: con el zoom, al volver a la ficha, al dia siguiente.
+// Sin copia, cada vista le pide la URL a Storage y baja el archivo entero. Con
+// copia se baja una sola vez.
+//
+// La usan Memorandum, Equipos Medicos, Informaciones y Licencias.
 //
 // Reglas (acordadas con el usuario el 2026-09-14; los computadores de los
 // supervisores no son compartidos):
 // - Solo se guarda lo que alguien abre, no todo lo que se sube.
 // - Tope de 2 GB: al pasarse, se borra lo que hace mas tiempo no se abre.
-// - Lo que no se abre en 90 dias se borra solo.
+// - Lo que no se abre en 120 dias se borra solo (eran 90; el usuario lo
+//   amplio el mismo 2026-09-14).
 // - Si en el navegador entra OTRA cuenta, la copia se vacia entera.
 //
 // Lo que necesita fuera de este archivo:
@@ -16,22 +20,27 @@
 //   sitios de Hosting). Sin eso el fetch falla y se muestra desde Storage, como
 //   antes, sin copia.
 // - blob: en el frame-src de la CSP, para mostrar el PDF copiado.
-// - sw.js no borra esta cache al activar una version nueva.
+// - sw.js y el boton Actualizar de main.js no borran esta cache.
 
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
-import { resolveAttachmentURL } from "./attachmentUtils.js";
+import {
+    canPreviewAttachment,
+    hasAttachmentContent,
+    openAttachmentFile,
+    resolveAttachmentURL
+} from "./attachmentUtils.js";
 
 export const ATTACHMENT_CACHE_PREFIX = "turnoplus-adjuntos";
 export const ATTACHMENT_CACHE_NAME = `${ATTACHMENT_CACHE_PREFIX}-v1`;
 export const ATTACHMENT_CACHE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
-export const ATTACHMENT_CACHE_MAX_IDLE_DAYS = 90;
+export const ATTACHMENT_CACHE_MAX_IDLE_DAYS = 120;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const INDEX_PATH = "/__turnoplus-adjuntos__/indice.json";
 const ENTRY_PATH = "/__turnoplus-adjuntos__/archivo/";
-// Copias abiertas en memoria a la vez. El resto sigue en disco y se vuelve a
-// leer al pedirlo: sin este limite, revisar 300 fotos en una tarde dejaria
-// 300 archivos cargados en la pestaña.
+// Copias abiertas en memoria a la vez (URLs blob: de miniaturas y visores). El
+// resto sigue en disco y se vuelve a leer al pedirlo: sin este limite, revisar
+// 300 fotos en una tarde dejaria 300 archivos cargados en la pestaña.
 const MAX_OBJECT_URLS = 24;
 
 // Solo estos tipos conservan su tipo real. Un blob: vive en el origen del
@@ -306,49 +315,43 @@ async function prepare() {
     return cache;
 }
 
+/* =========================================================
+   Lo que usan los menus
+========================================================= */
+
 /**
- * URL para mostrar un adjunto en la pagina, desde la copia del computador.
+ * El archivo, desde la copia del computador.
  *
- * Si ya esta copiado, no se toca la red. Si no, se baja una vez de Storage, se
- * guarda y se devuelve la copia. Si el navegador no deja copiarlo (sin Cache
- * Storage, CORS del bucket, cuota llena, modo incognito), devuelve la URL de
- * Storage igual que antes: la vista nunca se queda sin documento por la copia.
+ * Si ya esta copiado, no se toca la red. Si no, se baja una vez de Storage y se
+ * guarda. Si el navegador no deja copiarlo (sin Cache Storage, CORS del
+ * bucket, cuota llena, modo incognito), blob viene en null y remoteUrl trae la
+ * URL de Storage, para mostrarlo igual que antes: la vista nunca se queda sin
+ * documento por la copia.
  *
  * @param {Object} attachment
- * @returns {Promise<string>}
+ * @returns {Promise<{blob: Blob|null, remoteUrl: string}>}
  */
-export async function cachedAttachmentURL(attachment) {
-    if (!attachment) return "";
+export async function cachedAttachmentBlob(attachment) {
+    if (!attachment) return { blob: null, remoteUrl: "" };
 
     const key = attachmentCacheKey(attachment);
 
-    if (!key || !cacheSupported()) return resolveAttachmentURL(attachment);
+    if (!key || !cacheSupported()) {
+        return { blob: null, remoteUrl: await resolveAttachmentURL(attachment) };
+    }
 
     let cache = null;
 
     try {
         cache = await prepare();
 
-        if (index.entries[key] && objectUrls.has(key)) {
-            const url = objectUrls.get(key);
-
-            // Queda como la mas reciente de las abiertas en memoria.
-            objectUrls.delete(key);
-            objectUrls.set(key, url);
-            touch(key);
-
-            return url;
-        }
-
         if (index.entries[key]) {
             const hit = await cache.match(entryPath(key));
 
             if (hit) {
-                const blob = await hit.blob();
-
                 touch(key);
 
-                return rememberObjectUrl(key, blob);
+                return { blob: await hit.blob(), remoteUrl: "" };
             }
 
             delete index.entries[key];
@@ -359,7 +362,7 @@ export async function cachedAttachmentURL(attachment) {
 
     const remoteUrl = await resolveAttachmentURL(attachment);
 
-    if (!cache) return remoteUrl;
+    if (!cache) return { blob: null, remoteUrl };
 
     try {
         const response = await fetch(remoteUrl, {
@@ -367,14 +370,16 @@ export async function cachedAttachmentURL(attachment) {
             credentials: "omit"
         });
 
-        if (!response.ok) return remoteUrl;
+        if (!response.ok) return { blob: null, remoteUrl };
 
         const raw = await response.blob();
         const blob = new Blob([raw], {
             type: safeCachedType(raw.type || attachment.type)
         });
 
-        if (!blob.size || blob.size > ATTACHMENT_CACHE_MAX_BYTES) return remoteUrl;
+        if (!blob.size || blob.size > ATTACHMENT_CACHE_MAX_BYTES) {
+            return { blob: null, remoteUrl };
+        }
 
         await cache.put(entryPath(key), new Response(blob, {
             headers: { "Content-Type": blob.type }
@@ -401,10 +406,107 @@ export async function cachedAttachmentURL(attachment) {
 
         scheduleSave();
 
-        return rememberObjectUrl(key, blob);
+        return { blob, remoteUrl };
     } catch {
-        return remoteUrl;
+        return { blob: null, remoteUrl };
     }
+}
+
+/**
+ * URL para mostrar un adjunto dentro de la pagina (visor, miniatura), desde la
+ * copia del computador. Si no se pudo copiar, la URL de Storage.
+ *
+ * @param {Object} attachment
+ * @returns {Promise<string>}
+ */
+export async function cachedAttachmentURL(attachment) {
+    if (!attachment) return "";
+
+    const key = attachmentCacheKey(attachment);
+
+    if (key && objectUrls.has(key) && index?.entries?.[key]) {
+        const url = objectUrls.get(key);
+
+        // Queda como la mas reciente de las abiertas en memoria.
+        objectUrls.delete(key);
+        objectUrls.set(key, url);
+        touch(key);
+
+        return url;
+    }
+
+    const { blob, remoteUrl } = await cachedAttachmentBlob(attachment);
+
+    return blob && key ? rememberObjectUrl(key, blob) : remoteUrl;
+}
+
+/**
+ * Abre un adjunto desde la copia del computador: en otra pestaña si el
+ * navegador lo sabe mostrar (PDF, imagen, texto), o como descarga con su
+ * nombre si no se puede mostrar o se pidio descargar. Reemplaza a
+ * openAttachmentFile en los menus que usan la copia.
+ *
+ * @param {Object} attachment
+ * @param {{newTab?: boolean}} options newTab false = "Descargar"
+ */
+export async function openCachedAttachment(attachment, { newTab = true } = {}) {
+    if (!hasAttachmentContent(attachment)) {
+        throw new Error("Este adjunto no tiene contenido disponible.");
+    }
+
+    if (!attachmentCacheKey(attachment) || !cacheSupported()) {
+        return openAttachmentFile(attachment, { newTab });
+    }
+
+    const preview = newTab && canPreviewAttachment(attachment);
+    // La pestaña se abre YA, dentro del clic. Si se abriera despues de esperar
+    // la copia, el navegador la bloquearia como ventana emergente.
+    const tab = preview ? window.open("about:blank", "_blank") : null;
+
+    if (preview && !tab) {
+        throw new Error("El navegador bloqueo la ventana emergente.");
+    }
+
+    let url = "";
+    let local = false;
+
+    try {
+        const { blob, remoteUrl } = await cachedAttachmentBlob(attachment);
+
+        if (blob) {
+            url = URL.createObjectURL(blob);
+            local = true;
+        } else {
+            url = remoteUrl;
+        }
+    } catch (error) {
+        tab?.close();
+        throw error;
+    }
+
+    if (tab) {
+        tab.opener = null;
+        tab.location.replace(url);
+    } else {
+        const link = document.createElement("a");
+
+        link.href = url;
+
+        // La copia es del mismo sitio: el navegador respeta el nombre del
+        // archivo. La URL de Storage es de otro origen y lo ignora, asi que esa
+        // se abre aparte, igual que antes.
+        if (local) {
+            link.download = attachment.name || "archivo";
+        } else {
+            link.target = "_blank";
+        }
+
+        link.rel = "noopener";
+        link.click();
+    }
+
+    // La pestaña ya tomo el archivo; la URL local no se necesita mas.
+    if (local) setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 /**
@@ -426,7 +528,7 @@ export async function forgetCachedAttachment(attachment) {
         await removeEntries(cache, [key]);
         scheduleSave();
     } catch {
-        // Si no se pudo, la limpieza de 90 dias o el tope se hacen cargo.
+        // Si no se pudo, la limpieza por antiguedad o el tope se hacen cargo.
     }
 }
 

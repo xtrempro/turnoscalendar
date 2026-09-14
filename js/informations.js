@@ -7,9 +7,12 @@ import {
     canPreviewAttachment,
     deleteStoredAttachment,
     hasAttachmentContent,
-    openAttachmentFile,
     readAttachmentFiles
 } from "./attachmentUtils.js";
+import {
+    forgetCachedAttachment,
+    openCachedAttachment
+} from "./attachmentCache.js";
 import {
     getCurrentFirebaseUser,
     getFirebaseServices,
@@ -1384,7 +1387,7 @@ async function persistDraft(form, { asDraft = false } = {}) {
         await Promise.all(
             (current?.attachments || [])
                 .filter(file => !kept.has(file.id))
-                .map(file => deleteStoredAttachment(file).catch(error => {
+                .map(file => deleteStoredAttachment(file).then(() => forgetCachedAttachment(file)).catch(error => {
                     console.warn("No se pudo borrar un archivo quitado.", error);
                 }))
         );
@@ -1437,7 +1440,9 @@ async function openInformationAttachment(button, { newTab = true } = {}) {
 
     button.disabled = true;
     try {
-        await openAttachmentFile(attachment, { newTab });
+        // Desde la copia del computador (attachmentCache.js). "Descargar"
+        // (newTab false) baja el archivo con su nombre real.
+        await openCachedAttachment(attachment, { newTab });
     } catch (error) {
         await showAlert(
             error?.attachmentStorageMessage
@@ -1507,7 +1512,7 @@ async function deleteInformation(id) {
     try {
         await Promise.all(
             (current.attachments || []).map(attachment =>
-                deleteStoredAttachment(attachment).catch(error => {
+                deleteStoredAttachment(attachment).then(() => forgetCachedAttachment(attachment)).catch(error => {
                     console.warn("No se pudo borrar un archivo.", error);
                 })
             )

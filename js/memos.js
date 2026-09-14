@@ -9,12 +9,12 @@ import {
     canPreviewAttachment,
     deleteStoredAttachment,
     hasAttachmentContent,
-    openAttachmentFile,
     readAttachmentFile
 } from "./attachmentUtils.js";
 import {
     cachedAttachmentURL,
-    forgetCachedAttachment
+    forgetCachedAttachment,
+    openCachedAttachment
 } from "./attachmentCache.js";
 import {
     MEMO_KINDS,
@@ -718,7 +718,7 @@ export async function openMemoDocument(memoId, documentId) {
 
     if (!hasAttachmentContent(document)) return;
 
-    await openAttachmentFile(document, { newTab: true });
+    await openCachedAttachment(document, { newTab: true });
 }
 
 /* =========================================================
@@ -921,7 +921,7 @@ function bindLayer(layer) {
             const doc = memoDocuments(getMemoById(ui.openId) || {})[ui.docIndex];
 
             if (doc) {
-                openAttachmentFile(doc, { newTab: true }).catch(error =>
+                openCachedAttachment(doc, { newTab: true }).catch(error =>
                     toast(error?.message || "No se pudo abrir el documento.")
                 );
             }
@@ -1632,7 +1632,7 @@ async function printCurrentDocument(memo) {
     // Una foto se imprime tal cual; un PDF lo imprime su propio visor, que
     // pagina mejor que cualquier cosa que armemos aca.
     if (!isImageDocument(doc)) {
-        await openAttachmentFile(doc, { newTab: true });
+        await openCachedAttachment(doc, { newTab: true });
         toast("El documento se abrió para imprimirlo desde su visor.");
         return;
     }
@@ -1804,7 +1804,7 @@ async function onPanelClick(event) {
             if (!doc) return;
 
             try {
-                await openAttachmentFile(doc, { newTab: data.memAct === "open-doc" });
+                await openCachedAttachment(doc, { newTab: data.memAct === "open-doc" });
             } catch (error) {
                 toast(error?.message || "No se pudo abrir el documento.");
             }

@@ -5,10 +5,14 @@ import {
     attachmentStorageErrorMessage,
     deleteStoredAttachment,
     hasAttachmentContent,
-    openAttachmentFile,
-    readAttachmentFiles,
-    resolveAttachmentURL
+    readAttachmentFiles
 } from "./attachmentUtils.js";
+import {
+    cachedAttachmentBlob,
+    cachedAttachmentURL,
+    forgetCachedAttachment,
+    openCachedAttachment
+} from "./attachmentCache.js";
 import {
     getCurrentFirebaseUser,
     getFirebaseServices,
@@ -1769,16 +1773,54 @@ function tabSummaryHTML(snapshot, ctx) {
 
 /* ---------- pestaña Fallas ---------- */
 
+// Las fotos de una falla se dibujan vacias y se llenan despues con la copia del
+// computador (attachmentCache.js). Con la URL de Storage directo en el <img>,
+// cada vez que se abria la ficha se volvian a bajar todas.
+const EMPTY_IMAGE = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+const thumbFiles = new Map();
+
+async function hydrateThumbs(root) {
+    const images = [...root.querySelectorAll("img[data-meq-thumb-file]")];
+
+    for (const image of images) {
+        const file = thumbFiles.get(image.dataset.meqThumbFile);
+
+        if (!file) continue;
+
+        try {
+            const url = await cachedAttachmentURL(file);
+
+            if (!url) throw new Error("Adjunto sin contenido.");
+
+            // Si el panel se redibujo mientras tanto, el dibujo nuevo tiene su
+            // propio llenado.
+            if (!image.isConnected) return;
+
+            image.src = url;
+            // Se espera a que se dibuje antes de seguir: las copias abiertas en
+            // memoria tienen tope, y una miniatura que aun no carga no puede
+            // perder su URL.
+            await image.decode().catch(() => {});
+        } catch {
+            // Mismo camino que una foto que no carga: pasa a boton de archivo.
+            image.dispatchEvent(new Event("error"));
+        }
+    }
+}
+
 function attachmentsStripHTML(failure) {
     if (!failure.attachments.length) return "";
 
     return `<div class="meq-atts">
         <span class="meq-atts__h">${ic("camera")}${failure.channel === "PWA" ? "Adjuntos del trabajador" : "Adjuntos"} · ${failure.attachments.length}</span>
         <div class="meq-atts__list">${failure.attachments.map(file => {
-            const url = isPrintableImage(file) ? file.downloadURL || file.dataUrl || "" : "";
+            const thumbKey = `${failure.id}:${file.id}`;
+            const thumb = isPrintableImage(file) && hasAttachmentContent(file);
 
-            return url
-                ? `<button class="meq-att" type="button" data-meq-att="${attr(failure.id)}" data-meq-file="${attr(file.id)}" title="Ver ${attr(file.name)}"><img src="${attr(url)}" alt="${attr(file.name)}" loading="lazy" data-meq-thumb></button>`
+            if (thumb) thumbFiles.set(thumbKey, file);
+
+            return thumb
+                ? `<button class="meq-att" type="button" data-meq-att="${attr(failure.id)}" data-meq-file="${attr(file.id)}" title="Ver ${attr(file.name)}"><img src="${EMPTY_IMAGE}" alt="${attr(file.name)}" data-meq-thumb data-meq-thumb-file="${attr(thumbKey)}"></button>`
                 : `<button class="meq-att meq-att--file" type="button" data-meq-att="${attr(failure.id)}" data-meq-file="${attr(file.id)}" title="Abrir ${attr(file.name)}">${ic("file")}<span>${esc(file.name)}</span></button>`;
         }).join("")}</div>
     </div>`;
@@ -3091,6 +3133,7 @@ async function deleteFile(snapshot, group, fileId) {
 
     try {
         await deleteStoredAttachment(file);
+        void forgetCachedAttachment(file);
     } catch (error) {
         await showAlert(attachmentStorageErrorMessage(error, "eliminar"), { title: "Equipos Médicos", tone: "danger" });
         return;
@@ -3119,7 +3162,7 @@ async function deleteFile(snapshot, group, fileId) {
 }
 
 function openFile(file) {
-    openAttachmentFile(file, { newTab: true }).catch(error => {
+    openCachedAttachment(file, { newTab: true }).catch(error => {
         void showAlert(attachmentStorageErrorMessage(error, "abrir"), { title: "Equipos Médicos", tone: "danger" });
     });
 }
@@ -3322,12 +3365,20 @@ function printedAt() {
 async function printFailureHistory(snapshot, ctx) {
     const images = snapshot.failures.flatMap(failure => failure.attachments.filter(isPrintableImage));
     const imageUrls = new Map();
+    // URLs propias para la hoja, desde la copia del computador. No se reusan las
+    // de las miniaturas: esas se liberan al pasar su tope, y con muchas fotos la
+    // hoja saldria con huecos.
+    const localUrls = [];
 
     toast(images.length ? `Preparando el historial con ${plural(images.length, "foto", "fotos")}…` : "Preparando el historial…");
 
     await Promise.all(images.map(async file => {
         try {
-            imageUrls.set(file.id, await resolveAttachmentURL(file));
+            const { blob, remoteUrl } = await cachedAttachmentBlob(file);
+            const url = blob ? URL.createObjectURL(blob) : remoteUrl;
+
+            if (blob) localUrls.push(url);
+            imageUrls.set(file.id, url);
         } catch {
             // La impresion muestra un aviso en el lugar de esa foto.
         }
@@ -3341,6 +3392,8 @@ async function printFailureHistory(snapshot, ctx) {
         now: ctx.now,
         imageUrls
     }));
+
+    setTimeout(() => localUrls.forEach(url => URL.revokeObjectURL(url)), 60000);
 }
 
 async function printLifeSheet(snapshot, ctx) {
@@ -3717,6 +3770,7 @@ export function renderMedicalEquipmentPanel() {
 
     ensureLayer();
     bindPanel(panel);
+    thumbFiles.clear();
 
     const ctx = buildContext();
     lastContext = ctx;
@@ -3743,6 +3797,8 @@ export function renderMedicalEquipmentPanel() {
         input?.focus();
         if (input && caret !== null) input.setSelectionRange(caret, caret);
     }
+
+    void hydrateThumbs(panel);
 }
 
 export function initMedicalEquipmentPanel() {

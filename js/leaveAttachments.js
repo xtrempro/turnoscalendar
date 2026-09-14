@@ -11,11 +11,14 @@
 
 import { getJSON, setJSON } from "./persistence.js";
 import {
-    openAttachmentFile,
     readAttachmentFile,
     validateAttachmentFile,
     deleteStoredAttachment
 } from "./attachmentUtils.js";
+import {
+    forgetCachedAttachment,
+    openCachedAttachment
+} from "./attachmentCache.js";
 
 const STORAGE_KEY = "leaveAttachments";
 
@@ -140,8 +143,10 @@ export async function addLeaveAttachment(profile, logId, file) {
     return attachment;
 }
 
+// Desde la copia del computador (attachmentCache.js): el respaldo de una
+// licencia se vuelve a abrir desde el calendario y desde el perfil.
 export async function openLeaveAttachment(attachment) {
-    return openAttachmentFile(attachment, { newTab: true });
+    return openCachedAttachment(attachment, { newTab: true });
 }
 
 /**
@@ -164,6 +169,7 @@ export async function removeLeaveAttachment(profile, logId, attachmentId) {
         logId,
         attachments.filter(item => item !== attachment)
     );
+    void forgetCachedAttachment(attachment);
 
     return true;
 }

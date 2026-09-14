@@ -1,7 +1,7 @@
 // La copia local de los adjuntos (js/attachmentCache.js).
 //
 // Las reglas las fijo el usuario el 2026-09-14: 2 GB por computador, se borra
-// lo que no se abre en 90 dias, y se vacia si entra otra cuenta. Aca se prueban
+// lo que no se abre en 120 dias, y se vacia si entra otra cuenta. Aca se prueban
 // las cuentas; lo que depende del navegador (Cache Storage, CORS, blob:) se
 // verifica por fuente.
 import assert from "node:assert/strict";
@@ -52,15 +52,15 @@ const NOW = Date.UTC(2026, 8, 14, 12);
    Las reglas
 ========================================================= */
 
-test("tope de 2 GB y 90 dias sin abrir", () => {
+test("tope de 2 GB y 120 dias sin abrir", () => {
     assert.equal(cache.ATTACHMENT_CACHE_MAX_BYTES, 2 * GB);
-    assert.equal(cache.ATTACHMENT_CACHE_MAX_IDLE_DAYS, 90);
+    assert.equal(cache.ATTACHMENT_CACHE_MAX_IDLE_DAYS, 120);
 });
 
-test("lo que no se abre en 90 dias se borra; justo 90 todavia no", () => {
+test("lo que no se abre en 120 dias se borra; justo 120 todavia no", () => {
     const { remove } = cache.planCacheCleanup([
-        { key: "viejo", size: 100, lastAccess: NOW - 91 * DAY },
-        { key: "limite", size: 100, lastAccess: NOW - 90 * DAY },
+        { key: "viejo", size: 100, lastAccess: NOW - 121 * DAY },
+        { key: "limite", size: 100, lastAccess: NOW - 120 * DAY },
         { key: "nuevo", size: 100, lastAccess: NOW - DAY }
     ], { now: NOW });
 
@@ -150,6 +150,78 @@ test("el service worker no borra la copia al activar un deploy nuevo", async () 
     assert.equal(cache.ATTACHMENT_CACHE_NAME.startsWith("turnoplus-adjuntos"), true);
 });
 
+/* =========================================================
+   Los menus que usan la copia
+========================================================= */
+
+const MENUS = {
+    memorandum: "../js/memos.js",
+    equipos: "../js/medicalEquipment.js",
+    informaciones: "../js/informations.js",
+    licencias: "../js/leaveAttachments.js"
+};
+
+test("Memorandum, Equipos, Informaciones y Licencias abren desde la copia", async () => {
+    for (const [menu, path] of Object.entries(MENUS)) {
+        const source = await read(path);
+
+        assert.match(source, /openCachedAttachment\(/, menu);
+        // Ni un camino que siga bajando de Storage cada vez.
+        assert.doesNotMatch(source, /openAttachmentFile\(/, menu);
+        assert.doesNotMatch(source, /resolveAttachmentURL\(/, menu);
+    }
+
+    assert.match(await read(MENUS.informaciones), /await openCachedAttachment\(attachment, \{ newTab \}\)/);
+    assert.match(await read(MENUS.licencias), /return openCachedAttachment\(attachment, \{ newTab: true \}\)/);
+});
+
+test("al eliminar un adjunto se borra tambien su copia, en los cuatro menus", async () => {
+    assert.match(await read(MENUS.memorandum), /void forgetCachedAttachment\(document\);/);
+    assert.match(await read(MENUS.equipos), /await deleteStoredAttachment\(file\);\n\s*void forgetCachedAttachment\(file\);/);
+    assert.match(await read(MENUS.licencias), /void forgetCachedAttachment\(attachment\);/);
+
+    const informaciones = await read(MENUS.informaciones);
+
+    assert.match(informaciones, /deleteStoredAttachment\(file\)\.then\(\(\) => forgetCachedAttachment\(file\)\)/);
+    assert.match(informaciones, /deleteStoredAttachment\(attachment\)\.then\(\(\) => forgetCachedAttachment\(attachment\)\)/);
+});
+
+test("las fotos de una falla ya no se bajan de Storage en cada ficha", async () => {
+    const equipos = await read(MENUS.equipos);
+
+    // Antes: <img src="${attr(url)}"> con la downloadURL directo.
+    assert.doesNotMatch(equipos, /file\.downloadURL \|\| file\.dataUrl/);
+    assert.match(equipos, /data-meq-thumb data-meq-thumb-file=/);
+    assert.match(equipos, /const url = await cachedAttachmentURL\(file\);/);
+    assert.match(equipos, /void hydrateThumbs\(panel\);/);
+    // Se espera cada foto antes de seguir: las URLs en memoria tienen tope.
+    assert.match(equipos, /await image\.decode\(\)\.catch\(\(\) => \{\}\);/);
+});
+
+test("la impresion del historial usa URLs propias, no las de las miniaturas", async () => {
+    const equipos = await read(MENUS.equipos);
+
+    assert.match(equipos, /const \{ blob, remoteUrl \} = await cachedAttachmentBlob\(file\);/);
+    assert.match(equipos, /localUrls\.forEach\(url => URL\.revokeObjectURL\(url\)\)/);
+});
+
+test("la pestaña se abre dentro del clic, antes de esperar la copia", async () => {
+    // Si se abre despues del await, el navegador la bloquea como emergente.
+    const source = await read("../js/attachmentCache.js");
+    const body = source.slice(source.indexOf("export async function openCachedAttachment"));
+    const openAt = body.indexOf('window.open("about:blank", "_blank")');
+    const awaitAt = body.indexOf("await cachedAttachmentBlob(attachment)");
+
+    assert.ok(openAt > 0 && awaitAt > 0, "no se encontro el cuerpo esperado");
+    assert.ok(openAt < awaitAt, "la pestaña se abre despues de esperar la copia");
+});
+
+test("descargar desde la copia conserva el nombre del archivo", async () => {
+    const source = await read("../js/attachmentCache.js");
+
+    assert.match(source, /if \(local\) \{\n\s*link\.download = attachment\.name \|\| "archivo";/);
+});
+
 test("Actualizar (y tocar el logo) no borra la copia de los adjuntos", async () => {
     // reloadAppToLatestVersion vaciaba TODAS las caches, y el logo la dispara:
     // es lo primero que la gente toca cuando algo se ve raro.
@@ -170,8 +242,11 @@ test("la CSP deja mostrar el PDF copiado (blob:) en prod y en test", async () =>
 test("si el fetch falla (CORS, cuota) se devuelve la URL de Storage", async () => {
     const source = await read("../js/attachmentCache.js");
 
-    assert.match(source, /if \(!response\.ok\) return remoteUrl;/);
-    assert.match(source, /\} catch \{\n\s*return remoteUrl;\n\s*\}/);
+    assert.match(source, /if \(!response\.ok\) return \{ blob: null, remoteUrl \};/);
+    assert.match(source, /\} catch \{\n\s*return \{ blob: null, remoteUrl \};\n\s*\}/);
+    // Y quien pide la URL recibe la de Storage cuando no hubo copia.
+    assert.match(source, /return blob && key \? rememberObjectUrl\(key, blob\) : remoteUrl;/);
+    assert.match(source, /url = remoteUrl;/);
 });
 
 test("otra cuenta en el mismo navegador vacia la copia", async () => {
