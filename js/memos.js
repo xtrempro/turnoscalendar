@@ -28,7 +28,6 @@ import {
     memoFacts,
     memoIsOverdue,
     memoKind,
-    memoKpis,
     memoMissingMark,
     memoMonth,
     memoRangeLabel,
@@ -793,7 +792,9 @@ const ui = {
     periodo: "all",
     vista: "grupo",
     query: "",
-    kpi: "",
+    // "Ver los atrasados" del aviso: solo los que llevan mas de 15 dias sin
+    // documento, de cualquier mes y estado.
+    onlyOverdue: false,
     openId: "",
     docIndex: 0,
     zoom: 1,
@@ -1063,16 +1064,12 @@ function buildContext() {
     return {
         today,
         memos,
-        kpis: memoKpis(memos, today, ui.periodo),
         unitName: ""
     };
 }
 
 function visibleMemos(ctx, { ignore = "" } = {}) {
     const query = searchKey(ui.query.trim());
-    const kpi = ui.kpi
-        ? ctx.kpis.find(item => item.id === ui.kpi)
-        : null;
 
     return ctx.memos.filter(memo => {
         if (
@@ -1103,7 +1100,7 @@ function visibleMemos(ctx, { ignore = "" } = {}) {
             return false;
         }
 
-        return !kpi || kpi.match(memo);
+        return !ui.onlyOverdue || memoIsOverdue(memo, ctx.today);
     });
 }
 
@@ -1155,29 +1152,21 @@ function workerShift(name) {
 
 /* ---------- encabezado ---------- */
 
-function pageHeadHTML(ctx) {
+// Sin texto explicativo ni tarjetas de indicadores: el usuario los quito el
+// 2026-09-14, no los necesita.
+function pageHeadHTML() {
     return `<header class="mem-pagehead">
         <div class="mem-pagehead__top">
             <div>
                 <span class="mem-kicker">Documentos del personal</span>
                 <h1>Memorándum</h1>
-                <p>Reúne el documento de cada permiso, marcaje incompleto o contrato de reemplazo. La resolución la emite el sistema de personal; aquí se adjunta, se ve y queda junto al turno.</p>
             </div>
             <div class="mem-pagehead__side">
                 <button class="mem-btn mem-btn--secondary" type="button" data-mem-act="print-list">${ic("print")}Imprimir listado</button>
                 <button class="mem-btn mem-btn--primary" type="button" data-mem-act="new">${ic("plus")}Nuevo memorándum</button>
             </div>
         </div>
-        <div class="mem-kpis">${kpisHTML(ctx)}</div>
     </header>`;
-}
-
-function kpisHTML(ctx) {
-    return ctx.kpis.map(kpi => `
-        <button class="mem-kpi ${ui.kpi === kpi.id ? "is-on" : ""} ${kpi.value ? "" : "is-zero"}" type="button" data-mem-kpi="${attr(kpi.id)}" aria-pressed="${ui.kpi === kpi.id}">
-            <span class="mem-kpi__row"><span class="mem-dot ${kpi.value ? `mem-dot--${kpi.tone}` : ""}"></span><strong>${kpi.value}</strong></span>
-            <span class="mem-kpi__lbl">${esc(kpi.label)}</span>
-        </button>`).join("");
 }
 
 function toolbarHTML(ctx) {
@@ -1295,7 +1284,7 @@ function overdueCalloutHTML(list, ctx) {
     // justamente el que se pierde de vista.
     const all = ctx.memos.filter(memo => memoIsOverdue(memo, ctx.today));
 
-    if (!all.length || ui.kpi === "atrasados") return "";
+    if (!all.length || ui.onlyOverdue) return "";
 
     const outside = all.length - list.filter(memo =>
         memoIsOverdue(memo, ctx.today)
@@ -1315,13 +1304,18 @@ function overdueCalloutHTML(list, ctx) {
 }
 
 function listHTML(ctx, list) {
-    const title = `<div class="mem-sec__h">
-        <h3>${{
+    const heading = ui.onlyOverdue
+        ? `Atrasados (+${OVERDUE_DAYS} días)`
+        : {
             pending: "Pendientes",
             done: "Realizados",
             all: "Todos los memorándums"
-        }[ui.estado] || "Memorándums"}</h3>
-        <p>${esc(plural(list.length, "documento", "documentos"))}${ui.periodo === "all" ? "" : ` · ${esc(monthLabel(ui.periodo))}`}</p>
+        }[ui.estado] || "Memorándums";
+    // Con el filtro de atrasados el aviso desaparece: sin este enlace no habria
+    // como volver a la lista completa.
+    const title = `<div class="mem-sec__h">
+        <h3>${esc(heading)}</h3>
+        <p>${esc(plural(list.length, "documento", "documentos"))}${ui.periodo === "all" ? "" : ` · ${esc(monthLabel(ui.periodo))}`}${ui.onlyOverdue ? ` · <button class="mem-link" type="button" data-mem-act="clear-overdue">Quitar filtro</button>` : ""}</p>
     </div>`;
 
     if (!list.length) {
@@ -1693,7 +1687,7 @@ let documentBound = false;
 
 async function onPanelClick(event) {
     const target = event.target.closest(
-        "[data-mem-kpi],[data-mem-estado],[data-mem-vista],[data-mem-grupo],[data-mem-ver],[data-mem-zoom],[data-mem-doc],[data-mem-act],[data-mem-memo]"
+        "[data-mem-estado],[data-mem-vista],[data-mem-grupo],[data-mem-ver],[data-mem-zoom],[data-mem-doc],[data-mem-act],[data-mem-memo]"
     );
 
     if (!target) return;
@@ -1730,23 +1724,9 @@ async function onPanelClick(event) {
         return;
     }
 
-    if (data.memKpi) {
-        ui.kpi = ui.kpi === data.memKpi ? "" : data.memKpi;
-
-        if (ui.kpi === "pendientes" || ui.kpi === "pedidos") ui.estado = "pending";
-        if (ui.kpi === "realizados") ui.estado = "done";
-        if (ui.kpi === "atrasados") {
-            ui.estado = "all";
-            ui.periodo = "all";
-        }
-
-        renderMemosPanel();
-        return;
-    }
-
     if (data.memEstado) {
         ui.estado = data.memEstado;
-        ui.kpi = "";
+        ui.onlyOverdue = false;
         renderMemosPanel();
         return;
     }
@@ -1848,9 +1828,14 @@ async function onPanelClick(event) {
             });
             return;
         case "show-overdue":
-            ui.kpi = "atrasados";
+            ui.onlyOverdue = true;
             ui.estado = "all";
             ui.periodo = "all";
+            renderMemosPanel();
+            return;
+        case "clear-overdue":
+            ui.onlyOverdue = false;
+            ui.estado = "pending";
             renderMemosPanel();
             return;
         case "open-calendar": {
@@ -1940,7 +1925,7 @@ export function renderMemosPanel() {
     const caret = searchFocused ? active.selectionStart : null;
 
     panel.innerHTML = `<div class="mem mem-root">
-        ${pageHeadHTML(ctx)}
+        ${pageHeadHTML()}
         ${toolbarHTML(ctx)}
         <div class="mem-workspace">
             <main class="mem-list-panel" aria-label="Memorándums">${listHTML(ctx, list)}</main>

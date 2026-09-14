@@ -419,6 +419,20 @@ test("al eliminar el documento se borra tambien su copia", () => {
    El panel usa su propio bloque de estilos
 ========================================================= */
 
+test("el encabezado no lleva texto explicativo ni tarjetas de indicadores", () => {
+    // Se quitaron el 2026-09-14 a pedido del usuario.
+    assert.doesNotMatch(memosSource, /mem-kpi|data-mem-kpi|memoKpis/);
+    assert.doesNotMatch(memosSource, /Reúne el documento de cada permiso/);
+    assert.doesNotMatch(styles, /\.mem-kpi|\.mem-dot/);
+});
+
+test("el filtro de atrasados se puede quitar aunque ya no hay tarjetas", () => {
+    // El aviso desaparece al filtrar: sin el enlace no habria como volver.
+    assert.match(memosSource, /data-mem-act="clear-overdue">Quitar filtro<\/button>/);
+    assert.match(memosSource, /case "clear-overdue":\n\s*ui\.onlyOverdue = false;/);
+    assert.match(memosSource, /return !ui\.onlyOverdue \|\| memoIsOverdue\(memo, ctx\.today\);/);
+});
+
 test("las filas no tienen casillas de seleccion ni barra de acciones en lote", () => {
     // Se quitaron el 2026-09-14: el usuario no usaba las acciones en lote, y
     // ademas no funcionaban -el clic en la casilla tambien abria la fila y
