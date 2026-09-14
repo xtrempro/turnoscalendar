@@ -14,6 +14,10 @@ import {
 } from "./profileSearchUtils.js";
 import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
 import { getAbsenceType, getTurnoExtraAgregado } from "./rulesEngine.js";
+import {
+    codeToTurno,
+    getReplacementsForWorkerShift
+} from "./replacements.js";
 import { getHourReturn } from "./hourReturns.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import { fetchHolidays, getCachedHolidays } from "./holidays.js";
@@ -22,6 +26,7 @@ import { showAlert, showConfirm, showPrompt } from "./dialogs.js";
 import {
     buildTaskAutoScheduleHistory,
     canWorkerShareShiftTasks,
+    headcountForCell,
     planTaskAutoSchedule,
     workerMatchesTurnSignature
 } from "./taskAutoSchedule.js";
@@ -1011,7 +1016,56 @@ function getProfileShift(profile, keyDay) {
     return getTurnoReal(profile.name, keyDay);
 }
 
-function autoScheduleWorkerTurnContext(profileOrName, keyDay) {
+function autoScheduleReplacementReasonValue(replacement) {
+    const reason = String(replacement?.reason || "").trim();
+
+    if (reason) return reason;
+    if (replacement?.replaced) return "";
+
+    const source = String(replacement?.source || "").trim();
+
+    if (
+        source !== "manual_extra" &&
+        source !== "clock_extra" &&
+        source !== "rota_gap"
+    ) {
+        return "";
+    }
+
+    return String(replacement?.absenceType || "").trim();
+}
+
+function autoScheduleReplacementMatchesShift(replacement, shift = "") {
+    const turn = codeToTurno(replacement?.turno);
+
+    return !shift || !turn || turnScheduledForShift(turn, shift);
+}
+
+function autoScheduleExtraReason(profileName, keyDay, shift = "", extraTurn = 0) {
+    const records = getReplacementsForWorkerShift(profileName, keyDay)
+        .filter(replacement => autoScheduleReplacementReasonValue(replacement));
+
+    if (!records.length) return "";
+
+    const sameShift = records.filter(replacement =>
+        autoScheduleReplacementMatchesShift(replacement, shift)
+    );
+    const extra = Number(extraTurn) || TURNO.LIBRE;
+    const exactTurn = sameShift.filter(replacement =>
+        extra && codeToTurno(replacement?.turno) === extra
+    );
+    const preferred = exactTurn.length
+        ? exactTurn
+        : sameShift.length
+            ? sameShift
+            : records;
+
+    return uniqueValues(
+        preferred.map(autoScheduleReplacementReasonValue)
+    ).join(" ");
+}
+
+function autoScheduleWorkerTurnContext(profileOrName, keyDay, shift = "") {
     const profile = typeof profileOrName === "object"
         ? profileOrName
         : profileByName(profileOrName);
@@ -1021,12 +1075,14 @@ function autoScheduleWorkerTurnContext(profileOrName, keyDay) {
 
     const baseTurn = getTurnoBase(name, keyDay);
     const actualTurn = getTurnoReal(name, keyDay);
+    const extraTurn = getTurnoExtraAgregado(baseTurn, actualTurn);
 
     return {
         rotativaType: getRotativa(name).type,
         baseTurn,
         actualTurn,
-        extraTurn: getTurnoExtraAgregado(baseTurn, actualTurn),
+        extraTurn,
+        extraReason: autoScheduleExtraReason(name, keyDay, shift, extraTurn),
         profession: profileProfession(profile)
     };
 }
@@ -5334,14 +5390,14 @@ function serializeWorkerTaskMap(map) {
     );
 }
 
-function serializeWorkerTurnContexts(names, keyDay) {
+function serializeWorkerTurnContexts(names, keyDay, shift = "") {
     return Object.fromEntries(
         [...new Set(names || [])]
             .map(name => String(name || "").trim())
             .filter(Boolean)
             .map(name => [
                 name,
-                autoScheduleWorkerTurnContext(name, keyDay)
+                autoScheduleWorkerTurnContext(name, keyDay, shift)
             ])
     );
 }
@@ -5388,7 +5444,8 @@ function autoScheduleCells(days, tasks, assignments) {
                     candidates,
                     candidateTurnContextByWorker: serializeWorkerTurnContexts(
                         candidates,
-                        keyDay
+                        keyDay,
+                        shift
                     ),
                     existingTaskIdsByWorker: serializeWorkerTaskMap(
                         workerTaskIdsForShiftDay(
@@ -5421,8 +5478,8 @@ function createTaskAutoScheduleAttempt(days, tasks) {
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
         beforeWeekKey: weekKey(),
         profiles,
-        workerTurnContextForDay: (name, keyDay) =>
-            autoScheduleWorkerTurnContext(name, keyDay)
+        workerTurnContextForDay: (name, keyDay, shift) =>
+            autoScheduleWorkerTurnContext(name, keyDay, shift)
     });
     const plan = cells.length
         ? planTaskAutoSchedule({ cells, history })
@@ -5529,14 +5586,6 @@ function autoSchedulePreviewDayClass(day) {
         : "";
 }
 
-function autoSchedulePreviewTaskOrder(tasks, taskId) {
-    const task = tasks.find(item => item.id === taskId);
-
-    return Number.isFinite(Number(task?.order))
-        ? Number(task.order)
-        : Number.MAX_SAFE_INTEGER;
-}
-
 function autoSchedulePreviewRowMeta(row, tasks) {
     const mergedCount = row.taskIds?.length || 1;
 
@@ -5553,97 +5602,521 @@ function autoSchedulePreviewRowMeta(row, tasks) {
     };
 }
 
-function autoSchedulePreviewGridCell(item) {
-    if (!item) {
-        return `<div class="task-auto-preview-cell task-auto-preview-cell--empty"></div>`;
+function autoSchedulePreviewPlanMap(plan) {
+    const byCell = new Map();
+
+    (plan?.filled || []).forEach(item => {
+        byCell.set(
+            assignmentKey(item.shift, item.taskId, item.keyDay),
+            item
+        );
+    });
+
+    return byCell;
+}
+
+function autoSchedulePreviewEditableCellMap(attempt) {
+    const byCell = new Map();
+
+    (attempt?.cells || []).forEach(cell => {
+        byCell.set(
+            assignmentKey(cell.shift, cell.taskId, cell.keyDay),
+            cell
+        );
+    });
+
+    return byCell;
+}
+
+function autoSchedulePreviewFindCell(attempt, shift, taskId, keyDay) {
+    return (attempt?.cells || []).find(cell =>
+        cell.shift === shift &&
+        cell.taskId === taskId &&
+        cell.keyDay === keyDay
+    ) || null;
+}
+
+function autoSchedulePreviewHeadcount(attempt, cell) {
+    const taskIds = cell?.taskIds?.length ? cell.taskIds : [cell?.taskId];
+    const learned = Math.max(
+        0,
+        ...taskIds.map(taskId =>
+            headcountForCell(
+                attempt?.history,
+                cell.shift,
+                taskId,
+                cell.keyDay
+            )
+        )
+    );
+
+    return Math.max(1, learned);
+}
+
+function autoSchedulePreviewNormalizePlan(plan) {
+    const touched = new Set();
+
+    plan.filled = (plan.filled || [])
+        .map(item => {
+            const workers = sortTaskWorkersByRole(uniqueValues(
+                item.workers || []
+            ));
+            const manualWorkers = uniqueValues(item.manualWorkers || [])
+                .filter(name => workers.includes(name));
+
+            workers.forEach(name => touched.add(name));
+
+            return {
+                ...item,
+                workers,
+                manualWorkers,
+                short: Math.max((Number(item.headcount) || 0) - workers.length, 0)
+            };
+        })
+        .filter(item => item.workers.length);
+    plan.assignments = plan.filled.reduce(
+        (sum, item) => sum + item.workers.length,
+        0
+    );
+    plan.workers = [...touched];
+}
+
+function autoSchedulePreviewEnsureItem(attempt, shift, taskId, keyDay) {
+    const key = assignmentKey(shift, taskId, keyDay);
+    const plan = attempt?.plan;
+    const found = autoSchedulePreviewPlanMap(plan).get(key);
+
+    if (found) return found;
+
+    const cell = autoSchedulePreviewFindCell(attempt, shift, taskId, keyDay);
+
+    if (!cell || !plan) return null;
+
+    const item = {
+        shift,
+        taskId,
+        keyDay,
+        taskIds: cell.taskIds?.length ? [...cell.taskIds] : [taskId],
+        workers: [],
+        manualWorkers: [],
+        headcount: autoSchedulePreviewHeadcount(attempt, cell),
+        turnSlots: [],
+        edited: true,
+        short: 0
+    };
+
+    plan.filled.push(item);
+    return item;
+}
+
+function autoSchedulePreviewAddWorker(attempt, shift, taskId, keyDay, name) {
+    const cleanName = String(name || "").trim();
+    const item = autoSchedulePreviewEnsureItem(
+        attempt,
+        shift,
+        taskId,
+        keyDay
+    );
+
+    if (!cleanName || !item || item.workers.includes(cleanName)) return false;
+
+    item.workers.push(cleanName);
+    item.manualWorkers = uniqueValues([
+        ...(item.manualWorkers || []),
+        cleanName
+    ]);
+    item.edited = true;
+    autoSchedulePreviewNormalizePlan(attempt.plan);
+    return true;
+}
+
+function autoSchedulePreviewRemoveWorker(attempt, shift, taskId, keyDay, name) {
+    const cleanName = String(name || "").trim();
+    const item = autoSchedulePreviewPlanMap(attempt?.plan).get(
+        assignmentKey(shift, taskId, keyDay)
+    );
+
+    if (!cleanName || !item) return false;
+
+    item.workers = (item.workers || []).filter(worker => worker !== cleanName);
+    item.manualWorkers = (item.manualWorkers || [])
+        .filter(worker => worker !== cleanName);
+    item.edited = true;
+    autoSchedulePreviewNormalizePlan(attempt.plan);
+    return true;
+}
+
+function autoSchedulePreviewPickerMatches(picker, cell) {
+    return Boolean(picker && cell) &&
+        picker.shift === cell.shift &&
+        picker.taskId === cell.taskId &&
+        picker.keyDay === cell.keyDay;
+}
+
+function autoSchedulePreviewWorkerOtherTaskTitle(
+    attempt,
+    tasks,
+    workerName,
+    shift,
+    keyDay,
+    taskId
+) {
+    const planned = (attempt?.plan?.filled || []).find(item =>
+        item.shift === shift &&
+        item.keyDay === keyDay &&
+        item.taskId !== taskId &&
+        (item.workers || []).includes(workerName)
+    );
+
+    if (planned) {
+        return taskTitleForAutoSchedule(tasks, planned.taskId);
     }
 
-    const count = `${item.workers.length}/${item.headcount}`;
+    return workerOtherTaskTitle(
+        attempt?.assignments || {},
+        tasks,
+        workerName,
+        shift,
+        keyDay,
+        taskId
+    );
+}
+
+function autoSchedulePreviewPickerCandidates(attempt, cell, tasks) {
+    const assigned = new Set(
+        (autoSchedulePreviewPlanMap(attempt?.plan)
+            .get(assignmentKey(cell.shift, cell.taskId, cell.keyDay))
+            ?.workers || [])
+    );
+
+    return [...new Set(cell?.candidates || [])]
+        .map(name => String(name || "").trim())
+        .filter(Boolean)
+        .filter(name => !assigned.has(name))
+        .map(name => {
+            const profile = profileByName(name);
+
+            if (!profile) return null;
+
+            return {
+                profile,
+                otherTask: autoSchedulePreviewWorkerOtherTaskTitle(
+                    attempt,
+                    tasks,
+                    name,
+                    cell.shift,
+                    cell.keyDay,
+                    cell.taskId
+                )
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) =>
+            Number(Boolean(a.otherTask)) - Number(Boolean(b.otherTask)) ||
+            a.profile.name.localeCompare(b.profile.name, "es")
+        );
+}
+
+function autoSchedulePreviewPicker(attempt, cell, tasks) {
+    const candidates = autoSchedulePreviewPickerCandidates(
+        attempt,
+        cell,
+        tasks
+    );
+    const date = parseKey(cell.keyDay);
 
     return `
-        <div class="task-auto-preview-cell${item.short ? " is-short" : ""}">
-            <div class="task-auto-preview-cell-workers">
-                ${sortTaskWorkersByRole(item.workers).map(name => `
-                    <span class="task-auto-preview-chip">
-                        ${renderWorkerAvatar(name)}
-                        <span>${escapeHTML(name)}</span>
-                    </span>
-                `).join("")}
+        <div class="task-auto-preview-picker">
+            <div class="task-auto-preview-picker__head">
+                <strong>Agregar trabajadores</strong>
+                <span>${escapeHTML(formatWeekday(date))} ${escapeHTML(formatShortDate(date))}</span>
+                <button type="button" data-auto-schedule-picker-close aria-label="Cerrar">&times;</button>
             </div>
-            <em class="task-auto-preview-count">${escapeHTML(count)}</em>
+            <div class="task-auto-preview-picker__list">
+                ${candidates.length
+                    ? candidates.map(({ profile, otherTask }) => {
+                        const partial = partialShiftText(
+                            profile.name,
+                            cell.keyDay,
+                            cell.shift
+                        );
+
+                        return `
+                            <button class="task-auto-preview-picker__option${otherTask ? " task-auto-preview-picker__option--busy" : ""}" type="button" data-auto-schedule-worker-add data-shift="${escapeHTML(cell.shift)}" data-task-id="${escapeHTML(cell.taskId)}" data-day="${escapeHTML(cell.keyDay)}" data-worker="${escapeHTML(profile.name)}" title="${escapeHTML(autoScheduleWorkerHoverTitle(profile.name, cell.shift, cell.keyDay, tasks))}">
+                                ${renderWorkerAvatar(profile.name)}
+                                <span>
+                                    <strong>${escapeHTML(shortWorkerName(profile.name))}</strong>
+                                    <small>${escapeHTML(profileProfession(profile))} | ${otherTask ? escapeHTML(`Ya en ${otherTask}`) : escapeHTML(profileShiftLabel(profile, cell.keyDay))}${partial ? ` &middot; ${escapeHTML(partial)}` : ""}</small>
+                                </span>
+                            </button>
+                        `;
+                    }).join("")
+                    : `<p class="task-auto-preview-picker__empty">Sin personal disponible para agregar.</p>`}
+            </div>
         </div>
     `;
 }
 
-function autoSchedulePreviewGrid(plan, tasks, days) {
-    const rows = new Map();
-    const byCell = new Map();
+function autoScheduleRecentWorkerTasks(workerName, tasks, beforeWeekKey = weekKey()) {
+    const taskTitles = new Map(
+        (tasks || []).map(task => [task.id, task.title || task.id])
+    );
+    const rows = [];
 
-    [...plan.filled].forEach(item => {
-        const rowKey = `${item.shift}|${item.taskId}`;
+    Object.entries(getAllAssignments()).forEach(([storedWeekKey, assignments]) => {
+        if (beforeWeekKey && storedWeekKey >= beforeWeekKey) return;
+        if (!assignments || typeof assignments !== "object") return;
 
-        if (!rows.has(rowKey)) {
-            rows.set(rowKey, {
-                shift: item.shift,
-                taskId: item.taskId,
-                taskIds: item.taskIds?.length ? item.taskIds : [item.taskId]
+        Object.entries(assignments).forEach(([cellKey, entry]) => {
+            if (!assignmentWorkers(entry).includes(workerName)) return;
+
+            const parts = splitAssignmentKey(cellKey);
+            const date = parseKey(parts.keyDay);
+
+            if (Number.isNaN(date.getTime())) return;
+
+            rows.push({
+                time: date.getTime(),
+                taskTitle: taskTitles.get(parts.taskId) || parts.taskId,
+                shift: SHIFT_CONFIG[parts.shift]?.shortLabel || parts.shift,
+                date
             });
-        }
-
-        byCell.set(assignmentKey(item.shift, item.taskId, item.keyDay), item);
+        });
     });
 
-    const orderedRows = [...rows.values()].sort((a, b) =>
-        SHIFT_TYPES.indexOf(a.shift) - SHIFT_TYPES.indexOf(b.shift) ||
-        autoSchedulePreviewTaskOrder(tasks, a.taskId) -
-            autoSchedulePreviewTaskOrder(tasks, b.taskId) ||
-        taskTitleForAutoSchedule(tasks, a.taskId)
-            .localeCompare(taskTitleForAutoSchedule(tasks, b.taskId), "es")
+    return rows
+        .sort((a, b) => b.time - a.time)
+        .slice(0, 5)
+        .map(item =>
+            `${formatShortDate(item.date)} ${item.shift}: ${item.taskTitle}`
+        );
+}
+
+function autoScheduleWorkerHoverTitle(workerName, shift, keyDay, tasks) {
+    const context = autoScheduleWorkerTurnContext(workerName, keyDay, shift);
+    const lines = [workerName];
+    const extraTurn = Number(context.extraTurn) || TURNO.LIBRE;
+
+    if (extraTurn) {
+        lines.push(
+            context.extraReason
+                ? `Motivo HHEE: ${context.extraReason}`
+                : "Turno extra sin motivo HHEE registrado"
+        );
+    }
+
+    const recent = autoScheduleRecentWorkerTasks(
+        workerName,
+        tasks,
+        weekKey(weekStartMonday(parseKey(keyDay)))
     );
 
-    if (!orderedRows.length) {
+    if (recent.length) {
+        lines.push("Últimas 5 tareas:");
+        recent.forEach(item => lines.push(item));
+    }
+
+    return lines.join("\n");
+}
+
+function autoSchedulePreviewChip(workerName, item, tasks, { editable = true } = {}) {
+    const title = autoScheduleWorkerHoverTitle(
+        workerName,
+        item.shift,
+        item.keyDay,
+        tasks
+    );
+
+    return `
+        <span class="task-auto-preview-chip${editable ? "" : " task-auto-preview-chip--locked"}" title="${escapeHTML(title)}">
+            ${renderWorkerAvatar(workerName)}
+            <span class="task-auto-preview-chip-name">${escapeHTML(shortWorkerName(workerName))}</span>
+            ${editable ? `
+                <button class="task-auto-preview-chip-remove" type="button" data-auto-schedule-worker-remove data-shift="${escapeHTML(item.shift)}" data-task-id="${escapeHTML(item.taskId)}" data-day="${escapeHTML(item.keyDay)}" data-worker="${escapeHTML(workerName)}" title="Quitar de la propuesta" aria-label="Quitar de la propuesta">&times;</button>
+            ` : ""}
+        </span>
+    `;
+}
+
+function autoSchedulePreviewExistingItem(assignments, shift, taskId, keyDay) {
+    const entry = getCellEntry(assignments, shift, taskId, keyDay);
+    const workers = assignmentWorkers(entry);
+
+    if (!workers.length) return null;
+
+    return {
+        shift,
+        taskId,
+        keyDay,
+        workers: sortTaskWorkersByRole(workers),
+        headcount: workers.length,
+        existing: true,
+        short: 0
+    };
+}
+
+function autoSchedulePreviewGridCell({
+    attempt,
+    planItem,
+    existingItem,
+    cell,
+    group,
+    tasks,
+    dayIndex,
+    taskIndex,
+    picker
+}) {
+    const item = planItem || existingItem;
+    const editable = Boolean(cell);
+    const merged = (group?.taskIds?.length || 1) > 1;
+    const size = group?.taskIds?.length || 1;
+    const area = `grid-column: ${dayIndex + 2}; grid-row: ${taskIndex + 2} / span ${size};`;
+    const classes = [
+        "task-auto-preview-cell",
+        merged ? " task-auto-preview-cell--merged" : "",
+        item?.short ? " is-short" : "",
+        !item?.workers?.length ? " task-auto-preview-cell--empty" : "",
+        !editable ? " task-auto-preview-cell--locked" : ""
+    ].join("");
+    const count = item?.workers?.length
+        ? `${item.workers.length}/${Math.max(Number(item.headcount) || 0, item.workers.length)}`
+        : "";
+
+    return `
+        <div class="${classes}" style="${area}">
+            ${merged ? `
+                <span class="task-auto-preview-cell-tag">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M9.5 14.5 14.5 9.5"></path>
+                        <path d="M7 11 5 13a3.5 3.5 0 0 0 5 5l2-2"></path>
+                        <path d="M17 13l2-2a3.5 3.5 0 0 0-5-5l-2 2"></path>
+                    </svg>
+                    Casillas unidas
+                </span>
+            ` : ""}
+            <div class="task-auto-preview-cell-workers">
+                ${(item?.workers || []).map(name =>
+                    autoSchedulePreviewChip(name, {
+                        ...item,
+                        shift: item.shift || cell?.shift,
+                        taskId: item.taskId || cell?.taskId,
+                        keyDay: item.keyDay || cell?.keyDay
+                    }, tasks, { editable: editable && !item?.existing })
+                ).join("")}
+            </div>
+            ${editable ? `
+                <button class="task-auto-preview-add" type="button" data-auto-schedule-add data-shift="${escapeHTML(cell.shift)}" data-task-id="${escapeHTML(cell.taskId)}" data-day="${escapeHTML(cell.keyDay)}" title="Agregar trabajadores">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M12 5.5v13"></path>
+                        <path d="M5.5 12h13"></path>
+                    </svg>
+                    <span>Agregar</span>
+                </button>
+            ` : ""}
+            ${count ? `<em class="task-auto-preview-count">${escapeHTML(count)}</em>` : ""}
+            ${autoSchedulePreviewPickerMatches(picker, cell)
+                ? autoSchedulePreviewPicker(attempt, cell, tasks)
+                : ""}
+        </div>
+    `;
+}
+
+function autoSchedulePreviewGrid(attempt, tasks, days, picker = null) {
+    const plan = attempt?.plan || { filled: [] };
+    const assignments = attempt?.assignments || {};
+    const byCell = autoSchedulePreviewPlanMap(plan);
+    const editableByCell = autoSchedulePreviewEditableCellMap(attempt);
+    const hasVisibleContent = Boolean((attempt?.cells || []).length) ||
+        Boolean((plan.filled || []).length);
+
+    if (!hasVisibleContent) {
         return `<div class="empty-state empty-state--compact">No hay casillas que la programacion automatica pueda completar con el historial actual.</div>`;
     }
 
     return SHIFT_TYPES.map(shift => {
-        const sectionRows = orderedRows.filter(row => row.shift === shift);
+        const sectionTasks = tasksForShift(tasks, shift)
+            .map(task => taskForShift(task, shift));
+        const columns = days.map(day => {
+            const keyDay = keyFromDate(day);
+            const groups = columnGroups(assignments, shift, tasks, keyDay);
+            const owner = new Map();
+            const covered = new Set();
 
-        if (!sectionRows.length) return "";
+            groups.forEach(group => {
+                owner.set(group.start, group);
+
+                for (let offset = 1; offset < group.taskIds.length; offset += 1) {
+                    covered.add(group.start + offset);
+                }
+            });
+
+            return { day, keyDay, owner, covered };
+        });
+        const visible = sectionTasks.some(task =>
+            days.some(day => {
+                const key = assignmentKey(shift, task.id, keyFromDate(day));
+
+                return editableByCell.has(key) ||
+                    byCell.has(key) ||
+                    assignmentWorkers(
+                        getCellEntry(assignments, shift, task.id, keyFromDate(day))
+                    ).length;
+            })
+        );
+
+        if (!sectionTasks.length || !visible) return "";
 
         return `
             <section class="task-auto-preview-section">
                 <div class="task-auto-preview-section-head">
                     <strong>${escapeHTML(SHIFT_CONFIG[shift]?.label || shift)}</strong>
-                    <span>${sectionRows.length} ${sectionRows.length === 1 ? "tarea" : "tareas"}</span>
+                    <span>${sectionTasks.length} ${sectionTasks.length === 1 ? "tarea" : "tareas"}</span>
                 </div>
                 <div class="task-auto-preview-grid-wrap">
                     <div class="task-auto-preview-grid">
-                        <div class="task-auto-preview-corner">Tareas</div>
-                        ${days.map(day => `
-                            <div class="task-auto-preview-day-head${autoSchedulePreviewDayClass(day)}">
+                        <div class="task-auto-preview-corner" style="grid-column: 1; grid-row: 1;">Tareas</div>
+                        ${days.map((day, dayIndex) => `
+                            <div class="task-auto-preview-day-head${autoSchedulePreviewDayClass(day)}" style="grid-column: ${dayIndex + 2}; grid-row: 1;">
                                 <strong>${escapeHTML(formatWeekdayShort(day))}</strong>
                                 <span>${escapeHTML(formatShortDate(day))}</span>
                             </div>
                         `).join("")}
-                        ${sectionRows.map(row => {
-                            const meta = autoSchedulePreviewRowMeta(row, tasks);
+                        ${sectionTasks.map((task, taskIndex) => `
+                            <div class="task-auto-preview-task-head" style="grid-column: 1; grid-row: ${taskIndex + 2};">
+                                <strong>${escapeHTML(task.title)}</strong>
+                                ${taskDetailForShift(task, shift) ? `<span>${escapeHTML(taskDetailForShift(task, shift))}</span>` : ""}
+                            </div>
+                            ${columns.map((column, dayIndex) => {
+                                if (column.covered.has(taskIndex)) return "";
 
-                            return `
-                                <div class="task-auto-preview-task-head">
-                                    <strong>${escapeHTML(meta.title)}</strong>
-                                    ${meta.detail ? `<span>${escapeHTML(meta.detail)}</span>` : ""}
-                                </div>
-                                ${days.map(day => autoSchedulePreviewGridCell(
-                                    byCell.get(
-                                        assignmentKey(
-                                            shift,
-                                            row.taskId,
-                                            keyFromDate(day)
-                                        )
-                                    )
-                                )).join("")}
-                            `;
-                        }).join("")}
+                                const group = column.owner.get(taskIndex) || {
+                                    start: taskIndex,
+                                    taskIds: [task.id]
+                                };
+                                const cellKey = assignmentKey(
+                                    shift,
+                                    group.taskIds[0],
+                                    column.keyDay
+                                );
+
+                                return autoSchedulePreviewGridCell({
+                                    attempt,
+                                    planItem: byCell.get(cellKey),
+                                    existingItem: autoSchedulePreviewExistingItem(
+                                        assignments,
+                                        shift,
+                                        group.taskIds[0],
+                                        column.keyDay
+                                    ),
+                                    cell: editableByCell.get(cellKey),
+                                    group,
+                                    tasks,
+                                    dayIndex,
+                                    taskIndex,
+                                    picker
+                                });
+                            }).join("")}
+                        `).join("")}
                     </div>
                 </div>
             </section>
@@ -5694,8 +6167,8 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
         beforeWeekKey: weekKey(),
         profiles,
-        workerTurnContextForDay: (name, keyDay) =>
-            autoScheduleWorkerTurnContext(name, keyDay)
+        workerTurnContextForDay: (name, keyDay, shift) =>
+            autoScheduleWorkerTurnContext(name, keyDay, shift)
     });
     const affectedWorkers = new Set();
     let assignments = 0;
@@ -5722,28 +6195,39 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
         const plannedTurnSlots = Array.isArray(item.turnSlots)
             ? item.turnSlots
             : [];
+        const manualWorkers = new Set(item.manualWorkers || []);
+        const edited = Boolean(item.edited);
         const workers = sortTaskWorkersByRole(item.workers.filter((name, index) => {
             const profile = profileByName(name);
             const currentTaskIds = [
                 ...(existingByWorker.get(name) || new Set())
             ];
             const turnSignature = plannedTurnSlots[index] || "";
+            const manual = edited || manualWorkers.has(name);
 
             return profile &&
                 isAvailableForShift(profile, item.keyDay, item.shift) &&
                 (
+                    manual ||
                     !turnSignature ||
                     workerMatchesTurnSignature(
-                        autoScheduleWorkerTurnContext(profile, item.keyDay),
+                        autoScheduleWorkerTurnContext(
+                            profile,
+                            item.keyDay,
+                            item.shift
+                        ),
                         turnSignature
                     )
                 ) &&
-                canWorkerShareShiftTasks(history, {
-                    name,
-                    shift: item.shift,
-                    currentTaskIds,
-                    taskIds
-                });
+                (
+                    manual ||
+                    canWorkerShareShiftTasks(history, {
+                        name,
+                        shift: item.shift,
+                        currentTaskIds,
+                        taskIds
+                    })
+                );
         }));
 
         if (!workers.length) {
@@ -5779,10 +6263,11 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
 
 function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
     let currentAttempt = attempt;
+    let previewPicker = null;
     let publishing = false;
     const backdrop = document.createElement("div");
 
-    backdrop.className = "task-assignment-dialog-backdrop";
+    backdrop.className = "task-assignment-dialog-backdrop task-auto-preview-backdrop";
     document.body.appendChild(backdrop);
 
     const close = () => {
@@ -5790,6 +6275,7 @@ function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
     };
     const refreshAttempt = () => {
         currentAttempt = createTaskAutoScheduleAttempt(days, tasks);
+        previewPicker = null;
     };
     const render = () => {
         const plan = currentAttempt.plan;
@@ -5804,7 +6290,7 @@ function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
                     <button class="icon-button" type="button" data-auto-schedule-close aria-label="Cerrar">&times;</button>
                 </div>
                 <div class="task-auto-preview-list">
-                    ${autoSchedulePreviewGrid(plan, tasks, days)}
+                    ${autoSchedulePreviewGrid(currentAttempt, tasks, days, previewPicker)}
                 </div>
                 ${autoScheduleSkipSummary(plan)}
                 <div class="task-assignment-dialog__actions task-auto-preview-actions">
@@ -5826,6 +6312,58 @@ function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
             ?.addEventListener("click", () => {
                 if (publishing) return;
                 refreshAttempt();
+                render();
+            });
+        backdrop
+            .querySelectorAll("[data-auto-schedule-add]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    if (publishing) return;
+
+                    previewPicker = {
+                        shift: button.dataset.shift,
+                        taskId: button.dataset.taskId,
+                        keyDay: button.dataset.day
+                    };
+                    render();
+                });
+            });
+        backdrop
+            .querySelectorAll("[data-auto-schedule-worker-add]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    if (publishing) return;
+
+                    autoSchedulePreviewAddWorker(
+                        currentAttempt,
+                        button.dataset.shift,
+                        button.dataset.taskId,
+                        button.dataset.day,
+                        button.dataset.worker
+                    );
+                    render();
+                });
+            });
+        backdrop
+            .querySelectorAll("[data-auto-schedule-worker-remove]")
+            .forEach(button => {
+                button.addEventListener("click", () => {
+                    if (publishing) return;
+
+                    autoSchedulePreviewRemoveWorker(
+                        currentAttempt,
+                        button.dataset.shift,
+                        button.dataset.taskId,
+                        button.dataset.day,
+                        button.dataset.worker
+                    );
+                    render();
+                });
+            });
+        backdrop
+            .querySelector("[data-auto-schedule-picker-close]")
+            ?.addEventListener("click", () => {
+                previewPicker = null;
                 render();
             });
         backdrop

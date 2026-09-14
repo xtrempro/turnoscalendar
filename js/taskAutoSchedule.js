@@ -38,6 +38,11 @@
 //      muestra repetidamente que esa misma persona suele cubrir juntas esas
 //      tareas en el mismo turno. Aun asi, antes de repetir a alguien, se
 //      intenta usar a quienes siguen disponibles sin tarea en ese turno.
+//
+//   5. MOTIVO DE HHEE. Si un turno extra trae motivo, se aprende que motivos
+//      historicamente terminan en que tareas. Ese calce no inventa tareas ni
+//      salta el historial del trabajador; solo inclina fuerte el reparto hacia
+//      la tarea que el motivo suele anticipar.
 
 import { keyToDate } from "./dateUtils.js";
 
@@ -68,6 +73,10 @@ export const AUTO_SCHEDULE_MIN_MULTITASK_DAYS = 2;
 // Minimo de dias para aprender que una tarea suele cubrirse con una condicion
 // de turno concreta, por ejemplo rotativa diurno + turno real Larga.
 export const AUTO_SCHEDULE_MIN_TURN_PATTERN_DAYS = 2;
+// Minimo de repeticiones para creer que un motivo de HHEE anticipa una tarea.
+export const AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS = 2;
+// Proporcion minima del historial del motivo que debe apuntar a esa tarea.
+export const AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE = 0.5;
 
 const DAY_MS = 86400000;
 // Piso del peso en el sorteo: con peso 0 la raiz 1/peso se va al infinito y el
@@ -86,6 +95,42 @@ const REPEAT_PENALTY = 0.6;
 // Castigo por carga: cada casilla ya ganada en esta pasada baja un poco el
 // peso, para que el reparto no se concentre en los mismos cuatro nombres.
 const LOAD_PENALTY = 0.2;
+const EXTRA_REASON_MATCH_WEIGHT = 6;
+const EXTRA_REASON_MISMATCH_WEIGHT = 0.35;
+const EXTRA_REASON_MIN_SIMILARITY = 0.5;
+const EXTRA_REASON_MIN_OVERLAP = 0.75;
+const EXTRA_REASON_STOP_WORDS = new Set([
+    "a",
+    "al",
+    "con",
+    "de",
+    "del",
+    "e",
+    "el",
+    "en",
+    "extra",
+    "extras",
+    "hhee",
+    "hora",
+    "horas",
+    "la",
+    "las",
+    "lo",
+    "los",
+    "manual",
+    "motivo",
+    "para",
+    "por",
+    "turno",
+    "turnos",
+    "y"
+]);
+const EXTRA_REASON_TOKEN_ALIASES = new Map([
+    ["escanner", "scanner"],
+    ["escaner", "scanner"],
+    ["rx", "rayos"],
+    ["rayo", "rayos"]
+]);
 
 /* ==========================================================================
    Lectura del historial
@@ -200,6 +245,40 @@ function normalizeTextKey(value) {
         .toLowerCase();
 }
 
+function extraReasonTokens(value) {
+    return [...new Set(
+        normalizeTextKey(value)
+            .split(/[^a-z0-9]+/)
+            .map(token => String(token || "").trim())
+            .filter(Boolean)
+            .map(token => EXTRA_REASON_TOKEN_ALIASES.get(token) || token)
+            .filter(token => !EXTRA_REASON_STOP_WORDS.has(token))
+    )].sort((a, b) => a.localeCompare(b, "es"));
+}
+
+function normalizeExtraReasonKey(value) {
+    return extraReasonTokens(value).join(" ");
+}
+
+function extraReasonSimilarity(left, right) {
+    const leftTokens = extraReasonTokens(left);
+    const rightTokens = extraReasonTokens(right);
+
+    if (!leftTokens.length || !rightTokens.length) return 0;
+    if (leftTokens.join(" ") === rightTokens.join(" ")) return 1;
+
+    const rightSet = new Set(rightTokens);
+    const common = leftTokens.filter(token => rightSet.has(token)).length;
+    const overlap = common / Math.min(leftTokens.length, rightTokens.length);
+    const union = new Set([...leftTokens, ...rightTokens]).size;
+    const similarity = common / Math.max(union, 1);
+
+    return overlap >= EXTRA_REASON_MIN_OVERLAP &&
+        similarity >= EXTRA_REASON_MIN_SIMILARITY
+        ? (overlap + similarity) / 2
+        : 0;
+}
+
 function profileStaffingGroup(profile = {}) {
     const raw = String(profile?.estamento || "").trim();
     const key = normalizeTextKey(raw);
@@ -241,7 +320,14 @@ function normalizeTurnContext(context = {}) {
             context.actualTurn ?? context.actual ?? context.turn
         ),
         extraTurn: cleanTurnValue(context.extraTurn ?? context.extra),
-        profession: normalizeTextKey(context.profession)
+        profession: normalizeTextKey(context.profession),
+        extraReason: normalizeExtraReasonKey(
+            context.extraReason ??
+            context.overtimeReason ??
+            context.reason ??
+            context.motive ??
+            context.motivo
+        )
     };
 }
 
@@ -273,9 +359,9 @@ function turnSignatureSlots(groups) {
     return slots;
 }
 
-function workerTurnContextFor(options, name, keyDay) {
+function workerTurnContextFor(options, name, keyDay, shift = "") {
     if (typeof options?.workerTurnContextForDay === "function") {
-        return options.workerTurnContextForDay(name, keyDay) || {};
+        return options.workerTurnContextForDay(name, keyDay, shift) || {};
     }
 
     const contexts = options?.workerTurnContexts;
@@ -295,6 +381,18 @@ function candidateTurnContextFor(cell, name) {
     if (contexts instanceof Map) return contexts.get(cleanName) || {};
 
     return contexts[cleanName] || {};
+}
+
+function incrementNestedCount(map, key, subKey, amount = 1) {
+    const cleanKey = String(key || "").trim();
+    const cleanSubKey = String(subKey || "").trim();
+
+    if (!cleanKey || !cleanSubKey) return;
+
+    const counts = map.get(cleanKey) || new Map();
+
+    counts.set(cleanSubKey, (counts.get(cleanSubKey) || 0) + amount);
+    map.set(cleanKey, counts);
 }
 
 export function workerMatchesTurnSignature(context, signature) {
@@ -406,6 +504,9 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     // Mezcla de condiciones de turno en cada casilla historica. Permite
     // aprender casos como "APOYO TURNO lo toma un diurno con Larga agregada".
     const turnCounts = new Map();
+    // Motivo de HHEE -> tarea. Sirve para aprender que, por ejemplo, un motivo
+    // "estacion de trabajo" suele terminar en la tarea ESTACION DE TRABAJO.
+    const extraReasonTaskCounts = new Map();
     const contextOptions = { workerTurnContextForDay, workerTurnContexts };
 
     weekKeys.forEach(weekKey => {
@@ -444,9 +545,10 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
             names.forEach(name => {
                 const stat = task.get(name) || { days: 0, lastDay: 0 };
                 const group = workerGroups.get(name) || "";
-                const turnSignature = turnContextSignature(
-                    workerTurnContextFor(contextOptions, name, keyDay)
+                const turnContext = normalizeTurnContext(
+                    workerTurnContextFor(contextOptions, name, keyDay, shift)
                 );
+                const turnSignature = turnContextSignature(turnContext);
 
                 stat.days += 1;
                 stat.lastDay = Math.max(stat.lastDay, day);
@@ -478,6 +580,14 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
                     cellTurnSignatures.set(
                         turnSignature,
                         (cellTurnSignatures.get(turnSignature) || 0) + 1
+                    );
+                }
+
+                if (turnContext.extraReason) {
+                    incrementNestedCount(
+                        extraReasonTaskCounts,
+                        `${shift}|${turnContext.extraReason}`,
+                        taskId
                     );
                 }
             });
@@ -532,6 +642,7 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         counts,
         groupCounts,
         turnCounts,
+        extraReasonTaskCounts,
         workerGroups,
         activeColumns,
         taskFirstWeek,
@@ -948,6 +1059,100 @@ function fillAllEligibleCell(cell) {
         cell?.fillEligibleCandidates === true;
 }
 
+function extraReasonTaskCountsFor(history, shift, reason) {
+    const reasonKey = normalizeExtraReasonKey(reason);
+    const counts = new Map();
+    let total = 0;
+
+    if (!reasonKey) return { counts, total };
+
+    (history?.extraReasonTaskCounts || new Map())
+        .forEach((taskCounts, key) => {
+            const cleanKey = String(key || "");
+            const separator = cleanKey.indexOf("|");
+            const itemShift = separator >= 0
+                ? cleanKey.slice(0, separator)
+                : "";
+            const itemReason = separator >= 0
+                ? cleanKey.slice(separator + 1)
+                : cleanKey;
+            const similarity = extraReasonSimilarity(reasonKey, itemReason);
+
+            if ((shift && itemShift !== shift) || !similarity) return;
+
+            (taskCounts || new Map()).forEach((count, taskId) => {
+                const value = Math.max(Number(count) || 0, 0);
+
+                if (!value) return;
+
+                counts.set(taskId, (counts.get(taskId) || 0) + value);
+                total += value;
+            });
+        });
+
+    return { counts, total };
+}
+
+export function extraReasonTaskAffinity(history, shift, taskIds, reason) {
+    const ids = normalizedTaskIds(taskIds);
+    const { counts, total } = extraReasonTaskCountsFor(history, shift, reason);
+
+    if (!ids.length || total < AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS) {
+        return {
+            hasPattern: false,
+            matches: false,
+            rate: 0,
+            taskCount: 0,
+            bestCount: 0
+        };
+    }
+
+    const taskCount = ids.reduce(
+        (sum, taskId) => sum + (counts.get(taskId) || 0),
+        0
+    );
+    const bestCount = Math.max(0, ...counts.values());
+    const bestRate = bestCount / Math.max(total, 1);
+    const rate = taskCount / Math.max(total, 1);
+    const hasPattern =
+        bestCount >= AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS &&
+        bestRate >= AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE;
+
+    return {
+        hasPattern,
+        matches:
+            hasPattern &&
+            taskCount >= AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS &&
+            taskCount >= bestCount &&
+            rate >= AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE,
+        rate,
+        taskCount,
+        bestCount
+    };
+}
+
+function extraReasonFitForCandidate(history, cell, taskIds, name) {
+    const context = normalizeTurnContext(candidateTurnContextFor(cell, name));
+
+    return extraReasonTaskAffinity(
+        history,
+        cell.shift,
+        taskIds,
+        context.extraReason
+    );
+}
+
+function extraReasonWeightMultiplier(fit) {
+    if (fit?.matches) {
+        return 1 + EXTRA_REASON_MATCH_WEIGHT * Math.max(
+            fit.rate || 0,
+            AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE
+        );
+    }
+
+    return fit?.hasPattern ? EXTRA_REASON_MISMATCH_WEIGHT : 1;
+}
+
 /* ==========================================================================
    Sorteo con peso
    ========================================================================== */
@@ -1002,6 +1207,7 @@ function candidateWeight(name, {
     planDay,
     runTotal,
     runOnTask,
+    extraReasonFit,
 }) {
     const load = 1 + runTotal * LOAD_PENALTY;
 
@@ -1010,10 +1216,11 @@ function candidateWeight(name, {
     const total = worker?.days || stat?.days || 1;
     const variety = worker?.taskIds?.size || 1;
     const affinity = AFFINITY_FLOOR + (stat?.days || 0) / total;
+    const extraReasonMultiplier = extraReasonWeightMultiplier(extraReasonFit);
 
     // El que solo tiene UNA tarea no rota: no hay a donde moverlo, y castigarlo
     // por repetirla solo lograria dejar su casilla sin cubrir.
-    if (variety <= 1) return affinity / load;
+    if (variety <= 1) return (affinity * extraReasonMultiplier) / load;
 
     const staleness = stalenessFor(name, {
         taskIndex,
@@ -1022,7 +1229,8 @@ function candidateWeight(name, {
         stat
     });
 
-    return affinity * staleness / ((1 + runOnTask * REPEAT_PENALTY) * load);
+    return affinity * staleness * extraReasonMultiplier /
+        ((1 + runOnTask * REPEAT_PENALTY) * load);
 }
 
 function candidatePoolForSlot(item, round, {
@@ -1070,21 +1278,34 @@ function candidatePoolForSlot(item, round, {
         : [];
 
     return (turnMatchedPool.length ? turnMatchedPool : pool)
-        .map(name => ({
-            name,
-            weight: candidateWeight(name, {
-                taskWorkers,
-                workerStats,
-                taskIndex,
-                planDay,
-                runTotal: runTotals?.get(name) || 0,
-                runOnTask: taskIds.reduce(
-                    (sum, taskId) =>
-                        sum + (runByTask?.get(`${taskId}|${name}`) || 0),
-                    0
-                )
-            })
-        }));
+        .map(name => {
+            const extraReasonFit = extraReasonFitForCandidate(
+                stats,
+                cell,
+                taskIds,
+                name
+            );
+
+            return {
+                name,
+                priority: extraReasonFit.matches
+                    ? 1 + extraReasonFit.rate
+                    : 0,
+                weight: candidateWeight(name, {
+                    taskWorkers,
+                    workerStats,
+                    taskIndex,
+                    planDay,
+                    runTotal: runTotals?.get(name) || 0,
+                    runOnTask: taskIds.reduce(
+                        (sum, taskId) =>
+                            sum + (runByTask?.get(`${taskId}|${name}`) || 0),
+                        0
+                    ),
+                    extraReasonFit
+                })
+            };
+        });
 }
 
 function seedTakenForCell(takenByDay, dayKey, cell) {
@@ -1126,6 +1347,8 @@ function maximumSlotMatching(slotRows) {
     const order = slotRows
         .map((_slot, index) => index)
         .sort((left, right) =>
+            (slotRows[right].priority || 0) -
+                (slotRows[left].priority || 0) ||
             slotRows[left].edges.length - slotRows[right].edges.length ||
             slotRows[left].order - slotRows[right].order
         );
@@ -1212,6 +1435,12 @@ function assignFirstTasksForDay({
                 })
             }))
             .filter(row => row.edges.length);
+        slotRows.forEach(row => {
+            row.priority = Math.max(
+                0,
+                ...row.edges.map(edge => edge.priority || 0)
+            );
+        });
         const optionsByWorker = new Map();
 
         slotRows.forEach(row => {
@@ -1224,6 +1453,7 @@ function assignFirstTasksForDay({
         });
         slotRows.forEach(row => {
             row.edges.sort((left, right) =>
+                (right.priority || 0) - (left.priority || 0) ||
                 (optionsByWorker.get(left.name) || 0) -
                     (optionsByWorker.get(right.name) || 0) ||
                 right.weight - left.weight ||

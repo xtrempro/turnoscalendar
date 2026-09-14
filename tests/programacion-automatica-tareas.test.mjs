@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
     buildTaskAutoScheduleHistory,
+    extraReasonTaskAffinity,
     headcountForCell,
     planTaskAutoSchedule,
     presenceRateForCell,
@@ -70,14 +71,16 @@ function turnContext({
     baseTurn = TURNO.DIURNO,
     actualTurn = TURNO.LARGA,
     extraTurn = TURNO.MEDIA_TARDE,
-    profession = "Tecnologia Medica"
+    profession = "Tecnologia Medica",
+    extraReason = ""
 } = {}) {
     return {
         rotativaType,
         baseTurn,
         actualTurn,
         extraTurn,
-        profession
+        profession,
+        extraReason
     };
 }
 
@@ -580,6 +583,66 @@ test("si no hay alguien con el patron de turno, usa historial de tarea", () => {
     assert.deepEqual(plan.filled[0].workers, ["Bruno"]);
 });
 
+test("el motivo de horas extras prioriza su tarea historica", () => {
+    const entries = {};
+    const contexts = new Map();
+
+    WEEKS.forEach((week, index) => {
+        const day = MONDAYS[index];
+        const stationWorker = index < 2 ? "Ana" : "Bruno";
+        const supportWorker = index < 2 ? "Bruno" : "Ana";
+
+        entries[week] = {
+            [`day|estacion_trabajo|${day}`]: cell([stationWorker]),
+            [`day|apoyo_turno|${day}`]: cell([supportWorker])
+        };
+        contexts.set(
+            `${stationWorker}|${day}`,
+            turnContext({ extraReason: "Estacion de trabajo" })
+        );
+        contexts.set(
+            `${supportWorker}|${day}`,
+            turnContext({ extraReason: "Otro motivo" })
+        );
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK,
+        workerTurnContextForDay: workerTurnContextFrom(contexts)
+    });
+    const plan = planTaskAutoSchedule({
+        cells: ["apoyo_turno", "estacion_trabajo"].map(taskId => ({
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId,
+            taskIds: [taskId],
+            candidates: ["Ana"],
+            candidateTurnContextByWorker: {
+                Ana: turnContext({
+                    extraReason: "Horas extra estacion de trabajo"
+                })
+            },
+            blocked: []
+        })),
+        history,
+        rng: seededRng(46)
+    });
+
+    assert.equal(
+        extraReasonTaskAffinity(
+            history,
+            "day",
+            ["estacion_trabajo"],
+            "HHEE estacion de trabajo"
+        ).matches,
+        true
+    );
+    assert.ok(plan.filled.some(item =>
+        item.taskId === "estacion_trabajo" && item.workers.includes("Ana")
+    ));
+    assert.ok(!plan.filled.some(item => item.taskId === "apoyo_turno"));
+});
+
 test("el que hace varias tareas va rotando a lo largo de la semana", () => {
     // Eva y Gabriel hacen las dos tareas por igual, todos los dias. Sin
     // rotacion se quedarian los cinco dias clavados en la misma.
@@ -1016,9 +1079,25 @@ test("el modal de propuesta tiene un solo scroll y deja acciones visibles", asyn
         /\.task-auto-preview-list\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?max-height:\s*none;[\s\S]*?overflow:\s*auto;/
     );
     assert.doesNotMatch(source, /class="task-auto-preview-summary"/);
-    assert.match(source, /autoSchedulePreviewGrid\(plan, tasks, days\)/);
+    assert.match(source, /task-auto-preview-backdrop/);
+    assert.match(source, /autoSchedulePreviewGrid\(currentAttempt, tasks, days, previewPicker\)/);
+    assert.match(source, /data-auto-schedule-add/);
+    assert.match(source, /data-auto-schedule-worker-add/);
+    assert.match(source, /data-auto-schedule-worker-remove/);
+    assert.match(source, /autoSchedulePreviewPicker/);
+    assert.match(source, /autoScheduleWorkerHoverTitle/);
+    assert.match(source, /autoScheduleRecentWorkerTasks/);
+    assert.match(source, /shortWorkerName\(workerName\)/);
+    assert.match(source, /manualWorkers/);
+    assert.match(source, /columnGroups\(assignments, shift, tasks, keyDay\)/);
+    assert.match(source, /grid-row: \$\{taskIndex \+ 2\} \/ span \$\{size\};/);
+    assert.match(source, /task-auto-preview-cell--merged/);
     assert.match(
         styles,
-        /\.task-auto-preview-grid\s*\{[\s\S]*?repeat\(7,\s*minmax\(120px,\s*1fr\)\)/
+        /\.task-auto-preview-dialog\s*\{[\s\S]*?width:\s*min\(1760px,\s*calc\(100vw - 16px\)\);[\s\S]*?height:\s*min\(980px,\s*calc\(100vh - 16px\)\);/
+    );
+    assert.match(
+        styles,
+        /\.task-auto-preview-grid\s*\{[\s\S]*?repeat\(7,\s*minmax\(130px,\s*1fr\)\)/
     );
 });
