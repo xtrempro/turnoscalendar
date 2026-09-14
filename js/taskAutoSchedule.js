@@ -601,6 +601,28 @@ export function headcountForCell(history, shift, taskId, keyDay) {
     return Math.min(Math.max(best, 0), AUTO_SCHEDULE_MAX_HEADCOUNT);
 }
 
+export function presenceRateForCell(history, shift, taskId, keyDay) {
+    const weekday = weekdayOf(keyDay);
+    const weeks = weeksForCell(history, shift, taskId, keyDay);
+
+    if (!weeks.length) return 0;
+
+    const present = weeks.filter(week =>
+        (history.counts.get(`${week}|${shift}|${taskId}|${weekday}`) || 0) > 0
+    ).length;
+
+    return present / weeks.length;
+}
+
+function fillPriorityForTaskIds(history, shift, taskIds, keyDay) {
+    return Math.max(
+        0,
+        ...normalizedTaskIds(taskIds).map(taskId =>
+            presenceRateForCell(history, shift, taskId, keyDay)
+        )
+    );
+}
+
 export function staffingForCell(history, shift, taskId, keyDay) {
     const headcount = headcountForCell(history, shift, taskId, keyDay);
 
@@ -1331,6 +1353,12 @@ export function planTaskAutoSchedule({
         const effectiveGroupSlots = fillAllEligible ? [] : groupSlots;
         const effectiveTurnSlots = fillAllEligible ? [] : turnSlots;
         const effectiveHeadcount = fillAllEligible ? reach : staffing.headcount;
+        const fillPriority = fillPriorityForTaskIds(
+            stats,
+            cell.shift,
+            taskIds,
+            cell.keyDay
+        );
 
         return {
             cell,
@@ -1338,6 +1366,7 @@ export function planTaskAutoSchedule({
             taskWorkers,
             headcount: effectiveHeadcount,
             fillAllEligible,
+            fillPriority,
             groupSlots: effectiveGroupSlots,
             groupReach: groupReachForCell(
                 effectiveGroupSlots,
@@ -1368,6 +1397,7 @@ export function planTaskAutoSchedule({
         .sort((a, b) =>
             dayNumber(a.cell.keyDay) - dayNumber(b.cell.keyDay) ||
             String(a.cell.shift).localeCompare(String(b.cell.shift)) ||
+            b.fillPriority - a.fillPriority ||
             a.reach - b.reach ||
             a.jitter - b.jitter
         );

@@ -5523,6 +5523,134 @@ function autoSchedulePreviewRows(plan, tasks) {
     }).join("");
 }
 
+function autoSchedulePreviewDayClass(day) {
+    return day.getDay() === 0 || day.getDay() === 6
+        ? " task-auto-preview-day-head--inhabil"
+        : "";
+}
+
+function autoSchedulePreviewTaskOrder(tasks, taskId) {
+    const task = tasks.find(item => item.id === taskId);
+
+    return Number.isFinite(Number(task?.order))
+        ? Number(task.order)
+        : Number.MAX_SAFE_INTEGER;
+}
+
+function autoSchedulePreviewRowMeta(row, tasks) {
+    const mergedCount = row.taskIds?.length || 1;
+
+    if (mergedCount > 1) {
+        return {
+            title: "CASILLAS UNIDAS",
+            detail: `${mergedCount} tareas`
+        };
+    }
+
+    return {
+        title: taskTitleForAutoSchedule(tasks, row.taskId),
+        detail: ""
+    };
+}
+
+function autoSchedulePreviewGridCell(item) {
+    if (!item) {
+        return `<div class="task-auto-preview-cell task-auto-preview-cell--empty"></div>`;
+    }
+
+    const count = `${item.workers.length}/${item.headcount}`;
+
+    return `
+        <div class="task-auto-preview-cell${item.short ? " is-short" : ""}">
+            <div class="task-auto-preview-cell-workers">
+                ${sortTaskWorkersByRole(item.workers).map(name => `
+                    <span class="task-auto-preview-chip">
+                        ${renderWorkerAvatar(name)}
+                        <span>${escapeHTML(name)}</span>
+                    </span>
+                `).join("")}
+            </div>
+            <em class="task-auto-preview-count">${escapeHTML(count)}</em>
+        </div>
+    `;
+}
+
+function autoSchedulePreviewGrid(plan, tasks, days) {
+    const rows = new Map();
+    const byCell = new Map();
+
+    [...plan.filled].forEach(item => {
+        const rowKey = `${item.shift}|${item.taskId}`;
+
+        if (!rows.has(rowKey)) {
+            rows.set(rowKey, {
+                shift: item.shift,
+                taskId: item.taskId,
+                taskIds: item.taskIds?.length ? item.taskIds : [item.taskId]
+            });
+        }
+
+        byCell.set(assignmentKey(item.shift, item.taskId, item.keyDay), item);
+    });
+
+    const orderedRows = [...rows.values()].sort((a, b) =>
+        SHIFT_TYPES.indexOf(a.shift) - SHIFT_TYPES.indexOf(b.shift) ||
+        autoSchedulePreviewTaskOrder(tasks, a.taskId) -
+            autoSchedulePreviewTaskOrder(tasks, b.taskId) ||
+        taskTitleForAutoSchedule(tasks, a.taskId)
+            .localeCompare(taskTitleForAutoSchedule(tasks, b.taskId), "es")
+    );
+
+    if (!orderedRows.length) {
+        return `<div class="empty-state empty-state--compact">No hay casillas que la programacion automatica pueda completar con el historial actual.</div>`;
+    }
+
+    return SHIFT_TYPES.map(shift => {
+        const sectionRows = orderedRows.filter(row => row.shift === shift);
+
+        if (!sectionRows.length) return "";
+
+        return `
+            <section class="task-auto-preview-section">
+                <div class="task-auto-preview-section-head">
+                    <strong>${escapeHTML(SHIFT_CONFIG[shift]?.label || shift)}</strong>
+                    <span>${sectionRows.length} ${sectionRows.length === 1 ? "tarea" : "tareas"}</span>
+                </div>
+                <div class="task-auto-preview-grid-wrap">
+                    <div class="task-auto-preview-grid">
+                        <div class="task-auto-preview-corner">Tareas</div>
+                        ${days.map(day => `
+                            <div class="task-auto-preview-day-head${autoSchedulePreviewDayClass(day)}">
+                                <strong>${escapeHTML(formatWeekdayShort(day))}</strong>
+                                <span>${escapeHTML(formatShortDate(day))}</span>
+                            </div>
+                        `).join("")}
+                        ${sectionRows.map(row => {
+                            const meta = autoSchedulePreviewRowMeta(row, tasks);
+
+                            return `
+                                <div class="task-auto-preview-task-head">
+                                    <strong>${escapeHTML(meta.title)}</strong>
+                                    ${meta.detail ? `<span>${escapeHTML(meta.detail)}</span>` : ""}
+                                </div>
+                                ${days.map(day => autoSchedulePreviewGridCell(
+                                    byCell.get(
+                                        assignmentKey(
+                                            shift,
+                                            row.taskId,
+                                            keyFromDate(day)
+                                        )
+                                    )
+                                )).join("")}
+                            `;
+                        }).join("")}
+                    </div>
+                </div>
+            </section>
+        `;
+    }).join("");
+}
+
 function autoScheduleSkipSummary(plan) {
     const noHistory = countSkipped(plan, "sin-historial", "sin-turno");
     const noStaffingGroup = countSkipped(plan, "sin-estamento");
@@ -5675,11 +5803,8 @@ function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
                     </div>
                     <button class="icon-button" type="button" data-auto-schedule-close aria-label="Cerrar">&times;</button>
                 </div>
-                <div class="task-auto-preview-summary">
-                    ${escapeHTML(autoSchedulePlanSummary(plan, days)).replace(/\n/g, "<br>")}
-                </div>
                 <div class="task-auto-preview-list">
-                    ${autoSchedulePreviewRows(plan, tasks)}
+                    ${autoSchedulePreviewGrid(plan, tasks, days)}
                 </div>
                 ${autoScheduleSkipSummary(plan)}
                 <div class="task-assignment-dialog__actions task-auto-preview-actions">

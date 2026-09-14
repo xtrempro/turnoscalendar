@@ -6,6 +6,7 @@ import {
     buildTaskAutoScheduleHistory,
     headcountForCell,
     planTaskAutoSchedule,
+    presenceRateForCell,
     staffingForCell
 } from "../js/taskAutoSchedule.js";
 import { TURNO } from "../js/constants.js";
@@ -792,6 +793,49 @@ test("maximiza trabajadores distintos cuando existe una distribucion posible", (
     );
 });
 
+test("prioriza tareas que historicamente se cubren mas seguido", () => {
+    const entries = {};
+
+    WEEKS.forEach((week, index) => {
+        const day = MONDAYS[index];
+
+        entries[week] = {
+            [`day|critica|${day}`]: cell(index < 2 ? ["Ana"] : ["Bruno"])
+        };
+
+        if (index === 0) {
+            entries[week][`day|ocasional|${day}`] = cell(["Carla"]);
+        }
+
+        if (index >= 2) {
+            entries[week][`day|ocasional|${day}`] = cell(["Ana"]);
+        }
+    });
+
+    const history = buildTaskAutoScheduleHistory(entries, {
+        beforeWeekKey: PLAN_WEEK
+    });
+    const plan = planTaskAutoSchedule({
+        cells: ["ocasional", "critica"].map(taskId => ({
+            shift: "day",
+            keyDay: PLAN_MONDAY,
+            taskId,
+            taskIds: [taskId],
+            candidates: ["Ana"],
+            blocked: []
+        })),
+        history,
+        rng: seededRng(67)
+    });
+
+    assert.equal(presenceRateForCell(history, "day", "critica", PLAN_MONDAY), 1);
+    assert.equal(presenceRateForCell(history, "day", "ocasional", PLAN_MONDAY), 0.75);
+    assert.ok(plan.filled.some(item =>
+        item.taskId === "critica" && item.workers.includes("Ana")
+    ));
+    assert.ok(!plan.filled.some(item => item.taskId === "ocasional"));
+});
+
 test("una coincidencia aislada no autoriza multitarea", () => {
     const entries = {};
 
@@ -954,17 +998,27 @@ test("el boton esta cableado en el panel", async () => {
 });
 
 test("el modal de propuesta tiene un solo scroll y deja acciones visibles", async () => {
-    const source = await readFile(
+    const styles = await readFile(
         new URL("../styles.css", import.meta.url),
+        "utf8"
+    );
+    const source = await readFile(
+        new URL("../js/taskAssignments.js", import.meta.url),
         "utf8"
     );
 
     assert.match(
-        source,
-        /\.task-auto-preview-dialog\s*\{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) auto auto;[\s\S]*?overflow:\s*hidden;/
+        styles,
+        /\.task-auto-preview-dialog\s*\{[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\) auto auto;[\s\S]*?overflow:\s*hidden;/
     );
     assert.match(
-        source,
+        styles,
         /\.task-auto-preview-list\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?max-height:\s*none;[\s\S]*?overflow:\s*auto;/
+    );
+    assert.doesNotMatch(source, /class="task-auto-preview-summary"/);
+    assert.match(source, /autoSchedulePreviewGrid\(plan, tasks, days\)/);
+    assert.match(
+        styles,
+        /\.task-auto-preview-grid\s*\{[\s\S]*?repeat\(7,\s*minmax\(120px,\s*1fr\)\)/
     );
 });
