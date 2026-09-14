@@ -419,6 +419,16 @@ test("al eliminar el documento se borra tambien su copia", () => {
    El panel usa su propio bloque de estilos
 ========================================================= */
 
+test("las filas no tienen casillas de seleccion ni barra de acciones en lote", () => {
+    // Se quitaron el 2026-09-14: el usuario no usaba las acciones en lote, y
+    // ademas no funcionaban -el clic en la casilla tambien abria la fila y
+    // redibujaba el panel antes de que el cambio llegara a registrarse-.
+    assert.doesNotMatch(memosSource, /type="checkbox"/);
+    assert.doesNotMatch(memosSource, /mem-bulkbar|request-batch|print-selection|ui\.selected/);
+    assert.doesNotMatch(styles, /\.mem-bulkbar/);
+    assert.match(styles, /\.mem-memo \{ display: grid; grid-template-columns: auto minmax\(0, 1fr\) auto;/);
+});
+
 test("el panel se dibuja con el bloque mem-, aislado del resto", () => {
     assert.match(memosSource, /<div class="mem mem-root">/);
     assert.match(styles, /\.mem-root \{/);

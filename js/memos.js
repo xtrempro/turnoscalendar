@@ -794,7 +794,6 @@ const ui = {
     vista: "grupo",
     query: "",
     kpi: "",
-    selected: new Set(),
     openId: "",
     docIndex: 0,
     zoom: 1,
@@ -1224,8 +1223,7 @@ function memoRowHTML(memo, ctx) {
     const open = ui.openId === memo.id;
     const kind = memoKind(memo);
 
-    return `<div class="mem-memo ${ui.selected.has(memo.id) || open ? "is-on" : ""}" data-mem-memo="${attr(memo.id)}">
-        <input type="checkbox" data-mem-sel="${attr(memo.id)}" ${ui.selected.has(memo.id) ? "checked" : ""} aria-label="Seleccionar memorándum de ${attr(memo.profile)}">
+    return `<div class="mem-memo ${open ? "is-on" : ""}" data-mem-memo="${attr(memo.id)}">
         <span class="mem-memo__type mem-memo__type--${kind}" title="${attr(MEMO_KINDS[kind].label)}">${ic(MEMO_KINDS[kind].icon)}</span>
         <div class="mem-memo__body">
             <div class="mem-memo__top">
@@ -1333,17 +1331,7 @@ function listHTML(ctx, list) {
     const body = ui.vista === "grupo"
         ? groupByWorker(list).map(group => groupHTML(group, ctx)).join("")
         : `<section class="mem-group">${list.map(memo => memoRowHTML(memo, ctx)).join("")}</section>`;
-    const selected = ui.selected.size;
-
-    return `${title}${overdueCalloutHTML(list, ctx)}${body}
-        ${selected ? `<div class="mem-bulkbar">
-            <strong>${esc(plural(selected, "memorándum seleccionado", "memorándums seleccionados"))}</strong>
-            <span class="mem-bulkbar__acts">
-                <button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="request-batch">${ic("send")}Marcar que se los pedí</button>
-                <button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="print-selection">${ic("print")}Imprimir listado</button>
-                <button class="mem-btn mem-btn--ghost mem-btn--sm" type="button" data-mem-act="clear-selection">Quitar selección</button>
-            </span>
-        </div>` : ""}`;
+    return `${title}${overdueCalloutHTML(list, ctx)}${body}`;
 }
 
 /* ---------- visor ---------- */
@@ -1851,20 +1839,6 @@ async function onPanelClick(event) {
             );
             return;
         }
-        case "request-batch": {
-            const selected = ctx.memos.filter(memo =>
-                ui.selected.has(memo.id) && memoStatus(memo) === "pending"
-            );
-
-            requestDocuments(selected, touched => {
-                const people = new Set(touched.map(memo => memo.profile)).size;
-
-                ui.selected.clear();
-
-                return `Anotado: ${plural(touched.length, "documento pedido", "documentos pedidos")} a ${plural(people, "trabajador", "trabajadores")}.`;
-            });
-            return;
-        }
         case "print-list":
             await printList(visibleMemos(ctx), ctx, {
                 title: ui.estado === "pending"
@@ -1872,21 +1846,6 @@ async function onPanelClick(event) {
                     : "Listado de memorándums",
                 subtitle: `${ui.periodo === "all" ? "Todos los meses" : monthLabel(ui.periodo)} · ${plural(visibleMemos(ctx).length, "memorándum", "memorándums")}`
             });
-            return;
-        case "print-selection": {
-            const selected = ctx.memos.filter(memo => ui.selected.has(memo.id));
-
-            await printList(selected, ctx, {
-                title: "Listado de memorándums",
-                subtitle: plural(selected.length, "memorándum seleccionado", "memorándums seleccionados")
-            });
-            ui.selected.clear();
-            renderMemosPanel();
-            return;
-        }
-        case "clear-selection":
-            ui.selected.clear();
-            renderMemosPanel();
             return;
         case "show-overdue":
             ui.kpi = "atrasados";
@@ -1912,17 +1871,6 @@ async function onPanelClick(event) {
 
 function onPanelChange(event) {
     const input = event.target;
-
-    if (input.dataset.memSel) {
-        if (input.checked) {
-            ui.selected.add(input.dataset.memSel);
-        } else {
-            ui.selected.delete(input.dataset.memSel);
-        }
-
-        renderMemosPanel();
-        return;
-    }
 
     if (input.dataset.memTipo !== undefined) {
         ui.tipo = input.value;

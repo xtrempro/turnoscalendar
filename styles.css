@@ -16948,10 +16948,9 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 .mem-group__name small { color: var(--mem-muted); font-size: 11.5px; font-weight: 600; }
 .mem-group__side { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
-.mem-memo { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 10px 12px; align-items: start; padding: 11px 12px; border-top: 1px solid var(--mem-border); background: var(--mem-panel); }
+.mem-memo { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px 12px; align-items: start; padding: 11px 12px; border-top: 1px solid var(--mem-border); background: var(--mem-panel); }
 .mem-memo:hover { background: var(--mem-hover); }
 .mem-memo.is-on { background: var(--mem-brand-soft); }
-.mem-memo input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin-top: 3px; padding: 0; border: 0; box-shadow: none; accent-color: var(--mem-brand); }
 .mem-memo__type { width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center; flex: none; background: var(--mem-mut-bg); color: var(--mem-text-soft); }
 .mem-memo__type--leave { background: var(--mem-notice-bg); color: var(--mem-notice); }
 .mem-memo__type--clock { background: var(--mem-warn-bg); color: var(--mem-warn); }
@@ -16975,12 +16974,6 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 .mem-empty strong { color: var(--mem-text); font-size: 15px; }
 .mem-empty .mem-i { width: 26px; height: 26px; }
 
-.mem-bulkbar { position: sticky; bottom: 12px; z-index: 5; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 14px; background: var(--mem-tip-bg); color: var(--mem-tip-text); box-shadow: 0 16px 30px rgba(0, 0, 0, 0.25); }
-.mem-bulkbar strong { font-size: 13px; }
-.mem-bulkbar__acts { display: flex; gap: 8px; flex-wrap: wrap; }
-.mem-bulkbar .mem-btn--secondary { color: var(--mem-tip-text); border-color: rgba(255, 255, 255, 0.35); }
-.mem-bulkbar .mem-btn--secondary:hover { background: rgba(255, 255, 255, 0.12); }
-.mem-bulkbar .mem-btn--ghost { color: var(--mem-tip-text); opacity: 0.85; }
 
 /* ---------- visor del documento adjunto ---------- */
 .mem-viewer { position: sticky; top: 16px; display: grid; gap: 12px; align-content: start; background: var(--mem-panel); border: 1px solid var(--mem-border); border-radius: 20px; box-shadow: var(--mem-shadow); padding: 14px; }
@@ -17071,8 +17064,8 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 @container mem (max-width: 620px) {
     .mem-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .mem-pagehead { padding: 16px; }
-    .mem-memo { grid-template-columns: auto auto minmax(0, 1fr); }
-    .mem-memo__side { grid-column: 3; justify-items: start; }
+    .mem-memo { grid-template-columns: auto minmax(0, 1fr); }
+    .mem-memo__side { grid-column: 2; justify-items: start; }
     .mem-group__h { grid-template-columns: auto minmax(0, 1fr); }
     .mem-group__side { grid-column: 2; justify-content: flex-start; }
     .mem-callout { grid-template-columns: auto minmax(0, 1fr); }
