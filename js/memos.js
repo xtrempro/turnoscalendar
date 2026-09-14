@@ -10,9 +10,12 @@ import {
     deleteStoredAttachment,
     hasAttachmentContent,
     openAttachmentFile,
-    readAttachmentFile,
-    resolveAttachmentURL
+    readAttachmentFile
 } from "./attachmentUtils.js";
+import {
+    cachedAttachmentURL,
+    forgetCachedAttachment
+} from "./attachmentCache.js";
 import {
     MEMO_KINDS,
     MEMO_STATES,
@@ -687,6 +690,9 @@ export async function removeMemoDocument(memoId, documentId) {
         documents.filter(item => item !== document)
     );
 
+    // La copia del computador ya no sirve: el archivo no existe en Storage.
+    void forgetCachedAttachment(document);
+
     if (memo) {
         addAuditLog(
             AUDIT_CATEGORY.WORKER_REQUESTS,
@@ -795,9 +801,6 @@ const ui = {
     collapsed: new Set()
 };
 
-// URL de descarga ya resuelta, por documento: resolverla es una llamada a
-// Storage, y el visor se vuelve a dibujar con cada zoom.
-const previewUrls = new Map();
 // Un turno de carga por visor (el del panel y el de pantalla completa): si el
 // panel se redibuja mientras resuelve, la respuesta vieja no pisa la nueva.
 const previewTokens = new Map();
@@ -972,15 +975,11 @@ function isPdfDocument(doc) {
     return documentKindLabel(doc) === "PDF";
 }
 
+// La URL sale de la copia del computador (attachmentCache.js): la primera vez
+// se baja de Storage y queda guardada; despues, ni el redibujo por zoom ni la
+// vuelta al dia siguiente vuelven a bajarla.
 async function previewURL(doc) {
-    if (!doc) return "";
-    if (previewUrls.has(doc.id)) return previewUrls.get(doc.id);
-
-    const url = await resolveAttachmentURL(doc);
-
-    previewUrls.set(doc.id, url);
-
-    return url;
+    return doc ? cachedAttachmentURL(doc) : "";
 }
 
 function previewHTML(doc, url) {
@@ -1662,7 +1661,6 @@ async function removeCurrentDocument(memo, documentId) {
 
     try {
         await removeMemoDocument(memo.id, documentId);
-        previewUrls.delete(documentId);
         ui.docIndex = 0;
         toast(memoDocuments(getMemoById(memo.id) || {}).length
             ? "Documento quitado; queda el otro adjunto."

@@ -13904,7 +13904,12 @@ async function reloadAppToLatestVersion(button = null) {
         if (window.caches?.keys) {
             const keys = await caches.keys();
             await Promise.all(
-                keys.map(key => caches.delete(key).catch(() => {}))
+                // La copia de los adjuntos (js/attachmentCache.js) no es parte
+                // de la version de la app: tocar el logo no puede borrar los
+                // documentos que ese computador ya bajo.
+                keys
+                    .filter(key => !key.startsWith("turnoplus-adjuntos"))
+                    .map(key => caches.delete(key).catch(() => {}))
             );
         }
     } catch (error) { /* sin Cache API: se ignora */ }

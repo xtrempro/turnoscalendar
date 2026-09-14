@@ -404,11 +404,15 @@ test("la pantalla completa carga el documento en su propio cuadro", () => {
     assert.match(memosSource, /const selector = `\$\{scope\} \[data-mem-stage\]`/);
 });
 
-test("el visor recuerda la URL resuelta de cada documento", () => {
+test("el visor muestra la copia del computador, no baja el archivo cada vez", () => {
     // Resolverla es una llamada a Storage y el visor se redibuja con cada
-    // zoom: sin cache, acercar la imagen costaria una llamada por clic.
-    assert.match(memosSource, /const previewUrls = new Map\(\)/);
-    assert.match(memosSource, /if \(previewUrls\.has\(doc\.id\)\) return previewUrls\.get\(doc\.id\)/);
+    // zoom: sin copia, acercar la imagen costaria una descarga por clic.
+    assert.match(memosSource, /return doc \? cachedAttachmentURL\(doc\) : "";/);
+    assert.doesNotMatch(memosSource, /resolveAttachmentURL/);
+});
+
+test("al eliminar el documento se borra tambien su copia", () => {
+    assert.match(memosSource, /void forgetCachedAttachment\(document\);/);
 });
 
 /* =========================================================
