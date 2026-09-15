@@ -47,6 +47,7 @@ service cloud.firestore {
         ("informations" in permissions && permissions.informations.edit == true) ||
         !("informations" in permissions) ||
         ("medicalEquipment" in permissions && permissions.medicalEquipment.edit == true) ||
+        ("tenders" in permissions && permissions.tenders.edit == true) ||
         ("swap" in permissions && permissions.swap.edit == true) ||
         ("hours" in permissions && permissions.hours.edit == true) ||
         ("reports" in permissions && permissions.reports.edit == true) ||
@@ -84,6 +85,11 @@ service cloud.firestore {
 
     function medicalEquipmentEnabledByDefault(permissions) {
       return !("medicalEquipment" in permissions) &&
+        hasLegacyFullAdminPermissions(permissions);
+    }
+
+    function tendersEnabledByDefault(permissions) {
+      return !("tenders" in permissions) &&
         hasLegacyFullAdminPermissions(permissions);
     }
 
@@ -223,6 +229,10 @@ service cloud.firestore {
           (
             menuKey == "medicalEquipment" &&
             medicalEquipmentEnabledByDefault(permissions)
+          ) ||
+          (
+            menuKey == "tenders" &&
+            tendersEnabledByDefault(permissions)
           )
         );
     }
@@ -247,6 +257,10 @@ service cloud.firestore {
           (
             menuKey == "medicalEquipment" &&
             medicalEquipmentEnabledByDefault(permissions)
+          ) ||
+          (
+            menuKey == "tenders" &&
+            tendersEnabledByDefault(permissions)
           )
         );
     }
@@ -295,6 +309,7 @@ service cloud.firestore {
         (moduleId == "memos" && canViewMenu(workspaceId, "memos")) ||
         (moduleId == "informations" && canViewInformationsMenu(workspaceId)) ||
         (moduleId == "medicalEquipment" && canViewMenu(workspaceId, "medicalEquipment")) ||
+        (moduleId == "tenders" && canViewMenu(workspaceId, "tenders")) ||
         (moduleId == "swap" && canViewMenu(workspaceId, "swap")) ||
         (moduleId == "hours" && canViewMenu(workspaceId, "hours")) ||
         (moduleId == "weekly" && canViewMenu(workspaceId, "weekly")) ||
@@ -318,6 +333,7 @@ service cloud.firestore {
         (moduleId == "memos" && canEditMenu(workspaceId, "memos")) ||
         (moduleId == "informations" && canEditInformationsMenu(workspaceId)) ||
         (moduleId == "medicalEquipment" && canEditMenu(workspaceId, "medicalEquipment")) ||
+        (moduleId == "tenders" && canEditMenu(workspaceId, "tenders")) ||
         (moduleId == "swap" && canEditMenu(workspaceId, "swap")) ||
         (moduleId == "hours" && canEditMenu(workspaceId, "hours")) ||
         (moduleId == "weekly" && canEditMenu(workspaceId, "weekly")) ||

@@ -391,7 +391,7 @@ export function resolveContract(equipment, contracts = []) {
 }
 
 export function renewalCardDate(endDate) {
-    return isISODate(endDate) ? addMonthsISO(endDate, -3) : "";
+    return isISODate(endDate) ? addDaysISO(endDate, -120) : "";
 }
 
 /* ---------- indicadores del equipo: ultimos 12 meses ---------- */
@@ -651,7 +651,7 @@ export function equipmentAlerts(equipment, context) {
                     "contrato",
                     `contract:${contract.id}`
                 );
-            } else if (days <= 90) {
+            } else if (days <= 120) {
                 add(
                     days <= 30 ? 3 : 1,
                     `Contrato ${days} d`,
@@ -667,7 +667,7 @@ export function equipmentAlerts(equipment, context) {
         const warrantyDays = daysUntil(warranty, today);
 
         if (warrantyDays !== null && warrantyDays >= 0) {
-            if (warrantyDays <= 90) {
+            if (warrantyDays <= 120) {
                 add(
                     1,
                     `Garantía ${warrantyDays} d`,
@@ -796,11 +796,11 @@ function coverageEndsSoon(snapshot, today) {
     const contract = snapshot.contract;
 
     if (contract) {
-        return isISODate(contract.endDate) ? daysUntil(contract.endDate, today) <= 90 : false;
+        return isISODate(contract.endDate) ? daysUntil(contract.endDate, today) <= 120 : false;
     }
 
     const warranty = daysUntil(snapshot.equipment.warrantyUntil, today);
-    return !(warranty !== null && warranty > 90);
+    return !(warranty !== null && warranty > 120);
 }
 
 function pendingDocuments(snapshot) {
@@ -856,7 +856,7 @@ export function unitKpis(snapshots, today) {
         },
         {
             id: "coverage",
-            label: "Equipos sin cobertura en 90 días",
+            label: "Equipos sin cobertura en 120 días",
             value: count(item => coverageEndsSoon(item, today)),
             tone: "warn",
             match: item => coverageEndsSoon(item, today)

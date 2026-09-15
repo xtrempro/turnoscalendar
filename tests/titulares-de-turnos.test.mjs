@@ -871,6 +871,7 @@ test("el menu va justo despues de Turnos", async () => {
         ["taskAssignmentsPanel", null],
         ["informationsPanel", null],
         ["medicalEquipmentPanel", null],
+        ["tendersPanel", null],
         ["kanbanPanel", null],
         ["agendaPanel", null],
         ["hoursPanel", null],

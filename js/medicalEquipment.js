@@ -973,7 +973,7 @@ export function medicalEquipmentContractRenewalKanbanCards(
     equipmentItems = getMedicalEquipment()
 ) {
     const baseDate = isoDate(today) || todayISO();
-    const warningLimit = addMonthsISO(baseDate, 3);
+    const warningLimit = addDaysISO(baseDate, 120);
 
     if (!warningLimit) return [];
 
@@ -1345,14 +1345,14 @@ function contractVigHTML(snapshot, ctx) {
     }
 
     const rest = daysUntil(contract.endDate, ctx.today);
-    const tone = rest <= 30 ? "danger" : rest <= 90 ? "warn" : "";
+    const tone = rest <= 30 ? "danger" : rest <= 120 ? "warn" : "";
     const hasStart = Boolean(contract.startDate) && contract.startDate < contract.endDate;
     const total = hasStart ? daysBetween(contract.startDate, contract.endDate) : 0;
     const elapsed = hasStart ? daysBetween(contract.startDate, ctx.today) : 0;
     const progress = hasStart ? Math.max(0, Math.min(100, (elapsed / total) * 100)) : 100;
     const label = rest < 0
         ? `Vencido hace ${-rest} d`
-        : rest <= 90 ? `Vence en ${rest} d` : `${Math.round(rest / 30.4)} meses restantes`;
+        : rest <= 120 ? `Vence en ${rest} d` : `${Math.round(rest / 30.4)} meses restantes`;
 
     return `<div class="meq-vig">
         <div class="meq-vig__top"><strong>${esc(contract.provider || "Contrato")}</strong><span class="meq-pill meq-pill--${rest < 0 ? "danger" : tone || "ok"}">${label}</span></div>
@@ -1476,7 +1476,7 @@ function fichaHeadHTML(snapshot, ctx) {
             contractBadge = warrantyDays !== null && warrantyDays >= 0
                 ? `<span class="meq-pill meq-pill--notice">garantía</span>`
                 : `<span class="meq-pill meq-pill--danger">sin contrato</span>`;
-        } else if (contractDays !== null && contractDays <= 90) {
+        } else if (contractDays !== null && contractDays <= 120) {
             contractBadge = `<span class="meq-pill meq-pill--${contractDays < 0 ? "danger" : "warn"}">${contractDays < 0 ? "vencido" : `${contractDays} d`}</span>`;
         }
     }
@@ -2054,7 +2054,7 @@ function noContractHTML(snapshot, ctx) {
         : "";
     const head = inWarranty
         ? `<div class="meq-callout meq-callout--ok"><span class="meq-alert__ic">${ic("contract")}</span>
-            <span class="meq-callout__txt"><strong>En garantía del fabricante hasta el ${formatDate(equipment.warrantyUntil)}</strong><span>${warrantyDays <= 90 ? `Quedan ${plural(warrantyDays, "día", "días")}. ` : ""}Registra el contrato de mantención antes de que termine para no quedar sin cobertura.</span></span>${newButton}</div>`
+            <span class="meq-callout__txt"><strong>En garantía del fabricante hasta el ${formatDate(equipment.warrantyUntil)}</strong><span>${warrantyDays <= 120 ? `Quedan ${plural(warrantyDays, "día", "días")}. ` : ""}Registra el contrato de mantención antes de que termine para no quedar sin cobertura.</span></span>${newButton}</div>`
         : `<div class="meq-callout meq-callout--danger"><span class="meq-alert__ic">${ic("contract")}</span>
             <span class="meq-callout__txt"><strong>${equipment.warrantyUntil ? `Sin contrato de mantención desde el ${formatDate(equipment.warrantyUntil)}` : "Sin contrato de mantención"}</strong><span>${equipment.warrantyUntil ? "Terminó la garantía del fabricante. " : ""}Mientras no haya contrato, las preventivas y las reparaciones no tienen proveedor ni plazos comprometidos.</span></span>${newButton}</div>`;
 
@@ -2082,7 +2082,7 @@ function legacyContractHTML(snapshot, ctx) {
         </div>
         <section class="meq-sec">
             <div class="meq-sec__h"><div><span class="meq-kicker">Contrato de mantención</span><h3 style="font-size:17px">${esc(contract.provider || "Proveedor sin nombre")}</h3></div>
-                <span class="meq-pill meq-pill--${rest === null ? "warn" : rest < 0 ? "danger" : rest <= 90 ? "warn" : "ok"}">${rest === null ? "Sin fecha de término" : rest < 0 ? `Vencido hace ${-rest} d` : rest <= 90 ? `Vence en ${rest} d` : `Vigente hasta ${formatDate(contract.endDate)}`}</span></div>
+                <span class="meq-pill meq-pill--${rest === null ? "warn" : rest < 0 ? "danger" : rest <= 120 ? "warn" : "ok"}">${rest === null ? "Sin fecha de término" : rest < 0 ? `Vencido hace ${-rest} d` : rest <= 120 ? `Vence en ${rest} d` : `Vigente hasta ${formatDate(contract.endDate)}`}</span></div>
         </section>
         <div class="meq-cols">
             <section class="meq-sec">
@@ -2117,7 +2117,7 @@ function tabContractHTML(snapshot, ctx) {
     if (contract.legacy) return legacyContractHTML(snapshot, ctx);
 
     const rest = contract.endDate ? daysUntil(contract.endDate, ctx.today) : null;
-    const tone = rest === null ? "warn" : rest <= 30 ? "danger" : rest <= 90 ? "warn" : "ok";
+    const tone = rest === null ? "warn" : rest <= 30 ? "danger" : rest <= 120 ? "warn" : "ok";
     const hasStart = Boolean(contract.startDate && contract.endDate && contract.startDate < contract.endDate);
     const progress = hasStart
         ? Math.max(0, Math.min(100, (daysBetween(contract.startDate, ctx.today) / daysBetween(contract.startDate, contract.endDate)) * 100))
@@ -2134,7 +2134,7 @@ function tabContractHTML(snapshot, ctx) {
 
     if (rest === null) pillLabel = "Sin fecha de término";
     else if (rest < 0) pillLabel = `Vencido hace ${-rest} d`;
-    else if (rest <= 90) pillLabel = `Vence en ${rest} d`;
+    else if (rest <= 120) pillLabel = `Vence en ${rest} d`;
 
     if (contract.responseHours) {
         rows.push([
@@ -2170,7 +2170,7 @@ function tabContractHTML(snapshot, ctx) {
         : `<span class="meq-pill meq-pill--${value ? "ok" : "danger"}">${ic(value ? "check" : "x")}${value ? "Sí" : "No"}</span>`;
 
     return `
-        ${rest !== null && rest <= 90 ? `<div class="meq-callout ${rest < 0 ? "meq-callout--danger" : ""}">
+        ${rest !== null && rest <= 120 ? `<div class="meq-callout ${rest < 0 ? "meq-callout--danger" : ""}">
             <span class="meq-alert__ic">${ic("clock")}</span>
             <span class="meq-callout__txt"><strong>${rest < 0 ? `Venció hace ${plural(-rest, "día", "días")} (${formatDate(contract.endDate)})` : `Vence en ${plural(rest, "día", "días")} (${formatDate(contract.endDate)})`}</strong><span>La tarjeta de renovación está en Kanban desde el ${formatDate(renewalCardDate(contract.endDate))}. Al renovar, carga la nueva vigencia aquí una sola vez: se aplica a los ${plural(covered.length, "equipo", "equipos")} que cubre.</span></span>
             ${ctx.canEdit ? `<button class="meq-btn meq-btn--primary meq-btn--sm" type="button" data-meq-act="contract-renew">Registrar renovación</button>` : ""}

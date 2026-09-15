@@ -460,6 +460,10 @@ import {
     stopMedicalEquipmentReportSync
 } from "./medicalEquipment.js";
 import {
+    initTendersPanel,
+    renderTendersPanel
+} from "./tenders.js";
+import {
     initQualificationsPanel,
     renderQualificationsPanel
 } from "./qualifications.js";
@@ -5957,6 +5961,10 @@ async function setActiveShortcut(targetId, options = {}) {
 
         if (nextView === "medicalEquipment") {
             renderMedicalEquipmentPanel();
+        }
+
+        if (nextView === "tenders") {
+            renderTendersPanel();
         }
 
         if (nextView === "qualifications") {
@@ -13833,6 +13841,9 @@ function syncWorkspaceStateViews() {
             if (document.body.dataset.activeView === "medicalEquipment") {
                 renderMedicalEquipmentPanel();
             }
+            if (document.body.dataset.activeView === "tenders") {
+                renderTendersPanel();
+            }
             if (document.body.dataset.activeView === "qualifications") {
                 renderQualificationsPanel();
             }
@@ -14185,6 +14196,9 @@ initFirebaseShell({
         if (document.body.dataset.activeView === "medicalEquipment") {
             renderMedicalEquipmentPanel();
         }
+        if (document.body.dataset.activeView === "tenders") {
+            renderTendersPanel();
+        }
     }
 });
 bindProfileForm();
@@ -14203,6 +14217,7 @@ initHoursCharts(getPerfilActual);
 updateMemosNavBadge();
 initInformationsPanel();
 initMedicalEquipmentPanel();
+initTendersPanel();
 initQualificationsPanel();
 refreshWorkerRequestsNavBadge();
 initNotificationsBell({

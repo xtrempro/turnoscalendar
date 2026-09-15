@@ -55,6 +55,7 @@ service firebase.storage {
         ("informations" in permissions && permissions.informations.edit == true) ||
         !("informations" in permissions) ||
         ("medicalEquipment" in permissions && permissions.medicalEquipment.edit == true) ||
+        ("tenders" in permissions && permissions.tenders.edit == true) ||
         ("swap" in permissions && permissions.swap.edit == true) ||
         ("hours" in permissions && permissions.hours.edit == true) ||
         ("reports" in permissions && permissions.reports.edit == true) ||
@@ -92,6 +93,11 @@ service firebase.storage {
 
     function medicalEquipmentEnabledByDefault(permissions) {
       return !("medicalEquipment" in permissions) &&
+        hasLegacyFullAdminPermissions(permissions);
+    }
+
+    function tendersEnabledByDefault(permissions) {
+      return !("tenders" in permissions) &&
         hasLegacyFullAdminPermissions(permissions);
     }
 
@@ -145,6 +151,10 @@ service firebase.storage {
         (
           moduleId == "medicalEquipment" &&
           medicalEquipmentEnabledByDefault(permissions)
+        ) ||
+        (
+          moduleId == "tenders" &&
+          tendersEnabledByDefault(permissions)
         );
     }
 
@@ -162,6 +172,10 @@ service firebase.storage {
         (
           moduleId == "medicalEquipment" &&
           medicalEquipmentEnabledByDefault(permissions)
+        ) ||
+        (
+          moduleId == "tenders" &&
+          tendersEnabledByDefault(permissions)
         );
     }
 

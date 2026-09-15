@@ -54,10 +54,10 @@ const equipment = (extra = {}) => ({
     ...extra
 });
 
-test("Equipos Medicos crea tarjeta pendiente cuando faltan 3 meses para renovar", () => {
+test("Equipos Medicos crea tarjeta pendiente cuando faltan 120 dias para renovar", () => {
     const cards = medicalEquipmentContractRenewalKanbanCards("2026-09-08", [
-        equipment({ id: "near", name: "Tomógrafo", serviceUntil: "2026-12-08" }),
-        equipment({ id: "far", name: "Ecógrafo", serviceUntil: "2026-12-09" })
+        equipment({ id: "near", name: "Tomógrafo", serviceUntil: "2027-01-06" }),
+        equipment({ id: "far", name: "Ecógrafo", serviceUntil: "2027-01-07" })
     ]);
 
     assert.equal(cards.length, 1);
@@ -66,14 +66,14 @@ test("Equipos Medicos crea tarjeta pendiente cuando faltan 3 meses para renovar"
     assert.equal(cards[0].equipmentId, "near");
     assert.equal(
         cards[0].title,
-        "Renovar contrato de mantenimiento del equipo Tomógrafo, la vigencia del contrato dura hasta 08/12/2026"
+        "Renovar contrato de mantenimiento del equipo Tomógrafo, la vigencia del contrato dura hasta 06/01/2027"
     );
 });
 
 test("la tarjeta automatica se mezcla con el Kanban en Pendientes", () => {
     localStorage.clear();
     setJSON(MEDICAL_EQUIPMENT_KEY, [
-        equipment({ id: "rx-1", name: "Rayos X", serviceUntil: "2026-12-08" })
+        equipment({ id: "rx-1", name: "Rayos X", serviceUntil: "2027-01-06" })
     ]);
 
     const cards = getKanbanCardsForRender([
@@ -92,7 +92,7 @@ test("la tarjeta automatica se mezcla con el Kanban en Pendientes", () => {
         cards.map(card => [card.id, card.status]),
         [
             ["manual-1", "done"],
-            ["medical_contract_rx-1_2026-12-08", "pending"]
+            ["medical_contract_rx-1_2027-01-06", "pending"]
         ]
     );
 });

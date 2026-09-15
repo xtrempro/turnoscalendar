@@ -9,6 +9,11 @@ import {
     medicalEquipmentContractRenewalKanbanCards,
     selectMedicalEquipment
 } from "./medicalEquipment.js";
+import {
+    TENDERS_KEY,
+    selectTender,
+    tenderRenewalKanbanCards
+} from "./tenders.js";
 import { canEditMenu, canViewMenu } from "./workspacePermissions.js";
 
 const LEGACY_STORAGE_KEY = "kanban_cards";
@@ -105,14 +110,28 @@ function canViewMedicalEquipmentRenewalCards() {
     return canViewMenu("medicalEquipment") && canEditMenu("medicalEquipment");
 }
 
+function canViewTenderRenewalCards() {
+    return canViewMenu("tenders") && canEditMenu("tenders");
+}
+
 function isAutomaticCard(card) {
-    return card?.auto === true || card?.source === "medicalEquipmentRenewal";
+    return card?.auto === true ||
+        card?.source === "medicalEquipmentRenewal" ||
+        card?.source === "tenderRenewal";
 }
 
 export function getAutomaticKanbanCards(today) {
-    if (!canViewMedicalEquipmentRenewalCards()) return [];
+    const cards = [];
 
-    return medicalEquipmentContractRenewalKanbanCards(today);
+    if (canViewMedicalEquipmentRenewalCards()) {
+        cards.push(...medicalEquipmentContractRenewalKanbanCards(today));
+    }
+
+    if (canViewTenderRenewalCards()) {
+        cards.push(...tenderRenewalKanbanCards(today));
+    }
+
+    return cards;
 }
 
 export function getKanbanCardsForRender(cards = getCards(), today) {
@@ -346,16 +365,27 @@ function formatDate(value) {
     });
 }
 
+function renderAutomaticCardActions(card) {
+    if (card.source === "tenderRenewal") {
+        return `
+                    <button class="kanban-card__open" type="button" aria-label="Ver licitacion" data-kanban-tender="${escapeHTML(card.tenderId || "")}">
+                        Ver licitacion
+                    </button>`;
+    }
+
+    return `
+                    <button class="kanban-card__open" type="button" aria-label="Ver equipo medico" data-kanban-medical-equipment="${escapeHTML(card.equipmentId || "")}">
+                        Ver equipo
+                    </button>`;
+}
+
 function renderCard(card) {
     const automatic = isAutomaticCard(card);
     const cardAttrs = automatic
         ? `data-kanban-auto-card="${escapeHTML(card.id)}"`
         : `draggable="true" data-kanban-card="${escapeHTML(card.id)}"`;
     const actions = automatic
-        ? `
-                    <button class="kanban-card__open" type="button" aria-label="Ver equipo médico" data-kanban-medical-equipment="${escapeHTML(card.equipmentId || "")}">
-                        Ver equipo
-                    </button>`
+        ? renderAutomaticCardActions(card)
         : `
                     <button class="kanban-card__edit" type="button" aria-label="Editar tarjeta" data-kanban-edit="${escapeHTML(card.id)}">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -515,6 +545,17 @@ function openMedicalEquipmentFromKanban(equipmentId) {
         ?.click();
 }
 
+function openTenderFromKanban(tenderId) {
+    const id = String(tenderId || "");
+
+    if (!id) return;
+
+    selectTender(id, "resumen");
+    document
+        .querySelector('.nav-tile[data-target="tendersPanel"]')
+        ?.click();
+}
+
 function renderColumn(column, cards) {
     const columnCards = cards.filter(card => card.status === column.key);
 
@@ -552,6 +593,11 @@ function bindKanbanEvents(root) {
     root.querySelectorAll("[data-kanban-medical-equipment]").forEach(button => {
         button.onclick = () =>
             openMedicalEquipmentFromKanban(button.dataset.kanbanMedicalEquipment);
+    });
+
+    root.querySelectorAll("[data-kanban-tender]").forEach(button => {
+        button.onclick = () =>
+            openTenderFromKanban(button.dataset.kanbanTender);
     });
 
     root.querySelectorAll("[data-kanban-delete]").forEach(button => {
@@ -622,16 +668,17 @@ function bindKanbanEvents(root) {
     });
 }
 
-function shouldRefreshForMedicalEquipment(event) {
+function shouldRefreshForAutomaticSources(event) {
     const keys = event?.detail?.keys;
 
     return !Array.isArray(keys) ||
         !keys.length ||
-        keys.includes(MEDICAL_EQUIPMENT_KEY);
+        keys.includes(MEDICAL_EQUIPMENT_KEY) ||
+        keys.includes(TENDERS_KEY);
 }
 
-function refreshKanbanForMedicalEquipment(event) {
-    if (!shouldRefreshForMedicalEquipment(event)) return;
+function refreshKanbanForAutomaticSources(event) {
+    if (!shouldRefreshForAutomaticSources(event)) return;
     if (document.body?.dataset?.activeView !== "kanban") return;
 
     renderKanbanBoard();
@@ -643,15 +690,19 @@ function bindAutomaticKanbanRefresh() {
     automaticKanbanRefreshBound = true;
     window.addEventListener(
         "proturnos:medicalEquipmentChanged",
-        refreshKanbanForMedicalEquipment
+        refreshKanbanForAutomaticSources
+    );
+    window.addEventListener(
+        "proturnos:tendersChanged",
+        refreshKanbanForAutomaticSources
     );
     window.addEventListener(
         "proturnos:workspacePermissionsChanged",
-        refreshKanbanForMedicalEquipment
+        refreshKanbanForAutomaticSources
     );
     window.addEventListener(
         "proturnos:persistenceChanged",
-        refreshKanbanForMedicalEquipment
+        refreshKanbanForAutomaticSources
     );
 }
 

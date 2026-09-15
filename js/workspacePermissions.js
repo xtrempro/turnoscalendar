@@ -26,6 +26,7 @@ export const MENU_PERMISSION_DEFS = [
         label: "Equipos M\u00e9dicos",
         target: "medicalEquipmentPanel"
     },
+    { key: "tenders", label: "Licitaciones", target: "tendersPanel" },
     { key: "kanban", label: "Kanban", target: "kanbanPanel" },
     { key: "agenda", label: "Contactos", target: "agendaPanel" },
     { key: "profile", label: "Perfiles", target: "profileSection" },
@@ -54,6 +55,7 @@ const LEGACY_FULL_ADMIN_PERMISSION_KEYS = MENU_PERMISSION_DEFS
     .filter(key => ![
         "informations",
         "medicalEquipment",
+        "tenders",
         "qualifications"
     ].includes(key));
 
@@ -78,6 +80,7 @@ function defaultEnabledWhenMissing(menuKey, source = {}) {
         (
             (
                 menuKey === "medicalEquipment" ||
+                menuKey === "tenders" ||
                 menuKey === "qualifications"
             ) &&
             hasLegacyFullAdminPermissions(source)

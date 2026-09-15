@@ -65,6 +65,7 @@ function permissions(editable = [], hidden = []) {
         "memos",
         "informations",
         "medicalEquipment",
+        "tenders",
         "swap",
         "hours",
         "reports",
@@ -90,6 +91,7 @@ function legacyPermissions(editable = [], hidden = []) {
 
     delete next.informations;
     delete next.medicalEquipment;
+    delete next.tenders;
     delete next.qualifications;
     return next;
 }

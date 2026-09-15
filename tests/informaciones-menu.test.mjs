@@ -40,13 +40,15 @@ test("Informaciones queda enganchado al panel supervisor y a permisos", async ()
     const tasksNavIndex = html.indexOf('data-target="taskAssignmentsPanel"');
     const informationsNavIndex = html.indexOf('data-target="informationsPanel"');
     const medicalEquipmentNavIndex = html.indexOf('data-target="medicalEquipmentPanel"');
+    const tendersNavIndex = html.indexOf('data-target="tendersPanel"');
     const kanbanNavIndex = html.indexOf('data-target="kanbanPanel"');
 
     assert.match(html, /data-target="informationsPanel"[\s\S]{0,900}Informaciones/);
     assert.ok(tasksNavIndex > -1);
     assert.ok(informationsNavIndex > tasksNavIndex);
     assert.ok(medicalEquipmentNavIndex > informationsNavIndex);
-    assert.ok(kanbanNavIndex > medicalEquipmentNavIndex);
+    assert.ok(tendersNavIndex > medicalEquipmentNavIndex);
+    assert.ok(kanbanNavIndex > tendersNavIndex);
     assert.match(html, /<section id="informationsPanel" class="panel informations-panel"><\/section>/);
     assert.match(navigation, /targetId === "informationsPanel"[\s\S]{0,80}return "informations";/);
     assert.match(main, /renderInformationsPanel/);
@@ -64,7 +66,8 @@ test("Informaciones queda enganchado al panel supervisor y a permisos", async ()
     assert.match(css, /\.actionbar \.nav-tile\[data-target="taskAssignmentsPanel"\]\s*\{[\s\S]{0,80}order:\s*11/);
     assert.match(css, /\.actionbar \.nav-tile\[data-target="informationsPanel"\]\s*\{[\s\S]{0,80}order:\s*12/);
     assert.match(css, /\.actionbar \.nav-tile\[data-target="medicalEquipmentPanel"\]\s*\{[\s\S]{0,80}order:\s*13/);
-    assert.match(css, /\.actionbar \.nav-tile\[data-target="kanbanPanel"\]\s*\{[\s\S]{0,80}order:\s*14/);
+    assert.match(css, /\.actionbar \.nav-tile\[data-target="tendersPanel"\]\s*\{[\s\S]{0,80}order:\s*14/);
+    assert.match(css, /\.actionbar \.nav-tile\[data-target="kanbanPanel"\]\s*\{[\s\S]{0,80}order:\s*15/);
 });
 
 test("Informaciones queda activo por defecto en permisos legados", async () => {

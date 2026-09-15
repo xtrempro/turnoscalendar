@@ -7,6 +7,7 @@ export const FIREBASE_STATE_MODULES = Object.freeze({
     memos: { permission: "memos" },
     informations: { permission: "informations" },
     medicalEquipment: { permission: "medicalEquipment" },
+    tenders: { permission: "tenders" },
     swap: { permission: "swap" },
     hours: { permission: "hours" },
     weekly: { permission: "weekly" },
@@ -46,6 +47,7 @@ const EXACT_KEY_MODULES = new Map([
     ["memos", "memos"],
     ["informations", "informations"],
     ["medicalEquipment", "medicalEquipment"],
+    ["tenders", "tenders"],
     // Contratos de mantencion: uno puede cubrir varios equipos. Viaja en el
     // mismo modulo que los equipos, asi que usa las reglas ya desplegadas.
     ["medicalEquipmentContracts", "medicalEquipment"],

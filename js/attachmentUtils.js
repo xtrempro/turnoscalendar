@@ -50,6 +50,7 @@ const STORAGE_MODULES = new Set([
     "requests",
     "informations",
     "medicalEquipment",
+    "tenders",
     // Formulario de evaluacion cuatrimestral firmado y escaneado. El ownerId es
     // el trabajador y el recordId el periodo evaluado.
     "qualifications",
