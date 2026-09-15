@@ -5436,6 +5436,7 @@ function autoScheduleCells(days, tasks, assignments) {
                     keyDay,
                     taskId,
                     taskIds: group.taskIds,
+                    taskTitles: autoScheduleTaskTitles(tasks, group.taskIds),
                     fillAllEligible: autoScheduleFillsAllEligible(
                         shift,
                         day,
@@ -5495,6 +5496,10 @@ function autoSchedulePlanSummary(plan, days) {
     const noHistory = countSkipped(plan, "sin-historial", "sin-turno");
     const noStaffingGroup = countSkipped(plan, "sin-estamento");
     const takenElsewhere = countSkipped(plan, "sin-gente");
+    const byExtraReason = plan.filled.reduce(
+        (sum, item) => sum + (item.extraReasonWorkers?.length || 0),
+        0
+    );
     const lines = [
         `Se repartirán ${plan.assignments} ${plan.assignments === 1 ? "persona" : "personas"} en ${cells} ${cells === 1 ? "casilla vacía" : "casillas vacías"} de la semana del ${formatShortDate(days[0])} al ${formatShortDate(days[6])}.`,
         "",
@@ -5502,6 +5507,15 @@ function autoSchedulePlanSummary(plan, days) {
         "",
         "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];
+
+    // Quien trae turno extra con motivo HHEE de una tarea del dia va a esa tarea
+    // primero, aunque no tenga historial en ella ni la tarea tenga cupo ese dia.
+    if (byExtraReason) {
+        lines.push(
+            "",
+            `${byExtraReason} ${byExtraReason === 1 ? "persona va" : "personas van"} a la tarea que indica su motivo de HHEE.`
+        );
+    }
 
     if (noHistory || noStaffingGroup || takenElsewhere || shortCells) {
         lines.push("");
@@ -5536,6 +5550,14 @@ function autoSchedulePlanSummary(plan, days) {
 
 function taskTitleForAutoSchedule(tasks, taskId) {
     return tasks.find(task => task.id === taskId)?.title || taskId;
+}
+
+// Nombre de cada tarea de la casilla, para que el motor lo calce con el motivo
+// HHEE del turno extra ("Estacion de trabajo" -> ESTACION DE TRABAJO).
+function autoScheduleTaskTitles(tasks, taskIds = []) {
+    return Object.fromEntries(
+        taskIds.map(taskId => [taskId, taskTitleForAutoSchedule(tasks, taskId)])
+    );
 }
 
 function autoSchedulePreviewDayLabel(keyDay) {

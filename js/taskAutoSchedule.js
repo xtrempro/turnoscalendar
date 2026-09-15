@@ -39,10 +39,13 @@
 //      tareas en el mismo turno. Aun asi, antes de repetir a alguien, se
 //      intenta usar a quienes siguen disponibles sin tarea en ese turno.
 //
-//   5. MOTIVO DE HHEE. Si un turno extra trae motivo, se aprende que motivos
-//      historicamente terminan en que tareas. Ese calce no inventa tareas ni
-//      salta el historial del trabajador; solo inclina fuerte el reparto hacia
-//      la tarea que el motivo suele anticipar.
+//   5. MOTIVO DE HHEE. El turno extra que trae motivo existe PARA una tarea: el
+//      motivo es lo que el supervisor escribio al agregarlo. Si el motivo dice
+//      lo mismo que el nombre de una tarea del dia ("Estacion de trabajo" ->
+//      ESTACION DE TRABAJO), o el historial muestra que ese motivo termina en
+//      esa tarea, esa persona va ahi PRIMERO, sin pedirle cupo, experiencia ni
+//      tipo de turno habitual (ver assignExtraReasonMatches). Antes solo
+//      inclinaba el sorteo, y esos filtros lo dejaban afuera antes de pesar.
 
 import { keyToDate } from "./dateUtils.js";
 
@@ -1154,6 +1157,157 @@ function extraReasonWeightMultiplier(fit) {
 }
 
 /* ==========================================================================
+   Motivo de HHEE que manda la tarea
+   ========================================================================== */
+
+// Los nombres de las tareas de una casilla, tal como los manda el panel:
+// `taskTitles` como { tareaId: nombre } o como lista en el orden de `taskIds`.
+function cellTaskTitles(cell, taskIds) {
+    const titles = cell?.taskTitles;
+
+    if (Array.isArray(titles)) {
+        return titles.map(title => String(title || "").trim()).filter(Boolean);
+    }
+
+    if (titles && typeof titles === "object") {
+        return taskIds
+            .map(taskId => String(titles[taskId] || "").trim())
+            .filter(Boolean);
+    }
+
+    return [];
+}
+
+/**
+ * Cuanto calza el motivo HHEE de un candidato con las tareas de una casilla.
+ *
+ * Basta uno de dos caminos:
+ *   - por nombre: el motivo dice lo mismo que la tarea. No necesita historial,
+ *     es lo que el supervisor escribio al agregar el turno.
+ *   - por historial: ese motivo, otras veces, termino en esta tarea aunque se
+ *     llame distinto ("Refuerzo urgencias" -> TAC URGENCIA).
+ *
+ * @returns {number} 0 si no calza; mas alto, mas seguro.
+ */
+function extraReasonCellScore(history, cell, taskIds, name) {
+    const reason = normalizeTurnContext(
+        candidateTurnContextFor(cell, name)
+    ).extraReason;
+
+    if (!reason) return 0;
+
+    const byTitle = Math.max(
+        0,
+        ...cellTaskTitles(cell, taskIds).map(title =>
+            extraReasonSimilarity(reason, title)
+        )
+    );
+    const learned = extraReasonTaskAffinity(history, cell.shift, taskIds, reason);
+
+    return Math.max(byTitle, learned.matches ? learned.rate : 0);
+}
+
+/**
+ * Primera pasada del reparto: quien trae un turno extra con motivo HHEE va a la
+ * tarea que ese motivo indica, antes que nada.
+ *
+ * Aca NO se le piden los filtros que cuidan el sorteo -experiencia en la
+ * tarea, tipo de turno habitual, cupo aprendido del dia-: ese turno existe para
+ * esa tarea, y las tareas que dependen de HHEE van pocos dias, asi que su cupo
+ * aprendido suele salir 0. Va primero para que otra tarea no se lo lleve, y si
+ * la casilla ya no tiene cupo libre se le abre uno.
+ *
+ * Lo que SI se respeta: que este de turno ese dia (candidates), que no lo hayan
+ * sacado a mano de esa casilla (blocked), el estamento del cupo libre que
+ * ocupa, y la regla multitarea si ya tiene otra tarea en ese turno.
+ */
+function assignExtraReasonMatches({
+    prepared,
+    stats,
+    workerGroups,
+    takenByDay,
+    touched,
+    runTotals,
+    runByTask
+}) {
+    let assignments = 0;
+    const byDay = new Map();
+    const cleanNames = list => (list || [])
+        .map(name => String(name || "").trim())
+        .filter(Boolean);
+
+    prepared.forEach(item => {
+        const dayKey = `${item.cell.shift}|${item.cell.keyDay}`;
+        const list = byDay.get(dayKey) || [];
+
+        list.push(item);
+        byDay.set(dayKey, list);
+    });
+
+    byDay.forEach((items, dayKey) => {
+        items.forEach(item => seedTakenForCell(takenByDay, dayKey, item.cell));
+
+        const taken = takenByDay.get(dayKey);
+        const names = [...new Set(
+            items.flatMap(item => cleanNames(item.cell.candidates))
+        )];
+
+        names.forEach(name => {
+            let best = null;
+
+            items.forEach(item => {
+                if (!cleanNames(item.cell.candidates).includes(name)) return;
+                if (cleanNames(item.cell.blocked).includes(name)) return;
+                if (item.chosen.includes(name)) return;
+                if (!canCandidateUseCell(stats, item.cell, name, item.taskIds, taken)) {
+                    return;
+                }
+
+                const score = extraReasonCellScore(
+                    stats,
+                    item.cell,
+                    item.taskIds,
+                    name
+                );
+
+                if (score > 0 && (!best || score > best.score)) {
+                    best = { item, score };
+                }
+            });
+
+            if (!best) return;
+
+            const { item } = best;
+            const group = workerGroups.get(name) || "";
+            let round = item.slotAssignments.findIndex((assigned, slot) =>
+                !assigned &&
+                (!item.groupSlots[slot] || item.groupSlots[slot] === group)
+            );
+
+            if (round < 0) {
+                round = item.slotAssignments.length;
+                item.slotAssignments.push("");
+                item.headcount = item.slotAssignments.length;
+            }
+
+            recordSlotAssignment({
+                item,
+                round,
+                name,
+                taken,
+                touched,
+                runTotals,
+                runByTask
+            });
+            item.extraReasonWorkers.push(name);
+            assignments += 1;
+        });
+    });
+
+    return assignments;
+}
+
+/* ==========================================================================
    Sorteo con peso
    ========================================================================== */
 
@@ -1618,8 +1772,23 @@ export function planTaskAutoSchedule({
             chosen: [],
             turnSlots: effectiveTurnSlots,
             slotAssignments: Array(effectiveHeadcount).fill(""),
-            historyReach
+            historyReach,
+            // Quienes quedaron en esta casilla por su motivo de HHEE.
+            extraReasonWorkers: []
         };
+    });
+
+    // Antes que nada, el que trae un turno extra con motivo HHEE de una tarea de
+    // su dia va a esa tarea. Puede abrirle cupo a una casilla que venia en 0,
+    // por eso corre antes de descartar las casillas sin cupo.
+    assignments += assignExtraReasonMatches({
+        prepared,
+        stats,
+        workerGroups,
+        takenByDay,
+        touched,
+        runTotals,
+        runByTask
     });
 
     const ordered = prepared
@@ -1757,7 +1926,10 @@ export function planTaskAutoSchedule({
             turnSlots: chosenTurnSlots,
             // Una casilla que pedia tres y consiguio una no es un exito
             // callado: el resumen tiene que poder decirlo.
-            short: Math.max(headcount - chosen.length, 0)
+            short: Math.max(headcount - chosen.length, 0),
+            ...(item.extraReasonWorkers.length
+                ? { extraReasonWorkers: [...item.extraReasonWorkers] }
+                : {})
         });
     });
 
