@@ -5,6 +5,9 @@ const INTERNAL_KEYS = new Set([
     "proturnos_firebase_client_id",
     "proturnos_appstate_dirty_at",
     "proturnos_state_modules_dirty",
+    // Cuando trajo datos del servidor por ultima vez ESTE computador (ver
+    // js/syncFreshness.js). Es del equipo, no de la unidad.
+    "proturnos_last_server_sync",
     "shiftMovesAuditMigrationV1",
     // La agenda es local por supervisor (no se sincroniza entre usuarios del
     // mismo entorno): cada uno edita/borra su propia copia.

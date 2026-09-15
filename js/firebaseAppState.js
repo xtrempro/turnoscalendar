@@ -27,6 +27,13 @@ import {
     planPartialStateEntries
 } from "./firebasePartialState.js";
 import {
+    isRemoteDiscrepant,
+    isSyncStale,
+    measureRemoteDiscrepancy,
+    readLastServerSync,
+    writeLastServerSync
+} from "./syncFreshness.js";
+import {
     measurePerformance,
     recordPerformanceEvent
 } from "./performanceMonitor.js";
@@ -134,6 +141,114 @@ const appliedEntrySignatures = new Map();
 const EMPTY_SIGNATURES = new Map();
 const entryModulesPresent = new Set();
 let unsubscribeStateEntries = null;
+// Bloqueo de edicion mientras la copia local no merece que se edite encima
+// (ver js/syncFreshness.js). "" = sin bloqueo; si no, "stale" o "discrepancy".
+let stateLockReason = "";
+let staleStart = false;
+let lastServerSyncMarkAt = 0;
+let freshnessCheckInFlight = false;
+const SERVER_SYNC_MARK_THROTTLE_MS = 60 * 1000;
+const LOCK_RELEASE_SETTLE_MS = 600;
+
+function lockAppState(reason) {
+    if (stateLockReason === reason) return;
+    // La copia vieja pesa mas que una discrepancia: no se rebaja el aviso.
+    if (stateLockReason === "stale" && reason === "discrepancy") return;
+
+    stateLockReason = reason;
+    dispatchStatus({ type: "app-state-lock", reason });
+}
+
+function unlockAppState() {
+    if (!stateLockReason) return;
+
+    stateLockReason = "";
+    dispatchStatus({ type: "app-state-unlock" });
+}
+
+// Se suelta cuando lo del servidor ya quedo aplicado y la pantalla alcanzo a
+// repintarse: soltar antes dejaria editar un instante sobre la vista vieja.
+function releaseLockWhenApplied() {
+    if (!stateLockReason) return;
+
+    setTimeout(() => {
+        if (
+            !stateLockReason ||
+            waitingInitialState ||
+            pendingRemoteStateEntries.size ||
+            freshnessCheckInFlight
+        ) return;
+
+        unlockAppState();
+    }, LOCK_RELEASE_SETTLE_MS);
+}
+
+function markServerSync({ force = false } = {}) {
+    if (!activeWorkspaceId) return;
+
+    const now = Date.now();
+
+    if (!force && now - lastServerSyncMarkAt < SERVER_SYNC_MARK_THROTTLE_MS) {
+        return;
+    }
+
+    lastServerSyncMarkAt = now;
+    writeLastServerSync(
+        key => getRaw(key, null),
+        (key, value) => setRaw(key, value),
+        activeWorkspaceId,
+        now
+    );
+}
+
+function localCopyIsStale(workspaceId = activeWorkspaceId) {
+    return isSyncStale(
+        readLastServerSync(key => getRaw(key, null), workspaceId)
+    );
+}
+
+// Al volver a un computador que llevaba mas de un dia sin contacto: se bloquea
+// y se lee algo del SERVIDOR, no de la cache. Si responde, los listeners ya
+// trajeron lo que faltaba; se suelta cuando termina de aplicarse. Sin servidor
+// sigue bloqueado y se reintenta al reconectar.
+async function confirmServerFreshness() {
+    if (
+        !activeWorkspaceId ||
+        waitingInitialState ||
+        freshnessCheckInFlight ||
+        !localCopyIsStale()
+    ) return;
+
+    const workspaceId = activeWorkspaceId;
+    const moduleId = stateModuleIds().find(canReadModule);
+
+    if (!moduleId) return;
+
+    freshnessCheckInFlight = true;
+    lockAppState("stale");
+
+    try {
+        const { db, firestoreModule } = await services();
+        const read = typeof firestoreModule.getDocFromServer === "function"
+            ? firestoreModule.getDocFromServer
+            : firestoreModule.getDoc;
+
+        await read(moduleDocRef(db, firestoreModule, workspaceId, moduleId));
+
+        if (workspaceId !== activeWorkspaceId) return;
+
+        markServerSync({ force: true });
+    } catch (error) {
+        console.warn("No se pudo confirmar la version del servidor.", error);
+        return;
+    } finally {
+        freshnessCheckInFlight = false;
+    }
+
+    // Lo que trajeron los listeners se aplica ya, sin la espera de cortesia.
+    scheduleRemoteStateApply(0);
+    releaseLockWhenApplied();
+}
 
 function waitFirebaseStateIdle(timeout = 500) {
     return new Promise(resolve => {
@@ -577,7 +692,9 @@ async function flushRemoteStateEntries() {
         !pendingRemoteStateEntries.size
     ) return;
 
-    const delay = firebaseRemoteApplyDelay();
+    // Bloqueado por copia vieja o discrepancia: se aplica ya. La espera existe
+    // para no interrumpir a quien edita, y ahora no se puede editar.
+    const delay = stateLockReason ? 0 : firebaseRemoteApplyDelay();
 
     if (delay > 0) {
         recordPerformanceEvent("firebase-app-state:apply-deferred", {
@@ -597,6 +714,7 @@ async function flushRemoteStateEntries() {
     try {
         while (pendingRemoteStateEntries.size && activeWorkspaceId) {
             const batchSize =
+                !stateLockReason &&
                 typeof document !== "undefined" &&
                 document.visibilityState === "visible"
                     ? REMOTE_APPLY_BATCH_SIZE
@@ -639,6 +757,7 @@ async function flushRemoteStateEntries() {
             );
         } else {
             remoteQueueOldestAt = 0;
+            releaseLockWhenApplied();
         }
 
         // El apply remoto es justo lo que bloquea el envio local: al terminar
@@ -1300,6 +1419,7 @@ async function flushPartialStateEntries() {
             type: "app-state-entries-saved",
             count: writable.length
         });
+        markServerSync();
     } catch (error) {
         pending.forEach(entry => {
             const id = [
@@ -1574,6 +1694,8 @@ function handleEntriesSnapshot(
     // includeMetadataChanges) terminan en ese corte: docChanges() los excluye.
     noteServerReachability(moduleId, snap?.metadata);
 
+    if (snap?.metadata?.fromCache === false) markServerSync();
+
     const changes = typeof snap.docChanges === "function"
         ? snap.docChanges()
         : snap.docs.map(doc => ({ type: "added", doc }));
@@ -1602,8 +1724,20 @@ function handleEntriesSnapshot(
 
     if (!changedEntries.length) return;
 
+    // Varios puntos distintos de la copia local -o claves que esta copia ni
+    // tiene-: no se deja editar encima y se aplica ya (ver js/syncFreshness.js).
+    // Un cambio de una sola entrada, lo normal, ni se mide.
+    const discrepant = !waitingInitialState &&
+        changedEntries.length + pendingRemoteStateEntries.size >= 2 &&
+        isRemoteDiscrepant(measureRemoteDiscrepancy(
+            [...pendingRemoteStateEntries.values(), ...changedEntries],
+            key => getRaw(key, null)
+        ));
+
+    if (discrepant) lockAppState("discrepancy");
+
     queueRemoteStateEntries(changedEntries);
-    scheduleRemoteStateApply(firebaseRemoteApplyDelay());
+    scheduleRemoteStateApply(discrepant ? 0 : firebaseRemoteApplyDelay());
 }
 
 async function applyRemoteModule(
@@ -1730,6 +1864,15 @@ async function applyInitialModules(
         initialEntries.push(...entries);
         mergePartialStateEntries(mergedSnapshot, entries);
     }
+
+    // Copia de mas de un dia: manda el servidor, sin encimarle nada local. La
+    // edicion estuvo bloqueada, asi que lo pendiente lo genero la app sola
+    // -saneados, predefinidos- sobre datos viejos, y se regenera con los nuevos.
+    if (staleStart) {
+        pendingStateEntries.clear();
+        localDirtyStateEntries.clear();
+    }
+
     mergeLocalDirtyStateEntries(mergedSnapshot);
 
     if (
@@ -1772,6 +1915,11 @@ async function applyInitialModules(
     });
     onStateChanged(mergedSnapshot);
 
+    // Leer del servidor es el contacto que cuenta para "hace cuanto".
+    markServerSync({ force: true });
+    staleStart = false;
+    releaseLockWhenApplied();
+
     if (pendingStateEntries.size) {
         scheduleEntrySync(
             urgentEntrySyncPending ? 0 : ENTRY_SYNC_DELAY_MS,
@@ -1797,52 +1945,14 @@ async function handleModuleSnapshot(
 
     try {
         if (!docSnap.exists()) {
-            const localSnapshot = mergeLocalDirtyStateEntries({}, moduleId);
-
-            if (Object.keys(localSnapshot).length) {
-                applyingRemoteState = true;
-                try {
-                    measurePerformance(
-                        "firebase-app-state:preserve-local-module-subset",
-                        () => replaceLocalSnapshotSubset(
-                            localSnapshot,
-                            key => stateModuleForKey(key) === moduleId,
-                            { silent: true }
-                        ),
-                        {
-                            moduleId,
-                            keyCount: Object.keys(localSnapshot).length
-                        }
-                    );
-                } finally {
-                    applyingRemoteState = false;
-                }
-                forgetAppliedStateEntries(moduleId);
-                scheduleSettledNotify(localSnapshot);
-                return;
-            }
-
-            if (entryModulesPresent.has(moduleId)) return;
-
-            applyingRemoteState = true;
-            try {
-                measurePerformance(
-                    "firebase-app-state:clear-module-subset",
-                    () => replaceLocalSnapshotSubset(
-                        {},
-                        key => stateModuleForKey(key) === moduleId,
-                        { silent: true }
-                    ),
-                    {
-                        moduleId
-                    }
-                );
-            } finally {
-                applyingRemoteState = false;
-            }
-            lastAppliedHashes.delete(moduleId);
-            forgetAppliedStateEntries(moduleId);
-            scheduleSettledNotify({});
+            // El estado vive en `entries`: que el documento del modulo no
+            // exista es lo normal y no dice nada de lo que hay en la nube.
+            //
+            // Hasta el 2026-09-15 este aviso reemplazaba el modulo local por
+            // los cambios propios de los ultimos 30 minutos -o lo vaciaba si
+            // aun no llegaban las entradas-: la copia local quedaba sin
+            // reemplazos ni bitacora hasta volver a aplicarlos. Ese dia, con la
+            // lista vacia, se publico 1 reemplazo encima de 492.
             return;
         }
 
@@ -1925,6 +2035,11 @@ export async function startFirebaseAppStateSync(
 
     waitingInitialState = true;
     stateSyncStarting = true;
+    // Mas de un dia sin traer datos del servidor: no se edita hasta aplicar lo
+    // del servidor (ver applyInitialModules).
+    staleStart = localCopyIsStale(workspaceId);
+
+    if (staleStart) lockAppState("stale");
 
     try {
         const { db, firestoreModule } = await services();
@@ -2108,6 +2223,9 @@ export function stopFirebaseAppStateSync() {
     clearInitialStateRetry();
     servingFromCacheByModule.clear();
     servingFromCache = null;
+    unlockAppState();
+    staleStart = false;
+    freshnessCheckInFlight = false;
     clearTimeout(settleTimer);
     settleTimer = null;
     settleStartedAt = 0;
@@ -2165,7 +2283,14 @@ if (typeof window !== "undefined") {
         if (document.visibilityState === "hidden") {
             scheduleEntrySync(0);
             scheduleRemoteStateApply(0);
+            return;
         }
+
+        // Volver a un computador que llevaba mas de un dia sin contacto.
+        void confirmServerFreshness();
+    });
+    window.addEventListener("online", () => {
+        void confirmServerFreshness();
     });
 
     window.addEventListener("proturnos:persistenceChanged", event => {

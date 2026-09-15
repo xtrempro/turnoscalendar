@@ -26156,3 +26156,91 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 .sync-blocked-banner[hidden] {
     display: none !important;
 }
+
+/* Copia local de mas de un dia, o muy distinta de la del servidor: no se edita
+   hasta aplicar la version del servidor (js/syncBanner.js). */
+.sync-lock-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9500;
+    display: grid;
+    place-items: center;
+    padding: 16px;
+    background: rgba(11, 18, 32, 0.42);
+    backdrop-filter: blur(3px);
+}
+
+.sync-lock-overlay[hidden] {
+    display: none !important;
+}
+
+.sync-lock-card {
+    display: grid;
+    gap: 10px;
+    width: min(440px, 100%);
+    padding: 20px 22px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: linear-gradient(var(--panel), var(--panel)), var(--bg-bottom, #ffffff);
+    box-shadow: var(--shadow-lg);
+    color: var(--text);
+}
+
+.sync-lock-card strong {
+    font-size: 1rem;
+    font-weight: 900;
+}
+
+.sync-lock-card p {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.86rem;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+.sync-lock-bar {
+    position: relative;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(var(--brand-blue-rgb), 0.14);
+}
+
+.sync-lock-bar span {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -40%;
+    width: 40%;
+    border-radius: inherit;
+    background: rgba(var(--brand-blue-rgb), 0.9);
+    animation: sync-lock-progress 1.2s ease-in-out infinite;
+}
+
+@keyframes sync-lock-progress {
+    from {
+        left: -40%;
+    }
+
+    to {
+        left: 100%;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sync-lock-bar span {
+        left: 0;
+        width: 100%;
+        animation: none;
+        opacity: 0.6;
+    }
+}
+
+.sync-lock-reload {
+    justify-self: end;
+}
+
+.sync-lock-reload[hidden] {
+    display: none !important;
+}

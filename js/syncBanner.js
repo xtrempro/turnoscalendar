@@ -29,8 +29,29 @@ const MENSAJE_OFFLINE =
 // rato". Solo se muestra si la caída dura esto SIN interrupción.
 export const ESPERA_AVISO_SIN_CONEXION_MS = 30 * 1000;
 
+// Barra de carga que no deja editar: copia local de mas de un dia, o varios
+// cambios del servidor que esta copia no tenia (ver js/syncFreshness.js).
+const LOCK_ID = "sync-lock-overlay";
+const LOCK_RELOAD_AFTER_MS = 20 * 1000;
+const LOCK_COPY = {
+    stale: {
+        title: "Trayendo la última versión del servidor",
+        text: "Este computador llevaba más de un día sin sincronizar. Para no editar sobre datos viejos, espera a que termine de cargar."
+    },
+    discrepancy: {
+        title: "Actualizando datos",
+        text: "Llegaron del servidor varios cambios que este computador no tenía. Espera un momento mientras se aplican."
+    }
+};
+
 let banner = null;
 let bloqueado = "";
+let lockReason = "";
+let lockNode = null;
+let lockTitle = null;
+let lockText = null;
+let lockReload = null;
+let lockReloadTimer = null;
 // Dos fuentes, y cada una se levanta por su lado: que el navegador vea red no
 // prueba que el servidor responda, pero datos confirmados por el servidor sí
 // prueban que hay red.
@@ -59,6 +80,88 @@ function ensureBanner() {
 
 function hayCaida() {
     return navegadorSinRed || servidorSinRespuesta;
+}
+
+function ensureLockNode() {
+    if (lockNode?.isConnected) return lockNode;
+
+    lockNode = document.createElement("div");
+    lockNode.id = LOCK_ID;
+    lockNode.className = "sync-lock-overlay";
+    lockNode.setAttribute("role", "alertdialog");
+    lockNode.setAttribute("aria-modal", "true");
+    lockNode.setAttribute("aria-busy", "true");
+    lockNode.hidden = true;
+
+    const card = document.createElement("div");
+    const bar = document.createElement("div");
+
+    card.className = "sync-lock-card";
+    bar.className = "sync-lock-bar";
+    bar.appendChild(document.createElement("span"));
+    lockTitle = document.createElement("strong");
+    lockText = document.createElement("p");
+    lockReload = document.createElement("button");
+    lockReload.type = "button";
+    lockReload.className = "secondary-button sync-lock-reload";
+    lockReload.textContent = "Recargar";
+    lockReload.hidden = true;
+    lockReload.addEventListener("click", () => window.location.reload());
+    card.append(lockTitle, lockText, bar, lockReload);
+    lockNode.appendChild(card);
+    document.body.append(lockNode);
+
+    return lockNode;
+}
+
+function refreshLockText() {
+    if (!lockReason || !lockText) return;
+
+    const copy = LOCK_COPY[lockReason] || LOCK_COPY.discrepancy;
+
+    lockTitle.textContent = copy.title;
+    lockText.textContent = hayCaida()
+        ? `${copy.text} Sin conexión: conéctate a internet para continuar.`
+        : copy.text;
+}
+
+function renderLock() {
+    const node = ensureLockNode();
+
+    clearTimeout(lockReloadTimer);
+    lockReloadTimer = null;
+
+    if (!lockReason) {
+        node.hidden = true;
+        lockReload.hidden = true;
+        return;
+    }
+
+    refreshLockText();
+    node.hidden = false;
+    lockReload.hidden = true;
+    // Si no se suelta sola, que haya una salida visible.
+    lockReloadTimer = setTimeout(() => {
+        if (lockReason) lockReload.hidden = false;
+    }, LOCK_RELOAD_AFTER_MS);
+}
+
+/** Con la barra puesta no se escribe: solo recargar sigue funcionando. */
+export function shouldBlockKey(event, locked = Boolean(lockReason)) {
+    if (!locked || !event) return false;
+    if (event.key === "F5") return false;
+    if (
+        (event.ctrlKey || event.metaKey) &&
+        String(event.key || "").toLowerCase() === "r"
+    ) return false;
+    if (
+        lockNode &&
+        event.target &&
+        typeof lockNode.contains === "function" &&
+        lockNode.contains(event.target)
+    ) return false;
+
+    return true;
 }
 
 // El reloj corre desde la primera señal y NO se reinicia cuando la otra fuente
@@ -93,6 +196,8 @@ function render() {
         return;
     }
 
+    refreshLockText();
+
     if (caidaConfirmada) {
         node.textContent = MENSAJE_OFFLINE;
         node.className = "sync-blocked-banner is-offline";
@@ -105,6 +210,18 @@ function render() {
 
 export function handleSyncStatus(detail) {
     const tipo = detail?.type;
+
+    if (tipo === "app-state-lock") {
+        lockReason = detail.reason || "discrepancy";
+        renderLock();
+        return;
+    }
+
+    if (tipo === "app-state-unlock") {
+        lockReason = "";
+        renderLock();
+        return;
+    }
 
     if (tipo === "app-state-blocked") {
         bloqueado =
@@ -157,4 +274,10 @@ if (typeof window !== "undefined") {
     });
     window.addEventListener("offline", () => handleBrowserConnectivity(false));
     window.addEventListener("online", () => handleBrowserConnectivity(true));
+    document.addEventListener("keydown", event => {
+        if (!shouldBlockKey(event)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+    }, true);
 }
