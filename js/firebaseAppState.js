@@ -92,8 +92,9 @@ let entrySyncTimer = null;
 let applyingRemoteState = false;
 let waitingInitialState = false;
 let initialStateRetryTimer = null;
-// Ultimo estado conocido de "los datos vienen del servidor o de la cache".
-// null = todavia no se sabe.
+// Ultimo estado conocido de "los datos vienen del servidor o de la cache", por
+// modulo y agregado. null = todavia no se sabe.
+const servingFromCacheByModule = new Map();
 let servingFromCache = null;
 let initialStateRetryDelay = INITIAL_STATE_RETRY_MS;
 // Modulos que se estan aplicando en este momento. El estado del entorno viene
@@ -1299,16 +1300,29 @@ async function flushPartialStateEntries() {
 // encolando las escrituras. `metadata.fromCache` es la senal honesta de que lo
 // que se esta pintando no viene confirmado por el servidor.
 //
-// Solo se avisa en los CAMBIOS de estado, no en cada snapshot.
-function noteServerReachability(metadata) {
+// Cada modulo tiene su listener y no siempre coinciden: al reconectar, uno
+// puede seguir en cache unos segundos mientras los demas ya volvieron. Con un
+// solo indicador compartido cada snapshot pisaba al anterior y el aviso de
+// caida parpadeaba. Una caida de verdad deja a TODOS en cache (el estado de
+// conexion del SDK es uno solo), y basta UNO confirmado por el servidor para
+// saber que hay conexion.
+//
+// Solo se avisa en los CAMBIOS del agregado, no en cada snapshot.
+function noteServerReachability(moduleId, metadata) {
     const fromCache = metadata?.fromCache;
 
-    if (typeof fromCache !== "boolean" || fromCache === servingFromCache) return;
+    if (typeof fromCache !== "boolean") return;
 
-    servingFromCache = fromCache;
+    servingFromCacheByModule.set(moduleId, fromCache);
+
+    const allFromCache = [...servingFromCacheByModule.values()].every(Boolean);
+
+    if (allFromCache === servingFromCache) return;
+
+    servingFromCache = allFromCache;
 
     dispatchStatus({
-        type: fromCache ? "app-state-offline" : "app-state-online"
+        type: allFromCache ? "app-state-offline" : "app-state-online"
     });
 }
 
@@ -1521,8 +1535,9 @@ function handleEntriesSnapshot(
     ) return;
 
     // Antes del corte por snapshot vacio: un snapshot sin cambios tambien dice
-    // de donde vienen los datos.
-    noteServerReachability(snap?.metadata);
+    // de donde vienen los datos. Los que traen SOLO eso (el listener pide
+    // includeMetadataChanges) terminan en ese corte: docChanges() los excluye.
+    noteServerReachability(moduleId, snap?.metadata);
 
     const changes = typeof snap.docChanges === "function"
         ? snap.docChanges()
@@ -1985,6 +2000,11 @@ export async function startFirebaseAppStateSync(
                     workspaceId,
                     moduleId
                 ),
+                // Sin esto Firestore no entrega el paso de cache a servidor si
+                // no cambia un dato: la vuelta de la conexion llegaba con el
+                // siguiente cambio de alguien, y el aviso de caida se quedaba
+                // pegado mientras tanto.
+                { includeMetadataChanges: true },
                 snap => handleEntriesSnapshot(
                     snap,
                     moduleId,
@@ -1996,6 +2016,9 @@ export async function startFirebaseAppStateSync(
                         workspaceId === activeWorkspaceId &&
                         generation === syncGeneration
                     ) {
+                        // Un listener caido ya no informa: no puede quedar
+                        // votando con su ultimo estado de conexion.
+                        servingFromCacheByModule.delete(moduleId);
                         console.warn(
                             `No se pudieron leer cambios parciales de ${moduleId}.`,
                             error
@@ -2048,6 +2071,7 @@ export async function startFirebaseAppStateSync(
 
 export function stopFirebaseAppStateSync() {
     clearInitialStateRetry();
+    servingFromCacheByModule.clear();
     servingFromCache = null;
     clearTimeout(settleTimer);
     settleTimer = null;

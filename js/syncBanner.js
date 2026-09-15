@@ -9,7 +9,7 @@
 //   BLOQUEADO  no se pudo leer el estado al arrancar. La publicación queda
 //              cerrada (ver `waitingInitialState` en js/firebaseAppState.js)
 //              porque la copia local puede ser vieja y pisaría la del servidor.
-//              Es la peligrosa.
+//              Es la peligrosa, y se avisa al tiro.
 //
 //   OFFLINE    se estaba sincronizando y se cayó la conexión. Aquí NO se
 //              bloquea nada: Firestore encola las escrituras y las manda al
@@ -22,9 +22,22 @@ const BANNER_ID = "sync-blocked-banner";
 const MENSAJE_OFFLINE =
     "Sin conexion: tus cambios se guardan y se enviaran solos al reconectar.";
 
+// Un corte de pocos segundos no merece aviso: Firestore reconecta solo y las
+// escrituras ya van encoladas. Hasta el 2026-09-14 el aviso salía en cada
+// microcorte (el canal de Firestore que se reabre, el wifi que se reengancha,
+// una pestaña que vuelve del segundo plano) y se leía como "se cae todo el
+// rato". Solo se muestra si la caída dura esto SIN interrupción.
+export const ESPERA_AVISO_SIN_CONEXION_MS = 30 * 1000;
+
 let banner = null;
 let bloqueado = "";
-let sinConexion = false;
+// Dos fuentes, y cada una se levanta por su lado: que el navegador vea red no
+// prueba que el servidor responda, pero datos confirmados por el servidor sí
+// prueban que hay red.
+let navegadorSinRed = false;
+let servidorSinRespuesta = false;
+let esperaCaida = null;
+let caidaConfirmada = false;
 
 function ensureBanner() {
     if (banner?.isConnected) return banner;
@@ -44,6 +57,30 @@ function ensureBanner() {
     return banner;
 }
 
+function hayCaida() {
+    return navegadorSinRed || servidorSinRespuesta;
+}
+
+// El reloj corre desde la primera señal y NO se reinicia cuando la otra fuente
+// se suma, ni cuando una se levanta mientras la otra sigue caída: lo que se
+// mide es cuánto lleva sin conexión, de corrido. La vuelta sí es inmediata.
+function vigilarCaida() {
+    if (!hayCaida()) {
+        clearTimeout(esperaCaida);
+        esperaCaida = null;
+        caidaConfirmada = false;
+        return;
+    }
+
+    if (caidaConfirmada || esperaCaida) return;
+
+    esperaCaida = setTimeout(() => {
+        esperaCaida = null;
+        caidaConfirmada = hayCaida();
+        render();
+    }, ESPERA_AVISO_SIN_CONEXION_MS);
+}
+
 // El bloqueo manda sobre la falta de conexión: si además no se puede publicar,
 // eso es lo que hay que decir.
 function render() {
@@ -56,7 +93,7 @@ function render() {
         return;
     }
 
-    if (sinConexion) {
+    if (caidaConfirmada) {
         node.textContent = MENSAJE_OFFLINE;
         node.className = "sync-blocked-banner is-offline";
         node.hidden = false;
@@ -78,16 +115,19 @@ export function handleSyncStatus(detail) {
     }
 
     if (tipo === "app-state-offline") {
-        sinConexion = true;
+        servidorSinRespuesta = true;
+        vigilarCaida();
         render();
         return;
     }
 
-    // Solo el servidor levanta la caída. Aplicar estado NO sirve para esto:
+    // Solo el servidor levanta su caída. Aplicar estado NO sirve para esto:
     // estando offline se aplican datos de la caché igual, y eso borraría el
     // aviso justo cuando hace falta.
     if (tipo === "app-state-online") {
-        sinConexion = false;
+        servidorSinRespuesta = false;
+        navegadorSinRed = false;
+        vigilarCaida();
         render();
         return;
     }
@@ -100,9 +140,14 @@ export function handleSyncStatus(detail) {
     }
 }
 
-/** El navegador sabe de la caída antes que Firestore: se usa como aviso rápido. */
+/**
+ * El navegador sabe de la caída antes que Firestore, pero también pierde la
+ * red unos segundos cada vez que el wifi se reengancha: pasa por la misma
+ * espera. Su vuelta no da por vuelto al servidor.
+ */
 export function handleBrowserConnectivity(online) {
-    sinConexion = !online;
+    navegadorSinRed = !online;
+    vigilarCaida();
     render();
 }
 

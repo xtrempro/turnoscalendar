@@ -7,10 +7,14 @@
 //
 // Las ediciones no se pierden con la compuerta cerrada: las tres compuertas de
 // subida reencolan y salen cuando la lectura vuelve.
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { handleSyncStatus, handleBrowserConnectivity } from "../js/syncBanner.js";
+import {
+    ESPERA_AVISO_SIN_CONEXION_MS,
+    handleSyncStatus,
+    handleBrowserConnectivity
+} from "../js/syncBanner.js";
 
 const src = await readFile(
     new URL("../js/firebaseAppState.js", import.meta.url),
@@ -104,7 +108,8 @@ test("el bloqueo se avisa por el canal de estado, no solo por consola", () => {
 });
 
 // El banner recuerda su nodo entre llamadas (es estado de modulo), asi que las
-// dos pruebas comparten el MISMO falso: montar uno nuevo no lo reemplazaria.
+// pruebas comparten el MISMO falso: montar uno nuevo no lo reemplazaria. Por lo
+// mismo, cada prueba termina con la conexion de vuelta.
 const falso = {
     _oculto: true,
     get hidden() { return this._oculto; },
@@ -121,9 +126,14 @@ globalThis.document = {
     body: { append() {} }
 };
 
-test("el bloqueo aparece y se retira al aplicar el estado inicial", () => {
+// La espera del aviso de caida corre con reloj falso.
+mock.timers.enable({ apis: ["setTimeout"] });
+const esperar = ms => mock.timers.tick(ms);
+
+test("el bloqueo aparece al tiro y se retira al aplicar el estado inicial", () => {
     handleSyncStatus({ type: "app-state-blocked", message: "sin sincronizacion" });
 
+    // Sin esperar: el bloqueo SI deja cambios sin publicar.
     assert.equal(falso.textContent, "sin sincronizacion");
     assert.equal(falso.hidden, false);
     assert.match(falso.className, /is-blocked/);
@@ -133,13 +143,58 @@ test("el bloqueo aparece y se retira al aplicar el estado inicial", () => {
     assert.equal(falso.hidden, true);
 });
 
-test("la caida de conexion se avisa aparte, y no bloquea", () => {
+test("una caida que dura se avisa aparte, y no bloquea", () => {
     handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS);
 
     assert.equal(falso.hidden, false);
     assert.match(falso.className, /is-offline/);
     // El texto dice lo importante: los cambios NO se pierden.
     assert.match(falso.textContent, /se enviaran solos al reconectar/);
+
+    handleSyncStatus({ type: "app-state-online" });
+    assert.equal(falso.hidden, true, "la vuelta se avisa sin esperar");
+});
+
+test("un microcorte NO muestra el aviso", () => {
+    // El canal de Firestore que se reabre, el wifi que se reengancha: el aviso
+    // salia en cada uno y se leia como "se cae todo el rato".
+    assert.ok(ESPERA_AVISO_SIN_CONEXION_MS >= 15 * 1000);
+
+    handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS - 1);
+    assert.equal(falso.hidden, true);
+
+    handleSyncStatus({ type: "app-state-online" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS);
+    assert.equal(falso.hidden, true, "la espera se cancela al volver");
+});
+
+test("cada corte cuenta desde cero", () => {
+    handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS - 1000);
+    handleSyncStatus({ type: "app-state-online" });
+
+    handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS - 1000);
+    assert.equal(falso.hidden, true);
+
+    esperar(1000);
+    assert.equal(falso.hidden, false);
+
+    handleSyncStatus({ type: "app-state-online" });
+    assert.equal(falso.hidden, true);
+});
+
+test("la espera no se reinicia con cada senal de la misma caida", () => {
+    handleBrowserConnectivity(false);
+    esperar(20 * 1000);
+    handleSyncStatus({ type: "app-state-offline" });
+    // El navegador ya ve red, pero el servidor todavia no responde.
+    handleBrowserConnectivity(true);
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS - 20 * 1000);
+
+    assert.equal(falso.hidden, false, "lleva la espera completa sin conexion");
 
     handleSyncStatus({ type: "app-state-online" });
     assert.equal(falso.hidden, true);
@@ -149,6 +204,7 @@ test("aplicar estado NO retira el aviso de caida", () => {
     // Estando offline se aplican datos de la CACHE igual. Si eso retirara el
     // aviso, desapareceria justo cuando hace falta.
     handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS);
     assert.equal(falso.hidden, false);
 
     handleSyncStatus({ type: "app-state-entries-applied", keys: ["x"] });
@@ -160,6 +216,7 @@ test("aplicar estado NO retira el aviso de caida", () => {
 
 test("el bloqueo manda sobre la caida", () => {
     handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS);
     handleSyncStatus({ type: "app-state-blocked", message: "no se publica" });
 
     // Lo grave es que no se puede publicar: eso es lo que hay que leer.
@@ -167,13 +224,18 @@ test("el bloqueo manda sobre la caida", () => {
     assert.match(falso.className, /is-blocked/);
 
     handleSyncStatus({ type: "app-state-applied", modules: [] });
+    assert.match(falso.className, /is-offline/, "sigue la caida, sin bloqueo");
+
     handleSyncStatus({ type: "app-state-online" });
     assert.equal(falso.hidden, true);
 });
 
-test("el evento offline del navegador avisa sin esperar a Firestore", () => {
-    // Es la senal rapida: el SDK puede tardar en darse cuenta.
+test("el navegador sin red avisa sin Firestore, con la misma espera", () => {
     handleBrowserConnectivity(false);
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS - 1);
+    assert.equal(falso.hidden, true);
+
+    esperar(1);
     assert.equal(falso.hidden, false);
     assert.match(falso.className, /is-offline/);
 
@@ -181,25 +243,116 @@ test("el evento offline del navegador avisa sin esperar a Firestore", () => {
     assert.equal(falso.hidden, true);
 });
 
+test("que el navegador vea red no da por vuelto al servidor", () => {
+    handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS);
+
+    handleBrowserConnectivity(true);
+    assert.equal(falso.hidden, false);
+
+    handleSyncStatus({ type: "app-state-online" });
+    assert.equal(falso.hidden, true);
+});
+
 test("un error de un modulo suelto no toca el aviso", () => {
     handleSyncStatus({ type: "app-state-offline" });
+    esperar(ESPERA_AVISO_SIN_CONEXION_MS);
     handleSyncStatus({ type: "app-state-error", moduleId: "tasks" });
 
     assert.equal(falso.hidden, false);
     handleSyncStatus({ type: "app-state-online" });
+    assert.equal(falso.hidden, true);
 });
 
 test("la caida se detecta por fromCache, no por adivinanza", () => {
     // Firestore no avisa "me quede sin servidor": sigue sirviendo de su cache.
-    assert.match(src, /function noteServerReachability\(metadata\)/);
+    assert.match(src, /function noteServerReachability\(moduleId, metadata\)/);
     assert.match(src, /const fromCache = metadata\?\.fromCache;/);
-    // Solo se avisa en los CAMBIOS de estado.
-    assert.match(src, /fromCache === servingFromCache\) return;/);
+    // Solo se avisa en los CAMBIOS del agregado.
+    assert.match(src, /allFromCache === servingFromCache\) return;/);
     // Y se lee ANTES del corte por snapshot vacio.
     assert.match(
         src,
-        /noteServerReachability\(snap\?\.metadata\);[\s\S]{0,200}const changes = typeof snap\.docChanges/
+        /noteServerReachability\(moduleId, snap\?\.metadata\);[\s\S]{0,400}const changes = typeof snap\.docChanges/
     );
+});
+
+test("los listeners avisan tambien cuando SOLO cambia la conexion", () => {
+    // Sin includeMetadataChanges, Firestore no entrega el paso de cache a
+    // servidor si no cambia un dato: la vuelta llegaba con el siguiente cambio
+    // de alguien, y el aviso de caida se quedaba pegado mientras tanto.
+    assert.match(
+        src,
+        /moduleEntriesCollection\(\s*db,[\s\S]{0,700}\{ includeMetadataChanges: true \},\s*snap => handleEntriesSnapshot\(/
+    );
+    // Un listener caido no puede quedar votando con su ultimo estado.
+    assert.match(src, /servingFromCacheByModule\.delete\(moduleId\)/);
+    assert.match(
+        src,
+        /export function stopFirebaseAppStateSync\(\) \{[\s\S]{0,200}servingFromCacheByModule\.clear\(\);/
+    );
+});
+
+// El agregado, ejecutado: la misma funcion de la app con su estado aislado.
+function reachability() {
+    const fuente = src.slice(
+        src.indexOf("function noteServerReachability("),
+        src.indexOf("function dispatchStatus(")
+    );
+
+    return new Function(`
+        const servingFromCacheByModule = new Map();
+        let servingFromCache = null;
+        const avisos = [];
+        function dispatchStatus(detail) { avisos.push(detail.type); }
+        ${fuente}
+        return { note: noteServerReachability, avisos };
+    `)();
+}
+
+test("un modulo rezagado en cache NO hace parpadear el aviso", () => {
+    const { note, avisos } = reachability();
+
+    note("turnos", { fromCache: false });
+    note("tasks", { fromCache: false });
+    // Al reconectar, un modulo tarda en volver mientras los otros ya volvieron
+    // y siguen trayendo cambios: antes cada snapshot volteaba el indicador.
+    note("memos", { fromCache: true });
+    note("turnos", { fromCache: false });
+    note("memos", { fromCache: true });
+    note("tasks", { fromCache: false });
+    note("memos", { fromCache: false });
+
+    assert.deepEqual(avisos, ["app-state-online"]);
+});
+
+test("la caida real deja a TODOS en cache, y basta uno de vuelta", () => {
+    const { note, avisos } = reachability();
+
+    note("turnos", { fromCache: false });
+    note("tasks", { fromCache: false });
+    note("turnos", { fromCache: true });
+    assert.deepEqual(avisos, ["app-state-online"]);
+
+    note("tasks", { fromCache: true });
+    assert.deepEqual(avisos, ["app-state-online", "app-state-offline"]);
+
+    // Repetir el mismo estado no vuelve a avisar.
+    note("tasks", { fromCache: true });
+    note("tasks", { fromCache: false });
+    assert.deepEqual(avisos, [
+        "app-state-online",
+        "app-state-offline",
+        "app-state-online"
+    ]);
+});
+
+test("un snapshot sin metadata no cuenta como voto", () => {
+    const { note, avisos } = reachability();
+
+    note("turnos", undefined);
+    note("turnos", { fromCache: "si" });
+    assert.deepEqual(avisos, []);
 });
 
 test("el aviso esta montado en la app y tiene estilo", () => {
