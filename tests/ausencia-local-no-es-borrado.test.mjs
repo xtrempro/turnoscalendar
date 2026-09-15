@@ -52,10 +52,14 @@ test("un borrado explicito si se publica", () => {
     assert.equal(entries[0].storageKey, "weekly_task_assignment_tasks");
 });
 
-test("vaciar el catalogo a proposito sigue viajando como valor, no como borrado", () => {
+test("vaciar el catalogo a proposito borra sus elementos, no la clave", () => {
     // Borrar la ultima tarea desde la interfaz guarda `[]`, que es un valor
-    // legitimo. Si esto se publicara como `deleted` no habria forma de
-    // distinguir "no tengo la clave" de "la deje vacia".
+    // legitimo. Si esto se publicara como `deleted` de la clave no habria forma
+    // de distinguir "no tengo la clave" de "la deje vacia".
+    //
+    // Desde 2026-09-15 una lista con id no viaja nunca entera (ver
+    // tests/reemplazos-lista-entera.test.mjs): vaciarla borra elemento por
+    // elemento lo que habia.
     const entries = planPartialStateEntries({
         keys: ["weekly_task_assignment_tasks"],
         changes: {
@@ -69,8 +73,9 @@ test("vaciar el catalogo a proposito sigue viajando como valor, no como borrado"
     });
 
     assert.equal(entries.length, 1);
-    assert.equal(entries[0].deleted, false);
-    assert.equal(entries[0].value, "[]");
+    assert.equal(entries[0].itemKey, "t1");
+    assert.equal(entries[0].deleted, true);
+    assert.equal(entries[0].container, "array");
 });
 
 test("un cambio normal no se ve afectado", () => {

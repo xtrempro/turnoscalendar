@@ -289,9 +289,14 @@ export function planPartialStateEntries({
  * cuando la clave no es una lista partible: ahi el llamador vuelve al valor
  * entero de siempre.
  *
- * Solo se parte si las DOS versiones son partibles. Si una de ellas no lo es
- * -por ejemplo la primera vez que se crea la lista, o si un registro perdio su
- * id- se manda entera, que siempre es correcto.
+ * Una lista cuyos elementos tienen id viaja SIEMPRE por elemento, aunque no
+ * haya version anterior o la anterior este vacia: cada elemento es un alta y no
+ * se borra nada. Mandarla entera pisa el `value` de la nube con la copia local,
+ * y una copia local incompleta borra todo lo que no traiga: el 2026-09-15 una
+ * sesion con la lista de reemplazos vacia dejo 1 registro donde habia 492.
+ *
+ * Solo viaja entera si no se puede partir: algun elemento sin id o repetido, en
+ * la version nueva o en la anterior.
  */
 export function planListStateEntries({
     moduleId,
@@ -301,10 +306,20 @@ export function planListStateEntries({
     removed = false
 } = {}) {
     if (removed || nextRaw === null || nextRaw === undefined) return null;
-    if (!isSplittableList(previousRaw) || !isSplittableList(nextRaw)) return null;
 
-    const previous = indexListById(parseArray(previousRaw));
-    const next = indexListById(parseArray(nextRaw));
+    const nextList = parseStored(nextRaw);
+
+    if (!Array.isArray(nextList)) return null;
+
+    const next = indexListById(nextList);
+    const previousList = parseStored(previousRaw);
+    let previous = null;
+
+    if (previousList === null) {
+        previous = new Map();
+    } else if (Array.isArray(previousList)) {
+        previous = indexListById(previousList);
+    }
 
     if (!previous || !next) return null;
 

@@ -691,11 +691,12 @@ test("el documento que sube la cola conserva el marcador", async () => {
     assert.equal(documento.container, "array");
 });
 
-test("una lista que nace vacia viaja entera, no por elemento", () => {
-    // Solo se parte cuando las DOS versiones son partibles. Una lista vacia no
-    // lo es -no hay ids que mirar-, asi que el primer elemento sube el valor
-    // completo. Es correcto y ademas deja el documento en el formato que
-    // entiende cualquier version anterior.
+test("una lista que nace vacia tambien viaja por elemento", () => {
+    // Hasta el 2026-09-15 una lista vacia -o sin version anterior- subia el
+    // primer elemento como valor COMPLETO. Con una copia local incompleta eso
+    // pisaba la lista de la nube: asi se perdieron 343 reemplazos de
+    // Imagenologia (ver tests/reemplazos-lista-entera.test.mjs). Ahora cada
+    // elemento es un alta, y nada de lo que habia se toca.
     const entries = planPartialStateEntries({
         keys: ["swaps"],
         changes: {
@@ -709,5 +710,7 @@ test("una lista que nace vacia viaja entera, no por elemento", () => {
     });
 
     assert.equal(entries.length, 1);
-    assert.equal(entries[0].itemKey, "", "va como valor entero");
+    assert.equal(entries[0].itemKey, "s1", "va como elemento, no como valor entero");
+    assert.equal(entries[0].container, "array");
+    assert.equal(entries[0].deleted, false);
 });

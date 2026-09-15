@@ -1029,6 +1029,18 @@ async function commitPartialStateDocumentsNow(
     }
 }
 
+function isStoredListRaw(raw) {
+    if (typeof raw !== "string" || !raw.trimStart().startsWith("[")) {
+        return false;
+    }
+
+    try {
+        return Array.isArray(JSON.parse(raw));
+    } catch {
+        return false;
+    }
+}
+
 export async function flushPendingFirebaseAppStateEntries({
     keys = [],
     changes = {},
@@ -1056,8 +1068,17 @@ export async function flushPendingFirebaseAppStateEntries({
         };
     }
 
+    // Una LISTA sin su cambio a mano no se vuelve a planificar desde cero. Sin la
+    // version anterior no hay contra que diferenciar, y publicar la copia local
+    // entera pisaba la de la nube: el 2026-09-15 una sesion con la lista de
+    // reemplazos vacia confirmo un guardado y dejo 1 registro de 492. Los
+    // cambios reales de una lista ya estan en la cola desde que se hicieron.
+    const planKeys = stateKeys.filter(key =>
+        Object.prototype.hasOwnProperty.call(changes || {}, key) ||
+        !isStoredListRaw(getRaw(key, null))
+    );
     const planned = planPartialStateEntries({
-        keys: stateKeys,
+        keys: planKeys,
         changes,
         readRaw: key => getRaw(key, null),
         moduleForKey: stateModuleForKey
@@ -1070,6 +1091,20 @@ export async function flushPendingFirebaseAppStateEntries({
         ...planned,
         ...queued
     ];
+
+    // Solo listas y nada en cola ni en camino: lo que hay que confirmar ya esta
+    // en la nube.
+    if (
+        !writable.length &&
+        planKeys.length < stateKeys.length &&
+        !entrySyncInFlight
+    ) {
+        return {
+            flushed: true,
+            count: 0,
+            reason: "already-synced"
+        };
+    }
 
     if (!writable.length) {
         return {
