@@ -28,6 +28,7 @@ import {
     canWorkerShareShiftTasks,
     headcountForCell,
     planTaskAutoSchedule,
+    recommendTaskCandidates,
     workerMatchesTurnSignature
 } from "./taskAutoSchedule.js";
 import {
@@ -2079,9 +2080,6 @@ function renderWorkerChip(profileName, task, keyDay) {
     const offShiftClass = offShift
         ? " task-assignment-worker-chip--off-shift"
         : "";
-    const offShiftHint = offShift
-        ? " | Fuera de su turno este d&iacute;a"
-        : "";
     // Media jornada o extension horaria: el trabajador SI esta en la tarea,
     // pero solo un tramo del dia. La etiqueta va junto al nombre para que el
     // supervisor no tenga que abrir nada para saber hasta -o desde- cuando
@@ -2098,9 +2096,22 @@ function renderWorkerChip(profileName, task, keyDay) {
     const partialHint = partial
         ? ` | ${partialShiftText(profileName, keyDay, task.shift)}`
         : "";
+    // Debajo del nombre, lo mismo que en la programacion automatica: el motivo
+    // HHEE y las ultimas 5 tareas antes de este dia.
+    const [, ...hoverDetails] = autoScheduleWorkerHoverTitle(
+        profileName,
+        task.shift,
+        keyDay,
+        null,
+        { untilDay: true }
+    ).split("\n");
+    const title = [
+        `${profileName}${offShift ? " | Fuera de su turno este día" : ""}${partialHint} | Arrastrar a otra tarea del mismo turno y día`,
+        ...hoverDetails
+    ].join("\n");
 
     return `
-        <span class="task-assignment-worker-chip${configuredClass}${offShiftClass}" draggable="true" data-worker-drag="${escapeHTML(profileName)}" data-worker-task="${escapeHTML(task.id)}" data-worker-shift="${escapeHTML(task.shift)}" data-worker-day="${escapeHTML(keyDay)}" title="${escapeHTML(profileName)}${offShiftHint}${escapeHTML(partialHint)} | Arrastrar a otra tarea del mismo turno y d&iacute;a">
+        <span class="task-assignment-worker-chip${configuredClass}${offShiftClass}" draggable="true" data-worker-drag="${escapeHTML(profileName)}" data-worker-task="${escapeHTML(task.id)}" data-worker-shift="${escapeHTML(task.shift)}" data-worker-day="${escapeHTML(keyDay)}" title="${escapeHTML(title)}">
             ${renderWorkerAvatar(profileName)}
             <span class="task-assignment-worker-chip__name">${escapeHTML(shortWorkerName(profileName))}</span>
             ${partial ? `<span class="task-assignment-worker-chip__when">${escapeHTML(partial)}</span>` : ""}
@@ -2229,6 +2240,25 @@ function setCellClosed(shift, taskId, keyDay, closed) {
     return true;
 }
 
+function renderCellPickerOption(
+    { profile, otherTask, byExtraReason = false },
+    shift,
+    keyDay,
+    tasks
+) {
+    const partial = partialShiftText(profile.name, keyDay, shift);
+
+    return `
+        <button class="task-assignment-picker__option${otherTask ? " task-assignment-picker__option--busy" : ""}" type="button" data-picker-add="${escapeHTML(profile.name)}" title="${escapeHTML(autoScheduleWorkerHoverTitle(profile.name, shift, keyDay, tasks, { untilDay: true }))}">
+            ${renderWorkerAvatar(profile.name)}
+            <span>
+                <strong>${escapeHTML(profile.name)}</strong>
+                <small>${escapeHTML(profileProfession(profile))} | ${otherTask ? `Ya en ${escapeHTML(otherTask)}` : escapeHTML(profileShiftLabel(profile, keyDay))}${partial ? ` &middot; ${escapeHTML(partial)}` : ""}${byExtraReason ? " &middot; Por su motivo HHEE" : ""}</small>
+            </span>
+        </button>
+    `;
+}
+
 function renderCellPickerMarkup(shift, taskId, keyDay) {
     const assignments = getWeekAssignments();
     const tasks = getTasks();
@@ -2241,9 +2271,6 @@ function renderCellPickerMarkup(shift, taskId, keyDay) {
     const date = parseKey(keyDay);
     const entry = getCellEntry(assignments, shift, taskId, keyDay);
     const assigned = assignmentWorkers(entry);
-    // Quien ya esta en OTRA tarea de este mismo turno y dia sigue siendo
-    // elegible -mover gente entre tareas es normal- pero baja al final de la
-    // lista y se pinta en ambar, para que no compita con quien esta libre.
     const candidates = candidateProfiles(
         shift,
         keyDay,
@@ -2262,9 +2289,31 @@ function renderCellPickerMarkup(shift, taskId, keyDay) {
                 taskId
             )
         }));
-    const orderedCandidates = [
-        ...candidates.filter(item => !item.otherTask),
-        ...candidates.filter(item => item.otherTask)
+    // Arriba, a quienes pondria la programacion automatica en esta casilla, en
+    // su orden (pedido del usuario, 2026-09-15).
+    const byName = new Map(candidates.map(item => [item.profile.name, item]));
+    const recommendedItems = cellPickerRecommendations(
+        assignments,
+        tasks,
+        shift,
+        taskId,
+        keyDay
+    )
+        .filter(item => byName.has(item.name))
+        .map(item => ({
+            ...byName.get(item.name),
+            byExtraReason: item.byExtraReason
+        }));
+    const recommendedNames = new Set(
+        recommendedItems.map(item => item.profile.name)
+    );
+    // El resto. Quien ya esta en OTRA tarea de este mismo turno y dia sigue
+    // siendo elegible -mover gente entre tareas es normal- pero baja al final
+    // de la lista y se pinta en ambar, para que no compita con quien esta libre.
+    const rest = candidates.filter(item => !recommendedNames.has(item.profile.name));
+    const otherItems = [
+        ...rest.filter(item => !item.otherTask),
+        ...rest.filter(item => item.otherTask)
     ];
 
     return `
@@ -2290,27 +2339,21 @@ function renderCellPickerMarkup(shift, taskId, keyDay) {
                 `
                 : ""
         }
-        <div class="task-assignment-picker__label">Disponibles</div>
+        ${recommendedItems.length ? "" : `<div class="task-assignment-picker__label">Disponibles</div>`}
         <div class="task-assignment-picker__list">
             ${
-                orderedCandidates.length
-                    ? orderedCandidates.map(({ profile, otherTask }) => {
-                        const partial = partialShiftText(
-                            profile.name,
-                            keyDay,
-                            shift
-                        );
-
-                        return `
-                            <button class="task-assignment-picker__option${otherTask ? " task-assignment-picker__option--busy" : ""}" type="button" data-picker-add="${escapeHTML(profile.name)}">
-                                ${renderWorkerAvatar(profile.name)}
-                                <span>
-                                    <strong>${escapeHTML(profile.name)}</strong>
-                                    <small>${escapeHTML(profileProfession(profile))} | ${otherTask ? `Ya en ${escapeHTML(otherTask)}` : escapeHTML(profileShiftLabel(profile, keyDay))}${partial ? ` &middot; ${escapeHTML(partial)}` : ""}</small>
-                                </span>
-                            </button>
-                        `;
-                    }).join("")
+                recommendedItems.length
+                    ? `
+                        <div class="task-assignment-picker__label">Recomendados</div>
+                        ${recommendedItems.map(item => renderCellPickerOption(item, shift, keyDay, tasks)).join("")}
+                        ${otherItems.length ? `<div class="task-assignment-picker__label">Otros disponibles</div>` : ""}
+                    `
+                    : ""
+            }
+            ${otherItems.map(item => renderCellPickerOption(item, shift, keyDay, tasks)).join("")}
+            ${
+                recommendedItems.length || otherItems.length
+                    ? ""
                     : `<p class="task-assignment-picker__empty">Sin personal disponible para este turno.</p>`
             }
         </div>
@@ -5348,6 +5391,102 @@ export function goToTaskScheduleToday() {
 // propuesta; recien al publicarla se guarda y se envia a la PWA.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Recomendacion de la lista "Asignar": los mismos criterios de la programacion
+// automatica, para una sola casilla.
+// ---------------------------------------------------------------------------
+
+// Armar el historial recorre ocho semanas calculando el turno de cada persona
+// cada dia, y la lista se repinta con cada persona que se agrega. Lo que se
+// edita en la semana abierta no lo cambia -solo se leen las anteriores-, asi
+// que se guarda un rato y se descarta si cambia otra cosa: turnos, perfiles,
+// reemplazos.
+const AUTO_SCHEDULE_HISTORY_CACHE_MS = 2 * 60 * 1000;
+let autoScheduleHistoryCache = null;
+
+if (typeof window !== "undefined") {
+    window.addEventListener("proturnos:persistenceChanged", event => {
+        const keys = event?.detail?.keys || [];
+
+        if (keys.length && keys.every(key =>
+            key === ASSIGNMENTS_KEY || key === TASK_SCHEDULE_UPDATED_KEY
+        )) {
+            return;
+        }
+
+        autoScheduleHistoryCache = null;
+    });
+}
+
+function cachedAutoScheduleHistory() {
+    const key = weekKey();
+    const now = Date.now();
+
+    if (
+        autoScheduleHistoryCache?.key === key &&
+        now - autoScheduleHistoryCache.at < AUTO_SCHEDULE_HISTORY_CACHE_MS
+    ) {
+        return autoScheduleHistoryCache.history;
+    }
+
+    const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
+        beforeWeekKey: key,
+        profiles: getProfiles(),
+        workerTurnContextForDay: (name, keyDay, shift) =>
+            autoScheduleWorkerTurnContext(name, keyDay, shift)
+    });
+
+    autoScheduleHistoryCache = { key, at: now, history };
+    return history;
+}
+
+// A quienes pondria la programacion automatica en esta casilla, en su orden.
+// Solo ordena la lista: nadie desaparece por no estar recomendado, y si el
+// calculo falla la lista sale como siempre.
+function cellPickerRecommendations(assignments, tasks, shift, taskId, keyDay) {
+    try {
+        const group = groupForTask(assignments, shift, tasks, taskId, keyDay);
+        const taskIds = group?.taskIds?.length ? group.taskIds : [taskId];
+        const entry = getCellEntry(assignments, shift, taskId, keyDay);
+        const candidates = autoScheduleCandidates(shift, keyDay);
+
+        return recommendTaskCandidates({
+            cell: {
+                shift,
+                keyDay,
+                taskId,
+                taskIds,
+                taskTitles: autoScheduleTaskTitles(tasks, taskIds),
+                fillAllEligible: autoScheduleFillsAllEligible(
+                    shift,
+                    parseKey(keyDay),
+                    { taskIds }
+                ),
+                candidates,
+                candidateTurnContextByWorker: serializeWorkerTurnContexts(
+                    candidates,
+                    keyDay,
+                    shift
+                ),
+                existingTaskIdsByWorker: serializeWorkerTaskMap(
+                    workerTaskIdsForShiftDay(
+                        assignments,
+                        tasks,
+                        shift,
+                        keyDay,
+                        taskId
+                    )
+                ),
+                blocked: assignmentRemovedDefaults(entry)
+            },
+            history: cachedAutoScheduleHistory()
+        });
+    } catch (error) {
+        console.warn("No se pudo calcular la recomendacion de la casilla.", error);
+        return [];
+    }
+}
+
 // Los que ese dia y turno pueden trabajar. Si alguien ya esta en otra tarea
 // del mismo turno, igual se manda al motor: el decide si puede repetirse segun
 // el patron historico multitarea.
@@ -5871,42 +6010,82 @@ function autoSchedulePreviewPicker(attempt, cell, tasks) {
     `;
 }
 
-function autoScheduleRecentWorkerTasks(workerName, tasks, beforeWeekKey = weekKey()) {
-    const taskTitles = new Map(
-        (tasks || []).map(task => [task.id, task.title || task.id])
-    );
-    const rows = [];
+// Todas las tareas de cada persona, de la mas nueva a la mas vieja. El hover lo
+// pide por cada chip del tablero y por cada opcion de "Asignar": recorrer todas
+// las semanas en cada llamada se notaria al pintar, asi que se arma una vez por
+// version de las asignaciones.
+let recentWorkerTasksCache = { raw: undefined, byWorker: new Map() };
+let recentTaskTitlesCache = { raw: undefined, titles: new Map() };
 
-    Object.entries(getAllAssignments()).forEach(([storedWeekKey, assignments]) => {
-        if (beforeWeekKey && storedWeekKey >= beforeWeekKey) return;
+function recentWorkerTasksByWorker() {
+    const raw = getRaw(ASSIGNMENTS_KEY, "");
+
+    if (recentWorkerTasksCache.raw === raw) return recentWorkerTasksCache.byWorker;
+
+    const byWorker = new Map();
+
+    Object.values(getAllAssignments()).forEach(assignments => {
         if (!assignments || typeof assignments !== "object") return;
 
         Object.entries(assignments).forEach(([cellKey, entry]) => {
-            if (!assignmentWorkers(entry).includes(workerName)) return;
-
             const parts = splitAssignmentKey(cellKey);
             const date = parseKey(parts.keyDay);
 
             if (Number.isNaN(date.getTime())) return;
 
-            rows.push({
-                time: date.getTime(),
-                taskTitle: taskTitles.get(parts.taskId) || parts.taskId,
-                shift: SHIFT_CONFIG[parts.shift]?.shortLabel || parts.shift,
-                date
+            uniqueWorkerNames(entry?.workers).forEach(name => {
+                const rows = byWorker.get(name) || [];
+
+                rows.push({
+                    time: date.getTime(),
+                    date,
+                    taskId: parts.taskId,
+                    shift: parts.shift
+                });
+                byWorker.set(name, rows);
             });
         });
     });
 
-    return rows
-        .sort((a, b) => b.time - a.time)
+    byWorker.forEach(rows => rows.sort((a, b) => b.time - a.time));
+    recentWorkerTasksCache = { raw, byWorker };
+    return byWorker;
+}
+
+function recentTaskTitle(taskId, tasks) {
+    if (Array.isArray(tasks)) return taskTitleForAutoSchedule(tasks, taskId);
+
+    const raw = getRaw(TASKS_KEY, "");
+
+    if (recentTaskTitlesCache.raw !== raw) {
+        recentTaskTitlesCache = {
+            raw,
+            titles: new Map(getTasks().map(task => [task.id, task.title || task.id]))
+        };
+    }
+
+    return recentTaskTitlesCache.titles.get(taskId) || taskId;
+}
+
+// Las ultimas 5 tareas de una persona ANTES de `before` (un Date).
+function autoScheduleRecentWorkerTasks(workerName, tasks, before) {
+    const cutoff = before instanceof Date ? before.getTime() : Infinity;
+
+    return (recentWorkerTasksByWorker().get(workerName) || [])
+        .filter(row => row.time < cutoff)
         .slice(0, 5)
-        .map(item =>
-            `${formatShortDate(item.date)} ${item.shift}: ${item.taskTitle}`
+        .map(row =>
+            `${formatShortDate(row.date)} ${SHIFT_CONFIG[row.shift]?.shortLabel || row.shift}: ${recentTaskTitle(row.taskId, tasks)}`
         );
 }
 
-function autoScheduleWorkerHoverTitle(workerName, shift, keyDay, tasks) {
+function autoScheduleWorkerHoverTitle(
+    workerName,
+    shift,
+    keyDay,
+    tasks,
+    { untilDay = false } = {}
+) {
     const context = autoScheduleWorkerTurnContext(workerName, keyDay, shift);
     const lines = [workerName];
     const extraTurn = Number(context.extraTurn) || TURNO.LIBRE;
@@ -5919,10 +6098,12 @@ function autoScheduleWorkerHoverTitle(workerName, shift, keyDay, tasks) {
         );
     }
 
+    // En la propuesta se programa la semana entera, asi que se mira hasta su
+    // lunes; en el tablero, hasta el dia de la casilla.
     const recent = autoScheduleRecentWorkerTasks(
         workerName,
         tasks,
-        weekKey(weekStartMonday(parseKey(keyDay)))
+        untilDay ? parseKey(keyDay) : weekStartMonday(parseKey(keyDay))
     );
 
     if (recent.length) {
@@ -6009,7 +6190,7 @@ function autoSchedulePreviewGridCell({
                 </span>
             ` : ""}
             <div class="task-auto-preview-cell-workers">
-                ${(item?.workers || []).map(name =>
+                ${sortTaskWorkersByRole(item?.workers || []).map(name =>
                     autoSchedulePreviewChip(name, {
                         ...item,
                         shift: item.shift || cell?.shift,
@@ -6138,8 +6319,38 @@ function autoSchedulePreviewGrid(attempt, tasks, days, picker = null) {
     }).join("");
 }
 
-function autoScheduleSkipSummary(plan) {
+// "APOYO TURNO 24/9 (Profesional, TM Imagenología, rotativa diurno, turno Larga)"
+function autoScheduleProfileSkipText(items, tasks) {
+    const byTask = new Map();
+
+    items.forEach(item => {
+        const current = byTask.get(item.taskId) ||
+            { days: [], profile: item.profile || {} };
+
+        current.days.push(item.keyDay);
+        byTask.set(item.taskId, current);
+    });
+
+    return [...byTask.entries()].map(([taskId, { days, profile }]) => {
+        const traits = [
+            ...(profile.estamento || []),
+            ...(profile.profession || []),
+            ...(profile.rotativaType || []).map(value => `rotativa ${value}`),
+            ...(profile.actualTurn || []).map(value =>
+                `turno ${TURNO_LABEL[Number(value)] || value}`
+            )
+        ];
+        const dates = days
+            .map(keyDay => formatShortDate(parseKey(keyDay)))
+            .join(", ");
+
+        return `${taskTitleForAutoSchedule(tasks, taskId)} ${dates}${traits.length ? ` (${traits.join(", ")})` : ""}`;
+    }).join("; ");
+}
+
+function autoScheduleSkipSummary(plan, tasks = []) {
     const noHistory = countSkipped(plan, "sin-historial", "sin-turno");
+    const noProfile = plan.skipped.filter(item => item.reason === "sin-perfil");
     const noStaffingGroup = countSkipped(plan, "sin-estamento");
     const takenElsewhere = countSkipped(plan, "sin-gente");
     const withoutPattern = countSkipped(plan, "sin-cupo");
@@ -6163,6 +6374,12 @@ function autoScheduleSkipSummary(plan) {
 
     if (noHistory) {
         lines.push(`${noHistory} ${noHistory === 1 ? "casilla queda" : "casillas quedan"} sin cubrir por falta de alguien de turno con historial en esa tarea.`);
+    }
+
+    // No es falta de gente: es que ese dia nadie trae el perfil con que se hace
+    // la tarea, y por eso la tarea no va.
+    if (noProfile.length) {
+        lines.push(`${noProfile.length} ${noProfile.length === 1 ? "casilla queda vacía" : "casillas quedan vacías"} porque nadie de turno ese día calza con quienes hacen la tarea: ${autoScheduleProfileSkipText(noProfile, tasks)}.`);
     }
 
     if (noStaffingGroup) {
@@ -6356,7 +6573,7 @@ function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
                 <div class="task-auto-preview-list">
                     ${autoSchedulePreviewGrid(currentAttempt, tasks, days, previewPicker)}
                 </div>
-                ${autoScheduleSkipSummary(plan)}
+                ${autoScheduleSkipSummary(plan, tasks)}
                 <div class="task-assignment-dialog__actions task-auto-preview-actions">
                     <button class="secondary-button" type="button" data-auto-schedule-regenerate ${publishing ? "disabled" : ""}>Nueva distribución</button>
                     <button class="secondary-button" type="button" data-auto-schedule-cancel ${publishing ? "disabled" : ""}>Cancelar</button>

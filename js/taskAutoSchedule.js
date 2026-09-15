@@ -47,6 +47,13 @@
 //      mira el nombre: "Estacion de trabajo" -> ESTACION DE TRABAJO. Quien trae
 //      el motivo va ahi PRIMERO, sin pedirle cupo, experiencia, tipo de turno
 //      habitual ni patron multitarea (ver assignExtraReasonMatches).
+//
+//   6. PERFIL DE LA TAREA. Ademas de quien, se aprende en que condiciones va
+//      cada tarea: estamento, profesion, rotativa y turno real del dia, cuando
+//      uno de esos rasgos se repite en casi todos sus dias y es mucho mas comun
+//      ahi que en el resto (ver learnTaskProfiles). APOYO TURNO la hacen TM
+//      diurnos con Larga: el dia que ninguno tiene Larga, la casilla queda
+//      vacia en vez de llenarse con alguien de Diurno.
 
 import { keyToDate } from "./dateUtils.js";
 
@@ -86,6 +93,19 @@ export const AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE = 0.5;
 // motivo: en Imagenologia, RIS/PACS con el motivo "Ris Pacs" (100% de los dias
 // con motivo, 81% sin el).
 export const AUTO_SCHEDULE_EXTRA_REASON_TASK_GAIN = 0.25;
+// Perfil de la tarea: cuantos dias-persona hacen falta para aprenderlo. Con 6
+// dias MAMOGRAFIA aprendia "solo de Diurno" y quedaba vacia un dia de Larga.
+export const AUTO_SCHEDULE_MIN_TASK_PROFILE_DAYS = 10;
+// En que parte de esos dias tiene que repetirse un rasgo de la PERSONA: casi
+// siempre. Con 80%, RESONADOR aprendia "solo 4° turno" y dejaba afuera a los
+// diurnos que tambien la hacen.
+export const AUTO_SCHEDULE_TASK_PROFILE_RATE = 0.9;
+// El turno del DIA admite mas excepciones: en Imagenologia APOYO TURNO fue de
+// Larga en 24 de 29 dias (83%), y los otros eran HHEE que no quedaron como
+// turno agregado.
+export const AUTO_SCHEDULE_TASK_PROFILE_DAY_RATE = 0.8;
+// Y cuanto mas comun tiene que ser ahi que en el resto.
+export const AUTO_SCHEDULE_TASK_PROFILE_GAIN = 0.3;
 
 const DAY_MS = 86400000;
 // Piso del peso en el sorteo: con peso 0 la raiz 1/peso se va al infinito y el
@@ -501,6 +521,9 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     // Mezcla de condiciones de turno en cada casilla historica. Permite
     // aprender casos como "APOYO TURNO lo toma un diurno con Larga agregada".
     const turnCounts = new Map();
+    // Turno + tarea -> cada dia-persona que la hizo, con sus rasgos. Se resume
+    // en el perfil de quien hace la tarea (ver learnTaskProfiles).
+    const taskProfileDays = new Map();
     const contextOptions = { workerTurnContextForDay, workerTurnContexts };
 
     weekKeys.forEach(weekKey => {
@@ -539,9 +562,9 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
             names.forEach(name => {
                 const stat = task.get(name) || { days: 0, lastDay: 0 };
                 const group = workerGroups.get(name) || "";
-                const turnContext = normalizeTurnContext(
-                    workerTurnContextFor(contextOptions, name, keyDay, shift)
-                );
+                const rawTurnContext =
+                    workerTurnContextFor(contextOptions, name, keyDay, shift);
+                const turnContext = normalizeTurnContext(rawTurnContext);
                 const turnSignature = turnContextSignature(turnContext);
 
                 stat.days += 1;
@@ -565,6 +588,14 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
 
                 dayTasks.taskIds.add(taskId);
                 workerDayTasks.set(dayTaskKey, dayTasks);
+
+                const traits = taskProfileTraits(group, rawTurnContext);
+                const profileKey = `${shift}|${taskId}`;
+                const profileDays = taskProfileDays.get(profileKey) || [];
+
+                dayTasks.traits = traits;
+                profileDays.push({ name, dayKey: dayTaskKey, traits });
+                taskProfileDays.set(profileKey, profileDays);
 
                 if (group) {
                     cellGroups.set(group, (cellGroups.get(group) || 0) + 1);
@@ -633,6 +664,7 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         groupCounts,
         turnCounts,
         extraReasonTasks: learnExtraReasonTasks(workerDayTasks),
+        taskProfiles: learnTaskProfiles(taskProfileDays, workerDayTasks),
         workerGroups,
         activeColumns,
         taskFirstWeek,
@@ -744,6 +776,189 @@ function learnExtraReasonTasks(workerDayTasks) {
     });
 
     return learned;
+}
+
+/* ==========================================================================
+   Perfil de quien hace cada tarea
+   ========================================================================== */
+
+// Los rasgos de la PERSONA se comparan con toda la unidad en ese turno; el
+// turno real es del DIA y se compara con los otros dias de esas mismas personas.
+const TASK_PROFILE_PERSON_TRAITS = ["estamento", "profession", "rotativaType"];
+const TASK_PROFILE_DAY_TRAITS = ["actualTurn"];
+const TASK_PROFILE_TRAITS = [
+    ...TASK_PROFILE_PERSON_TRAITS,
+    ...TASK_PROFILE_DAY_TRAITS
+];
+
+// Valor vacio = no se sabe: ni cuenta para aprender ni deja a nadie afuera.
+function taskProfileTraits(group, context = {}) {
+    const normalized = normalizeTurnContext(context);
+    const profession = normalized.profession === "sin informacion"
+        ? ""
+        : normalized.profession;
+    // Libre (0) en una casilla es un dato raro, no un turno que aprender.
+    const actualTurn = normalized.actualTurn === "0" ? "" : normalized.actualTurn;
+
+    return {
+        estamento: {
+            value: normalizeTextKey(group),
+            label: String(group || "").trim()
+        },
+        profession: {
+            value: profession,
+            label: String(context?.profession || "").trim()
+        },
+        rotativaType: {
+            value: normalized.rotativaType,
+            label: String(context?.rotativaType || context?.rotativa || "").trim()
+        },
+        actualTurn: { value: actualTurn, label: actualTurn }
+    };
+}
+
+/**
+ * El perfil de quien hace cada tarea, cuando es marcado: "APOYO TURNO la hacen
+ * TM de rotativa diurna con turno Larga".
+ *
+ * Quien PUEDE ir ya lo decide el historial de cada persona; esto agrega en que
+ * CONDICIONES va. La misma TM que hace APOYO TURNO un dia de Larga no la hace un
+ * dia de Diurno: la tarea es de 17:00 a 20:00.
+ *
+ * Un rasgo pasa a ser requisito solo si se repite en la gran mayoria de los
+ * dias de la tarea Y es mucho mas comun ahi que en el resto:
+ *   - rasgos de la persona (estamento, profesion, rotativa): contra toda la
+ *     unidad en ese turno. Si todos son TM, ser TM no dice nada.
+ *   - turno real: contra los OTROS dias de esas mismas personas. Si alguien
+ *     siempre trabaja de Diurno, que haga la tarea de Diurno no dice nada; y sin
+ *     otros dias suyos con que comparar, no se aprende.
+ *
+ * @returns {Map} `turno|tareaId` -> `{ requires, labels, days }`
+ */
+function learnTaskProfiles(taskProfileDays, workerDayTasks) {
+    const unitByShift = new Map();
+    const daysByWorker = new Map();
+
+    workerDayTasks.forEach((day, dayKey) => {
+        if (!day.traits) return;
+
+        const unit = unitByShift.get(day.shift) || [];
+        const workerKey = `${day.shift}|${day.name}`;
+        const own = daysByWorker.get(workerKey) || [];
+
+        unit.push(day.traits);
+        unitByShift.set(day.shift, unit);
+        own.push({ dayKey, traits: day.traits });
+        daysByWorker.set(workerKey, own);
+    });
+
+    const shareOf = (list, trait, value) => list.length
+        ? list.filter(traits => traits[trait].value === value).length / list.length
+        : 0;
+    const learned = new Map();
+
+    taskProfileDays.forEach((rows, key) => {
+        if (rows.length < AUTO_SCHEDULE_MIN_TASK_PROFILE_DAYS) return;
+
+        const shift = key.slice(0, key.indexOf("|"));
+        const taskDays = new Set(rows.map(row => row.dayKey));
+        const others = [...new Set(rows.map(row => row.name))]
+            .flatMap(name => daysByWorker.get(`${shift}|${name}`) || [])
+            .filter(day => !taskDays.has(day.dayKey))
+            .map(day => day.traits);
+        const requires = {};
+        const labels = {};
+
+        TASK_PROFILE_TRAITS.forEach(trait => {
+            const dayTrait = TASK_PROFILE_DAY_TRAITS.includes(trait);
+
+            if (dayTrait && others.length < AUTO_SCHEDULE_MIN_TASK_PROFILE_DAYS) {
+                return;
+            }
+
+            const counts = new Map();
+
+            rows.forEach(({ traits }) => {
+                const { value, label } = traits[trait];
+
+                if (!value) return;
+
+                const current = counts.get(value) || { count: 0, label };
+
+                current.count += 1;
+                counts.set(value, current);
+            });
+
+            const [best] = [...counts.entries()]
+                .sort((a, b) => b[1].count - a[1].count);
+
+            if (!best) return;
+
+            const [value, { count, label }] = best;
+            const share = count / rows.length;
+            const baseline = dayTrait ? others : unitByShift.get(shift) || [];
+
+            const rate = dayTrait
+                ? AUTO_SCHEDULE_TASK_PROFILE_DAY_RATE
+                : AUTO_SCHEDULE_TASK_PROFILE_RATE;
+
+            if (
+                share >= rate &&
+                share - shareOf(baseline, trait, value) >=
+                    AUTO_SCHEDULE_TASK_PROFILE_GAIN
+            ) {
+                requires[trait] = value;
+                labels[trait] = label || value;
+            }
+        });
+
+        if (Object.keys(requires).length) {
+            learned.set(key, { requires, labels, days: rows.length });
+        }
+    });
+
+    return learned;
+}
+
+// El perfil que pide una casilla. En una casilla unida solo se pide lo que
+// piden TODAS sus tareas, y vale el valor de cualquiera de ellas.
+function taskProfileForTaskIds(history, shift, taskIds) {
+    const profiles = taskIds.map(taskId =>
+        history?.taskProfiles?.get(`${shift}|${taskId}`)
+    );
+
+    if (!profiles.length || profiles.some(profile => !profile)) return null;
+
+    const requires = {};
+    const labels = {};
+
+    TASK_PROFILE_TRAITS.forEach(trait => {
+        if (!profiles.every(profile => profile.requires[trait])) return;
+
+        requires[trait] = new Set(
+            profiles.map(profile => profile.requires[trait])
+        );
+        labels[trait] = [
+            ...new Set(profiles.map(profile => profile.labels[trait]))
+        ];
+    });
+
+    return Object.keys(requires).length ? { requires, labels } : null;
+}
+
+// Si esa persona, ese dia, calza con el perfil de la casilla. Lo que no se sabe
+// de ella no la deja afuera.
+function fitsTaskProfile(profile, workerGroups, cell, name) {
+    if (!profile) return true;
+
+    const traits = taskProfileTraits(
+        workerGroups?.get(name) || "",
+        candidateTurnContextFor(cell, name)
+    );
+
+    return Object.entries(profile.requires).every(([trait, allowed]) =>
+        !traits[trait].value || allowed.has(traits[trait].value)
+    );
 }
 
 /* ==========================================================================
@@ -1470,6 +1685,11 @@ function candidatePoolForSlot(item, round, {
         .filter(name =>
             canCandidateUseCell(stats, cell, name, taskIds, taken)
         )
+        // A diferencia del tipo de turno habitual, que solo da preferencia, el
+        // perfil es requisito: si nadie calza, la casilla queda vacia.
+        .filter(name =>
+            fitsTaskProfile(item.taskProfile, workerGroups, cell, name)
+        )
         .filter(name =>
             !slotGroup || workerGroups.get(name) === slotGroup
         )
@@ -1782,11 +2002,18 @@ export function planTaskAutoSchedule({
             .filter(Boolean)
             .filter(name => !blocked.has(name) && taskWorkers.has(name))
             .length;
-        const reach = (cell.candidates || [])
+        // El perfil de quien hace la tarea (ver learnTaskProfiles). No se pide
+        // en las casillas unidas de dias inhabiles: ahi va todo el que pueda.
+        const taskProfile = fillAllEligible
+            ? null
+            : taskProfileForTaskIds(stats, cell.shift, taskIds);
+        const usable = (cell.candidates || [])
             .map(name => String(name || "").trim())
             .filter(Boolean)
             .filter(name => !blocked.has(name) && taskWorkers.has(name))
-            .filter(name => canCandidateUseCell(stats, cell, name, taskIds))
+            .filter(name => canCandidateUseCell(stats, cell, name, taskIds));
+        const reach = usable
+            .filter(name => fitsTaskProfile(taskProfile, workerGroups, cell, name))
             .length;
         const effectiveGroupSlots = fillAllEligible ? [] : groupSlots;
         const effectiveTurnSlots = fillAllEligible ? [] : turnSlots;
@@ -1827,6 +2054,9 @@ export function planTaskAutoSchedule({
             turnSlots: effectiveTurnSlots,
             slotAssignments: Array(effectiveHeadcount).fill(""),
             historyReach,
+            taskProfile,
+            // Habia gente con historial en la tarea, pero nadie con su perfil.
+            profileBlocked: usable.length > 0 && reach === 0,
             // Quienes quedaron en esta casilla por su motivo de HHEE.
             extraReasonWorkers: []
         };
@@ -1958,12 +2188,19 @@ export function planTaskAutoSchedule({
                 //   sin-gente     si los habia, pero se los llevaron otras
                 //                 casillas del mismo dia, o no tenian patron
                 //                 multitarea para repetirse ahi.
-                reason: reasonFor(
-                    cell,
-                    historyReach,
-                    groupReach,
-                    groupSlots.length
-                )
+                //   sin-perfil    los habia, pero ninguno con el perfil de la
+                //                 tarea (APOYO TURNO sin nadie de Larga).
+                reason: item.profileBlocked
+                    ? "sin-perfil"
+                    : reasonFor(
+                        cell,
+                        historyReach,
+                        groupReach,
+                        groupSlots.length
+                    ),
+                ...(item.profileBlocked
+                    ? { profile: item.taskProfile.labels }
+                    : {})
             });
             return;
         }
@@ -1993,6 +2230,100 @@ export function planTaskAutoSchedule({
         assignments,
         workers: [...touched]
     };
+}
+
+/**
+ * A quienes pondria la programacion automatica en una casilla, del mas al menos
+ * probable. Es para ordenar la lista de "Asignar" del tablero, asi que aplica
+ * los mismos filtros que el reparto -historial en la tarea, patron multitarea,
+ * perfil de la tarea, sacados a mano- y pone primero a quien trae el motivo
+ * HHEE de la tarea. Despues va quien calza con el tipo de turno habitual, y
+ * luego el peso con que el sorteo lo elegiria.
+ *
+ * @param {Object} options
+ * @param {Object} options.cell casilla con la misma forma que en
+ *   `planTaskAutoSchedule`.
+ * @param {Object} options.history salida de `buildTaskAutoScheduleHistory`.
+ * @returns {Array<{name: string, byExtraReason: boolean}>}
+ */
+export function recommendTaskCandidates({ cell = null, history = null } = {}) {
+    if (!cell) return [];
+
+    const stats = history || buildTaskAutoScheduleHistory({});
+    const taskIds = cell.taskIds?.length ? cell.taskIds : [cell.taskId];
+    const taskWorkers = taskHistoryFor(stats, taskIds);
+    const workerGroups = stats.workerGroups || new Map();
+    const taskProfile = fillAllEligibleCell(cell)
+        ? null
+        : taskProfileForTaskIds(stats, cell.shift, taskIds);
+    const usualTurns = new Set(
+        turnPatternForTaskIds(stats, cell.shift, taskIds, cell.keyDay).signatures
+    );
+    const blocked = new Set(
+        (cell.blocked || []).map(name => String(name || "").trim())
+    );
+    const planDay = dayNumber(cell.keyDay);
+
+    return [...new Set(
+        (cell.candidates || [])
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+    )]
+        .filter(name => !blocked.has(name))
+        .map(name => {
+            const current = currentTaskIdsForCell(cell, name);
+
+            if (taskIds.some(taskId => current.has(taskId))) return null;
+
+            const byReason = extraReasonCellScore(stats, cell, taskIds, name);
+
+            if (byReason > 0) {
+                return { name, byExtraReason: true, rank: [byReason, 0, 0] };
+            }
+
+            if (
+                !taskWorkers.has(name) ||
+                !canCandidateUseCell(stats, cell, name, taskIds) ||
+                !fitsTaskProfile(taskProfile, workerGroups, cell, name)
+            ) {
+                return null;
+            }
+
+            const usualTurn = usualTurns.has(
+                turnContextSignature(candidateTurnContextFor(cell, name))
+            );
+
+            return {
+                name,
+                byExtraReason: false,
+                rank: [
+                    0,
+                    usualTurn ? 1 : 0,
+                    candidateWeight(name, {
+                        taskWorkers,
+                        workerStats: stats.workers || new Map(),
+                        taskIndex: stats.tasks || new Map(),
+                        planDay,
+                        runTotal: 0,
+                        runOnTask: 0,
+                        extraReasonFit: extraReasonFitForCandidate(
+                            stats,
+                            cell,
+                            taskIds,
+                            name
+                        )
+                    })
+                ]
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) =>
+            b.rank[0] - a.rank[0] ||
+            b.rank[1] - a.rank[1] ||
+            b.rank[2] - a.rank[2] ||
+            a.name.localeCompare(b.name, "es")
+        )
+        .map(({ name, byExtraReason }) => ({ name, byExtraReason }));
 }
 
 function cellRef(cell) {

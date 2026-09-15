@@ -55,7 +55,8 @@ test("el chip fuera de turno se marca en vez de esconderse", async () => {
 
     assert.match(source, /!isScheduledForShift\(profile, keyDay, task\.shift\)/);
     assert.match(source, /task-assignment-worker-chip--off-shift/);
-    assert.match(source, /Fuera de su turno este d&iacute;a/);
+    // Desde 2026-09-15 va en el title junto a las ultimas tareas, como texto.
+    assert.match(source, /Fuera de su turno este día/);
     assert.match(
         styles,
         /\.task-assignment-worker-chip--off-shift \{[^}]*border-style: dashed;/

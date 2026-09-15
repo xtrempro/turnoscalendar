@@ -370,7 +370,7 @@ test("las casillas llevan el nombre de sus tareas, para calzarlo con el motivo",
     // aviso no se veia.
     assert.match(
         source,
-        /function autoScheduleSkipSummary\(plan\) \{[\s\S]{0,900}a la tarea que indica su motivo de HHEE/
+        /function autoScheduleSkipSummary\(plan, tasks = \[\]\) \{[\s\S]{0,1200}a la tarea que indica su motivo de HHEE/
     );
 });
 

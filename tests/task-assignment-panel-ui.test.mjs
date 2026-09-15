@@ -125,10 +125,12 @@ test("los candidatos ya asignados en otra tarea van al final y se marcan", async
     const styles = await readStyles();
 
     // Siguen siendo elegibles -mover gente entre tareas es normal- pero no
-    // deben competir con quien esta libre a esa hora.
+    // deben competir con quien esta libre a esa hora. Desde 2026-09-15 los
+    // recomendados por la programacion automatica van antes, en su orden, y
+    // esta regla ordena el resto.
     assert.match(
         source,
-        /const orderedCandidates = \[\s*\n\s*\.\.\.candidates\.filter\(item => !item\.otherTask\),\s*\n\s*\.\.\.candidates\.filter\(item => item\.otherTask\)\s*\n\s*\];/
+        /const otherItems = \[\s*\n\s*\.\.\.rest\.filter\(item => !item\.otherTask\),\s*\n\s*\.\.\.rest\.filter\(item => item\.otherTask\)\s*\n\s*\];/
     );
     assert.match(source, /task-assignment-picker__option--busy/);
     assert.match(source, /Ya en \$\{escapeHTML\(otherTask\)\}/);
