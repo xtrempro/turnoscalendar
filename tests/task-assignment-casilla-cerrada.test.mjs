@@ -42,8 +42,14 @@ function grab(source, name) {
     throw new Error(`sin cierre: ${name}`);
 }
 
+// `assignmentWorkers` ordena por estamento. Sin perfiles cargados el rango
+// real es 99 para todos, que es lo que devuelve este reemplazo: queda el orden
+// alfabetico, igual que en la app.
 const api = new Function(`
     ${grab(src, "uniqueValues")}
+    ${grab(src, "uniqueWorkerNames")}
+    function taskWorkerRoleRank() { return 99; }
+    ${grab(src, "sortTaskWorkersByRole")}
     ${grab(src, "assignmentWorkers")}
     ${grab(src, "assignmentRemovedDefaults")}
     ${grab(src, "assignmentClosed")}
