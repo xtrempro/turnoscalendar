@@ -14909,12 +14909,19 @@ body.theme-light .task-assignment-event-day--inhabil {
     top: calc(100% - 6px);
     z-index: 8;
     display: grid;
+    /* La lista hace scroll DENTRO del recuadro. Sin la fila acotada y el
+       overflow, los nombres pasados los 270px se salian del fondo y quedaban
+       encima de las casillas de abajo, como si el menu fuera transparente. */
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 6px;
     max-height: 270px;
+    overflow: hidden;
     padding: 8px;
     border: 1px solid var(--border);
     border-radius: 10px;
-    background: var(--panel);
+    /* --panel es 94% opaco: debajo va un fondo solido para que no se lean los
+       chips de la grilla a traves del menu. */
+    background: linear-gradient(var(--panel), var(--panel)), var(--bg-bottom, #ffffff);
     box-shadow: var(--shadow-lg);
 }
 

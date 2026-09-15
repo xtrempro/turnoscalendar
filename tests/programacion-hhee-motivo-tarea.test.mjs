@@ -15,12 +15,19 @@
 //   - orden: otra tarea del dia se lo lleva antes.
 // Y el calce motivo -> tarea solo se aprendia del historial: un motivo llamado
 // igual que la tarea no contaba si no se habia visto dos veces.
+//
+// 2026-09-15: con los datos reales de Imagenologia, "Extension Apoyo Clinico Rx
+// TC" -> APOYO TURNO no se aprendia. Quien viene a la extension hace su tarea
+// de siempre Y APOYO TURNO, y contando tareas sueltas APOYO TURNO quedaba en 3
+// de 9; ademas se mezclaba con "Apoyo Clinico TC", que va al ESCANER. Ahora se
+// cuenta por dia, contra los dias sin ese motivo, y el motivo va exacto.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
     buildTaskAutoScheduleHistory,
+    extraReasonTaskAffinity,
     planTaskAutoSchedule
 } from "../js/taskAutoSchedule.js";
 import { TURNO } from "../js/constants.js";
@@ -44,7 +51,8 @@ const PLAN_MONDAY = "2026-7-31";
 const TITLES = {
     estacion_trabajo: "ESTACIÓN DE TRABAJO",
     apoyo_turno: "APOYO TURNO",
-    tac_urgencia: "TAC URGENCIA"
+    tac_urgencia: "TAC URGENCIA",
+    escaner: "ESCANER"
 };
 
 function cell(workers) {
@@ -363,5 +371,175 @@ test("las casillas llevan el nombre de sus tareas, para calzarlo con el motivo",
     assert.match(
         source,
         /function autoScheduleSkipSummary\(plan\) \{[\s\S]{0,900}a la tarea que indica su motivo de HHEE/
+    );
+});
+
+/* =========================================================
+   Lo aprendido del historial, con el caso real (2026-09-15)
+========================================================= */
+
+// Como en Imagenologia: el que viene a la extension hace su tarea de siempre Y
+// APOYO TURNO. Sus lunes con motivo: resonador+apoyo, rayos+apoyo,
+// mamografia+apoyo, resonador solo. Sus martes, sin motivo, solo la de siempre.
+const EXTENSION = "Extensión Apoyo Clínico Rx TC";
+
+function extensionHistory(addToWeek = () => {}) {
+    const entries = {};
+    const contexts = new Map();
+    const mondays = [
+        ["resonador", "apoyo_turno"],
+        ["rayos", "apoyo_turno"],
+        ["mamografia", "apoyo_turno"],
+        ["resonador"]
+    ];
+    const tuesdays = ["resonador", "rayos", "mamografia", "resonador"];
+
+    WEEKS.forEach((week, index) => {
+        entries[week] = {};
+        mondays[index].forEach(taskId => {
+            entries[week][`day|${taskId}|${MONDAYS[index]}`] = cell(["Seba"]);
+        });
+        entries[week][`day|${tuesdays[index]}|${TUESDAYS[index]}`] = cell(["Seba"]);
+        contexts.set(`Seba|${MONDAYS[index]}`, extra(EXTENSION));
+        contexts.set(`Seba|${TUESDAYS[index]}`, REGULAR);
+        addToWeek(index, entries[week], contexts);
+    });
+
+    return { entries, contexts };
+}
+
+test("la extension va a APOYO TURNO aunque ese dia tambien haga su tarea de siempre", () => {
+    // Contando tareas sueltas APOYO TURNO era 3 de 7 (43%) y no llegaba al 50%:
+    // las de siempre la diluian. Por dia fue 3 de 4 lunes, y ningun martes sin
+    // motivo. Y ese lunes ya esta en RAYOS, sin patron multitarea RAYOS + APOYO
+    // TURNO: el motivo igual se la suma.
+    const { entries, contexts } = extensionHistory();
+    const planContexts = { Seba: extra(EXTENSION), Bruno: REGULAR };
+    const plan = planTaskAutoSchedule({
+        cells: [
+            planCell("apoyo_turno", ["Seba", "Bruno"], planContexts, {
+                existingTaskIdsByWorker: { Seba: ["rayos"] }
+            })
+        ],
+        history: history(entries, contexts),
+        rng: seededRng(37)
+    });
+    const support = plan.filled.find(item => item.taskId === "apoyo_turno");
+
+    assert.ok(support?.workers.includes("Seba"), JSON.stringify(plan.filled));
+    assert.deepEqual(support.extraReasonWorkers, ["Seba"]);
+});
+
+test("la tarea que hace igual con o sin motivo no es la del motivo", () => {
+    const { entries, contexts } = extensionHistory();
+    const learned = history(entries, contexts);
+
+    // RESONADOR: 2 de 4 lunes con motivo, y 2 de 4 martes sin el.
+    assert.equal(
+        extraReasonTaskAffinity(learned, "day", ["resonador"], EXTENSION).matches,
+        false
+    );
+    assert.equal(
+        extraReasonTaskAffinity(learned, "day", ["apoyo_turno"], EXTENSION).matches,
+        true
+    );
+    // Escrito con otras mayusculas y sin tildes es el mismo motivo.
+    assert.equal(
+        extraReasonTaskAffinity(learned, "day", ["apoyo_turno"], "extension apoyo clinico RX TC").matches,
+        true
+    );
+    // Y en otro turno ese motivo no dice nada.
+    assert.equal(
+        extraReasonTaskAffinity(learned, "night", ["apoyo_turno"], EXTENSION).hasPattern,
+        false
+    );
+});
+
+test("motivos parecidos de la lista no se mezclan", () => {
+    // "Apoyo Clinico TC" lleva al ESCANER. Por parecido de palabras era el
+    // mismo motivo que la extension, y la extension terminaba en el ESCANER.
+    const { entries, contexts } = extensionHistory((index, weekEntries, weekContexts) => {
+        weekEntries[`day|escaner|${MONDAYS[index]}`] = cell(["Carla"]);
+        weekEntries[`day|relevo|${TUESDAYS[index]}`] = cell(["Carla"]);
+        weekContexts.set(`Carla|${MONDAYS[index]}`, extra("Apoyo Clinico TC"));
+        weekContexts.set(`Carla|${TUESDAYS[index]}`, REGULAR);
+    });
+    const planContexts = { Seba: extra(EXTENSION), Carla: REGULAR };
+    const plan = planTaskAutoSchedule({
+        cells: [
+            planCell("escaner", ["Seba", "Carla"], planContexts),
+            planCell("apoyo_turno", ["Seba", "Carla"], planContexts)
+        ],
+        history: history(entries, contexts),
+        rng: seededRng(39)
+    });
+
+    assert.ok(!workersIn(plan, "escaner").includes("Seba"));
+    assert.ok(workersIn(plan, "apoyo_turno").includes("Seba"));
+});
+
+test("lo aprendido manda sobre el nombre del motivo", () => {
+    // Dos lunes seguidos "Estacion de trabajo" termino en APOYO TURNO. El
+    // nombre apunta a ESTACION DE TRABAJO, pero lo que se hace es otra cosa.
+    const entries = {};
+    const contexts = new Map();
+
+    WEEKS.forEach((week, index) => {
+        entries[week] = {
+            [`day|estacion_trabajo|${MONDAYS[index]}`]: cell(["Eva"]),
+            ...(index < 2
+                ? { [`day|apoyo_turno|${MONDAYS[index]}`]: cell(["Ana"]) }
+                : {})
+        };
+        contexts.set(`Ana|${MONDAYS[index]}`, extra("Estación de trabajo"));
+    });
+
+    const planContexts = { Ana: extra("Estación de trabajo"), Eva: REGULAR };
+    const plan = planTaskAutoSchedule({
+        cells: [
+            planCell("apoyo_turno", ["Ana", "Eva"], planContexts),
+            planCell("estacion_trabajo", ["Ana", "Eva"], planContexts)
+        ],
+        history: history(entries, contexts),
+        rng: seededRng(41)
+    });
+
+    assert.ok(workersIn(plan, "apoyo_turno").includes("Ana"));
+    assert.ok(!workersIn(plan, "estacion_trabajo").includes("Ana"));
+});
+
+test("renombrar la tarea no pierde lo aprendido: va por id", () => {
+    const { entries, contexts } = extensionHistory();
+    const plan = planTaskAutoSchedule({
+        cells: [
+            planCell("apoyo_turno", ["Seba"], { Seba: extra(EXTENSION) }, {
+                taskTitles: { apoyo_turno: "REFUERZO DE LA TARDE" }
+            })
+        ],
+        history: history(entries, contexts),
+        rng: seededRng(43)
+    });
+
+    assert.deepEqual(workersIn(plan, "apoyo_turno"), ["Seba"]);
+});
+
+test("al publicar no se le vuelve a exigir tipo de turno ni patron multitarea", async () => {
+    const source = (await readFile(
+        new URL("../js/taskAssignments.js", import.meta.url),
+        "utf8"
+    )).replace(/\r\n/g, "\n");
+
+    assert.match(
+        source,
+        /const motiveWorkers = new Set\(item\.extraReasonWorkers \|\| \[\]\);/
+    );
+    assert.match(
+        source,
+        /const manual = edited \|\| manualWorkers\.has\(name\) \|\| motiveWorkers\.has\(name\);/
+    );
+    // Y si lo sacan de la propuesta, deja de contar en el aviso.
+    assert.match(
+        source,
+        /const extraReasonWorkers = uniqueValues\(item\.extraReasonWorkers \|\| \[\]\)\s*\.filter\(name => workers\.includes\(name\)\);/
     );
 });

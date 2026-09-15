@@ -5672,6 +5672,10 @@ function autoSchedulePreviewNormalizePlan(plan) {
             ));
             const manualWorkers = uniqueValues(item.manualWorkers || [])
                 .filter(name => workers.includes(name));
+            // Si el supervisor saca de la propuesta a quien iba por su motivo,
+            // ya no cuenta en el aviso.
+            const extraReasonWorkers = uniqueValues(item.extraReasonWorkers || [])
+                .filter(name => workers.includes(name));
 
             workers.forEach(name => touched.add(name));
 
@@ -5679,6 +5683,7 @@ function autoSchedulePreviewNormalizePlan(plan) {
                 ...item,
                 workers,
                 manualWorkers,
+                extraReasonWorkers,
                 short: Math.max((Number(item.headcount) || 0) - workers.length, 0)
             };
         })
@@ -6216,6 +6221,9 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
             ? item.turnSlots
             : [];
         const manualWorkers = new Set(item.manualWorkers || []);
+        // Quien va por su motivo HHEE entro sin tipo de turno habitual ni patron
+        // multitarea: volver a exigirselos al publicar lo sacaba en silencio.
+        const motiveWorkers = new Set(item.extraReasonWorkers || []);
         const edited = Boolean(item.edited);
         const workers = sortTaskWorkersByRole(item.workers.filter((name, index) => {
             const profile = profileByName(name);
@@ -6223,7 +6231,7 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
                 ...(existingByWorker.get(name) || new Set())
             ];
             const turnSignature = plannedTurnSlots[index] || "";
-            const manual = edited || manualWorkers.has(name);
+            const manual = edited || manualWorkers.has(name) || motiveWorkers.has(name);
 
             return profile &&
                 isAvailableForShift(profile, item.keyDay, item.shift) &&
@@ -6297,7 +6305,43 @@ function openTaskAutoSchedulePreviewDialog({ days, tasks, attempt }) {
         currentAttempt = createTaskAutoScheduleAttempt(days, tasks);
         previewPicker = null;
     };
+    // Redibujar el modal entero recrea sus contenedores con scroll, y cada uno
+    // volvia al inicio: abrir "Agregar" en una casilla de abajo saltaba al
+    // principio de la grilla. Se anota donde estaba cada uno y se repone. La
+    // lista del selector solo se repone si sigue abierto el MISMO selector.
+    let paintedPickerKey = "";
+    const pickerKey = () => previewPicker
+        ? `${previewPicker.shift}|${previewPicker.taskId}|${previewPicker.keyDay}`
+        : "";
     const render = () => {
+        const scrollers = [
+            ".task-auto-preview-list",
+            ".task-auto-preview-grid-wrap",
+            ...(pickerKey() && pickerKey() === paintedPickerKey
+                ? [".task-auto-preview-picker__list"]
+                : [])
+        ];
+        const positions = scrollers.map(selector =>
+            [...backdrop.querySelectorAll(selector)].map(node =>
+                [node.scrollTop, node.scrollLeft]
+            )
+        );
+
+        paint();
+        paintedPickerKey = pickerKey();
+
+        scrollers.forEach((selector, index) => {
+            backdrop.querySelectorAll(selector).forEach((node, position) => {
+                const [top, left] = positions[index][position] || [];
+
+                if (top === undefined) return;
+
+                node.scrollTop = top;
+                node.scrollLeft = left;
+            });
+        });
+    };
+    const paint = () => {
         const plan = currentAttempt.plan;
 
         backdrop.innerHTML = `

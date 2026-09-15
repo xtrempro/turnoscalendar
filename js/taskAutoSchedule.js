@@ -39,13 +39,14 @@
 //      tareas en el mismo turno. Aun asi, antes de repetir a alguien, se
 //      intenta usar a quienes siguen disponibles sin tarea en ese turno.
 //
-//   5. MOTIVO DE HHEE. El turno extra que trae motivo existe PARA una tarea: el
-//      motivo es lo que el supervisor escribio al agregarlo. Si el motivo dice
-//      lo mismo que el nombre de una tarea del dia ("Estacion de trabajo" ->
-//      ESTACION DE TRABAJO), o el historial muestra que ese motivo termina en
-//      esa tarea, esa persona va ahi PRIMERO, sin pedirle cupo, experiencia ni
-//      tipo de turno habitual (ver assignExtraReasonMatches). Antes solo
-//      inclinaba el sorteo, y esos filtros lo dejaban afuera antes de pesar.
+//   5. MOTIVO DE HHEE. El turno extra que trae motivo existe PARA una tarea.
+//      Esa tarea se APRENDE del historial: de los dias en que alguien vino con
+//      ese motivo, en cual estuvo mucho mas seguido que en sus dias sin el
+//      (ver learnExtraReasonTasks). Va por id de tarea, asi que renombrar la
+//      tarea no la pierde. Solo si ese motivo todavia no tiene historial se
+//      mira el nombre: "Estacion de trabajo" -> ESTACION DE TRABAJO. Quien trae
+//      el motivo va ahi PRIMERO, sin pedirle cupo, experiencia, tipo de turno
+//      habitual ni patron multitarea (ver assignExtraReasonMatches).
 
 import { keyToDate } from "./dateUtils.js";
 
@@ -76,10 +77,15 @@ export const AUTO_SCHEDULE_MIN_MULTITASK_DAYS = 2;
 // Minimo de dias para aprender que una tarea suele cubrirse con una condicion
 // de turno concreta, por ejemplo rotativa diurno + turno real Larga.
 export const AUTO_SCHEDULE_MIN_TURN_PATTERN_DAYS = 2;
-// Minimo de repeticiones para creer que un motivo de HHEE anticipa una tarea.
+// Minimo de dias con ese motivo en esa tarea para creer que el motivo la anticipa.
 export const AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS = 2;
-// Proporcion minima del historial del motivo que debe apuntar a esa tarea.
+// De los dias en que alguien vino con ese motivo, en cuantos estuvo en la tarea.
 export const AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE = 0.5;
+// Cuanto MAS seguido que en los dias sin ese motivo, de las mismas personas. Sin
+// esto la tarea de siempre -la que hacen con o sin motivo- pasaba por la del
+// motivo: en Imagenologia, RIS/PACS con el motivo "Ris Pacs" (100% de los dias
+// con motivo, 81% sin el).
+export const AUTO_SCHEDULE_EXTRA_REASON_TASK_GAIN = 0.25;
 
 const DAY_MS = 86400000;
 // Piso del peso en el sorteo: con peso 0 la raiz 1/peso se va al infinito y el
@@ -386,18 +392,6 @@ function candidateTurnContextFor(cell, name) {
     return contexts[cleanName] || {};
 }
 
-function incrementNestedCount(map, key, subKey, amount = 1) {
-    const cleanKey = String(key || "").trim();
-    const cleanSubKey = String(subKey || "").trim();
-
-    if (!cleanKey || !cleanSubKey) return;
-
-    const counts = map.get(cleanKey) || new Map();
-
-    counts.set(cleanSubKey, (counts.get(cleanSubKey) || 0) + amount);
-    map.set(cleanKey, counts);
-}
-
 export function workerMatchesTurnSignature(context, signature) {
     const expected = String(signature || "").trim();
 
@@ -500,16 +494,13 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     // semanas arrastraria los ceros de las seis anteriores -cuando ni existia-
     // y su cupo saldria 0 para siempre.
     const taskFirstWeek = new Map();
-    // Persona + turno + dia historico -> tareas que hizo juntas ese dia.
-    // Se resume despues en combinaciones repetidas, porque con una sola tarea
-    // por dia no hay nada especial que aprender.
+    // Persona + turno + dia historico -> tareas que hizo juntas ese dia, y el
+    // motivo HHEE que traia. Se resume despues en combinaciones repetidas y en
+    // la tarea propia de cada motivo.
     const workerDayTasks = new Map();
     // Mezcla de condiciones de turno en cada casilla historica. Permite
     // aprender casos como "APOYO TURNO lo toma un diurno con Larga agregada".
     const turnCounts = new Map();
-    // Motivo de HHEE -> tarea. Sirve para aprender que, por ejemplo, un motivo
-    // "estacion de trabajo" suele terminar en la tarea ESTACION DE TRABAJO.
-    const extraReasonTaskCounts = new Map();
     const contextOptions = { workerTurnContextForDay, workerTurnContexts };
 
     weekKeys.forEach(weekKey => {
@@ -587,11 +578,7 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
                 }
 
                 if (turnContext.extraReason) {
-                    incrementNestedCount(
-                        extraReasonTaskCounts,
-                        `${shift}|${turnContext.extraReason}`,
-                        taskId
-                    );
+                    dayTasks.extraReason = turnContext.extraReason;
                 }
             });
 
@@ -645,12 +632,118 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         counts,
         groupCounts,
         turnCounts,
-        extraReasonTaskCounts,
+        extraReasonTasks: learnExtraReasonTasks(workerDayTasks),
         workerGroups,
         activeColumns,
         taskFirstWeek,
         multiTaskCombos
     };
+}
+
+/**
+ * La tarea PROPIA de cada motivo de HHEE, por turno.
+ *
+ * Se cuenta por DIA-PERSONA, no por tarea suelta: el que viene a una extension
+ * hace su tarea de siempre Y la del motivo, y contando tareas la del motivo se
+ * diluia entre las de siempre (en Imagenologia, APOYO TURNO con "Extension
+ * Apoyo Clinico Rx TC" quedaba en 3 de 9 tareas, aunque estuvo en 3 de 4 dias).
+ *
+ * Y se compara contra los dias SIN ese motivo de las mismas personas: la tarea
+ * que hacen igual con o sin motivo es su tarea de siempre, no la del motivo.
+ *
+ * El motivo se compara exacto (sin tildes, mayusculas ni palabras de relleno),
+ * no por parecido: "Apoyo Clinico TC" y "Extension Apoyo Clinico Rx TC" son dos
+ * motivos de la lista, con tareas distintas, y mezclarlos mandaba la extension
+ * al ESCANER.
+ *
+ * @returns {Map} `turno|motivo` -> `{ taskIds, rate, gain, days }`
+ */
+function learnExtraReasonTasks(workerDayTasks) {
+    const byWorker = new Map();
+    const byReason = new Map();
+    const bump = (map, key) => map.set(key, (map.get(key) || 0) + 1);
+
+    workerDayTasks.forEach(({ shift, name, taskIds, extraReason }) => {
+        const workerKey = `${shift}|${name}`;
+        const worker = byWorker.get(workerKey) ||
+            { days: 0, tasks: new Map() };
+
+        worker.days += 1;
+        taskIds.forEach(taskId => bump(worker.tasks, taskId));
+        byWorker.set(workerKey, worker);
+
+        if (!extraReason) return;
+
+        const reasonKey = `${shift}|${extraReason}`;
+        const reason = byReason.get(reasonKey) ||
+            { shift, days: 0, tasks: new Map(), workers: new Map() };
+        const mine = reason.workers.get(name) ||
+            { days: 0, tasks: new Map() };
+
+        reason.days += 1;
+        mine.days += 1;
+        taskIds.forEach(taskId => {
+            bump(reason.tasks, taskId);
+            bump(mine.tasks, taskId);
+        });
+        reason.workers.set(name, mine);
+        byReason.set(reasonKey, reason);
+    });
+
+    const learned = new Map();
+
+    byReason.forEach((reason, reasonKey) => {
+        const totals = name => byWorker.get(`${reason.shift}|${name}`);
+        // Los dias de esas mismas personas en que NO traian este motivo.
+        let daysWithout = 0;
+
+        reason.workers.forEach((mine, name) => {
+            daysWithout += totals(name).days - mine.days;
+        });
+
+        const ranked = [...reason.tasks.entries()]
+            .map(([taskId, days]) => {
+                let without = 0;
+
+                reason.workers.forEach((mine, name) => {
+                    without +=
+                        (totals(name).tasks.get(taskId) || 0) -
+                        (mine.tasks.get(taskId) || 0);
+                });
+
+                const rate = days / reason.days;
+
+                return {
+                    taskId,
+                    days,
+                    rate,
+                    gain: rate - (daysWithout ? without / daysWithout : 0)
+                };
+            })
+            .filter(item =>
+                item.days >= AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS &&
+                item.rate >= AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE &&
+                item.gain >= AUTO_SCHEDULE_EXTRA_REASON_TASK_GAIN
+            )
+            .sort((a, b) => b.rate - a.rate || b.gain - a.gain);
+
+        if (!ranked.length) return;
+
+        // Un motivo apunta a UNA tarea: la mas marcada. Solo un empate exacto
+        // deja dos.
+        const [best] = ranked;
+
+        learned.set(reasonKey, {
+            taskIds: ranked
+                .filter(item => item.rate === best.rate && item.gain === best.gain)
+                .map(item => item.taskId),
+            rate: best.rate,
+            gain: best.gain,
+            days: reason.days
+        });
+    });
+
+    return learned;
 }
 
 /* ==========================================================================
@@ -1062,75 +1155,31 @@ function fillAllEligibleCell(cell) {
         cell?.fillEligibleCandidates === true;
 }
 
-function extraReasonTaskCountsFor(history, shift, reason) {
-    const reasonKey = normalizeExtraReasonKey(reason);
-    const counts = new Map();
-    let total = 0;
-
-    if (!reasonKey) return { counts, total };
-
-    (history?.extraReasonTaskCounts || new Map())
-        .forEach((taskCounts, key) => {
-            const cleanKey = String(key || "");
-            const separator = cleanKey.indexOf("|");
-            const itemShift = separator >= 0
-                ? cleanKey.slice(0, separator)
-                : "";
-            const itemReason = separator >= 0
-                ? cleanKey.slice(separator + 1)
-                : cleanKey;
-            const similarity = extraReasonSimilarity(reasonKey, itemReason);
-
-            if ((shift && itemShift !== shift) || !similarity) return;
-
-            (taskCounts || new Map()).forEach((count, taskId) => {
-                const value = Math.max(Number(count) || 0, 0);
-
-                if (!value) return;
-
-                counts.set(taskId, (counts.get(taskId) || 0) + value);
-                total += value;
-            });
-        });
-
-    return { counts, total };
-}
-
+/**
+ * Si el motivo HHEE de alguien apunta a las tareas de una casilla, segun lo
+ * aprendido del historial (ver learnExtraReasonTasks).
+ *
+ * `hasPattern`: ese motivo ya tiene tarea propia en ese turno. `matches`: y es
+ * una de las de esta casilla. `rate`: en que parte de sus dias fue a esa tarea.
+ */
 export function extraReasonTaskAffinity(history, shift, taskIds, reason) {
     const ids = normalizedTaskIds(taskIds);
-    const { counts, total } = extraReasonTaskCountsFor(history, shift, reason);
+    const reasonKey = normalizeExtraReasonKey(reason);
+    const learned = reasonKey
+        ? history?.extraReasonTasks?.get(`${shift}|${reasonKey}`)
+        : null;
 
-    if (!ids.length || total < AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS) {
-        return {
-            hasPattern: false,
-            matches: false,
-            rate: 0,
-            taskCount: 0,
-            bestCount: 0
-        };
+    if (!ids.length || !learned) {
+        return { hasPattern: false, matches: false, rate: 0, taskIds: [] };
     }
 
-    const taskCount = ids.reduce(
-        (sum, taskId) => sum + (counts.get(taskId) || 0),
-        0
-    );
-    const bestCount = Math.max(0, ...counts.values());
-    const bestRate = bestCount / Math.max(total, 1);
-    const rate = taskCount / Math.max(total, 1);
-    const hasPattern =
-        bestCount >= AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS &&
-        bestRate >= AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE;
+    const matches = learned.taskIds.some(taskId => ids.includes(taskId));
 
     return {
-        hasPattern,
-        matches:
-            hasPattern &&
-            taskCount >= AUTO_SCHEDULE_MIN_EXTRA_REASON_TASK_DAYS &&
-            taskCount >= bestCount &&
-            rate >= AUTO_SCHEDULE_EXTRA_REASON_TASK_RATE,
-        rate,
-        taskCount,
-        bestCount
+        hasPattern: true,
+        matches,
+        rate: matches ? learned.rate : 0,
+        taskIds: [...learned.taskIds]
     };
 }
 
@@ -1181,13 +1230,12 @@ function cellTaskTitles(cell, taskIds) {
 /**
  * Cuanto calza el motivo HHEE de un candidato con las tareas de una casilla.
  *
- * Basta uno de dos caminos:
- *   - por nombre: el motivo dice lo mismo que la tarea. No necesita historial,
- *     es lo que el supervisor escribio al agregar el turno.
- *   - por historial: ese motivo, otras veces, termino en esta tarea aunque se
- *     llame distinto ("Refuerzo urgencias" -> TAC URGENCIA).
+ * Manda lo aprendido: si ese motivo ya tiene tarea propia en el historial, solo
+ * cuenta esa, se llame como se llame ("Refuerzo urgencias" -> TAC URGENCIA). El
+ * nombre ("Estacion de trabajo" -> ESTACION DE TRABAJO) es el camino para un
+ * motivo que todavia no tiene historial suficiente.
  *
- * @returns {number} 0 si no calza; mas alto, mas seguro.
+ * @returns {number} 0 si no calza; lo aprendido (1 a 2) gana a un nombre (hasta 1).
  */
 function extraReasonCellScore(history, cell, taskIds, name) {
     const reason = normalizeTurnContext(
@@ -1196,15 +1244,16 @@ function extraReasonCellScore(history, cell, taskIds, name) {
 
     if (!reason) return 0;
 
-    const byTitle = Math.max(
+    const learned = extraReasonTaskAffinity(history, cell.shift, taskIds, reason);
+
+    if (learned.hasPattern) return learned.matches ? 1 + learned.rate : 0;
+
+    return Math.max(
         0,
         ...cellTaskTitles(cell, taskIds).map(title =>
             extraReasonSimilarity(reason, title)
         )
     );
-    const learned = extraReasonTaskAffinity(history, cell.shift, taskIds, reason);
-
-    return Math.max(byTitle, learned.matches ? learned.rate : 0);
 }
 
 /**
@@ -1217,9 +1266,13 @@ function extraReasonCellScore(history, cell, taskIds, name) {
  * aprendido suele salir 0. Va primero para que otra tarea no se lo lleve, y si
  * la casilla ya no tiene cupo libre se le abre uno.
  *
+ * Tampoco se le pide patron multitarea: quien viene a una extension hace su
+ * tarea de siempre Y la del motivo, y ese par casi nunca se repite lo bastante
+ * para aprenderlo.
+ *
  * Lo que SI se respeta: que este de turno ese dia (candidates), que no lo hayan
- * sacado a mano de esa casilla (blocked), el estamento del cupo libre que
- * ocupa, y la regla multitarea si ya tiene otra tarea en ese turno.
+ * sacado a mano de esa casilla (blocked), que no este ya en esa misma tarea, y
+ * el estamento del cupo libre que ocupa.
  */
 function assignExtraReasonMatches({
     prepared,
@@ -1259,9 +1312,10 @@ function assignExtraReasonMatches({
                 if (!cleanNames(item.cell.candidates).includes(name)) return;
                 if (cleanNames(item.cell.blocked).includes(name)) return;
                 if (item.chosen.includes(name)) return;
-                if (!canCandidateUseCell(stats, item.cell, name, item.taskIds, taken)) {
-                    return;
-                }
+
+                const current = currentTaskIdsForCell(item.cell, name, taken);
+
+                if (item.taskIds.some(taskId => current.has(taskId))) return;
 
                 const score = extraReasonCellScore(
                     stats,
