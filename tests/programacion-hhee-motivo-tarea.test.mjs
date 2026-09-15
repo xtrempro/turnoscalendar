@@ -357,4 +357,11 @@ test("las casillas llevan el nombre de sus tareas, para calzarlo con el motivo",
     )).replace(/\r\n/g, "\n");
 
     assert.match(source, /taskTitles: autoScheduleTaskTitles\(tasks, group\.taskIds\),/);
+    // El aviso va en las notas que SI muestra la propuesta. Al principio quedo
+    // en autoSchedulePlanSummary, que nadie llama: el build la elimina y el
+    // aviso no se veia.
+    assert.match(
+        source,
+        /function autoScheduleSkipSummary\(plan\) \{[\s\S]{0,900}a la tarea que indica su motivo de HHEE/
+    );
 });

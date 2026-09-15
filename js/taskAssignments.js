@@ -5496,10 +5496,6 @@ function autoSchedulePlanSummary(plan, days) {
     const noHistory = countSkipped(plan, "sin-historial", "sin-turno");
     const noStaffingGroup = countSkipped(plan, "sin-estamento");
     const takenElsewhere = countSkipped(plan, "sin-gente");
-    const byExtraReason = plan.filled.reduce(
-        (sum, item) => sum + (item.extraReasonWorkers?.length || 0),
-        0
-    );
     const lines = [
         `Se repartirán ${plan.assignments} ${plan.assignments === 1 ? "persona" : "personas"} en ${cells} ${cells === 1 ? "casilla vacía" : "casillas vacías"} de la semana del ${formatShortDate(days[0])} al ${formatShortDate(days[6])}.`,
         "",
@@ -5507,15 +5503,6 @@ function autoSchedulePlanSummary(plan, days) {
         "",
         "Lo que ya está asignado no se toca. La propuesta no se publica hasta presionar Publicar."
     ];
-
-    // Quien trae turno extra con motivo HHEE de una tarea del dia va a esa tarea
-    // primero, aunque no tenga historial en ella ni la tarea tenga cupo ese dia.
-    if (byExtraReason) {
-        lines.push(
-            "",
-            `${byExtraReason} ${byExtraReason === 1 ? "persona va" : "personas van"} a la tarea que indica su motivo de HHEE.`
-        );
-    }
 
     if (noHistory || noStaffingGroup || takenElsewhere || shortCells) {
         lines.push("");
@@ -6152,7 +6139,18 @@ function autoScheduleSkipSummary(plan) {
     const takenElsewhere = countSkipped(plan, "sin-gente");
     const withoutPattern = countSkipped(plan, "sin-cupo");
     const shortCells = plan.filled.filter(item => item.short).length;
+    const byExtraReason = plan.filled.reduce(
+        (sum, item) => sum + (item.extraReasonWorkers?.length || 0),
+        0
+    );
     const lines = [];
+
+    // Quien trae turno extra con motivo HHEE de una tarea del dia va a esa
+    // tarea primero, aunque no tenga historial en ella ni cupo ese dia. Va en
+    // estas notas porque son las que muestra la propuesta.
+    if (byExtraReason) {
+        lines.push(`${byExtraReason} ${byExtraReason === 1 ? "persona va" : "personas van"} a la tarea que indica su motivo de HHEE.`);
+    }
 
     if (shortCells) {
         lines.push(`${shortCells} ${shortCells === 1 ? "casilla queda" : "casillas quedan"} con menos personal que el patrón habitual.`);
