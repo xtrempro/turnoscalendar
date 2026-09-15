@@ -54,6 +54,14 @@
 //      ahi que en el resto (ver learnTaskProfiles). APOYO TURNO la hacen TM
 //      diurnos con Larga: el dia que ninguno tiene Larga, la casilla queda
 //      vacia en vez de llenarse con alguien de Diurno.
+//
+//   7. CASILLAS UNIDAS. Los trabajadores de una union viven en la primera
+//      tarea, pero no la hicieron solos. Una union de 2 tareas cuenta para las
+//      DOS. Una union grande -mas de 2 tareas, o mas del 20% de las del turno-
+//      no es patron de ninguna tarea: en Imagenologia los dias inhabiles se
+//      unen 15 de 19 casillas solo para mostrar quien esta de turno, y entre
+//      ellos se reparten. Quien estuvo en uniones asi solo cuenta para otra
+//      union grande (ver isLooseTaskGroup).
 
 import { keyToDate } from "./dateUtils.js";
 
@@ -106,6 +114,25 @@ export const AUTO_SCHEDULE_TASK_PROFILE_RATE = 0.9;
 export const AUTO_SCHEDULE_TASK_PROFILE_DAY_RATE = 0.8;
 // Y cuanto mas comun tiene que ser ahi que en el resto.
 export const AUTO_SCHEDULE_TASK_PROFILE_GAIN = 0.3;
+// Union "suelta": desde cuantas tareas, o que parte de las del turno.
+export const AUTO_SCHEDULE_LOOSE_GROUP_MIN_TASKS = 3;
+export const AUTO_SCHEDULE_LOOSE_GROUP_RATE = 0.2;
+
+/**
+ * Si una casilla unida de `size` tareas es de las que solo muestran quien esta
+ * de turno (se reparten entre ellos) y no una tarea que se hace entre varios.
+ * Sin saber cuantas tareas tiene el turno, basta el tope por cantidad.
+ */
+export function isLooseTaskGroup(size, shiftTaskCount = 0) {
+    const tasks = Number(size) || 0;
+
+    if (tasks < 2) return false;
+    if (tasks >= AUTO_SCHEDULE_LOOSE_GROUP_MIN_TASKS) return true;
+
+    const total = Number(shiftTaskCount) || 0;
+
+    return total > 0 && tasks / total > AUTO_SCHEDULE_LOOSE_GROUP_RATE;
+}
 
 const DAY_MS = 86400000;
 // Piso del peso en el sorteo: con peso 0 la raiz 1/peso se va al infinito y el
@@ -466,6 +493,20 @@ function weeksForCell(history, shift, taskId, keyDay) {
         .filter(week => week >= firstWeek);
 }
 
+// Las tareas de una casilla unida, en orden. Los trabajadores viven solo en la
+// primera; las de abajo guardan nada mas el enlace a la siguiente.
+function mergedGroupTaskIds(week, shift, taskId, keyDay) {
+    const ids = [taskId];
+    let next = String(week?.[`${shift}|${taskId}|${keyDay}`]?.mergedNextTaskId || "");
+
+    while (next && !ids.includes(next) && ids.length < 100) {
+        ids.push(next);
+        next = String(week?.[`${shift}|${next}|${keyDay}`]?.mergedNextTaskId || "");
+    }
+
+    return ids;
+}
+
 /**
  * Resume las semanas anteriores en el patron que usa el reparto.
  *
@@ -483,7 +524,10 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     weeks = AUTO_SCHEDULE_HISTORY_WEEKS,
     profiles = [],
     workerTurnContextForDay = null,
-    workerTurnContexts = null
+    workerTurnContexts = null,
+    // Cuantas tareas tiene cada turno: { day: 19, night: 2 }. Sirve para
+    // reconocer una union grande (ver isLooseTaskGroup).
+    shiftTaskCounts = null
 } = {}) {
     const limit = String(beforeWeekKey || "");
     const weekKeys = Object.keys(entriesByWeek || {})
@@ -524,6 +568,9 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     // Turno + tarea -> cada dia-persona que la hizo, con sus rasgos. Se resume
     // en el perfil de quien hace la tarea (ver learnTaskProfiles).
     const taskProfileDays = new Map();
+    // Turno -> quienes estuvieron en uniones grandes. No es historial de
+    // ninguna tarea: solo vuelve a contar para otra union grande.
+    const looseGroupWorkers = new Map();
     const contextOptions = { workerTurnContextForDay, workerTurnContexts };
 
     weekKeys.forEach(weekKey => {
@@ -532,6 +579,16 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         if (!week || typeof week !== "object") return;
 
         const columnsUsed = new Set();
+        // Las casillas de abajo de una union: sus trabajadores, si quedo alguno,
+        // no se ven en el tablero y no son patron.
+        const innerCells = new Set();
+
+        Object.entries(week).forEach(([cellKey, entry]) => {
+            const { shift, keyDay } = cellParts(cellKey);
+            const next = String(entry?.mergedNextTaskId || "");
+
+            if (next) innerCells.add(`${shift}|${next}|${keyDay}`);
+        });
 
         Object.entries(week).forEach(([cellKey, entry]) => {
             const { shift, taskId, keyDay } = cellParts(cellKey);
@@ -540,62 +597,73 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
             // Una casilla vacia NO se guarda: se borra de la clave. Por eso el
             // vacio no se lee aqui sino por ausencia, al calcular el cupo.
             if (!shift || !taskId || !keyDay || !names.length) return;
+            if (innerCells.has(cellKey)) return;
 
             columnsUsed.add(`${shift}|${weekdayOf(keyDay)}`);
 
-            const first = taskFirstWeek.get(taskId);
-
-            if (!first || weekKey < first) taskFirstWeek.set(taskId, weekKey);
-
-            const countKey = `${weekKey}|${shift}|${taskId}|${weekdayOf(keyDay)}`;
-
-            counts.set(
-                countKey,
-                Math.max(counts.get(countKey) || 0, names.length)
-            );
-
-            const task = tasks.get(taskId) || new Map();
+            const groupTaskIds = mergedGroupTaskIds(week, shift, taskId, keyDay);
             const day = dayNumber(keyDay);
+
+            if (isLooseTaskGroup(groupTaskIds.length, shiftTaskCounts?.[shift])) {
+                const loose = looseGroupWorkers.get(shift) || new Map();
+
+                names.forEach(name => {
+                    const stat = loose.get(name) || { days: 0, lastDay: 0 };
+
+                    stat.days += 1;
+                    stat.lastDay = Math.max(stat.lastDay, day);
+                    loose.set(name, stat);
+                });
+                looseGroupWorkers.set(shift, loose);
+                return;
+            }
+
             const cellGroups = new Map();
             const cellTurnSignatures = new Map();
 
             names.forEach(name => {
-                const stat = task.get(name) || { days: 0, lastDay: 0 };
                 const group = workerGroups.get(name) || "";
                 const rawTurnContext =
                     workerTurnContextFor(contextOptions, name, keyDay, shift);
                 const turnContext = normalizeTurnContext(rawTurnContext);
                 const turnSignature = turnContextSignature(turnContext);
-
-                stat.days += 1;
-                stat.lastDay = Math.max(stat.lastDay, day);
-                task.set(name, stat);
-
+                const traits = taskProfileTraits(group, rawTurnContext);
                 const worker = workers.get(name) ||
                     { days: 0, taskIds: new Set() };
-
-                worker.days += 1;
-                worker.taskIds.add(taskId);
-                workers.set(name, worker);
-
                 const dayTaskKey = `${weekKey}|${shift}|${keyDay}|${name}`;
                 const dayTasks = workerDayTasks.get(dayTaskKey) || {
                     shift,
                     name,
                     day,
-                    taskIds: new Set()
+                    taskIds: new Set(),
+                    comboTaskIds: new Set()
                 };
 
-                dayTasks.taskIds.add(taskId);
-                workerDayTasks.set(dayTaskKey, dayTasks);
-
-                const traits = taskProfileTraits(group, rawTurnContext);
-                const profileKey = `${shift}|${taskId}`;
-                const profileDays = taskProfileDays.get(profileKey) || [];
-
+                worker.days += 1;
+                // Para el patron multitarea una union es UN puesto: se anota
+                // solo su primera tarea, como antes.
+                dayTasks.comboTaskIds.add(taskId);
                 dayTasks.traits = traits;
-                profileDays.push({ name, dayKey: dayTaskKey, traits });
-                taskProfileDays.set(profileKey, profileDays);
+
+                // Una union de 2 tareas cuenta para las dos.
+                groupTaskIds.forEach(groupTaskId => {
+                    const task = tasks.get(groupTaskId) || new Map();
+                    const stat = task.get(name) || { days: 0, lastDay: 0 };
+                    const profileKey = `${shift}|${groupTaskId}`;
+                    const profileDays = taskProfileDays.get(profileKey) || [];
+
+                    stat.days += 1;
+                    stat.lastDay = Math.max(stat.lastDay, day);
+                    task.set(name, stat);
+                    tasks.set(groupTaskId, task);
+                    worker.taskIds.add(groupTaskId);
+                    dayTasks.taskIds.add(groupTaskId);
+                    profileDays.push({ name, dayKey: dayTaskKey, traits });
+                    taskProfileDays.set(profileKey, profileDays);
+                });
+
+                workers.set(name, worker);
+                workerDayTasks.set(dayTaskKey, dayTasks);
 
                 if (group) {
                     cellGroups.set(group, (cellGroups.get(group) || 0) + 1);
@@ -613,15 +681,28 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
                 }
             });
 
-            if (groupCountTotal(cellGroups) === names.length) {
-                groupCounts.set(countKey, cellGroups);
-            }
+            groupTaskIds.forEach(groupTaskId => {
+                const first = taskFirstWeek.get(groupTaskId);
+                const countKey =
+                    `${weekKey}|${shift}|${groupTaskId}|${weekdayOf(keyDay)}`;
 
-            if (groupCountTotal(cellTurnSignatures) === names.length) {
-                turnCounts.set(countKey, cellTurnSignatures);
-            }
+                if (!first || weekKey < first) {
+                    taskFirstWeek.set(groupTaskId, weekKey);
+                }
 
-            tasks.set(taskId, task);
+                counts.set(
+                    countKey,
+                    Math.max(counts.get(countKey) || 0, names.length)
+                );
+
+                if (groupCountTotal(cellGroups) === names.length) {
+                    groupCounts.set(countKey, cellGroups);
+                }
+
+                if (groupCountTotal(cellTurnSignatures) === names.length) {
+                    turnCounts.set(countKey, cellTurnSignatures);
+                }
+            });
         });
 
         columnsUsed.forEach(column => {
@@ -635,9 +716,11 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
     const multiTaskCombos = new Map();
 
     workerDayTasks.forEach(dayTasks => {
-        if (!dayTasks?.taskIds || dayTasks.taskIds.size < 2) return;
+        const comboTaskIds = dayTasks?.comboTaskIds || dayTasks?.taskIds;
 
-        taskSubsets([...dayTasks.taskIds]).forEach(taskIds => {
+        if (!comboTaskIds || comboTaskIds.size < 2) return;
+
+        taskSubsets([...comboTaskIds]).forEach(taskIds => {
             const signature = taskBundleSignature(taskIds);
             const key = multitaskComboKey(
                 dayTasks.shift,
@@ -668,7 +751,8 @@ export function buildTaskAutoScheduleHistory(entriesByWeek = {}, {
         workerGroups,
         activeColumns,
         taskFirstWeek,
-        multiTaskCombos
+        multiTaskCombos,
+        looseGroupWorkers
     };
 }
 
@@ -1194,23 +1278,24 @@ function turnPatternForTaskIds(history, shift, taskIds, keyDay) {
    Quien puede ir a cada tarea
    ========================================================================== */
 
-function taskHistoryFor(history, taskIds) {
+function taskHistoryFor(history, taskIds, { shift = "", loose = false } = {}) {
     const merged = new Map();
+    const add = (stat, name) => {
+        const current = merged.get(name) || { days: 0, lastDay: 0 };
+
+        merged.set(name, {
+            days: current.days + stat.days,
+            lastDay: Math.max(current.lastDay, stat.lastDay)
+        });
+    };
 
     taskIds.forEach(taskId => {
-        const task = history?.tasks?.get(taskId);
-
-        if (!task) return;
-
-        task.forEach((stat, name) => {
-            const current = merged.get(name) || { days: 0, lastDay: 0 };
-
-            merged.set(name, {
-                days: current.days + stat.days,
-                lastDay: Math.max(current.lastDay, stat.lastDay)
-            });
-        });
+        history?.tasks?.get(taskId)?.forEach(add);
     });
+
+    // Una union grande tambien la puede cubrir quien estuvo en uniones asi,
+    // aunque nunca haya hecho esas tareas por separado. Solo aca.
+    if (loose) history?.looseGroupWorkers?.get(shift)?.forEach(add);
 
     [...merged.entries()].forEach(([name, stat]) => {
         if ((stat?.days || 0) < AUTO_SCHEDULE_MIN_WORKER_TASK_DAYS) {
@@ -1965,7 +2050,10 @@ export function planTaskAutoSchedule({
 
     const prepared = cells.map(cell => {
         const taskIds = cell.taskIds?.length ? cell.taskIds : [cell.taskId];
-        const taskWorkers = taskHistoryFor(stats, taskIds);
+        const taskWorkers = taskHistoryFor(stats, taskIds, {
+            shift: cell.shift,
+            loose: isLooseTaskGroup(taskIds.length, cell.shiftTaskCount)
+        });
         const staffing = staffingForTaskIds(
             stats,
             cell.shift,
@@ -2251,7 +2339,10 @@ export function recommendTaskCandidates({ cell = null, history = null } = {}) {
 
     const stats = history || buildTaskAutoScheduleHistory({});
     const taskIds = cell.taskIds?.length ? cell.taskIds : [cell.taskId];
-    const taskWorkers = taskHistoryFor(stats, taskIds);
+    const taskWorkers = taskHistoryFor(stats, taskIds, {
+        shift: cell.shift,
+        loose: isLooseTaskGroup(taskIds.length, cell.shiftTaskCount)
+    });
     const workerGroups = stats.workerGroups || new Map();
     const taskProfile = fillAllEligibleCell(cell)
         ? null

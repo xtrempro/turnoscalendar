@@ -5432,6 +5432,7 @@ function cachedAutoScheduleHistory() {
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
         beforeWeekKey: key,
         profiles: getProfiles(),
+        shiftTaskCounts: autoScheduleShiftTaskCounts(getTasks()),
         workerTurnContextForDay: (name, keyDay, shift) =>
             autoScheduleWorkerTurnContext(name, keyDay, shift)
     });
@@ -5457,6 +5458,7 @@ function cellPickerRecommendations(assignments, tasks, shift, taskId, keyDay) {
                 taskId,
                 taskIds,
                 taskTitles: autoScheduleTaskTitles(tasks, taskIds),
+                shiftTaskCount: tasksForShift(tasks, shift).length,
                 fillAllEligible: autoScheduleFillsAllEligible(
                     shift,
                     parseKey(keyDay),
@@ -5576,6 +5578,7 @@ function autoScheduleCells(days, tasks, assignments) {
                     taskId,
                     taskIds: group.taskIds,
                     taskTitles: autoScheduleTaskTitles(tasks, group.taskIds),
+                    shiftTaskCount: tasksForShift(tasks, shift).length,
                     fillAllEligible: autoScheduleFillsAllEligible(
                         shift,
                         day,
@@ -5611,6 +5614,14 @@ function countSkipped(plan, ...reasons) {
     return plan.skipped.filter(item => reasons.includes(item.reason)).length;
 }
 
+// Cuantas tareas tiene cada tablero: el motor lo usa para reconocer una union
+// grande de casillas (ver isLooseTaskGroup en taskAutoSchedule.js).
+function autoScheduleShiftTaskCounts(tasks) {
+    return Object.fromEntries(
+        SHIFT_TYPES.map(shift => [shift, tasksForShift(tasks, shift).length])
+    );
+}
+
 function createTaskAutoScheduleAttempt(days, tasks) {
     const profiles = getProfiles();
     const assignments = cleanAssignmentsForWeek(days, tasks);
@@ -5618,6 +5629,7 @@ function createTaskAutoScheduleAttempt(days, tasks) {
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
         beforeWeekKey: weekKey(),
         profiles,
+        shiftTaskCounts: autoScheduleShiftTaskCounts(tasks),
         workerTurnContextForDay: (name, keyDay, shift) =>
             autoScheduleWorkerTurnContext(name, keyDay, shift)
     });
@@ -6030,16 +6042,30 @@ function recentWorkerTasksByWorker() {
         Object.entries(assignments).forEach(([cellKey, entry]) => {
             const parts = splitAssignmentKey(cellKey);
             const date = parseKey(parts.keyDay);
+            const names = uniqueWorkerNames(entry?.workers);
 
-            if (Number.isNaN(date.getTime())) return;
+            if (!names.length || Number.isNaN(date.getTime())) return;
 
-            uniqueWorkerNames(entry?.workers).forEach(name => {
+            // Una casilla unida guarda a todos en su primera tarea: se sigue la
+            // cadena para nombrarla entera.
+            const taskIds = [parts.taskId];
+            let next = String(entry?.mergedNextTaskId || "");
+
+            while (next && !taskIds.includes(next) && taskIds.length < 100) {
+                taskIds.push(next);
+                next = String(
+                    assignments[assignmentKey(parts.shift, next, parts.keyDay)]
+                        ?.mergedNextTaskId || ""
+                );
+            }
+
+            names.forEach(name => {
                 const rows = byWorker.get(name) || [];
 
                 rows.push({
                     time: date.getTime(),
                     date,
-                    taskId: parts.taskId,
+                    taskIds,
                     shift: parts.shift
                 });
                 byWorker.set(name, rows);
@@ -6075,8 +6101,16 @@ function autoScheduleRecentWorkerTasks(workerName, tasks, before) {
         .filter(row => row.time < cutoff)
         .slice(0, 5)
         .map(row =>
-            `${formatShortDate(row.date)} ${SHIFT_CONFIG[row.shift]?.shortLabel || row.shift}: ${recentTaskTitle(row.taskId, tasks)}`
+            `${formatShortDate(row.date)} ${SHIFT_CONFIG[row.shift]?.shortLabel || row.shift}: ${recentTaskLabel(row.taskIds, tasks)}`
         );
+}
+
+// Una union grande no se nombra por su primera tarea: quien estuvo ahi no la
+// hizo solo (en Imagenologia, los dias inhabiles).
+function recentTaskLabel(taskIds, tasks) {
+    if (taskIds.length >= 3) return `Casillas unidas (${taskIds.length} tareas)`;
+
+    return taskIds.map(taskId => recentTaskTitle(taskId, tasks)).join(" + ");
 }
 
 function autoScheduleWorkerHoverTitle(
@@ -6409,6 +6443,7 @@ function applyTaskAutoSchedulePlan(plan, tasks) {
     const history = buildTaskAutoScheduleHistory(getAllAssignments(), {
         beforeWeekKey: weekKey(),
         profiles,
+        shiftTaskCounts: autoScheduleShiftTaskCounts(tasks),
         workerTurnContextForDay: (name, keyDay, shift) =>
             autoScheduleWorkerTurnContext(name, keyDay, shift)
     });
