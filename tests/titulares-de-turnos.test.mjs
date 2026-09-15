@@ -877,9 +877,7 @@ test("el menu va justo despues de Turnos", async () => {
         ["hoursPanel", null],
         ["memosPanel", null],
         ["dashboardPanel", null],
-        ["auditLogPanel", null],
-        [null, "#undoBtn"],
-        [null, "#redoBtn"]
+        ["auditLogPanel", null]
     ];
     const orden = ([target, id]) => {
         const bloque = id

@@ -124,6 +124,23 @@ test("Licitaciones queda activo para administradores legados con permiso complet
     assert.deepEqual(explicitOff.tenders, { view: false, edit: false });
 });
 
+test("Licitaciones formatea montos CLP y el menu no muestra deshacer/rehacer", async () => {
+    const html = await read("../index.html");
+    const main = await read("../js/main.js");
+    const tenders = await read("../js/tenders.js");
+
+    assert.doesNotMatch(html, /id="undoBtn"/);
+    assert.doesNotMatch(html, /id="redoBtn"/);
+    assert.match(main, /if \(DOM\.undoBtn\) \{/);
+    assert.match(main, /if \(DOM\.redoBtn\) \{/);
+    assert.match(tenders, /function formatMoneyInputValue/);
+    assert.match(tenders, /replace\(\/\\D\/g, ""\)/);
+    assert.match(tenders, /number\.toLocaleString\("es-CL"\)/);
+    assert.match(tenders, /\? `\$\$\{number\.toLocaleString/);
+    assert.match(tenders, /data-tender-money/);
+    assert.match(tenders, /bindTenderMoneyInputs\(backdrop\)/);
+});
+
 test("Licitaciones genera tarjetas automaticas por vencimiento o saldo bajo", async () => {
     const { TENDERS_KEY, tenderRenewalKanbanCards } =
         await import("../js/tenders.js");

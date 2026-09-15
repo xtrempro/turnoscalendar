@@ -207,6 +207,50 @@ function formatMoney(value, currency = "CLP") {
     });
 }
 
+function formatMoneyInputValue(value, currency = "CLP") {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    if (typeof value === "number" && value <= 0) return "";
+
+    if (currency === "UF") {
+        const number = amountNumber(raw);
+        return number ? number.toLocaleString("es-CL", { maximumFractionDigits: 2 }) : "";
+    }
+
+    const digits = raw.replace(/\D/g, "");
+    if (!digits) return "";
+
+    const number = Number(digits);
+    return Number.isFinite(number) && number > 0
+        ? `$${number.toLocaleString("es-CL")}`
+        : "";
+}
+
+function moneyInputCurrency(input) {
+    const formCurrency = input.form?.elements?.currency?.value;
+    return String(formCurrency || input.dataset.currency || "CLP") === "UF" ? "UF" : "CLP";
+}
+
+function refreshMoneyInput(input) {
+    input.value = formatMoneyInputValue(input.value, moneyInputCurrency(input));
+}
+
+function bindTenderMoneyInputs(root) {
+    const moneyInputs = root.querySelectorAll("[data-tender-money]");
+    moneyInputs.forEach(input => {
+        refreshMoneyInput(input);
+        input.addEventListener("input", () => refreshMoneyInput(input));
+    });
+
+    root.querySelectorAll("select[name='currency']").forEach(select => {
+        select.addEventListener("change", () => {
+            moneyInputs.forEach(input => {
+                if (input.form === select.form) refreshMoneyInput(input);
+            });
+        });
+    });
+}
+
 function formatPercent(value) {
     if (!Number.isFinite(value)) return "0%";
     return `${Math.round(value * 100)}%`;
@@ -1300,7 +1344,7 @@ function openTenderDialog(tender = null, mode = "edit") {
         <label><span>Administrador del contrato</span><input name="administrator" maxlength="180" value="${attr(source.administrator)}"></label>
         <label><span>Fecha inicio</span><input name="startDate" type="date" value="${attr(nextStart)}"></label>
         <label><span>Fecha termino</span><input name="endDate" type="date" value="${attr(isRenew ? "" : source.endDate)}"></label>
-        <label><span>Monto</span><input name="amount" inputmode="numeric" value="${attr(isRenew ? "" : source.amount)}"></label>
+        <label><span>Monto</span><input name="amount" inputmode="numeric" data-tender-money value="${attr(isRenew ? "" : formatMoneyInputValue(source.amount, source.currency))}"></label>
         <label><span>Moneda</span><select name="currency"><option value="CLP" ${source.currency !== "UF" ? "selected" : ""}>CLP</option><option value="UF" ${source.currency === "UF" ? "selected" : ""}>UF</option></select></label>
         <label><span>Tipo de vencimiento</span><select name="expirationMode">
             <option value="date" ${source.expirationMode === "date" ? "selected" : ""}>Por plazo</option>
@@ -1318,6 +1362,7 @@ function openTenderDialog(tender = null, mode = "edit") {
         <button class="primary-button" type="submit">${isRenew ? "Crear renovacion" : "Guardar"}</button>
     `, "data-tender-form");
 
+    bindTenderMoneyInputs(backdrop);
     backdrop.querySelector("form").onsubmit = event => {
         event.preventDefault();
         const data = Object.fromEntries(new FormData(event.currentTarget).entries());
@@ -1389,7 +1434,7 @@ function openInvoiceDialog(tender) {
     const body = `<div class="tnd-formgrid">
         <label><span>Numero factura</span><input name="number" maxlength="120"></label>
         <label><span>Proveedor</span><input name="provider" maxlength="180" value="${attr(tender.provider)}"></label>
-        <label><span>Monto</span><input name="amount" required inputmode="numeric"></label>
+        <label><span>Monto</span><input name="amount" required inputmode="numeric" data-tender-money data-currency="${attr(tender.currency)}"></label>
         <label><span>Fecha emision</span><input name="issueDate" type="date" value="${todayISO()}"></label>
         <label><span>Fecha vencimiento pago</span><input name="dueDate" type="date"></label>
         <label><span>Estado</span><select name="status"><option value="pending">Pendiente</option><option value="paid">Pagada</option><option value="observed">Observada</option></select></label>
@@ -1401,6 +1446,7 @@ function openInvoiceDialog(tender) {
         <button class="primary-button" type="submit">Guardar factura</button>
     `, "data-tender-invoice-form");
 
+    bindTenderMoneyInputs(backdrop);
     backdrop.querySelector("form").onsubmit = event => {
         event.preventDefault();
         void saveInvoiceFromForm(event.currentTarget, tender, backdrop);
@@ -1444,7 +1490,7 @@ function openIncidentDialog(tender) {
         <label><span>Tipo</span><select name="type">${selectOptions(INCIDENT_TYPES, "breach")}</select></label>
         <label><span>Fecha</span><input name="date" type="date" value="${todayISO()}"></label>
         <label class="tnd-formgrid__full"><span>Titulo</span><input name="title" maxlength="160" required></label>
-        <label><span>Monto asociado</span><input name="amount" inputmode="numeric"></label>
+        <label><span>Monto asociado</span><input name="amount" inputmode="numeric" data-tender-money data-currency="${attr(tender.currency)}"></label>
         <label><span>Responsable</span><input name="responsible" maxlength="160" value="${attr(currentUserName())}"></label>
         <label class="tnd-formgrid__full"><span>Detalle</span><textarea name="detail" maxlength="${MAX_LONG_TEXT}" rows="4"></textarea></label>
         <label class="tnd-formgrid__full"><span>Adjuntos</span><input name="attachments" type="file" multiple accept="${ATTACHMENT_ACCEPT}"></label>
@@ -1454,6 +1500,7 @@ function openIncidentDialog(tender) {
         <button class="primary-button" type="submit">Guardar incidencia</button>
     `, "data-tender-incident-form");
 
+    bindTenderMoneyInputs(backdrop);
     backdrop.querySelector("form").onsubmit = event => {
         event.preventDefault();
         void saveIncidentFromForm(event.currentTarget, tender, backdrop);
@@ -1497,7 +1544,7 @@ function openExtensionDialog(tender) {
         <label><span>Desde</span><input name="from" type="date" value="${attr(tender.endDate ? addDaysISO(tender.endDate, 1) : "")}"></label>
         <label><span>Hasta</span><input name="to" type="date"></label>
         <label><span>Resolucion</span><input name="resolution" maxlength="180"></label>
-        <label><span>Monto adicional</span><input name="amount" inputmode="numeric"></label>
+        <label><span>Monto adicional</span><input name="amount" inputmode="numeric" data-tender-money data-currency="${attr(tender.currency)}"></label>
         <label class="tnd-formgrid__full"><span>Motivo</span><textarea name="reason" maxlength="${MAX_LONG_TEXT}" rows="4"></textarea></label>
         <label class="tnd-formgrid__full"><span>Adjuntos</span><input name="attachments" type="file" multiple accept="${ATTACHMENT_ACCEPT}"></label>
     </div>`;
@@ -1506,6 +1553,7 @@ function openExtensionDialog(tender) {
         <button class="primary-button" type="submit">Guardar prorroga</button>
     `, "data-tender-extension-form");
 
+    bindTenderMoneyInputs(backdrop);
     backdrop.querySelector("form").onsubmit = event => {
         event.preventDefault();
         void saveExtensionFromForm(event.currentTarget, tender, backdrop);

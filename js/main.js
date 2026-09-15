@@ -13136,33 +13136,37 @@ document
         };
     });
 
-DOM.undoBtn.onclick = () => {
-    const result = undo();
+if (DOM.undoBtn) {
+    DOM.undoBtn.onclick = () => {
+        const result = undo();
 
-    if (result) {
-        addAuditLog(
-            AUDIT_CATEGORY.CALENDAR,
-            "Deshizo \u00faltima acci\u00f3n",
-            "El usuario revirti\u00f3 el \u00faltimo cambio guardado en el historial."
-        );
-        refreshAll();
-        showHistoryActionToast(result, "undo");
-    }
-};
+        if (result) {
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Deshizo \u00faltima acci\u00f3n",
+                "El usuario revirti\u00f3 el \u00faltimo cambio guardado en el historial."
+            );
+            refreshAll();
+            showHistoryActionToast(result, "undo");
+        }
+    };
+}
 
-DOM.redoBtn.onclick = () => {
-    const result = redo();
+if (DOM.redoBtn) {
+    DOM.redoBtn.onclick = () => {
+        const result = redo();
 
-    if (result) {
-        addAuditLog(
-            AUDIT_CATEGORY.CALENDAR,
-            "Rehizo \u00faltima acci\u00f3n",
-            "El usuario reaplic\u00f3 el \u00faltimo cambio revertido en el historial."
-        );
-        refreshAll();
-        showHistoryActionToast(result, "redo");
-    }
-};
+        if (result) {
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Rehizo \u00faltima acci\u00f3n",
+                "El usuario reaplic\u00f3 el \u00faltimo cambio revertido en el historial."
+            );
+            refreshAll();
+            showHistoryActionToast(result, "redo");
+        }
+    };
+}
 
 // Dias corridos que ocupa un P. Administrativo aplicado desde el calendario.
 // Avanza dia a dia sin saltar fines de semana, igual que aplicarAdministrativo:
