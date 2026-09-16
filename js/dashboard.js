@@ -4,6 +4,7 @@ import {
     getCompensationProfileAt,
     getProfileData,
     getProfiles,
+    getShiftAssigned,
     isProfileActive
 } from "./storage.js";
 import {
@@ -20,6 +21,13 @@ import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { analizarMes } from "./staffing.js";
 import { getAbsenceType } from "./rulesEngine.js";
 import { measurePerformance } from "./performanceMonitor.js";
+import { TURNO } from "./constants.js";
+import { keyFromDate } from "./dateUtils.js";
+import { getTurnoReal } from "./turnEngine.js";
+import {
+    buildTaskAssignmentContext,
+    getDayTaskAssignments
+} from "./taskAssignmentProjection.js";
 
 const ROLE_DEFS = [
     {
@@ -68,11 +76,32 @@ const dashboardState = {
     // calcularHorasMesPerfil es lo que hizo desactivar otros graficos por lentos.
     overtimeProfession: "",
     overtimeYear: currentDate.getFullYear(),
-    overtimeMonth: currentDate.getMonth()
+    overtimeMonth: currentDate.getMonth(),
+    serviceYear: currentDate.getFullYear(),
+    serviceMonth: currentDate.getMonth(),
+    serviceShiftMode: "both",
+    serviceHiddenProfessions: new Set()
 };
 
 let renderRequest = 0;
 const holidayCache = new Map();
+const SERVICE_SHIFT_MODES = new Set(["both", "day", "night"]);
+const SERVICE_ESTAMENTO_ORDER = [
+    "Profesional",
+    "T\u00e9cnico",
+    "Administrativo",
+    "Auxiliar"
+];
+const SERVICE_PROFESSION_PALETTE = [
+    "#8a1f3d",
+    "#2563eb",
+    "#0f766e",
+    "#7c3aed",
+    "#d97706",
+    "#0891b2",
+    "#be123c",
+    "#4d7c0f"
+];
 
 function roleKey(value) {
     const normalized = normalizeText(value)
@@ -150,6 +179,230 @@ async function holidaysForYear(year) {
     }
 
     return holidayCache.get(year);
+}
+
+function keyToDate(key) {
+    const parts = String(key || "").split("-").map(Number);
+
+    return new Date(parts[0], parts[1], parts[2]);
+}
+
+function profileMap(prefix, name) {
+    return getJSON(`${prefix}_${name}`, {});
+}
+
+function pad2(value) {
+    return String(value).padStart(2, "0");
+}
+
+function hm(hours, minutes = 0) {
+    return `${pad2(hours)}:${pad2(minutes)}`;
+}
+
+function dashboardStandardSchedule(turno, date) {
+    const friday = date.getDay() === 5;
+    const diurnoEnd = friday ? 16 : 17;
+
+    switch (Number(turno) || TURNO.LIBRE) {
+        case TURNO.LARGA:
+            return { day: "08:00 a 20:00", night: null };
+        case TURNO.NOCHE:
+            return { day: null, night: "20:00 a 08:00" };
+        case TURNO.TURNO24:
+            return { day: "08:00 a 20:00", night: "20:00 a 08:00" };
+        case TURNO.DIURNO:
+            return { day: `08:00 a ${hm(diurnoEnd)}`, night: null };
+        case TURNO.DIURNO_NOCHE:
+            return { day: `08:00 a ${hm(diurnoEnd)}`, night: "20:00 a 08:00" };
+        case TURNO.MEDIA_MANANA:
+            return { day: "08:00 a 14:00", night: null };
+        case TURNO.MEDIA_TARDE:
+            return { day: "14:00 a 20:00", night: null };
+        case TURNO.TURNO18:
+            return { day: "14:00 a 20:00", night: "20:00 a 08:00" };
+        default:
+            return { day: null, night: null };
+    }
+}
+
+function dashboardHalfAdminSchedule(turno, half, date, assigned) {
+    const friday = date.getDay() === 5;
+
+    if (half === "0.5M") {
+        if (assigned) return { day: "14:00 a 20:00", night: null };
+
+        const entry = friday ? "12:00" : "12:30";
+        const exit = Number(turno) === TURNO.LARGA
+            ? "20:00"
+            : (friday ? "16:00" : "17:00");
+
+        return { day: `${entry} a ${exit}`, night: null };
+    }
+
+    if (half === "0.5T") {
+        if (assigned) return { day: "08:00 a 14:00", night: null };
+        return { day: "08:00 a 12:30", night: null };
+    }
+
+    return dashboardStandardSchedule(turno, date);
+}
+
+function dashboardServiceSchedule(profile, keyDay, date) {
+    const name = profile?.name;
+
+    if (!name) return null;
+    if (profileMap("legal", name)[keyDay]) return null;
+    if (profileMap("comp", name)[keyDay]) return null;
+    if (profileMap("absences", name)[keyDay]) return null;
+
+    const adminVal = profileMap("admin", name)[keyDay];
+    const half = adminVal === "0.5M" || adminVal === "0.5T"
+        ? adminVal
+        : null;
+
+    if (adminVal && !half) return null;
+
+    const turno = Number(getTurnoReal(name, keyDay)) || TURNO.LIBRE;
+
+    if (turno <= TURNO.LIBRE) return null;
+
+    const schedule = half
+        ? dashboardHalfAdminSchedule(
+            turno,
+            half,
+            date,
+            getShiftAssigned(name, date)
+        )
+        : dashboardStandardSchedule(turno, date);
+
+    return schedule.day || schedule.night
+        ? schedule
+        : null;
+}
+
+function serviceProfessionLabel(profile) {
+    const value = String(profile?.profession || profile?.estamento || "")
+        .trim();
+
+    return value || "Sin profesi\u00f3n";
+}
+
+function serviceProfessionColor(label, index = 0) {
+    const normalized = normalizeText(label);
+
+    if (
+        normalized.includes("tm imagenologia") ||
+        normalized.includes("tecnologo medico")
+    ) {
+        return "#8a1f3d";
+    }
+
+    if (normalized.includes("enfermeria")) {
+        return "#2563eb";
+    }
+
+    if (normalized.includes("tecnico")) {
+        return "#0f766e";
+    }
+
+    if (normalized.includes("administrativo")) {
+        return "#7c3aed";
+    }
+
+    if (normalized.includes("auxiliar")) {
+        return "#d97706";
+    }
+
+    return SERVICE_PROFESSION_PALETTE[
+        Math.abs(index) % SERVICE_PROFESSION_PALETTE.length
+    ];
+}
+
+function activeServiceProfessions() {
+    return [...new Set(
+        getProfiles()
+            .filter(isProfileActive)
+            .map(serviceProfessionLabel)
+    )]
+        .sort((a, b) => a.localeCompare(b, "es"))
+        .map((label, index) => ({
+            label,
+            color: serviceProfessionColor(label, index)
+        }));
+}
+
+function cleanServiceProfessionFilters(professions) {
+    const available = new Set(professions.map(item => item.label));
+
+    for (const label of dashboardState.serviceHiddenProfessions) {
+        if (!available.has(label)) {
+            dashboardState.serviceHiddenProfessions.delete(label);
+        }
+    }
+}
+
+function selectedServiceProfessions(professions) {
+    cleanServiceProfessionFilters(professions);
+
+    return professions.filter(item =>
+        !dashboardState.serviceHiddenProfessions.has(item.label)
+    );
+}
+
+export function buildDailyServiceRows(
+    year = dashboardState.serviceYear,
+    month = dashboardState.serviceMonth
+) {
+    const daysCount = new Date(year, month + 1, 0).getDate();
+    const professions = activeServiceProfessions();
+    const rows = Array.from({ length: daysCount }, (_, index) => {
+        const day = index + 1;
+        const date = new Date(year, month, day);
+
+        return {
+            day,
+            date,
+            keyDay: keyFromDate(date),
+            values: Object.fromEntries(
+                professions.map(profession => [
+                    profession.label,
+                    { day: 0, night: 0 }
+                ])
+            )
+        };
+    });
+
+    getProfiles()
+        .filter(isProfileActive)
+        .forEach(profile => {
+            const profession = serviceProfessionLabel(profile);
+
+            rows.forEach(row => {
+                const schedule = dashboardServiceSchedule(
+                    profile,
+                    row.keyDay,
+                    row.date
+                );
+
+                if (!schedule) return;
+                if (!row.values[profession]) {
+                    row.values[profession] = { day: 0, night: 0 };
+                }
+                if (schedule.day) row.values[profession].day += 1;
+                if (schedule.night) row.values[profession].night += 1;
+            });
+        });
+
+    const max = rows.reduce((highest, row) => {
+        const rowMax = Math.max(
+            ...Object.values(row.values)
+                .flatMap(value => [value.day, value.night])
+        );
+
+        return Math.max(highest, rowMax);
+    }, 0);
+
+    return { year, month, professions, rows, max };
 }
 
 function profilesForRoles(roleKeys) {
@@ -699,6 +952,494 @@ export function renderOvertimeByWorker(rows) {
     `;
 }
 
+function niceServiceAxisMax(value) {
+    const max = Math.max(1, Number(value) || 0);
+    const step = max <= 10 ? 2 : max <= 25 ? 5 : 10;
+
+    return Math.ceil(max / step) * step;
+}
+
+function serviceLinePath(values, axisMax, xFor, yFor) {
+    return values
+        .map((value, index) => {
+            const command = index === 0 ? "M" : "L";
+
+            return `${command}${xFor(index).toFixed(2)} ${yFor(value, axisMax).toFixed(2)}`;
+        })
+        .join(" ");
+}
+
+function serviceSeriesForChart(data) {
+    const mode = SERVICE_SHIFT_MODES.has(dashboardState.serviceShiftMode)
+        ? dashboardState.serviceShiftMode
+        : "both";
+    const professions = selectedServiceProfessions(data.professions);
+    const series = [];
+
+    professions.forEach(profession => {
+        if (mode !== "night") {
+            series.push({
+                profession: profession.label,
+                shift: "day",
+                label: `${profession.label} \u00b7 d\u00eda`,
+                color: profession.color,
+                dashed: false,
+                values: data.rows.map(row =>
+                    row.values[profession.label]?.day || 0
+                )
+            });
+        }
+
+        if (mode !== "day") {
+            series.push({
+                profession: profession.label,
+                shift: "night",
+                label: `${profession.label} \u00b7 noche`,
+                color: profession.color,
+                dashed: true,
+                values: data.rows.map(row =>
+                    row.values[profession.label]?.night || 0
+                )
+            });
+        }
+    });
+
+    return series;
+}
+
+export function renderDailyServiceChart(data) {
+    if (!data.professions.length) {
+        return chartEmpty("No hay trabajadores activos para graficar.");
+    }
+
+    const visibleSeries = serviceSeriesForChart(data)
+        .filter(series => series.values.some(Boolean));
+
+    if (!visibleSeries.length) {
+        return chartEmpty(
+            "No hay dotaci\u00f3n en servicio para los filtros seleccionados."
+        );
+    }
+
+    const width = Math.max(820, data.rows.length * 38 + 90);
+    const height = 320;
+    const pad = { top: 22, right: 28, bottom: 42, left: 42 };
+    const plotWidth = width - pad.left - pad.right;
+    const plotHeight = height - pad.top - pad.bottom;
+    const axisMax = niceServiceAxisMax(
+        Math.max(...visibleSeries.flatMap(series => series.values))
+    );
+    const xFor = index => pad.left + (
+        data.rows.length <= 1
+            ? plotWidth / 2
+            : (index / (data.rows.length - 1)) * plotWidth
+    );
+    const yFor = (value, max) => pad.top + ((max - value) / max) * plotHeight;
+    const gridValues = Array.from({ length: 5 }, (_, index) =>
+        Math.round((axisMax / 4) * (4 - index))
+    );
+    const dayWidth = data.rows.length <= 1
+        ? plotWidth
+        : plotWidth / (data.rows.length - 1);
+
+    return `
+        <div class="dashboard-service">
+            <div class="dashboard-service-summary">
+                <span><i class="dashboard-service-line is-day"></i>D\u00eda</span>
+                <span><i class="dashboard-service-line is-night"></i>Noche</span>
+                <b>${escapeHTML(MONTH_SHORT[data.month])} ${data.year}</b>
+            </div>
+            <div class="dashboard-line-scroll">
+                <svg class="dashboard-line-chart dashboard-service-chart"
+                    viewBox="0 0 ${width} ${height}" role="img"
+                    aria-label="Dotaci\u00f3n diaria por profesi\u00f3n">
+                    ${gridValues.map(value => {
+                        const y = yFor(value, axisMax);
+
+                        return `
+                            <line class="dashboard-line-grid" x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}"></line>
+                            <text class="dashboard-line-axis" x="${pad.left - 9}" y="${y + 4}" text-anchor="end">${value}</text>
+                        `;
+                    }).join("")}
+                    ${data.rows.map((row, index) => `
+                        <text class="dashboard-line-label" x="${xFor(index)}" y="${height - 14}">
+                            ${row.day}
+                        </text>
+                    `).join("")}
+                    ${visibleSeries.map(series => `
+                        <path class="dashboard-line-path"
+                            d="${serviceLinePath(series.values, axisMax, xFor, yFor)}"
+                            stroke="${series.color}"
+                            ${series.dashed ? 'stroke-dasharray="8 7"' : ""}></path>
+                    `).join("")}
+                    ${visibleSeries.map(series => series.values.map((value, index) => `
+                        <circle class="dashboard-line-dot"
+                            cx="${xFor(index)}" cy="${yFor(value, axisMax)}" r="4"
+                            fill="${series.color}">
+                            <title>${escapeHTML(`${series.label}: ${value} el d\u00eda ${data.rows[index].day}`)}</title>
+                        </circle>
+                    `).join("")).join("")}
+                    ${data.rows.map((row, index) => {
+                        const x = Math.max(
+                            pad.left,
+                            xFor(index) - dayWidth / 2
+                        );
+                        const nextX = Math.min(
+                            width - pad.right,
+                            xFor(index) + dayWidth / 2
+                        );
+
+                        return `
+                            <rect class="dashboard-service-hit"
+                                tabindex="0" role="button"
+                                aria-label="Ver dotaci\u00f3n del d\u00eda ${row.day}"
+                                data-dashboard-service-day="${escapeHTML(row.keyDay)}"
+                                x="${x}" y="${pad.top}"
+                                width="${Math.max(18, nextX - x)}"
+                                height="${plotHeight}"></rect>
+                        `;
+                    }).join("")}
+                </svg>
+            </div>
+            <div class="dashboard-chart-legend dashboard-service-legend">
+                ${selectedServiceProfessions(data.professions).map(profession => `
+                    <span><i style="background:${profession.color}"></i>${escapeHTML(profession.label)}</span>
+                `).join("")}
+            </div>
+        </div>
+    `;
+}
+
+function renderDailyServiceControls(data) {
+    const monthName = `${MONTH_SHORT[dashboardState.serviceMonth]} ${dashboardState.serviceYear}`;
+
+    return `
+        <aside class="dashboard-control-card dashboard-service-controls">
+            <strong>Mes</strong>
+            <div class="dashboard-month-nav">
+                <button type="button" data-dashboard-service-month="-1" aria-label="Mes anterior">&#8249;</button>
+                <span>${escapeHTML(monthName)}</span>
+                <button type="button" data-dashboard-service-month="1" aria-label="Mes siguiente">&#8250;</button>
+            </div>
+            <strong>Turno</strong>
+            <div class="dashboard-radio-list">
+                ${[
+                    ["both", "D\u00eda y noche"],
+                    ["day", "Solo d\u00eda"],
+                    ["night", "Solo noche"]
+                ].map(([value, label]) => `
+                    <label>
+                        <input type="radio" name="dashboardServiceShift" value="${value}" ${dashboardState.serviceShiftMode === value ? "checked" : ""}>
+                        <span>${label}</span>
+                    </label>
+                `).join("")}
+            </div>
+            <strong>Profesiones</strong>
+            <div class="dashboard-check-list dashboard-service-professions">
+                ${data.professions.map(profession => `
+                    <label style="--role-color:${profession.color}">
+                        <input type="checkbox" data-dashboard-service-profession
+                            value="${escapeHTML(profession.label)}"
+                            ${dashboardState.serviceHiddenProfessions.has(profession.label) ? "" : "checked"}>
+                        <span>${escapeHTML(profession.label)}</span>
+                    </label>
+                `).join("")}
+            </div>
+        </aside>
+    `;
+}
+
+function serviceTimeMinutes(value) {
+    const [hours, minutes] = String(value || "").split(":").map(Number);
+
+    return Number.isFinite(hours)
+        ? hours * 60 + (Number(minutes) || 0)
+        : 0;
+}
+
+function compareServiceDetailRows(a, b) {
+    const [entryA = "", exitA = ""] = String(a.time || "").split(" a ");
+    const [entryB = "", exitB = ""] = String(b.time || "").split(" a ");
+
+    return (
+        serviceTimeMinutes(entryA) - serviceTimeMinutes(entryB) ||
+        serviceTimeMinutes(exitB) - serviceTimeMinutes(exitA) ||
+        a.name.localeCompare(b.name, "es")
+    );
+}
+
+function serviceEstamentoRank(label) {
+    const index = SERVICE_ESTAMENTO_ORDER.indexOf(label);
+
+    return index === -1 ? SERVICE_ESTAMENTO_ORDER.length : index;
+}
+
+export function buildDailyServiceDetail(date = new Date()) {
+    const keyDay = keyFromDate(date);
+    const byEstamento = {};
+    const taskContext = buildTaskAssignmentContext();
+
+    getProfiles()
+        .filter(isProfileActive)
+        .forEach(profile => {
+            const schedule = dashboardServiceSchedule(profile, keyDay, date);
+
+            if (!schedule) return;
+
+            const tasks = getDayTaskAssignments(
+                profile.name,
+                keyDay,
+                taskContext
+            );
+            const tasksFor = shift => tasks
+                .filter(item => item.shift === shift || item.shift === "both")
+                .map(item => item.title);
+            const estamento = String(profile.estamento || "Otros").trim() ||
+                "Otros";
+
+            if (!byEstamento[estamento]) {
+                byEstamento[estamento] = { day: [], night: [] };
+            }
+            if (schedule.day) {
+                byEstamento[estamento].day.push({
+                    name: profile.name,
+                    time: schedule.day,
+                    tasks: tasksFor("day")
+                });
+            }
+            if (schedule.night) {
+                byEstamento[estamento].night.push({
+                    name: profile.name,
+                    time: schedule.night,
+                    tasks: tasksFor("night")
+                });
+            }
+        });
+
+    const estamentos = Object.keys(byEstamento)
+        .sort((a, b) =>
+            serviceEstamentoRank(a) - serviceEstamentoRank(b) ||
+            a.localeCompare(b, "es")
+        );
+
+    estamentos.forEach(estamento => {
+        byEstamento[estamento].day.sort(compareServiceDetailRows);
+        byEstamento[estamento].night.sort(compareServiceDetailRows);
+    });
+
+    return { keyDay, byEstamento, estamentos };
+}
+
+function serviceDetailCount(detail) {
+    return new Set([
+        ...detail.day.map(item => item.name),
+        ...detail.night.map(item => item.name)
+    ]).size;
+}
+
+function serviceDetailRowHTML(row) {
+    const tasks = Array.isArray(row.tasks) ? row.tasks : [];
+    const tasksHTML = tasks.length
+        ? `<div class="hm-dot-tasks">${tasks
+            .map(title => `<span class="hm-dot-task">${escapeHTML(title)}</span>`)
+            .join("")}</div>`
+        : "";
+
+    return `
+        <div class="hm-dot-row">
+            <span class="hm-dot-name">${escapeHTML(row.name)}</span>
+            <span class="hm-dot-time">${escapeHTML(row.time)}</span>
+            ${tasksHTML}
+        </div>
+    `;
+}
+
+function serviceDetailColumnHTML(title, rows) {
+    return `
+        <div class="hm-dot-col">
+            <div class="hm-dot-colhead"><span>${title}</span><b>${rows.length}</b></div>
+            <div class="hm-dot-list">
+                ${rows.length
+                    ? rows.map(serviceDetailRowHTML).join("")
+                    : `<div class="hm-dot-empty">Sin trabajadores.</div>`}
+            </div>
+        </div>
+    `;
+}
+
+function serviceDetailDateLabel(date) {
+    const days = [
+        "Domingo",
+        "Lunes",
+        "Martes",
+        "Mi\u00e9rcoles",
+        "Jueves",
+        "Viernes",
+        "S\u00e1bado"
+    ];
+    const months = [
+        "Enero",
+        "Febrero",
+        "Marzo",
+        "Abril",
+        "Mayo",
+        "Junio",
+        "Julio",
+        "Agosto",
+        "Septiembre",
+        "Octubre",
+        "Noviembre",
+        "Diciembre"
+    ];
+
+    return `${days[date.getDay()]} ${date.getDate()} de ${months[date.getMonth()]}`;
+}
+
+const serviceDetailState = {
+    date: new Date(),
+    estamento: ""
+};
+
+function renderServiceDetailModal() {
+    const backdrop = document.querySelector("[data-dashboard-service-modal]");
+
+    if (!backdrop) return;
+
+    const detail = buildDailyServiceDetail(serviceDetailState.date);
+    const activeEstamento = detail.estamentos.includes(
+        serviceDetailState.estamento
+    )
+        ? serviceDetailState.estamento
+        : detail.estamentos[0] || "";
+    const body = backdrop.querySelector("[data-dashboard-service-body]");
+    const title = backdrop.querySelector("[data-dashboard-service-title]");
+    const activeDetail = detail.byEstamento[activeEstamento];
+
+    serviceDetailState.estamento = activeEstamento;
+    title.textContent = activeEstamento
+        ? `${activeEstamento} \u00b7 en servicio el ${serviceDetailDateLabel(serviceDetailState.date)}`
+        : `Sin dotaci\u00f3n en servicio el ${serviceDetailDateLabel(serviceDetailState.date)}`;
+
+    body.innerHTML = `
+        ${detail.estamentos.length > 1
+            ? `<div class="hm-dot-chips" role="tablist" aria-label="Estamento">
+                ${detail.estamentos.map(estamento => {
+                    const estDetail = detail.byEstamento[estamento];
+                    const active = estamento === activeEstamento;
+
+                    return `
+                        <button type="button"
+                            class="hm-dot-chip${active ? " is-active" : ""}"
+                            data-dashboard-service-est="${escapeHTML(estamento)}"
+                            role="tab"
+                            aria-selected="${active ? "true" : "false"}">
+                            ${escapeHTML(estamento)}<b>${serviceDetailCount(estDetail)}</b>
+                        </button>
+                    `;
+                }).join("")}
+            </div>`
+            : ""}
+        ${activeDetail
+            ? `<div class="hm-dot-cols">
+                ${serviceDetailColumnHTML("De d\u00eda", activeDetail.day)}
+                ${serviceDetailColumnHTML("De noche", activeDetail.night)}
+            </div>`
+            : `<div class="hm-dot-empty">Sin trabajadores en servicio.</div>`}
+    `;
+}
+
+function closeServiceDetailModal() {
+    document
+        .querySelector("[data-dashboard-service-modal]")
+        ?.remove();
+}
+
+function bindServiceDetailModal(backdrop) {
+    backdrop.addEventListener("click", event => {
+        const target = event.target.closest(
+            "[data-dashboard-service-close], [data-dashboard-service-est], [data-dashboard-service-detail-day]"
+        );
+
+        if (!target) {
+            if (event.target === backdrop) closeServiceDetailModal();
+            return;
+        }
+
+        if (target.dataset.dashboardServiceClose !== undefined) {
+            closeServiceDetailModal();
+            return;
+        }
+
+        if (target.dataset.dashboardServiceEst !== undefined) {
+            serviceDetailState.estamento = target.dataset.dashboardServiceEst;
+            renderServiceDetailModal();
+            return;
+        }
+
+        const step = Number(target.dataset.dashboardServiceDetailDay) || 0;
+        serviceDetailState.date = new Date(
+            serviceDetailState.date.getFullYear(),
+            serviceDetailState.date.getMonth(),
+            serviceDetailState.date.getDate() + step
+        );
+        renderServiceDetailModal();
+    });
+
+    backdrop.addEventListener("keydown", event => {
+        if (event.key === "Escape") closeServiceDetailModal();
+    });
+}
+
+function openServiceDetailModal(keyDay) {
+    const date = keyToDate(keyDay);
+
+    if (Number.isNaN(date.getTime())) return;
+
+    closeServiceDetailModal();
+    serviceDetailState.date = date;
+    serviceDetailState.estamento = "";
+
+    document.body.insertAdjacentHTML("beforeend", `
+        <div class="hm-modal-backdrop dashboard-service-modal-backdrop"
+            data-dashboard-service-modal>
+            <div class="hm-modal hm-modal--dotacion dashboard-service-modal"
+                role="dialog" aria-modal="true" tabindex="-1"
+                aria-label="Trabajadores en servicio">
+                <div class="hm-modal-head">
+                    <span class="hm-modal-ico" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                    </span>
+                    <h3 data-dashboard-service-title>En servicio</h3>
+                    <div class="hm-bday-nav">
+                        <button type="button" data-dashboard-service-detail-day="-1" aria-label="D\u00eda anterior" title="D\u00eda anterior">&#8249;</button>
+                        <button type="button" data-dashboard-service-detail-day="1" aria-label="D\u00eda siguiente" title="D\u00eda siguiente">&#8250;</button>
+                    </div>
+                    <button class="hm-modal-close" type="button"
+                        data-dashboard-service-close aria-label="Cerrar">&times;</button>
+                </div>
+                <div class="hm-modal-body">
+                    <div data-dashboard-service-body></div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    const backdrop = document.querySelector("[data-dashboard-service-modal]");
+    const dialog = backdrop?.querySelector(".dashboard-service-modal");
+
+    if (!backdrop || !dialog) return;
+
+    bindServiceDetailModal(backdrop);
+    renderServiceDetailModal();
+    dialog.focus();
+}
+
 function loadingHTML() {
     return `
         <div class="dashboard-loading">
@@ -739,6 +1480,66 @@ function renderCard(title, subtitle, chart, controls = "") {
 }
 
 function bindDashboardControls(root) {
+    root
+        .querySelectorAll("[data-dashboard-service-month]")
+        .forEach(button => {
+            button.addEventListener("click", () => {
+                const step = Number(button.dataset.dashboardServiceMonth) || 0;
+                const next = new Date(
+                    dashboardState.serviceYear,
+                    dashboardState.serviceMonth + step,
+                    1
+                );
+
+                dashboardState.serviceYear = next.getFullYear();
+                dashboardState.serviceMonth = next.getMonth();
+                renderDashboardPanel();
+            });
+        });
+
+    root
+        .querySelectorAll("input[name='dashboardServiceShift']")
+        .forEach(input => {
+            input.addEventListener("change", event => {
+                dashboardState.serviceShiftMode =
+                    SERVICE_SHIFT_MODES.has(event.target.value)
+                        ? event.target.value
+                        : "both";
+                renderDashboardPanel();
+            });
+        });
+
+    root
+        .querySelectorAll("[data-dashboard-service-profession]")
+        .forEach(input => {
+            input.addEventListener("change", event => {
+                const label = event.target.value;
+
+                if (event.target.checked) {
+                    dashboardState.serviceHiddenProfessions.delete(label);
+                } else {
+                    dashboardState.serviceHiddenProfessions.add(label);
+                }
+
+                renderDashboardPanel();
+            });
+        });
+
+    root
+        .querySelectorAll("[data-dashboard-service-day]")
+        .forEach(target => {
+            const open = () =>
+                openServiceDetailModal(target.dataset.dashboardServiceDay);
+
+            target.addEventListener("click", open);
+            target.addEventListener("keydown", event => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+
+                event.preventDefault();
+                open();
+            });
+        });
+
     root
         .querySelectorAll("input[name='dashboardLicenseYears']")
         .forEach(input => {
@@ -804,6 +1605,17 @@ export async function renderDashboardPanel() {
 
             const professions = overtimeProfessions();
             const profession = activeOvertimeProfession();
+            const serviceData = measurePerformance(
+                "dashboard:build-daily-service",
+                () => buildDailyServiceRows(
+                    dashboardState.serviceYear,
+                    dashboardState.serviceMonth
+                ),
+                {
+                    year: dashboardState.serviceYear,
+                    month: dashboardState.serviceMonth
+                }
+            );
             const overtimeRows = profession
                 ? await measurePerformance(
                     "dashboard:build-overtime-by-worker",
@@ -819,6 +1631,12 @@ export async function renderDashboardPanel() {
             if (requestId !== renderRequest) return;
 
             root.innerHTML = dashboardShell(`
+                ${renderCard(
+                    "Dotaci\u00f3n diaria en servicio",
+                    "Trabajadores por profesi\u00f3n durante el mes; l\u00ednea continua de d\u00eda y discontinua de noche.",
+                    renderDailyServiceChart(serviceData),
+                    renderDailyServiceControls(serviceData)
+                )}
                 ${professions.length
                     ? renderCard(
                         "Horas extras por trabajador",

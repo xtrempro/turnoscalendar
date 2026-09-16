@@ -6398,6 +6398,71 @@ body.theme-dark .dashboard-overtime {
     text-anchor: middle;
 }
 
+.dashboard-service {
+    display: grid;
+    gap: 10px;
+}
+
+.dashboard-service-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.dashboard-service-summary b {
+    margin-left: auto;
+    color: var(--text-strong);
+}
+
+.dashboard-service-line {
+    display: inline-block;
+    width: 26px;
+    height: 0;
+    margin-right: 6px;
+    vertical-align: 3px;
+    border-top: 3px solid var(--text-soft);
+}
+
+.dashboard-service-line.is-night {
+    border-top-style: dashed;
+}
+
+.dashboard-service-chart {
+    min-width: 820px;
+    cursor: crosshair;
+}
+
+.dashboard-service-hit {
+    fill: transparent;
+    cursor: pointer;
+    outline: none;
+    pointer-events: all;
+}
+
+.dashboard-service-hit:hover,
+.dashboard-service-hit:focus-visible {
+    fill: rgba(var(--brand-blue-rgb), 0.08);
+}
+
+.dashboard-service-legend i {
+    border: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+.dashboard-service-professions {
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.dashboard-service-modal .hm-modal-body > div {
+    display: grid;
+    gap: 16px;
+}
+
 .dashboard-ranking {
     display: grid;
     gap: 9px;
