@@ -2,7 +2,8 @@ import {
     getCurrentFirebaseUser,
     getFirebaseServices
 } from "./firebaseClient.js";
-import { getActiveWorkspace } from "./workspaces.js";
+import { getActiveWorkspace, listUserWorkspaces } from "./workspaces.js";
+import { showChoice } from "./dialogs.js";
 
 function cleanText(value, fallback = "") {
     const text = String(value ?? "").trim();
@@ -138,14 +139,89 @@ function canResolveLinkFromActiveWorkspace(link, activeWorkspace, user) {
     return isOwnerPendingWorkspaceLink(link, user);
 }
 
-function ensureLinkCanResolveHere(link, activeWorkspace, user) {
+function ensureLinkCanResolveHere(
+    link,
+    activeWorkspace,
+    user,
+    targetWorkspace = null
+) {
     if (!canResolveLinkFromActiveWorkspace(link, activeWorkspace, user)) {
         throw new Error("Solo la unidad invitada puede responder este enlace.");
     }
 
-    if (link.fromWorkspaceId === activeWorkspace.id) {
-        throw new Error("No puedes enlazar la unidad activa consigo misma.");
+    // Contra la unidad que va a quedar enlazada, que no siempre es la activa:
+    // el owner puede estar parado en una unidad y enlazar otra suya.
+    const target = targetWorkspace || activeWorkspace;
+
+    if (link.fromWorkspaceId === target.id) {
+        throw new Error("No puedes enlazar una unidad consigo misma.");
     }
+}
+
+/**
+ * Unidades de las que este usuario es OWNER.
+ *
+ * Son las unicas a las que se puede amarrar un enlace: las reglas exigen
+ * isOwner(toWorkspaceId) para responder la solicitud.
+ */
+export async function listLinkTargetWorkspaces(user = getCurrentFirebaseUser()) {
+    const workspaces = await listUserWorkspaces(user);
+
+    return workspaces.filter(workspace =>
+        String(workspace?.role || "") === "owner"
+    );
+}
+
+/**
+ * Pregunta a CUAL de sus unidades quiere enlazar.
+ *
+ * La solicitud llega por el correo del owner, y un owner puede tener varias
+ * unidades: sin esta pregunta el enlace se amarraba en silencio a la unidad que
+ * tuviera activa en ese momento, que no tiene por que ser la que le estan
+ * pidiendo. Se pregunta siempre, incluso con una sola unidad, para que quede a
+ * la vista cual quedo enlazada.
+ *
+ * @returns {Promise<{id: string, name: string}|null>} null si se cancela.
+ */
+export async function chooseWorkspaceForLink(link = {}) {
+    const options = (await listLinkTargetWorkspaces()).filter(workspace =>
+        workspace.id !== link.fromWorkspaceId
+    );
+
+    if (!options.length) {
+        throw new Error(
+            "No tienes unidades propias para enlazar. Solo el owner de una unidad puede aceptar un enlace."
+        );
+    }
+
+    const requester = cleanText(link.fromWorkspaceName, "Otra unidad");
+    const expected = cleanText(link.expectedWorkspaceName);
+    const chosenId = await showChoice(
+        [
+            `La unidad "${requester}" quiere enlazarse con una de las tuyas.`,
+            expected
+                ? `Dice esperar la unidad "${expected}".`
+                : "",
+            "Elige a cuál enlazarla:"
+        ].filter(Boolean).join(" "),
+        {
+            title: "Elegir unidad a enlazar",
+            confirmText: "Enlazar",
+            choices: options.map(workspace => ({
+                value: workspace.id,
+                label: workspaceName(workspace),
+                hint: workspace.id
+            }))
+        }
+    );
+
+    if (!chosenId) return null;
+
+    const chosen = options.find(workspace => workspace.id === chosenId);
+
+    return chosen
+        ? { id: chosen.id, name: workspaceName(chosen) }
+        : null;
 }
 
 function responsePayloadForLink(
@@ -167,7 +243,10 @@ function responsePayloadForLink(
     };
 }
 
-export async function requestWorkspaceLink(targetOwnerEmail) {
+export async function requestWorkspaceLink(
+    targetOwnerEmail,
+    expectedWorkspaceName = ""
+) {
     const email = cleanEmail(targetOwnerEmail);
     const activeWorkspace = getActiveWorkspace();
     const user = getCurrentFirebaseUser();
@@ -188,7 +267,10 @@ export async function requestWorkspaceLink(targetOwnerEmail) {
         "requestWorkspaceLinkByOwnerEmail",
         {
             fromWorkspaceId: activeWorkspace.id,
-            ownerEmail: email
+            ownerEmail: email,
+            // No decide nada -el owner elige al aceptar- pero le dice cual de
+            // sus unidades le estan pidiendo.
+            expectedWorkspaceName: cleanText(expectedWorkspaceName)
         }
     );
 
@@ -212,7 +294,14 @@ export async function listWorkspaceLinks(workspace = getActiveWorkspace()) {
     return uniqueLinks(snaps, workspace);
 }
 
-export async function acceptWorkspaceLink(linkId) {
+/**
+ * Acepta la solicitud y la amarra a una unidad.
+ *
+ * `targetWorkspace` es la unidad ELEGIDA por el owner (chooseWorkspaceForLink).
+ * Sin ella se cae en la unidad activa, que es lo que se hacia antes y solo
+ * sirve cuando la solicitud ya venia dirigida a una unidad concreta.
+ */
+export async function acceptWorkspaceLink(linkId, targetWorkspace = null) {
     const activeWorkspace = getActiveWorkspace();
     const user = getCurrentFirebaseUser();
 
@@ -233,15 +322,18 @@ export async function acceptWorkspaceLink(linkId) {
     }
 
     const link = linkSnap.data() || {};
+    const target = targetWorkspace?.id
+        ? targetWorkspace
+        : activeWorkspace;
 
-    ensureLinkCanResolveHere(link, activeWorkspace, user);
+    ensureLinkCanResolveHere(link, activeWorkspace, user, target);
 
     await firestoreModule.updateDoc(linkRef, responsePayloadForLink({
         status: "accepted",
         acceptedAt: firestoreModule.serverTimestamp(),
         acceptedByUid: user.uid,
         acceptedByName: userName(user)
-    }, link, firestoreModule, activeWorkspace));
+    }, link, firestoreModule, target));
 }
 
 export async function rejectWorkspaceLink(linkId, reason = "") {

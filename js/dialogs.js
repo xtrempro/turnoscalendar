@@ -123,6 +123,9 @@ function createDialog({
     inputLabel,
     inputType,
     destructive,
+    // Opciones de un dialogo de eleccion: [{ value, label, hint }]. Resuelve el
+    // `value` elegido, o null si se cancela.
+    choices = [],
     // Botones ADEMAS de aceptar y cancelar, para las decisiones que no son un
     // si/no: p.ej. "borrar igual" frente a "mejor renombrar". Cada uno es
     // { text, value, tone }. Cuando hay alguno, el dialogo resuelve un OBJETO
@@ -181,6 +184,7 @@ function createDialog({
         const body = dialog.querySelector(".app-dialog__body");
         const actions = dialog.querySelector(".app-dialog__actions");
         let input = null;
+        let choiceValue = "";
         let settled = false;
 
         if (type === "prompt") {
@@ -200,6 +204,49 @@ function createDialog({
             input.autocomplete = "off";
             field.append(label, input);
             body.append(field);
+        }
+
+        // Elegir UNA de una lista corta (p.ej. a cual de mis unidades enlazar).
+        // Botones de radio y no un desplegable: con dos o tres opciones se ven
+        // todas de una, y la elegida queda a la vista al confirmar.
+        if (type === "choice") {
+            const group = document.createElement("div");
+            const groupName = `${headingId}-choice`;
+
+            group.className = "app-dialog__choices";
+            group.setAttribute("role", "radiogroup");
+
+            (Array.isArray(choices) ? choices : []).forEach((choice, index) => {
+                const option = document.createElement("label");
+                const radio = document.createElement("input");
+                const text = document.createElement("span");
+
+                option.className = "app-dialog__choice";
+                radio.type = "radio";
+                radio.name = groupName;
+                radio.value = String(choice?.value ?? "");
+                radio.checked = index === 0;
+                text.className = "app-dialog__choice-text";
+                text.textContent = String(choice?.label ?? choice?.value ?? "");
+
+                if (choice?.hint) {
+                    const hint = document.createElement("small");
+
+                    hint.className = "app-dialog__choice-hint";
+                    hint.textContent = String(choice.hint);
+                    text.append(hint);
+                }
+
+                radio.addEventListener("change", () => {
+                    choiceValue = radio.value;
+                });
+                option.append(radio, text);
+                group.append(option);
+
+                if (index === 0) choiceValue = radio.value;
+            });
+
+            body.append(group);
         }
 
         const hasExtras = Array.isArray(extraActions) && extraActions.length > 0;
@@ -270,11 +317,23 @@ function createDialog({
             }
 
             if (action === "cancel") {
-                finish(type === "alert" ? true : type === "prompt" ? null : false);
+                finish(
+                    type === "alert"
+                        ? true
+                        : (type === "prompt" || type === "choice")
+                            ? null
+                            : false
+                );
                 return;
             }
 
-            finish(type === "prompt" ? input.value : true);
+            finish(
+                type === "prompt"
+                    ? input.value
+                    : type === "choice"
+                        ? choiceValue
+                        : true
+            );
         };
 
         const accept = () => settle("confirm");
@@ -338,6 +397,23 @@ export function showPrompt(message, options = {}) {
         createDialog({
             ...options,
             type: "prompt",
+            message
+        })
+    );
+}
+
+/**
+ * Elegir una opcion de una lista. Resuelve el `value` elegido, o null si se
+ * cancela.
+ *
+ * @param {string} message
+ * @param {{ choices: Array<{value: string, label: string, hint?: string}> }} options
+ */
+export function showChoice(message, options = {}) {
+    return enqueueDialog(() =>
+        createDialog({
+            ...options,
+            type: "choice",
             message
         })
     );

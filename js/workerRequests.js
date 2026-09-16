@@ -15,6 +15,7 @@ import {
 } from "./firebaseClient.js";
 import {
     acceptWorkspaceLink,
+    chooseWorkspaceForLink,
     isOwnerPendingWorkspaceLink,
     listWorkspaceLinks,
     rejectWorkspaceLink,
@@ -1258,6 +1259,14 @@ function requestDetailsHTML(request) {
             pieces.push(`ID: ${request.fromWorkspaceId}`);
         }
 
+        if (request.expectedWorkspaceName) {
+            pieces.push(`Espera enlazar: ${request.expectedWorkspaceName}`);
+        }
+
+        if (request.needsWorkspaceChoice && request.status === "pending") {
+            pieces.push("Eliges tu unidad al aceptar");
+        }
+
         return pieces.join(" | ");
     }
 
@@ -1534,6 +1543,10 @@ async function getWorkspaceLinkRequests() {
                 fromWorkspaceId: link.fromWorkspaceId || "",
                 fromWorkspaceName:
                     workspaceLinkDisplayName(link, activeWorkspace),
+                // Solicitud que llego por el correo del owner: todavia no tiene
+                // unidad destino, se elige al aceptar.
+                needsWorkspaceChoice: isOwnerPendingWorkspaceLink(link),
+                expectedWorkspaceName: link.expectedWorkspaceName || "",
                 note:
                     link.status === "pending"
                         ? "Solicita enlazarse a esta unidad para gestionar prestamos entre unidades."
@@ -1919,12 +1932,26 @@ export async function rejectWorkerRequestById(requestId) {
 }
 
 async function acceptWorkspaceLinkRequest(request) {
-    await acceptWorkspaceLink(request.linkId);
+    // La solicitud llego por el correo del owner, que puede tener varias
+    // unidades: se le pregunta a cual enlazar en vez de amarrarla en silencio a
+    // la que tenga activa.
+    const target = request.needsWorkspaceChoice
+        ? await chooseWorkspaceForLink({
+            fromWorkspaceId: request.fromWorkspaceId,
+            fromWorkspaceName: request.fromWorkspaceName,
+            expectedWorkspaceName: request.expectedWorkspaceName
+        })
+        : null;
+
+    if (request.needsWorkspaceChoice && !target) return;
+
+    await acceptWorkspaceLink(request.linkId, target);
 
     addAuditLog(
         AUDIT_CATEGORY.WORKER_REQUESTS,
         "Acepto enlace entre unidades",
-        `${request.fromWorkspaceName}: solicitud de enlace aceptada.`,
+        `${request.fromWorkspaceName}: solicitud de enlace aceptada` +
+            (target?.name ? ` con la unidad ${target.name}.` : "."),
         {
             requestId: request.linkId,
             requestType: "workspace_link",

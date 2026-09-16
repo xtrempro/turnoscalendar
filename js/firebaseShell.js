@@ -43,6 +43,7 @@ import {
 import { openSystemSettings } from "./systemSettings.js";
 import {
     acceptWorkspaceLink,
+    chooseWorkspaceForLink,
     isOwnerPendingWorkspaceLink,
     listWorkspaceLinks,
     rejectWorkspaceLink,
@@ -751,7 +752,9 @@ function linkedUnitsPanelHTML() {
             <p>
                 Ingresa el correo del owner de la unidad que quieres enlazar.
                 Le enviaremos un correo y la solicitud aparecera en su menu de
-                Solicitudes.
+                Solicitudes. Si ese owner tiene varias unidades, el elige a cual
+                enlazarla al aceptar: anota abajo cual esperas para que no se
+                equivoque.
             </p>
             ${message}
             <div class="firebase-linked-request">
@@ -759,6 +762,9 @@ function linkedUnitsPanelHTML() {
                 <button class="secondary-button" type="button" data-action="request-workspace-link" ${linkedUnitState.loading ? "disabled" : ""}>
                     Solicitar enlace
                 </button>
+            </div>
+            <div class="firebase-linked-request">
+                <input id="firebaseLinkedExpectedWorkspaceName" type="text" maxlength="160" placeholder="¿Qué unidad esperas enlazar? (opcional)">
             </div>
             ${incoming.length ? `
                 <div class="firebase-linked-list">
@@ -768,6 +774,12 @@ function linkedUnitsPanelHTML() {
                             <div>
                                 <strong>${escapeHTML(workspaceLinkDisplayName(link, currentWorkspace))}</strong>
                                 <small>Solicitado por ${escapeHTML(link.requestedByName || "Usuario")}</small>
+                                ${link.expectedWorkspaceName
+                                    ? `<small>Espera enlazar: ${escapeHTML(link.expectedWorkspaceName)}</small>`
+                                    : ""}
+                                ${isOwnerPendingWorkspaceLink(link, currentUser)
+                                    ? `<small>Eliges tu unidad al aceptar</small>`
+                                    : ""}
                             </div>
                             <div class="firebase-linked-actions">
                                 <button class="primary-button" type="button" data-action="accept-workspace-link" data-link-ref="${escapeHTML(link.id)}">
@@ -1536,11 +1548,18 @@ async function handleAction(action, backdrop, sourceButton = null) {
                 throw new Error("El correo debe tener el formato nombre@dominio.cl.");
             }
 
+            const expectedInput = backdrop.querySelector(
+                "#firebaseLinkedExpectedWorkspaceName"
+            );
+            const expectedWorkspaceName = String(
+                expectedInput?.value || ""
+            ).trim();
+
             linkedUnitState.loading = true;
             linkedUnitState.message = "Enviando solicitud de enlace...";
             renderSignedInModal(backdrop);
 
-            await requestWorkspaceLink(email);
+            await requestWorkspaceLink(email, expectedWorkspaceName);
             linkedUnitState.loading = false;
             linkedUnitState.message =
                 `Solicitud enviada a ${email}. El owner la vera en Solicitudes.`;
@@ -1553,9 +1572,24 @@ async function handleAction(action, backdrop, sourceButton = null) {
         }
 
         if (action === "accept-workspace-link") {
-            await acceptWorkspaceLink(sourceButton?.dataset.linkRef);
-            linkedUnitState.message =
-                "Enlace aceptado. La unidad solicitante ya puede buscar sugerencias de prestamo.";
+            const linkId = sourceButton?.dataset.linkRef;
+            const link = linkedUnitState.links.find(item =>
+                item.id === linkId
+            );
+            // La solicitud llego por el correo del owner y todavia no tiene
+            // unidad destino: se le pregunta a cual de las suyas enlazarla en
+            // vez de amarrarla a la que tenga activa.
+            const needsChoice = isOwnerPendingWorkspaceLink(link, currentUser);
+            const target = needsChoice
+                ? await chooseWorkspaceForLink(link)
+                : null;
+
+            if (needsChoice && !target) return;
+
+            await acceptWorkspaceLink(linkId, target);
+            linkedUnitState.message = target?.name
+                ? `Enlace aceptado con ${target.name}. La unidad solicitante ya puede buscar sugerencias de prestamo.`
+                : "Enlace aceptado. La unidad solicitante ya puede buscar sugerencias de prestamo.";
             await refreshLinkedUnits();
             window.dispatchEvent(
                 new CustomEvent("proturnos:workerRequestsChanged")

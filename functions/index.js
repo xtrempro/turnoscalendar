@@ -2538,14 +2538,28 @@ function proturnosRequestsUrl() {
   return url.toString();
 }
 
-function workspaceLinkOwnerRequestId(fromWorkspaceId, ownerUid, ownerEmail) {
-  const from = cleanCallableText(fromWorkspaceId, 160).replace(/\//g, "");
-  const target = createHash("sha256")
-    .update(`${ownerUid || ""}|${ownerEmail || ""}`)
-    .digest("hex")
-    .slice(0, 40);
+// Solicitud de enlace todavia SIN responder entre esta unidad y ese owner.
+//
+// Se reutiliza para que pedir el enlace dos veces no deje dos solicitudes
+// colgando. Lo que no se reutiliza es una ya respondida: el owner puede tener
+// varias unidades y esta unidad puede querer enlazarse con mas de una, asi que
+// cada solicitud nueva abre su propio documento. (Antes el id era uno solo por
+// (unidad, owner), y por eso un segundo enlace con otra unidad del mismo dueño
+// era imposible.)
+async function findPendingWorkspaceLink(fromWorkspaceId, ownerUid) {
+  const snap = await db
+    .collection("workspaceLinks")
+    .where("fromWorkspaceId", "==", fromWorkspaceId)
+    .where("toOwnerUid", "==", ownerUid)
+    .limit(20)
+    .get();
 
-  return `${from}__owner_${target}`;
+  return snap.docs.find(docSnap => {
+    const data = docSnap.data() || {};
+
+    return String(data.status || "pending") === "pending" &&
+      !cleanCallableText(data.toWorkspaceId, 160);
+  }) || null;
 }
 
 function workspaceIsActiveForLinks(workspace = {}) {
@@ -3267,6 +3281,10 @@ exports.requestWorkspaceLinkByOwnerEmail = onCall(
     const fromWorkspaceId =
       cleanCallableText(request.data?.fromWorkspaceId, 160);
     const ownerEmail = normalizeEmail(request.data?.ownerEmail);
+    // Que unidad espera enlazar quien solicita. No decide nada -el owner elige
+    // al aceptar- pero le dice cual de sus unidades le estan pidiendo.
+    const expectedWorkspaceName =
+      cleanCallableText(request.data?.expectedWorkspaceName, 160);
 
     if (!fromWorkspaceId) {
       throw new HttpsError(
@@ -3320,12 +3338,14 @@ exports.requestWorkspaceLinkByOwnerEmail = onCall(
       );
     }
 
-    const linkId = workspaceLinkOwnerRequestId(
+    const pendingLink = await findPendingWorkspaceLink(
       fromWorkspaceId,
-      targetOwner.ownerUid,
-      ownerEmail
+      targetOwner.ownerUid
     );
-    const linkRef = db.collection("workspaceLinks").doc(linkId);
+    const linkRef = pendingLink
+      ? pendingLink.ref
+      : db.collection("workspaceLinks").doc();
+    const linkId = linkRef.id;
     const now = admin.firestore.Timestamp.now();
     const requesterName =
       cleanCallableText(request.auth.token?.name, 160) ||
@@ -3335,46 +3355,34 @@ exports.requestWorkspaceLinkByOwnerEmail = onCall(
     const fromWorkspaceName =
       cleanCallableText(fromWorkspace.name, 160) || "Unidad solicitante";
 
-    await db.runTransaction(async transaction => {
-      const linkSnap = await transaction.get(linkRef);
-      const previous = linkSnap.data() || {};
-
-      if (
-        linkSnap.exists &&
-        previous.status === "accepted" &&
-        previous.toWorkspaceId
-      ) {
-        throw new HttpsError(
-          "failed-precondition",
-          "Ya existe un enlace activo con una unidad de ese owner."
-        );
-      }
-
-      transaction.set(linkRef, {
-        fromWorkspaceId,
-        fromWorkspaceName,
-        fromOwnerUid: cleanCallableText(fromWorkspace.ownerUid, 160),
-        toOwnerUid: targetOwner.ownerUid,
-        toOwnerEmail: ownerEmail,
-        toWorkspaceId: "",
-        toWorkspaceName: "",
-        status: "pending",
-        requestMode: "owner_email",
-        requestedByUid: uid,
-        requestedByName: requesterName,
-        requestedByEmail: cleanCallableText(request.auth.token?.email, 254),
-        createdAt: previous.createdAt || now,
-        updatedAt: now,
-        emailStatus: "pending",
-        emailError: ""
-      }, { merge: true });
-    });
+    await linkRef.set({
+      fromWorkspaceId,
+      fromWorkspaceName,
+      fromOwnerUid: cleanCallableText(fromWorkspace.ownerUid, 160),
+      toOwnerUid: targetOwner.ownerUid,
+      toOwnerEmail: ownerEmail,
+      // La unidad destino se decide al aceptar: el owner elige cual de las
+      // suyas enlaza.
+      toWorkspaceId: "",
+      toWorkspaceName: "",
+      expectedWorkspaceName,
+      status: "pending",
+      requestMode: "owner_email",
+      requestedByUid: uid,
+      requestedByName: requesterName,
+      requestedByEmail: cleanCallableText(request.auth.token?.email, 254),
+      createdAt: pendingLink?.data()?.createdAt || now,
+      updatedAt: now,
+      emailStatus: "pending",
+      emailError: ""
+    }, { merge: true });
 
     const requestsUrl = proturnosRequestsUrl();
     const { html, text } = buildWorkspaceLinkRequestEmail({
       fromWorkspaceName,
       requesterName,
-      requestsUrl
+      requestsUrl,
+      expectedWorkspaceName
     });
     let sent;
 
@@ -6049,28 +6057,36 @@ function buildSupervisorInviteEmail({
 function buildWorkspaceLinkRequestEmail({
   fromWorkspaceName,
   requesterName,
-  requestsUrl
+  requestsUrl,
+  expectedWorkspaceName = ""
 }) {
   const unit = String(fromWorkspaceName || "una unidad").trim();
   const requester = String(requesterName || "un administrador").trim();
+  const expected = String(expectedWorkspaceName || "").trim();
   const safeUnit = escapeHtml(unit);
   const safeRequester = escapeHtml(requester);
+  const safeExpected = escapeHtml(expected);
   const safeRequestsUrl = escapeHtml(requestsUrl);
+  const expectedLine = expected
+    ? `Dice esperar tu unidad "${expected}".`
+    : "";
 
   const text = [
     "Hola.",
     `${requester} solicito enlazar la unidad "${unit}" con una de tus unidades en TurnoPlus.`,
-    "La solicitud ya esta disponible en el menu Solicitudes.",
+    expectedLine,
+    "La solicitud ya esta disponible en el menu Solicitudes. Al aceptarla eliges a cual de tus unidades enlazarla.",
     `Abre TurnoPlus para revisarla: ${requestsUrl}`,
     "Si no esperabas esta solicitud, puedes rechazarla desde TurnoPlus."
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
 
   const html = `
     <div style="font-family: Arial, Helvetica, sans-serif; color: #1f2933; line-height: 1.5;">
       <h2 style="margin: 0 0 12px;">TurnoPlus</h2>
       <p>Hola,</p>
       <p><strong>${safeRequester}</strong> solicito enlazar la unidad <strong>${safeUnit}</strong> con una de tus unidades.</p>
-      <p>La solicitud ya esta disponible en el menu <strong>Solicitudes</strong>. Al aceptarla, quedara enlazada con la unidad que tengas activa.</p>
+      ${expected ? `<p>Dice esperar tu unidad <strong>${safeExpected}</strong>.</p>` : ""}
+      <p>La solicitud ya esta disponible en el menu <strong>Solicitudes</strong>. Al aceptarla eliges a cual de tus unidades enlazarla.</p>
       <p style="margin: 24px 0;">
         <a href="${safeRequestsUrl}" style="background: #15559a; color: #ffffff; text-decoration: none; padding: 12px 22px; border-radius: 10px; font-weight: bold; display: inline-block;">Abrir Solicitudes</a>
       </p>

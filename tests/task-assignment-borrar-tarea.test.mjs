@@ -207,6 +207,11 @@ test("con tres salidas, el boton de aceptar NO se tine de rojo", () => {
 
 test("sin extraActions el dialogo sigue devolviendo lo de siempre", () => {
     // Los demas avisos de la app esperan booleano o texto: no se pueden romper.
+    // El de eleccion (showChoice) devuelve la opcion elegida; todo lo que no es
+    // prompt ni choice sigue devolviendo true.
     assert.match(dialogs, /if \(action === "cancel"\)/);
-    assert.match(dialogs, /finish\(type === "prompt" \? input\.value : true\)/);
+    assert.match(
+        dialogs,
+        /finish\(\s*\n\s*type === "prompt"\s*\n\s*\? input\.value\s*\n\s*: type === "choice"\s*\n\s*\? choiceValue\s*\n\s*: true\s*\n\s*\);/
+    );
 });
