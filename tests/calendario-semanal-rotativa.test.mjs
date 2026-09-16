@@ -374,9 +374,13 @@ test("el dialogo aprendio una segunda puerta de entrada", () => {
 
 test("un cupo de rotativa no busca una ausencia que no existe", () => {
     // Nadie falto: el grupo esta constituido con uno menos.
+    //
+    // La otra via que corta por lo mismo es el tramo (`coverWindow`): al cubrir
+    // las horas que quedaron sin nadie, el reemplazo que ya existe es
+    // justamente el que dejo el hueco y no puede bloquear el cuadro.
     assert.match(
         calendar,
-        /const existing = rota\s*\n\s*\? null\s*\n\s*: getReplacementForCoveredShift\(profileName, keyDay\)/
+        /const existing = \(rota \|\| coverWindow\)\s*\n\s*\? null\s*\n\s*: getReplacementForCoveredShift\(profileName, keyDay\)/
     );
     assert.match(
         calendar,

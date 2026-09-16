@@ -56,7 +56,7 @@ import {
     codeToTurno,
     getBackedTurnForWorker,
     getClockExtraBackupForWorker,
-    getReplacementForCoveredShift,
+    coveredShiftIsFullyCovered,
     getReplacementForWorkerShift,
     buildPendingRequestIndex,
     getPendingRequestsFromIndex,
@@ -2383,7 +2383,9 @@ function needsReplacementMarker(nombre, key) {
             getAbs(nombre),
             getRotativa(nombre).type
         ) &&
-        !getReplacementForCoveredShift(nombre, key) &&
+        // Cubierto ENTERO: un turno al que le recortaron la jornada de quien lo
+        // cubre vuelve a pedir cobertura (ver js/shiftCoverage.js).
+        !coveredShiftIsFullyCovered(nombre, key) &&
         !getInheritedReplacementContractForCoveredShift(nombre, key) &&
         !isNoCoverageDay(nombre, key)
     );

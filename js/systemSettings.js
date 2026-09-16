@@ -487,6 +487,13 @@ function renderTurnChangesPanel() {
                     title: "Permitir turnos de 24 horas invertidos",
                     description: "Si se desactiva, se bloquea Noche seguida de Larga, Diurno o D + N al dia siguiente y Noche el dia anterior a cualquiera de esos turnos."
                 })}
+
+                ${checkboxHTML({
+                    id: "settingsAllowSplitShiftCoverage",
+                    checked: config.allowSplitShiftCoverage,
+                    title: "Permitir cubrir un mismo turno con 2 funcionarios",
+                    description: "Al recortarle la jornada a quien cubre un permiso (por ejemplo, entra a las 08:00 y se va a las 13:00 de una Larga), el turno vuelve a pedir cobertura por las horas que quedan y se ofrece buscar a otro trabajador para ese tramo. Si se desactiva, recortar la jornada no ofrece nada y el turno sigue dandose por cubierto."
+                })}
             </div>
         </section>
     `;
@@ -1096,6 +1103,10 @@ function readTurnChangeConfig(backdrop) {
             hasInput("settingsAllowInvertedTwentyFourHourShifts")
                 ? checked("settingsAllowInvertedTwentyFourHourShifts")
                 : fallback.allowInvertedTwentyFourHourShifts,
+        allowSplitShiftCoverage:
+            hasInput("settingsAllowSplitShiftCoverage")
+                ? checked("settingsAllowSplitShiftCoverage")
+                : fallback.allowSplitShiftCoverage,
         // El checkbox solo existe en el DOM con los turnos 24 activos. Al
         // desactivarlos desaparece, y sin este `false` explicito el fallback
         // conservaria la excepcion encendida de forma invisible.

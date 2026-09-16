@@ -235,7 +235,9 @@ test("cubierto el turno, deja de pedir cobertura en el inicio", async () => {
         /const requires = requiereReemplazoTurnoBase\(\s*\n\s*keyDay,\s*\n\s*getTurnoBase\(name, keyDay\)/
     );
     [
-        "getReplacementForCoveredShift",
+        // Cubierto ENTERO: un reemplazo al que le recortaron la jornada deja
+        // horas sin nadie y el turno sigue pidiendo cobertura.
+        "coveredShiftIsFullyCovered",
         // Un contrato de reemplazo cubre el turno sin dejar registro puntual.
         "getInheritedReplacementContractForCoveredShift",
         "getPreassignmentForCoveredShift",

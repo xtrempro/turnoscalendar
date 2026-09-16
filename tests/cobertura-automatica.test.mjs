@@ -498,7 +498,9 @@ test("cubrir el turno o marcarlo sin cobertura caduca lo pendiente", () => {
     [autoCoverage, serverAuto].forEach(source => {
         assert.match(source, /export function shiftStillNeedsCoverage\(replaced, keyDay\)/);
         assert.match(source, /isNoCoverageDay\(replaced, keyDay\)\) return false;/);
-        assert.match(source, /getReplacementForCoveredShift\(replaced, keyDay\)\) return false;/);
+        // Cubierto ENTERO: con la jornada recortada de quien cubre quedan horas
+        // sin nadie y la campaña no puede cerrarse (ver js/shiftCoverage.js).
+        assert.match(source, /coveredShiftIsFullyCovered\(replaced, keyDay\)\) return false;/);
         assert.match(source, /getPreassignmentForCoveredShift\(replaced, keyDay\)\) return false;/);
     });
 

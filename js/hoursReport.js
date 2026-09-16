@@ -85,6 +85,10 @@ import {
     isReplacementProfile
 } from "./contracts.js";
 import { REPLACEMENT_ROTATION_MODE } from "./replacementRotation.js";
+import {
+    coverWindowFromRecord,
+    coverWindowLabel
+} from "./shiftCoverage.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import { getJSON } from "./persistence.js";
 import {
@@ -288,7 +292,14 @@ function replacementDetail(profileName, keyDay) {
 
     return records.map(record => {
         if (record.replaced) {
-            return `Reemplaza a ${record.replaced} por ${record.absenceType || "ausencia"}`;
+            // Cubriendo solo un TRAMO del turno, el detalle tiene que decir
+            // cual: dos personas pueden repartirse una misma Larga, y "reemplaza
+            // a Juan" no distingue quien hizo cada mitad.
+            const window = coverWindowLabel(coverWindowFromRecord(record));
+
+            return window
+                ? `Cubre el permiso del turno ${turnoReplacementLabel(codeToTurno(record.turno))} de ${record.replaced} ${window}`
+                : `Reemplaza a ${record.replaced} por ${record.absenceType || "ausencia"}`;
         }
 
         return `Motivo horas extras: ${record.reason || record.absenceType || "sin detalle"}`;

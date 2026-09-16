@@ -36,7 +36,7 @@ import {
 import {
     createReplacementRequests,
     getPendingReplacementRequestsForShift,
-    getReplacementForCoveredShift,
+    coveredShiftIsFullyCovered,
     turnoReplacementLabel
 } from "./replacements.js";
 import { getPreassignmentForCoveredShift } from "./preassignments.js";
@@ -221,7 +221,9 @@ export function shiftStartInstant(keyDay, turno) {
  */
 export function shiftStillNeedsCoverage(replaced, keyDay) {
     if (isNoCoverageDay(replaced, keyDay)) return false;
-    if (getReplacementForCoveredShift(replaced, keyDay)) return false;
+    // Cubierto ENTERO: con la jornada recortada de quien cubre quedan horas sin
+    // nadie, y la campaña no puede darse por terminada (ver js/shiftCoverage.js).
+    if (coveredShiftIsFullyCovered(replaced, keyDay)) return false;
     if (getPreassignmentForCoveredShift(replaced, keyDay)) return false;
 
     return true;

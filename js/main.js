@@ -197,6 +197,7 @@ import {
     addTurnToDay,
     addPreassignedTurnToDay,
     toggleContingencyForDay,
+    offerSplitShiftCoverage,
     openManualExtraReasonForDay,
     openPreassignmentReasonForDay,
     openReplacementSuggestionsForLeaveBlock,
@@ -11760,6 +11761,10 @@ async function handleClockMarkSelection(fecha) {
                 keyDay
             }
         );
+
+        // Si con este marcaje quedaron horas del turno sin cubrir, se ofrece
+        // repartirlas con otro trabajador (ver offerSplitShiftCoverage).
+        await offerSplitShiftCoverage(profile, keyDay, fecha, holidays);
     }
 
     clearSelectionMode();

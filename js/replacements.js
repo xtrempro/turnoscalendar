@@ -46,6 +46,11 @@ import {
 import { getWorkerAppLinkForProfile } from "./workerAppLinks.js";
 import { releaseLeaveHoldsForCoverage } from "./leaveHold.js";
 import { removePreassignment } from "./preassignments.js";
+import {
+    coverageGapsFromRecords,
+    coveredShiftIsComplete,
+    normalizeCoverTime
+} from "./shiftCoverage.js";
 
 function formatNotificationDate(value) {
     const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -319,6 +324,29 @@ export function getActiveReplacementsForCoveredShift(profile, keyDay) {
         replacementActive(replacement) &&
         replacement.replaced === profile &&
         replacement.date === iso
+    );
+}
+
+/**
+ * .El turno de este trabajador quedo cubierto ENTERO?
+ *
+ * Reemplaza al viejo "tiene algun reemplazo" en el calendario, el timeline, el
+ * inicio y el motor de permisos: si a quien cubre le recortaron la jornada,
+ * quedan horas que nadie hace y el turno sigue pidiendo cobertura.
+ *
+ * Los reemplazos que no traen tramo estampado cubren el turno entero, asi que
+ * todo lo guardado hasta hoy responde exactamente como antes.
+ */
+export function coveredShiftIsFullyCovered(profile, keyDay) {
+    return coveredShiftIsComplete(
+        getActiveReplacementsForCoveredShift(profile, keyDay)
+    );
+}
+
+/** Los tramos del turno que todavia no cubre nadie. */
+export function uncoveredShiftGaps(profile, keyDay) {
+    return coverageGapsFromRecords(
+        getActiveReplacementsForCoveredShift(profile, keyDay)
     );
 }
 
@@ -649,6 +677,48 @@ function removeManualExtraTurnFromCalendar(record) {
     if (Number(restoredTurn) === Number(currentTurn)) return;
 
     saveProfileDayTurn(keyDay, restoredTurn, worker);
+}
+
+/**
+ * Anota en un reemplazo QUE TRAMO del turno cubre.
+ *
+ * Se estampa cuando al reemplazante se le recorta la jornada: hasta ese momento
+ * cubria el turno entero y el registro no llevaba horario. A partir de aqui el
+ * turno se mide por tramos, y lo que quede sin nadie vuelve a pedir cobertura
+ * (ver js/shiftCoverage.js).
+ *
+ * @returns {Object|null} el reemplazo actualizado, o null si no se encontro.
+ */
+export function setReplacementCoverWindow(replacementId, window = {}) {
+    const id = String(replacementId || "");
+
+    if (!id) return null;
+
+    let updated = null;
+    const replacements = getReplacements().map(replacement => {
+        if (
+            String(replacement?.id || "") !== id ||
+            !replacementActive(replacement)
+        ) {
+            return replacement;
+        }
+
+        updated = {
+            ...replacement,
+            coverFrom: normalizeCoverTime(window.coverFrom),
+            coverUntil: normalizeCoverTime(window.coverUntil),
+            shiftFrom: normalizeCoverTime(window.shiftFrom),
+            shiftUntil: normalizeCoverTime(window.shiftUntil)
+        };
+
+        return updated;
+    });
+
+    if (!updated) return null;
+
+    saveReplacements(replacements);
+
+    return updated;
 }
 
 export function cancelReplacementById(
@@ -1041,6 +1111,13 @@ export function saveReplacement(data) {
         clockLabel: data.clockLabel || "",
         clockHours: data.clockHours || null,
         diurnoLongCoverage: Boolean(data.diurnoLongCoverage),
+        // Tramo del turno que este reemplazo cubre, y horario del turno contra
+        // el que se mide. Van VACIOS cuando cubre el turno entero, que es lo
+        // que hacen todos los reemplazos de siempre (ver js/shiftCoverage.js).
+        coverFrom: normalizeCoverTime(data.coverFrom),
+        coverUntil: normalizeCoverTime(data.coverUntil),
+        shiftFrom: normalizeCoverTime(data.shiftFrom),
+        shiftUntil: normalizeCoverTime(data.shiftUntil),
         overtimeHours: normalizeHours(data.overtimeHours),
         isLoan: Boolean(data.isLoan),
         workerWorkspaceId: data.workerWorkspaceId || "",

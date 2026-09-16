@@ -26,6 +26,7 @@ import {
     getAllReplacementContracts,
     replacementContractCoversCoveredShift
 } from "./contracts.js";
+import { coveredShiftIsComplete } from "./shiftCoverage.js";
 
 export const LEAVE_HOLD_KEY_PREFIX = "leaveHold_";
 
@@ -125,11 +126,16 @@ function isCoveredKey(profile, keyDay, sources) {
     if (sources.noCoverage[keyDay]) return true;
 
     const iso = isoFromKey(keyDay);
-    const takenByReplacement = sources.replacements.some(replacement =>
-        replacement &&
-        !replacement.canceled &&
-        replacement.replaced === profile &&
-        replacement.date === iso
+    // Cubierto ENTERO y no "tiene algun reemplazo": a quien cubre se le puede
+    // recortar la jornada, y mientras queden horas sin nadie el turno no esta
+    // resuelto, asi que el permiso sigue esperando (ver js/shiftCoverage.js).
+    const takenByReplacement = coveredShiftIsComplete(
+        sources.replacements.filter(replacement =>
+            replacement &&
+            !replacement.canceled &&
+            replacement.replaced === profile &&
+            replacement.date === iso
+        )
     );
 
     if (takenByReplacement) return true;

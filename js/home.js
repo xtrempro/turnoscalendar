@@ -38,7 +38,7 @@ import {
 import {
     cancelPreassignment,
     confirmPreassignment,
-    getReplacementForCoveredShift,
+    coveredShiftIsFullyCovered,
     buildPendingRequestIndex,
     getPendingRequestsFromIndex
 } from "./replacements.js";
@@ -350,7 +350,9 @@ function isShiftUncovered(name, keyDay) {
     if (!requires) return false;
 
     return (
-        !getReplacementForCoveredShift(name, keyDay) &&
+        // Cubierto ENTERO: si a quien cubre le recortaron la jornada quedan
+        // horas sin nadie y el turno sigue pidiendo cobertura.
+        !coveredShiftIsFullyCovered(name, keyDay) &&
         // Un contrato de reemplazo tambien cubre el turno, sin dejar un registro
         // en `replacements`: el reemplazante hereda los turnos del ausente
         // mientras dura el contrato. Faltaba mirarlo aqui, asi que el inicio

@@ -1010,6 +1010,12 @@ export const DEFAULT_TURN_CHANGE_CONFIG = {
     // una excepcion que la unidad habilita a proposito, no el comportamiento
     // por defecto. Solo tiene sentido con los turnos 24 permitidos.
     allowDiurnoAfterTwentyFour: false,
+    // Dos funcionarios en un mismo turno: al recortarle la jornada a quien
+    // cubre un permiso, el tramo que queda se le puede dar a otro. Arranca
+    // DESACTIVADO porque no todas las unidades parten un turno en dos; sin
+    // esto, recortar la jornada no ofrece nada y el turno sigue dandose por
+    // cubierto, como hasta ahora.
+    allowSplitShiftCoverage: false,
     limitMonthlySwaps: false,
     monthlySwapLimit: 2
 };
@@ -1049,6 +1055,8 @@ function normalizeTurnChangeConfig(config = {}) {
         allowDiurnoAfterTwentyFour:
             config.allowDiurnoAfterTwentyFour === true &&
             config.allowTwentyFourHourShifts !== false,
+        allowSplitShiftCoverage:
+            config.allowSplitShiftCoverage === true,
         limitMonthlySwaps:
             config.limitMonthlySwaps === true,
         monthlySwapLimit:

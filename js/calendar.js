@@ -138,6 +138,7 @@ import {
     getPendingRequestsFromIndex,
     formatRequestTimeLeft,
     getActiveReplacementsForCoveredShift,
+    coveredShiftIsFullyCovered,
     getCoveringWorkersForShift,
     getPendingReplacementRequestsForShift,
     getReplacementForCoveredShift,
@@ -145,6 +146,7 @@ import {
     getReplacementsForWorkerShift,
     replacementActive,
     saveReplacement,
+    setReplacementCoverWindow,
     turnoToCode,
     turnoReplacementLabel,
     workerHasAbsence
@@ -192,6 +194,11 @@ import {
     toggleContingencyDay
 } from "./contingency.js";
 import {
+    coverWindowLabel,
+    coverageGapsForShift,
+    coveredShiftIsComplete
+} from "./shiftCoverage.js";
+import {
     releaseLeaveHoldsForCoverage,
     removeLeaveHoldKeys
 } from "./leaveHold.js";
@@ -202,6 +209,8 @@ import {
     getClockNetExtraHours,
     getClockScheduleState,
     getScheduledSegmentsForProfile,
+    getWorkedIntervalsForState,
+    saveClockMarks,
     hasClockNetExtra,
     hasSevereClockIncident,
     hasSimpleClockIncident
@@ -785,6 +794,10 @@ function calendarShiftAssignedResolver(profileName) {
 
 function buildCalendarReplacementIndex(profileName) {
     const byCoveredDate = new Map();
+    // TODOS los reemplazos que cubren el turno de ese dia, no solo el primero:
+    // con la jornada recortada de quien cubre hace falta la lista entera para
+    // saber si el turno quedo cubierto completo (ver js/shiftCoverage.js).
+    const coveredRecordsByDate = new Map();
     const byWorkerDate = new Map();
     const clockExtraBackupByDate = new Map();
     const coveringWorkersByDate = new Map();
@@ -796,11 +809,15 @@ function buildCalendarReplacementIndex(profileName) {
 
             if (!date) return;
 
-            if (
-                replacement.replaced === profileName &&
-                !byCoveredDate.has(date)
-            ) {
-                byCoveredDate.set(date, replacement);
+            if (replacement.replaced === profileName) {
+                if (!byCoveredDate.has(date)) {
+                    byCoveredDate.set(date, replacement);
+                }
+
+                const covered = coveredRecordsByDate.get(date) || [];
+
+                covered.push(replacement);
+                coveredRecordsByDate.set(date, covered);
             }
 
             if (
@@ -831,6 +848,7 @@ function buildCalendarReplacementIndex(profileName) {
 
     return {
         byCoveredDate,
+        coveredRecordsByDate,
         byWorkerDate,
         clockExtraBackupByDate,
         coveringWorkersByDate
@@ -1173,8 +1191,6 @@ async function handleCalendarCellFallbackClick(cell, event) {
     const shiftMoveMarkers =
         getShiftMoveMarkers(activeProfile, keyDay);
     const shiftMoveMarker = shiftMoveMarkers[0] || null;
-    const coveredReplacement =
-        getReplacementForCoveredShift(activeProfile, keyDay);
     const workerReplacement =
         getReplacementForWorkerShift(activeProfile, keyDay);
     const replacementContractError =
@@ -1217,7 +1233,8 @@ async function handleCalendarCellFallbackClick(cell, event) {
             absences,
             getRotativa(activeProfile).type
         ) &&
-        !coveredReplacement &&
+        // Cubierto ENTERO: ver js/shiftCoverage.js.
+        !coveredShiftIsFullyCovered(activeProfile, keyDay) &&
         !inheritedContractCoverage &&
         !isNoCoverageDay(activeProfile, keyDay);
     const pendingManualExtra =
@@ -6102,7 +6119,21 @@ window.openPendingRequestsDialog = openPendingRequestsDialog;
  */
 async function openReplacementDialog(profileName, keyDay, options = {}) {
     const rota = options.rota || null;
-    const existing = rota
+    // Tramo del turno que se busca cubrir. Al recortarle la jornada a quien
+    // cubria queda una franja descubierta, no el turno entero: por eso el
+    // reemplazo que YA existe no bloquea el cuadro, si es justamente el que
+    // dejo el hueco (ver offerSplitShiftCoverage).
+    const coverWindow = options.coverWindow || null;
+    const shiftWindow = options.shiftWindow || null;
+    const coverWindowPayload = coverWindow
+        ? {
+            coverFrom: coverWindow.from,
+            coverUntil: coverWindow.until,
+            shiftFrom: shiftWindow?.from || "",
+            shiftUntil: shiftWindow?.until || ""
+        }
+        : {};
+    const existing = (rota || coverWindow)
         ? null
         : getReplacementForCoveredShift(profileName, keyDay);
 
@@ -6810,8 +6841,23 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                                         : "replacement",
                                 ...replacementCoverageFromDataset(
                                     button.dataset
-                                )
+                                ),
+                                ...coverWindowPayload
                             });
+
+                            // Toma solo un tramo: queda con ese horario en su
+                            // marcaje, que es lo que se le va a pedir trabajar.
+                            if (coverWindow) {
+                                writeCoverWindowClockMark(
+                                    button.dataset.worker,
+                                    keyDay,
+                                    dateFromKeyDay(keyDay),
+                                    coverWindow,
+                                    await fetchHolidays(
+                                        dateFromKeyDay(keyDay).getFullYear()
+                                    )
+                                );
+                            }
                         }
 
                         close();
@@ -8459,6 +8505,186 @@ window.openPreassignmentDialog = openPreassignmentDialog;
 
 // Si ese dia hay un turno sin cubrir. Se extrajo del cuerpo de `clickDia`
 // porque ahora hace falta ANTES, para decidir a que dialogo lleva el click.
+/* ======================================================
+   Dos funcionarios en un mismo turno
+
+   Al reemplazante que cubre un permiso se le puede recortar la jornada: entra a
+   las 08:00 y se va a las 13:00 de una Larga que llega hasta las 20:00. Esas
+   horas que quedan no las hace nadie, asi que el turno vuelve a pedir cobertura
+   por ese tramo y se puede repartir con un segundo trabajador.
+
+   Solo funciona con el ajuste "Permitir cubrir un mismo turno con 2
+   funcionarios" de la unidad. Sin el, recortar la jornada no ofrece nada y el
+   turno sigue dandose por cubierto, como siempre.
+====================================================== */
+
+function clockTimeLabel(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+
+    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+// La franja completa del turno: de la entrada del primer tramo a la salida del
+// ultimo. Un D+N son dos tramos y se mide de punta a punta.
+function windowFromIntervals(intervals = []) {
+    const list = (Array.isArray(intervals) ? intervals : [])
+        .filter(item => item?.start && item?.end);
+
+    if (!list.length) return null;
+
+    const from = clockTimeLabel(list[0].start);
+    const until = clockTimeLabel(list[list.length - 1].end);
+
+    return from && until ? { from, until } : null;
+}
+
+/**
+ * Deja escrito el marcaje de quien toma un tramo del turno.
+ *
+ * Lo pidio el usuario: al elegir al segundo trabajador queda automaticamente
+ * con el horario que faltaba por cubrir. Son horas de un turno que todavia no
+ * ocurre, asi que se pueden corregir despues como cualquier marcaje.
+ */
+function writeCoverWindowClockMark(worker, keyDay, date, window, holidays) {
+    if (!worker || !window?.from || !window?.until) return false;
+
+    const state = getActualState(worker, keyDay);
+    const segments = getScheduledSegmentsForProfile(
+        worker,
+        keyDay,
+        date,
+        getClockScheduleState(worker, keyDay, state),
+        holidays
+    );
+    const segment = segments[0];
+
+    if (!segment) return false;
+
+    const marks = getClockMarks(worker);
+    const previous = marks[keyDay] || { segments: {} };
+    const segmentMark = { ...(previous.segments?.[segment.id] || {}) };
+
+    if (window.from !== clockTimeLabel(segment.start)) {
+        segmentMark.entryTime = window.from;
+    }
+
+    if (window.until !== clockTimeLabel(segment.end)) {
+        segmentMark.exitTime = window.until;
+    }
+
+    if (!segmentMark.entryTime && !segmentMark.exitTime) return false;
+
+    marks[keyDay] = {
+        ...previous,
+        segments: {
+            ...(previous.segments || {}),
+            [segment.id]: segmentMark
+        },
+        updatedAt: new Date().toISOString()
+    };
+    saveClockMarks(worker, marks);
+
+    return true;
+}
+
+/**
+ * Al recortar la jornada de quien cubre un permiso, anota el tramo que cubre y
+ * -si quedan horas sin nadie- ofrece que hacer con ellas.
+ *
+ * Se llama despues de guardar el marcaje. Devuelve true si se abrio el cuadro.
+ */
+export async function offerSplitShiftCoverage(coverWorker, keyDay, date, holidays = {}) {
+    if (!getTurnChangeConfig().allowSplitShiftCoverage) return false;
+
+    // El turno extra que cubre a alguien. Los que no cubren a nadie -horas
+    // extras con motivo- no dejan a nadie descubierto.
+    const covering = getReplacementsForWorkerShift(coverWorker, keyDay)
+        .find(record => record.replaced);
+
+    if (!covering) return false;
+
+    const replaced = covering.replaced;
+    const state = getActualState(coverWorker, keyDay);
+    const scheduled = getScheduledSegmentsForProfile(
+        coverWorker,
+        keyDay,
+        date,
+        getClockScheduleState(coverWorker, keyDay, state),
+        holidays
+    );
+    const shiftWindow = windowFromIntervals(scheduled);
+    const workedWindow = windowFromIntervals(
+        getWorkedIntervalsForState(coverWorker, keyDay, date, state, holidays)
+    );
+
+    if (!shiftWindow || !workedWindow) return false;
+
+    // Cubre lo mismo que el turno: no hay nada que repartir. Se limpia el tramo
+    // por si venia de un recorte anterior que se deshizo.
+    const sameWindow =
+        workedWindow.from === shiftWindow.from &&
+        workedWindow.until === shiftWindow.until;
+
+    setReplacementCoverWindow(covering.id, sameWindow
+        ? {}
+        : {
+            coverFrom: workedWindow.from,
+            coverUntil: workedWindow.until,
+            shiftFrom: shiftWindow.from,
+            shiftUntil: shiftWindow.until
+        });
+
+    if (sameWindow) return false;
+
+    const gaps = coverageGapsForShift(
+        shiftWindow,
+        getActiveReplacementsForCoveredShift(replaced, keyDay)
+    );
+
+    if (!gaps.length) return false;
+
+    const gap = gaps[0];
+    const decision = await showConfirm(
+        `${coverWorker} cubre el turno de ${replaced} ${coverWindowLabel(workedWindow)}.\n\n` +
+        `Quedan sin cubrir las horas ${coverWindowLabel(gap)}.`,
+        {
+            title: "Horas del turno sin cubrir",
+            tone: "warning",
+            confirmText: "Buscar quién puede cubrir",
+            cancelText: "Decidir más tarde",
+            extraActions: [
+                { text: "No requiere cobertura", value: "no-coverage" }
+            ]
+        }
+    );
+    const action = decision?.action || "";
+
+    if (action === "no-coverage") {
+        setNoCoverageDay(replaced, keyDay, true, `Turno cubierto ${coverWindowLabel(workedWindow)}.`);
+        // Igual que marcarlo sin cobertura desde la casilla: el permiso que
+        // estaba esperando ya puede viajar a la PWA (ver js/leaveHold.js).
+        releaseLeaveHoldsForCoverage(replaced);
+        addAuditLog(
+            AUDIT_CATEGORY.CALENDAR,
+            "Marco sin cobertura el tramo restante",
+            `${replaced}: las horas ${coverWindowLabel(gap)} del ${keyDay} quedan sin cubrir por decision del supervisor.`,
+            { profile: replaced, keyDay }
+        );
+        await updateDayCell(replaced, keyDay);
+
+        return true;
+    }
+
+    if (action !== "confirm") return false;
+
+    await openReplacementDialog(replaced, keyDay, {
+        coverWindow: gap,
+        shiftWindow
+    });
+
+    return true;
+}
+
 function dayNeedsReplacement(
     profileName,
     keyDay,
@@ -8478,7 +8704,10 @@ function dayNeedsReplacement(
             absences,
             getRotativa(profileName).type
         ) &&
-        !getReplacementForCoveredShift(profileName, keyDay) &&
+        // Cubierto ENTERO: si a quien cubre le recortaron la jornada quedan
+        // horas que nadie hace, y el turno vuelve a pedir cobertura por ese
+        // tramo (ver js/shiftCoverage.js).
+        !coveredShiftIsFullyCovered(profileName, keyDay) &&
         !getInheritedReplacementContractForCoveredShift(profileName, keyDay) &&
         !isNoCoverageDay(profileName, keyDay)
     );
@@ -9528,8 +9757,6 @@ async function renderCalendarImpl(options = {}) {
                 )
             );
         const turnChange = turnChangeMarker?.swap || null;
-        const coveredReplacement =
-            replacementIndex.byCoveredDate.get(isoDay) || null;
         const inheritedContractCoverage =
             getInheritedReplacementContractForCoveredShift(
                 activeProfile,
@@ -9592,7 +9819,11 @@ async function renderCalendarImpl(options = {}) {
                 absences,
                 activeRotativa.type
             ) &&
-            !coveredReplacement &&
+            // Cubierto ENTERO. Se mide con TODOS los reemplazos del dia -por eso
+            // el indice los junta- y no con el primero que aparezca.
+            !coveredShiftIsComplete(
+                replacementIndex.coveredRecordsByDate.get(isoDay) || []
+            ) &&
             !inheritedContractCoverage &&
             !isNoCoverageDay(activeProfile, keyDay);
         const showExtraReason =
