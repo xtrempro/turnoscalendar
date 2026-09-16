@@ -9792,6 +9792,14 @@ async function cleanupFutureSchedule(startDate, options = {}) {
     saveHourReturns(profileName, hourReturns);
 }
 
+// Rotativas que PRODUCEN turnos por si solas. "libre", "reemplazo" y la vacia
+// no: ahi el calendario queda en blanco hasta que alguien cargue algo.
+function rotationGeneratesTurns(rotationType) {
+    return ["diurno", "3turno", "4turno"].includes(
+        String(rotationType || "")
+    );
+}
+
 async function applyDraftRotation(
     rotationType,
     rotationStart,
@@ -10140,6 +10148,9 @@ async function guardarPerfil() {
     };
     let compensationEffectiveDate = "";
     let shiftAssignmentEffectiveMonth = "";
+    // Mes desde el que hay que rehacer el calendario porque cambio el tipo de
+    // contrato (ver mas abajo).
+    let contractTypeOverwriteStart = "";
 
     if (
         !await validateProfileSavePreflight({
@@ -10171,6 +10182,41 @@ async function guardarPerfil() {
             );
 
         if (!compensationEffectiveDate) {
+            return false;
+        }
+    }
+
+    // Cambiar el TIPO de contrato cambia de donde salen los turnos: un
+    // Reemplazo los hereda del trabajador al que cubre, y un Contrato los saca
+    // de su propia rotativa. Lo que quedo cargado con el contrato anterior ya
+    // no corresponde, y hasta ahora sobrevivia -el calendario lee `data_` antes
+    // que la rotativa-, asi que el cambio "no se aplicaba": se veian los turnos
+    // viejos. Se borra desde el mes de vigencia hacia adelante. Un cambio de
+    // grado o estamento NO entra aqui: ese no mueve los turnos.
+    if (contractTypeChanged && compensationEffectiveDate) {
+        contractTypeOverwriteStart = compensationEffectiveDate;
+
+        const confirmedOverwrite = await showConfirm(
+            `El tipo de contrato de ${nextName} cambia de ` +
+            `"${previousSnapshot?.contractType || "sin contrato"}" a ` +
+            `"${nextProfilePayload.contractType || "sin contrato"}" desde el ` +
+            `${formatDisplayDate(compensationEffectiveDate)}.\n\n` +
+            "Desde ese mes en adelante se borrara lo que tenga cargado: " +
+            "turnos, permisos, feriados, licencias, devoluciones de horas, " +
+            "turnos extra, cambios y traslados de turno. Los meses anteriores " +
+            "no se tocan.\n\n" +
+            (rotationGeneratesTurns(nextRotationType)
+                ? "Despues quedaran los turnos de la rotativa nueva."
+                : "El calendario quedara vacio desde ese mes: define una rotativa si corresponde."),
+            {
+                title: "Sobrescribir el calendario",
+                tone: "warning",
+                confirmText: "Sobrescribir",
+                destructive: true
+            }
+        );
+
+        if (!confirmedOverwrite) {
             return false;
         }
     }
@@ -10439,6 +10485,29 @@ async function guardarPerfil() {
         }
 
         exitProfileMode(nextName);
+
+        // Va ANTES de aplicar la rotativa: al reves borraria los turnos que
+        // esta acaba de escribir. Si la rotativa nueva genera turnos, el motor
+        // los calcula solo desde su ancla una vez que el mes quedo limpio.
+        if (contractTypeOverwriteStart) {
+            await cleanupFutureSchedule(
+                parseInputDate(contractTypeOverwriteStart)
+            );
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Sobrescribio el calendario por cambio de contrato",
+                `${nextName}: se borro lo cargado desde el ${formatDisplayDate(contractTypeOverwriteStart)} al pasar de ` +
+                `${previousSnapshot?.contractType || "sin contrato"} a ` +
+                `${nextProfilePayload.contractType || "sin contrato"}.`,
+                {
+                    profile: nextName,
+                    date: contractTypeOverwriteStart,
+                    from: previousSnapshot?.contractType || "",
+                    to: nextProfilePayload.contractType || ""
+                }
+            );
+        }
+
         if (shouldApplyRotation) {
             await applyDraftRotation(
                 nextRotationType,
