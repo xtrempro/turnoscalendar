@@ -94,6 +94,10 @@ const PREFIX_KEY_MODULES = [
     ["comp_", "turnos"],
     ["absences_", "turnos"],
     ["blocked_", "turnos"],
+    // Quien queda de llamado para cubrir un turno del dia (js/contingency.js).
+    // Viaja con los turnos porque es una anotacion del calendario, y asi no
+    // necesita una regla nueva en Firestore.
+    ["contingency_", "turnos"],
     ["noCoverage_", "turnos"],
     // Permisos aplicados que aun no viajan a la PWA (js/leaveHold.js). Viaja con
     // los permisos porque el motor del servidor lo lee para decidir que esconder.

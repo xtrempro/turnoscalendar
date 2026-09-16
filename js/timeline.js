@@ -68,6 +68,11 @@ import {
     getPreassignmentTurnForWorker
 } from "./preassignments.js";
 import {
+    CONTINGENCY_BADGE,
+    getContingencyKind,
+    normalizeContingencyKind
+} from "./contingency.js";
+import {
     getAllReplacementContracts,
     getInheritedReplacementContractForCoveredShift,
     hasContractForDate,
@@ -971,6 +976,7 @@ function timelineAffectedProfilesFromKeys(keys = [], changes = {}) {
         "comp_",
         "absences_",
         "blocked_",
+        "contingency_",
         "noCoverage_",
         "rotativa_",
         "replacementContracts_",
@@ -1861,6 +1867,7 @@ function createTimelineRenderCache(year, month, diasMes) {
         rotativaByProfile: new Map(),
         hourReturnsByProfile: new Map(),
         clockMarksByProfile: new Map(),
+        contingencyByProfile: new Map(),
         baseSequenceByProfile: new Map()
     };
 }
@@ -1925,6 +1932,16 @@ function getTimelineCachedBlocked(nombre, renderCache = null) {
         "blockedByProfile",
         nombre,
         "blocked_" + nombre,
+        {}
+    );
+}
+
+function getTimelineCachedContingency(nombre, renderCache = null) {
+    return timelineCachedJSON(
+        renderCache,
+        "contingencyByProfile",
+        nombre,
+        "contingency_" + nombre,
         {}
     );
 }
@@ -2764,6 +2781,7 @@ function buildTimelineRowAuxiliaryContext(
         hourReturns: getTimelineCachedHourReturns(profileName, renderCache),
         pendingRequestIndex: getTimelineCachedPendingRequests(renderCache),
         clockMarks: getTimelineCachedClockMarks(profileName, renderCache),
+        contingency: getTimelineCachedContingency(profileName, renderCache),
         replacementByIso,
         coveredReplacementByIso,
         clockExtraBackupByIso,
@@ -3469,6 +3487,15 @@ function renderTimelineDayCell(profile, d, {
         )
         : [];
     const waitingForRequest = pendingRequests.length > 0;
+    // Contingencia: quien queda de llamado por si ese dia alguien no llega a su
+    // turno. Es la sigla de MENOR prioridad de la casilla: se ve cuando no hay
+    // nada mas urgente que mostrar, porque no es algo que haya que resolver.
+    const contingencyKind = rowAux?.contingency
+        ? normalizeContingencyKind(rowAux.contingency[key])
+        : getContingencyKind(profile.name, key);
+    const contingencyMark = contingencyKind
+        ? CONTINGENCY_BADGE[contingencyKind]
+        : "";
     const marker = contractError
         ? "X"
         : severeClockIncident
@@ -3491,7 +3518,7 @@ function renderTimelineDayCell(profile, d, {
                         ? hourReturnTimelineMarker(hourReturn)
                         : replacement
                         ? (replacement.isLoan ? "P" : "R")
-                        : "");
+                        : contingencyMark);
     const title = contractError
         ? "No tiene contrato vigente en la fecha seleccionada"
         : severeClockIncident
@@ -3532,6 +3559,9 @@ function renderTimelineDayCell(profile, d, {
         workerBlockedDay
             ? workerBlockedDay.message ||
                 "El trabajador solicito no hacer reemplazos ni cambios de turno en esta fecha."
+            : "",
+        contingencyMark
+            ? `Contingencia de ${contingencyKind === "N" ? "Noche" : "Larga"}: si ese dia alguien no llega a ese turno, le toca venir a cubrir.`
             : ""
     ].filter(Boolean).join("\n");
 
@@ -3555,7 +3585,7 @@ function renderTimelineDayCell(profile, d, {
         <td
             data-timeline-profile="${escapeHtml(profile.name)}"
             data-timeline-key="${escapeHtml(key)}"
-            class="mini ${isLeaveFreeDay ? "leave-free-day" : ""} ${pendingLeave ? "timeline-leave-pending" : ""} ${pendingSwap ? "timeline-leave-pending timeline-swap-pending" : ""} ${workerBlockedDay ? "worker-blocked-mini" : ""} ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement && !preassignedCovered && !waitingForRequest ? "needs-replacement" : ""} ${waitingForRequest ? "request-wait-day" : ""} ${preassignedCovered || preassignedWorker ? "preassign-day" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""}"
+            class="mini ${isLeaveFreeDay ? "leave-free-day" : ""} ${pendingLeave ? "timeline-leave-pending" : ""} ${pendingSwap ? "timeline-leave-pending timeline-swap-pending" : ""} ${workerBlockedDay ? "worker-blocked-mini" : ""} ${isInhabil ? "timeline-inhabil" : ""} ${contractError ? "contract-error-day" : ""} ${honorariaExcess ? "honoraria-limit-day" : ""} ${severeClockIncident ? "clock-severe-day" : ""} ${simpleClockIncident ? "clock-incident-day" : ""} ${needsReplacement && !preassignedCovered && !waitingForRequest ? "needs-replacement" : ""} ${waitingForRequest ? "request-wait-day" : ""} ${preassignedCovered || preassignedWorker ? "preassign-day" : ""} ${showExtraReason || showClockExtra ? "needs-extra-reason" : ""} ${hourReturn ? "hours-return-mini" : ""} ${replacement ? "replacement-day" : ""} ${contingencyMark ? "contingency-mini" : ""}"
             style="${escapeHtml(`background:${preassignBackground || background}${pendingLeaveStyle}`)}"
             title="${escapeHtml(titleText)}"
             ${preassignedCovered || preassignedWorker ? `data-preassign-profile="${escapeHtml(profile.name)}" data-preassign-key="${escapeHtml(key)}"` : ""}

@@ -182,6 +182,16 @@ import {
     getPreassignmentTurnForWorker
 } from "./preassignments.js";
 import {
+    CONTINGENCY_BADGE,
+    canMarkContingency,
+    contingencyBadgeForKind,
+    contingencyDayBlockReason,
+    contingencyNameForKind,
+    getContingencyKind,
+    normalizeContingencyKind,
+    toggleContingencyDay
+} from "./contingency.js";
+import {
     releaseLeaveHoldsForCoverage,
     removeLeaveHoldKeys
 } from "./leaveHold.js";
@@ -2228,6 +2238,7 @@ function calendarStorageMaps(profileName) {
         [`comp_${profileName}`]: getJSON(`comp_${profileName}`, {}),
         [`absences_${profileName}`]: getJSON(`absences_${profileName}`, {}),
         [`blocked_${profileName}`]: getJSON(`blocked_${profileName}`, {}),
+        [`contingency_${profileName}`]: getJSON(`contingency_${profileName}`, {}),
         [`hourReturns_${profileName}`]: getJSON(`hourReturns_${profileName}`, {}),
         [`clockMarks_${profileName}`]: getJSON(`clockMarks_${profileName}`, {})
     };
@@ -2851,6 +2862,17 @@ function buildDayCell({
 
                     if (item === REQUEST_PENDING_BADGE) {
                         return `<span class="day-badge day-badge--request" title="Solicitud de cobertura enviada: en espera de respuesta">${REQUEST_PENDING_BADGE_ICON}</span>`;
+                    }
+
+                    if (
+                        item === CONTINGENCY_BADGE.L ||
+                        item === CONTINGENCY_BADGE.N
+                    ) {
+                        const nombre = item === CONTINGENCY_BADGE.L
+                            ? "Larga"
+                            : "Noche";
+
+                        return `<span class="day-badge day-badge--contingency" title="Contingencia de ${nombre}: si ese día alguien no llega a ese turno, le toca venir a cubrir">${escapeHTML(item)}</span>`;
                     }
 
                     const className = item === "No disp."
@@ -5500,6 +5522,17 @@ function replacementDialogHTML({
             const limitNote = candidate.exceedsDiurnalLimit
                 ? `Superaria las ${MAX_MONTHLY_DIURNAL_OVERTIME} h extras diurnas del mes.`
                 : "";
+            // Quien quedo de llamado para este turno. Con la fecha encima va
+            // primero -es a quien le toca venir-; con dias por delante aparece
+            // igual, pero sin saltarse la fila: todavia hay tiempo de buscar a
+            // otro y el tiene que quedar libre por si ese dia falta alguien mas.
+            const contingencyNote = candidate.contingencyCovers
+                ? (
+                    candidate.contingencyPriority
+                        ? `Está programado como ${contingencyNameForKind(candidate.contingencyKind)} para este día: le toca cubrir.`
+                        : `Programado como ${contingencyNameForKind(candidate.contingencyKind)} para este día, que todavía no llega.`
+                )
+                : "";
             const candidateHours = candidate.isLinked
                 ? "<b>Disponible</b>"
                 : `
@@ -5527,7 +5560,7 @@ function replacementDialogHTML({
             if (isRequestMode) {
                 return `
                 ${openSlot}
-                <label class="replacement-candidate replacement-candidate--request ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${nextDayNote ? "replacement-candidate--next-day-shift" : ""} ${limitNote ? "replacement-candidate--over-limit" : ""} ${candidate.backsPendingExtra ? "replacement-candidate--backs-extra" : ""} ${pendingRequest ? "is-disabled" : ""}">
+                <label class="replacement-candidate replacement-candidate--request ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${nextDayNote ? "replacement-candidate--next-day-shift" : ""} ${limitNote ? "replacement-candidate--over-limit" : ""} ${candidate.backsPendingExtra ? "replacement-candidate--backs-extra" : ""} ${contingencyNote ? "replacement-candidate--contingency" : ""} ${pendingRequest ? "is-disabled" : ""}">
                     <input
                         class="replacement-candidate-checkbox"
                         type="checkbox"
@@ -5544,6 +5577,7 @@ function replacementDialogHTML({
                             ${escapeHTML(candidateStateLabel(candidate, pendingRequest))}
                             ${nextDayNote ? `<span class="replacement-candidate-next-shift">${escapeHTML(nextDayNote)}</span>` : ""}
                             ${limitNote ? `<span class="replacement-candidate-over-limit">${escapeHTML(limitNote)}</span>` : ""}
+                            ${contingencyNote ? `<span class="replacement-candidate-contingency">${escapeHTML(contingencyNote)}</span>` : ""}
                         </small>
                         ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                     </span>
@@ -5574,7 +5608,7 @@ function replacementDialogHTML({
             ${unitHeading}
             ${openSlot}
             <button
-                class="replacement-candidate ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.isLinked ? "replacement-candidate--linked" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${nextDayNote ? "replacement-candidate--next-day-shift" : ""} ${limitNote ? "replacement-candidate--over-limit" : ""} ${candidate.backsPendingExtra ? "replacement-candidate--backs-extra" : ""} ${pendingRequest ? "is-disabled" : ""}"
+                class="replacement-candidate ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.isLinked ? "replacement-candidate--linked" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${nextDayNote ? "replacement-candidate--next-day-shift" : ""} ${limitNote ? "replacement-candidate--over-limit" : ""} ${candidate.backsPendingExtra ? "replacement-candidate--backs-extra" : ""} ${contingencyNote ? "replacement-candidate--contingency" : ""} ${pendingRequest ? "is-disabled" : ""}"
                 type="button"
                 data-worker="${escapeHTML(candidate.profile.name)}"
                 data-worker-profile-id="${escapeHTML(candidate.profile.id || "")}"
@@ -5592,6 +5626,7 @@ function replacementDialogHTML({
                         ${escapeHTML(candidateStateLabel(candidate, pendingRequest))}
                         ${nextDayNote ? `<span class="replacement-candidate-next-shift">${escapeHTML(nextDayNote)}</span>` : ""}
                             ${limitNote ? `<span class="replacement-candidate-over-limit">${escapeHTML(limitNote)}</span>` : ""}
+                            ${contingencyNote ? `<span class="replacement-candidate-contingency">${escapeHTML(contingencyNote)}</span>` : ""}
                     </small>
                     ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
                     ${candidate.backsPendingExtra
@@ -9006,6 +9041,84 @@ export function addPreassignedTurnToDay(
     return true;
 }
 
+/* ======================================================
+   Contingencia (L CONTINGENCIA / N CONTINGENCIA)
+
+   Deja anotado quien queda de LLAMADO para un turno del dia. No es un turno:
+   no se publica, no suma horas y no entra en la proyeccion. Las dos preguntas
+   -si el dia admite la marca y que queda al marcarlo- las contesta
+   js/contingency.js, para que la casilla que se ilumina sea exactamente la que
+   despues acepta el click.
+====================================================== */
+
+/**
+ * Si esta casilla admite la marca de contingencia elegida.
+ *
+ * Un dia que YA tiene esa misma marca siempre se puede tocar: ese click la
+ * quita, y es la unica forma de corregir una marca que despues quedo en un dia
+ * que la regla ya no admitiria.
+ */
+export function canMarkContingencyDay(profileName, keyDay, kind, context = {}) {
+    const kindValue = normalizeContingencyKind(kind);
+
+    if (!profileName || !kindValue) return false;
+
+    if (getContingencyKind(profileName, keyDay) === kindValue) return true;
+
+    return canMarkContingency(profileName, keyDay, kindValue, context);
+}
+
+/**
+ * Pone la marca en el dia, o la quita si ya estaba.
+ *
+ * @returns {{done: boolean, state: string, reason: string}}
+ */
+export function toggleContingencyForDay(profileName, keyDay, kind, context = {}) {
+    const kindValue = normalizeContingencyKind(kind);
+
+    if (!profileName || !keyDay || !kindValue) {
+        return { done: false, state: "", reason: "Marca de contingencia no válida." };
+    }
+
+    const previous = getContingencyKind(profileName, keyDay);
+    const result = toggleContingencyDay(
+        profileName,
+        keyDay,
+        kindValue,
+        context
+    );
+
+    if (!result) {
+        return {
+            done: false,
+            state: "",
+            reason: contingencyDayBlockReason(
+                profileName,
+                keyDay,
+                kindValue,
+                context
+            )
+        };
+    }
+
+    const nombre = contingencyNameForKind(kindValue);
+    const sigla = contingencyBadgeForKind(kindValue);
+
+    addAuditLog(
+        AUDIT_CATEGORY.CALENDAR,
+        result === "on" ? "Marco contingencia" : "Quito contingencia",
+        result === "on"
+            ? `${profileName}: ${nombre} (${sigla}) para el ${keyDay}.` +
+                (previous && previous !== kindValue
+                    ? ` Reemplaza la marca ${contingencyBadgeForKind(previous)}.`
+                    : "")
+            : `${profileName}: se quito ${nombre} (${sigla}) del ${keyDay}.`,
+        { profile: profileName, keyDay }
+    );
+
+    return { done: true, state: result, reason: "" };
+}
+
 async function renderCalendarImpl(options = {}) {
     if (
         calendarDirectEditRefreshTimer &&
@@ -9570,9 +9683,16 @@ async function renderCalendarImpl(options = {}) {
         const attendanceIncidentTitle = attendanceIncidents.length
             ? attendanceIncidentSummary(attendanceIncidents)
             : "";
+        // Contingencia: quien queda de llamado por si ese dia alguien no llega.
+        // Va como insignia y no como etiqueta del dia porque convive con el
+        // turno que el trabajador ya tenga: no lo reemplaza.
+        const contingencyKind = getContingencyKind(activeProfile, keyDay);
         const calendarBadges =
             Array.from(new Set([
                 ...(badge ? [badge] : []),
+                ...(contingencyKind
+                    ? [CONTINGENCY_BADGE[contingencyKind]]
+                    : []),
                 ...(pendingLeaveRequest ? ["Pend."] : []),
                 ...(workerBlockedDay ? ["No disp."] : []),
                 ...(attendanceIncidents.length
@@ -9926,9 +10046,30 @@ async function renderCalendarImpl(options = {}) {
                 }
             );
 
+        // Lo mismo para las marcas de contingencia: se ilumina el dia donde ESA
+        // marca cabe, con la misma regla que despues la guarda.
+        const contingencyBlocked =
+            window.selectionMode === "contingency" &&
+            !canMarkContingencyDay(
+                activeProfile,
+                keyDay,
+                window.pendingContingency || "",
+                {
+                    admin,
+                    legal,
+                    comp,
+                    absences,
+                    hourReturns,
+                    actualState: state
+                }
+            );
+
         if (window.selectionMode || !activeProfileEnabled) {
             div.classList.add(
-                bloqueado || addTurnBlocked || !activeProfileEnabled
+                bloqueado ||
+                addTurnBlocked ||
+                contingencyBlocked ||
+                !activeProfileEnabled
                     ? "mpa-disabled"
                     : "mpa-enabled"
             );

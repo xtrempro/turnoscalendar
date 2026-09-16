@@ -2,6 +2,7 @@ const PARTIAL_MAP_PREFIXES = [
     "data_",
     "baseData_",
     "blocked_",
+    "contingency_",
     "admin_",
     "legal_",
     "comp_",

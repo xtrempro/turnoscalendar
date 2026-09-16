@@ -311,6 +311,18 @@ export function searchReplacements(payload = {}) {
                     return left.nextDayMorningShift ? 1 : -1;
                 }
 
+                // 3. Contingencia del dia: es a quien le toca venir si alguien
+                //    no llega a ese turno. Va PRIMERO de los que quedan, pero
+                //    despues de los dos criterios de arriba: de nada sirve
+                //    ofrecer el turno a quien no se le puede pagar o quien
+                //    seguiria sin dormir, aunque le tocara.
+                if (
+                    Boolean(left.contingencyPriority) !==
+                    Boolean(right.contingencyPriority)
+                ) {
+                    return left.contingencyPriority ? -1 : 1;
+                }
+
                 if (
                     Boolean(left.isDiurnoLongCoverage) !==
                     Boolean(right.isDiurnoLongCoverage)

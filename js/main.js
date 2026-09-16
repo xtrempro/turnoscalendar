@@ -196,6 +196,7 @@ import {
     setCalendarSelectionHandler,
     addTurnToDay,
     addPreassignedTurnToDay,
+    toggleContingencyForDay,
     openManualExtraReasonForDay,
     openPreassignmentReasonForDay,
     openReplacementSuggestionsForLeaveBlock,
@@ -1389,6 +1390,7 @@ const CRITICAL_PROFILE_STATE_PREFIXES = [
     "data_",
     "baseData_",
     "blocked_",
+    "contingency_",
     "admin_",
     "legal_",
     "comp_",
@@ -7710,6 +7712,7 @@ function clearSelectionMode(shouldRefresh = true) {
     pendingShiftMove = null;
     window.pendingAddTurn = 0;
     window.pendingAddTurnPreassign = false;
+    window.pendingContingency = "";
     window.pendingShiftMoveSourceKey = "";
     window.pendingShiftMoveDestinationTurn = 0;
     compCantidad = 0;
@@ -11726,6 +11729,14 @@ const ADD_TURN_OPTIONS = {
     }
 };
 
+// Contingencia: estos dos NO ponen un turno. Dejan anotado quien queda de
+// LLAMADO para el turno de ese dia, por si alguien no llega (js/contingency.js).
+// El `turno` es solo para el color del punto, que es el del turno que cubriria.
+const CONTINGENCY_OPTIONS = {
+    larga: { kind: "L", turno: TURNO.LARGA, label: "L CONTINGENCIA" },
+    noche: { kind: "N", turno: TURNO.NOCHE, label: "N CONTINGENCIA" }
+};
+
 function syncAddTurnButtons() {
     const armado = window.selectionMode === "addturn"
         ? Number(window.pendingAddTurn) || 0
@@ -11747,6 +11758,29 @@ function syncAddTurnButtons() {
 
             const activo = opcion.turno === armado &&
                 Boolean(opcion.preassign) === armadoPre;
+
+            button.style.setProperty(
+                "--add-turn-color",
+                colores[opcion.turno] || ""
+            );
+            button.classList.toggle("is-armed", activo);
+            button.setAttribute("aria-pressed", activo ? "true" : "false");
+        });
+
+    // Los de contingencia comparten caja y armado con los de turno, pero no
+    // arman un turno: se marcan por su propia clave.
+    const contingenciaArmada = window.selectionMode === "contingency"
+        ? String(window.pendingContingency || "")
+        : "";
+
+    document
+        .querySelectorAll("[data-mark-contingency]")
+        .forEach(button => {
+            const opcion = CONTINGENCY_OPTIONS[button.dataset.markContingency];
+
+            if (!opcion) return;
+
+            const activo = opcion.kind === contingenciaArmada;
 
             button.style.setProperty(
                 "--add-turn-color",
@@ -11841,6 +11875,66 @@ function activarModoAgregarTurno(clave) {
     }
 
     syncAddTurnButtons();
+}
+
+function activarModoMarcarContingencia(clave) {
+    const opcion = CONTINGENCY_OPTIONS[clave];
+
+    if (!opcion) return;
+
+    // Apretar el mismo boton otra vez apaga el modo, igual que los de turno.
+    if (
+        window.selectionMode === "contingency" &&
+        String(window.pendingContingency || "") === opcion.kind
+    ) {
+        clearSelectionMode();
+        return;
+    }
+
+    window.pendingContingency = opcion.kind;
+    activarModo("contingency", `Marcando ${opcion.label}`);
+
+    if (!window.selectionMode) {
+        // activarModo se planta si el perfil no se puede modificar.
+        window.pendingContingency = "";
+    }
+
+    syncAddTurnButtons();
+}
+
+async function handleContingencySelection(fecha) {
+    const profile = getCurrentProfile();
+    const keyDay = keyFromDate(fecha);
+    const kind = String(window.pendingContingency || "");
+
+    if (!profile || !kind) {
+        clearSelectionMode();
+        return;
+    }
+
+    pushHistory();
+
+    // Marcar un dia que ya tenia esta misma contingencia la quita: es la forma
+    // de corregirse sin buscar otro control.
+    const resultado = toggleContingencyForDay(profile, keyDay, kind, {
+        admin: getAdminDays(),
+        legal: getLegalDays(),
+        comp: getCompDays(),
+        absences: getAbsences(),
+        hourReturns: { [keyDay]: getHourReturn(profile, keyDay) }
+    });
+
+    if (!resultado.done) {
+        alert(resultado.reason || "Ese dia no admite esa contingencia.");
+        return;
+    }
+
+    // El modo se queda armado, al reves que los botones de turno: la
+    // contingencia se programa de a varios dias del mismo trabajador, y volver
+    // a apretar el boton en cada uno seria una vuelta de mas. Se sale con
+    // "Cancelar" o apretando el mismo boton.
+    await updateDayCell(profile, keyDay);
+    await updateVisibleCalendarDays({ updateSummary: false });
 }
 
 async function handleTrainingSelection(fecha) {
@@ -13136,6 +13230,14 @@ document
         };
     });
 
+document
+    .querySelectorAll("[data-mark-contingency]")
+    .forEach(button => {
+        button.onclick = () => {
+            activarModoMarcarContingencia(button.dataset.markContingency);
+        };
+    });
+
 if (DOM.undoBtn) {
     DOM.undoBtn.onclick = () => {
         const result = undo();
@@ -13204,6 +13306,11 @@ setCalendarSelectionHandler(async ({ cell: celda, date: fecha }) => {
 
     if (selectionMode === "addturn") {
         await handleAddTurnSelection(fecha);
+        return;
+    }
+
+    if (selectionMode === "contingency") {
+        await handleContingencySelection(fecha);
         return;
     }
 

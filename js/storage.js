@@ -2014,6 +2014,7 @@ export function updateProfile(oldName, nextProfile){
     const keysToMove = [
         "data_",
         "blocked_",
+        "contingency_",
         "baseData_",
         "shift_",
         "shiftAssignmentHistory_",

@@ -82,9 +82,13 @@ test("la insignia principal entra en la lista y no la desplaza TTMM", () => {
 
 test("la insignia principal va primero, antes que las secundarias", () => {
     // El "!" es la que exige una accion; TTMM y "Pend." solo informan.
+    // Hasta el cierre de la lista y no a tantos caracteres: con una ventana
+    // fija, agregar una insignia nueva empujaba el traslado fuera del trozo
+    // examinado y la prueba fallaba sin que el orden hubiera cambiado.
+    const inicio = calendar.indexOf("const calendarBadges =");
     const bloque = calendar.slice(
-        calendar.indexOf("const calendarBadges ="),
-        calendar.indexOf("const calendarBadges =") + 520
+        inicio,
+        calendar.indexOf("]));", inicio) + 4
     );
 
     assert.ok(

@@ -47,6 +47,11 @@ import { calculateWorkerMonthTotals } from "./hoursEngine.js";
 import { getBlockedDayForProfile } from "./workerBlockedDays.js";
 import { cededSwapTurnBlocks } from "./swaps.js";
 import { getPreassignmentTurnForWorker } from "./preassignments.js";
+import {
+    contingencyCoversTurn,
+    contingencyIsImminent,
+    getContingencyKind
+} from "./contingency.js";
 import { rotationPositionLabel } from "./rotationUtils.js";
 import { runCooperativeRange } from "./mainThreadScheduler.js";
 import { TURNO } from "./constants.js";
@@ -612,6 +617,11 @@ export async function buildReplacementCandidates(profileName, keyDay, {
             keyDay,
             neededTurn
         );
+    // La contingencia solo se adelanta en la lista cuando la fecha ya esta
+    // encima. Con dias por delante todavia se puede buscar a otro, y quien
+    // quedo de llamado tiene que seguir libre por si ese mismo dia falta
+    // alguien mas.
+    const contingencyImminent = contingencyIsImminent(date);
     const baseProfile = getProfiles().find(profile =>
         profile.name === profileName
     );
@@ -668,6 +678,13 @@ export async function buildReplacementCandidates(profileName, keyDay, {
                 keyDay,
                 neededTurn
             );
+            // Quien quedo de llamado para este dia (js/contingency.js): "LC"
+            // para la Larga, "NC" para la Noche.
+            const contingencyKind = getContingencyKind(profile.name, keyDay);
+            const contingencyCovers = contingencyCoversTurn(
+                contingencyKind,
+                neededTurn
+            );
 
             candidates.push({
                 profile,
@@ -700,6 +717,11 @@ export async function buildReplacementCandidates(profileName, keyDay, {
                     neededTurn
                 ),
                 blockedDay,
+                contingencyKind,
+                contingencyCovers,
+                // La bandera que ORDENA. Se resuelve aqui porque el worker que
+                // ordena no tiene la fecha para saber si el turno es inminente.
+                contingencyPriority: contingencyCovers && contingencyImminent,
                 hheeDiurnas,
                 hheeNocturnas,
                 hhee: hheeDiurnas + hheeNocturnas
