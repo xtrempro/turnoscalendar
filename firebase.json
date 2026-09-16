@@ -2,6 +2,7 @@
   "hosting": {
     "site": "calendarioturnos-7c4d9",
     "public": "dist",
+    "predeploy": ["node scripts/verificar-reglas-vivas.mjs"],
     "ignore": [
       "firebase.json",
       ".firebaserc",
