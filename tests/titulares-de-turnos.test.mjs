@@ -928,3 +928,65 @@ test("el barrido cede el hilo entre trabajador y trabajador", async () => {
 
     assert.match(source, /runCooperativeRange\(0, profiles\.length - 1/);
 });
+
+/* ======================================================================
+   Una rotativa que empieza en el futuro
+
+   Paso de verdad en Imagenologia: al ampliar una rotativa, el inicio vigente
+   quedo en el dia siguiente al tramo historico aplicado. Como hoy era anterior
+   a esa fecha, el barrido se cortaba en la PRIMERA vuelta, se quedaba sin dias
+   que mirar y la trabajadora desaparecia del tablero sin ningun aviso, con su
+   calendario perfecto y los mismos turnos que sus companeros.
+   ====================================================================== */
+
+// Ciclo del 4to turno (Largo, Noche, Libre, Libre) desde el 2 de septiembre.
+function cicloDesdeElDos(hasta = 10) {
+    const dias = {};
+
+    for (let dia = 2; dia <= hasta; dia += 1) {
+        const fase = (dia - 2) % 4;
+
+        dias[`2026-8-${dia}`] = fase === 0 ? 1 : fase === 1 ? 2 : 0;
+    }
+
+    return dias;
+}
+
+test("con el inicio por delante, la ubica igual su calendario", () => {
+    sembrar([
+        { name: "Ana", start: "2026-09-02" },
+        {
+            name: "Ampliada",
+            start: "2026-10-07",
+            firstTurn: "libre2",
+            baseData: cicloDesdeElDos()
+        }
+    ]);
+
+    const ampliada = detectHolderPlacement("Ampliada", HOY);
+
+    assert.ok(ampliada, "no puede desaparecer del tablero");
+    // Viene haciendo el mismo ciclo que Ana, asi que comparte columna.
+    assert.equal(ampliada.letter, detectHolderPlacement("Ana", HOY).letter);
+    assert.ok(ampliada.streakDays >= 4, "la racha sale de su calendario");
+});
+
+test("pero una rotativa que aun no empieza sigue fuera", () => {
+    // Sin calendario que lo respalde no hay nada que ubicar. Ojo: un calendario
+    // vacio es todo Libre y calza por casualidad una o dos fases, por eso se
+    // exige un ciclo completo y no "alguna racha".
+    sembrar([{ name: "Nueva", start: "2026-10-07" }]);
+
+    assert.equal(detectHolderPlacement("Nueva", HOY), null);
+});
+
+test("un inicio ya cumplido sigue cortando el barrido donde siempre", () => {
+    // Lo de arriba no puede cambiar el caso normal: antes del inicio el motor
+    // devuelve Libre para todo, y eso no es evidencia de nada.
+    sembrar([{ name: "Reciente", start: "2026-09-08" }]);
+
+    const reciente = detectHolderPlacement("Reciente", HOY);
+
+    assert.ok(reciente, "con el inicio cumplido tiene que entrar");
+    assert.equal(reciente.historyDays, 3, "solo mira desde el 8 de septiembre");
+});

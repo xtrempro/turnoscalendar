@@ -105,16 +105,27 @@ export function detectHolderPlacement(profileName, today = new Date()) {
     if (rotativa.type !== "4turno") return null;
 
     const start = parseISODate(rotativa.start);
+    // Una rotativa que EMPIEZA EN EL FUTURO no puede borrar a nadie del tablero.
+    // Pasa al ampliar una rotativa: el inicio vigente queda despues de la
+    // ventana aplicada -el dia siguiente al fin del tramo historico-, hoy es
+    // anterior a el, y el barrido de abajo se cortaba en la PRIMERA vuelta. El
+    // trabajador desaparecia sin ningun aviso aunque llevara meses haciendo el
+    // ciclo, que es justo lo que este recuadro promete mostrar.
+    //
+    // Con el inicio por delante se mira igual hacia atras. Lo que no se regala
+    // es la evidencia: mas abajo, sin calce con el ciclo sigue sin entrar.
+    const startsLater = Boolean(start) && start > today;
 
     // Turnos base observados, de hoy hacia atras. Se corta en el inicio de la
     // rotativa: antes de esa fecha el motor devuelve Libre para todo, y eso no
     // es evidencia de nada.
+    const lowerBound = startsLater ? null : start;
     const observed = [];
 
     for (let back = 0; back < LOOKBACK_DAYS; back++) {
         const date = addDays(today, -back);
 
-        if (start && date < start) break;
+        if (lowerBound && date < lowerBound) break;
 
         observed.push(getTurnoBase(profileName, keyFromDate(date)));
     }
@@ -153,6 +164,13 @@ export function detectHolderPlacement(profileName, today = new Date()) {
 
         if (isBetter) best = { position, streak };
     }
+
+    // Con el inicio por delante, lo unico que prueba que hace este ciclo es el
+    // calce con su calendario, y se exige un CICLO COMPLETO: un calendario vacio
+    // -todo Libre- calza por casualidad uno o dos dias contra las dos fases
+    // libres, y con eso entraria al tablero gente cuya rotativa ni siquiera ha
+    // empezado.
+    if (startsLater && best.streak < CYCLE.length) return null;
 
     const position = best.streak > 0
         ? best.position
