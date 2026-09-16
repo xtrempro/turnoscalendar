@@ -224,14 +224,27 @@ test("cubierto el turno, deja de pedir cobertura en el inicio", async () => {
     // descuenta lo ya cubierto o preasignado, asi que un turno trasladado con
     // permiso entra en la cuenta y sale de ella al cubrirlo. Lo que se fija aca
     // es que siga apoyandose en esas condiciones y no en una lista propia.
+    //
+    // Se comprueba condicion por condicion y no la secuencia completa: fijar el
+    // orden exacto hacia fallar esta prueba al AGREGAR una condicion -paso con
+    // la del contrato de reemplazo- sin que nada se hubiera roto.
     const home = await read("../js/home.js");
 
     assert.match(
         home,
         /const requires = requiereReemplazoTurnoBase\(\s*\n\s*keyDay,\s*\n\s*getTurnoBase\(name, keyDay\)/
     );
-    assert.match(
-        home,
-        /!getReplacementForCoveredShift\(name, keyDay\) &&\s*\n\s*!getPreassignmentForCoveredShift\(name, keyDay\) &&\s*\n\s*!isNoCoverageDay\(name, keyDay\)/
-    );
+    [
+        "getReplacementForCoveredShift",
+        // Un contrato de reemplazo cubre el turno sin dejar registro puntual.
+        "getInheritedReplacementContractForCoveredShift",
+        "getPreassignmentForCoveredShift",
+        "isNoCoverageDay"
+    ].forEach(condicion => {
+        assert.match(
+            home,
+            new RegExp(`!${condicion}\\(name, keyDay\\)`),
+            `el inicio tiene que descontar ${condicion}`
+        );
+    });
 });

@@ -46,6 +46,9 @@ import {
     getPreassignmentForCoveredShift,
     getPreassignments
 } from "./preassignments.js";
+import {
+    getInheritedReplacementContractForCoveredShift
+} from "./contracts.js";
 import { refreshAll } from "./refresh.js";
 import { updateDayCell, updateVisibleCalendarDays } from "./calendar.js";
 import { updateTimelineCells } from "./timeline.js";
@@ -348,6 +351,12 @@ function isShiftUncovered(name, keyDay) {
 
     return (
         !getReplacementForCoveredShift(name, keyDay) &&
+        // Un contrato de reemplazo tambien cubre el turno, sin dejar un registro
+        // en `replacements`: el reemplazante hereda los turnos del ausente
+        // mientras dura el contrato. Faltaba mirarlo aqui, asi que el inicio
+        // daba por descubierto un turno que el calendario y el timeline ya
+        // mostraban cubierto, y no habia forma de sacarlo de "sin cubrir".
+        !getInheritedReplacementContractForCoveredShift(name, keyDay) &&
         !getPreassignmentForCoveredShift(name, keyDay) &&
         !isNoCoverageDay(name, keyDay)
     );
