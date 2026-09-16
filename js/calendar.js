@@ -5529,8 +5529,8 @@ function replacementDialogHTML({
             const contingencyNote = candidate.contingencyCovers
                 ? (
                     candidate.contingencyPriority
-                        ? `Está programado como ${contingencyNameForKind(candidate.contingencyKind)} para este día: le toca cubrir.`
-                        : `Programado como ${contingencyNameForKind(candidate.contingencyKind)} para este día, que todavía no llega.`
+                        ? "Está programado como contingencia este día, le corresponde cubrir."
+                        : "Está programado como contingencia este día, que todavía no llega."
                 )
                 : "";
             const candidateHours = candidate.isLinked

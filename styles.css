@@ -215,6 +215,48 @@ body.app-dialog-open {
     box-shadow: 0 0 0 4px var(--dialog-tone-soft);
 }
 
+/* Dialogo de eleccion (showChoice): una lista corta donde se marca UNA. */
+.app-dialog__choices {
+    display: grid;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+.app-dialog__choice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--field-border);
+    border-radius: 13px;
+    background: var(--field);
+    cursor: pointer;
+}
+
+.app-dialog__choice:hover {
+    border-color: var(--dialog-tone);
+}
+
+.app-dialog__choice:has(input:checked) {
+    border-color: var(--dialog-tone);
+    box-shadow: 0 0 0 3px var(--dialog-tone-soft);
+}
+
+.app-dialog__choice-text {
+    display: grid;
+    gap: 2px;
+    color: var(--text);
+    font-size: 0.92rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+
+.app-dialog__choice-hint {
+    color: var(--text-soft);
+    font-size: 0.76rem;
+    font-weight: 500;
+}
+
 .app-dialog__actions {
     display: flex;
     justify-content: flex-end;
@@ -16283,10 +16325,17 @@ button.staffing-pill {
     box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.24);
 }
 
-/* La sigla en la casilla del calendario. */
+/* La sigla en la casilla del calendario. Va un 80% mas grande que el resto de
+   las insignias -lo pidio el usuario- porque no es un aviso que se atiende y se
+   va: se programa con semanas de anticipacion y hay que poder leerlo de un
+   vistazo sobre el calendario completo. */
 .day-badge--contingency {
+    min-width: 36px;
+    min-height: 36px;
+    padding: 3px 12px;
     background: rgba(59, 130, 246, 0.2);
     color: #1d4ed8;
+    font-size: 1.17rem;
     font-weight: 800;
 }
 
