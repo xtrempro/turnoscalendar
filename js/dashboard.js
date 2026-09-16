@@ -287,8 +287,16 @@ function serviceProfessionLabel(profile) {
     return value || "Sin profesi\u00f3n";
 }
 
-function serviceProfessionColor(label, index = 0) {
+function serviceProfessionColor(label, index = 0, estamentoKey = "") {
     const normalized = normalizeText(label);
+
+    if (estamentoKey === "auxiliar") {
+        return "#d97706";
+    }
+
+    if (estamentoKey === "administrativo") {
+        return "#7c3aed";
+    }
 
     if (
         normalized.includes("tm imagenologia") ||
@@ -318,25 +326,68 @@ function serviceProfessionColor(label, index = 0) {
     ];
 }
 
+function serviceEstamentoLabel(profile) {
+    const key = roleKey(profile?.estamento);
+
+    return key
+        ? roleLabel(key)
+        : (String(profile?.estamento || "").trim() || "Otros");
+}
+
+function serviceGroupForProfile(profile, index = 0) {
+    const estamentoKey = roleKey(profile?.estamento);
+    const estamento = serviceEstamentoLabel(profile);
+    const label = estamentoKey === "auxiliar" ||
+        estamentoKey === "administrativo"
+        ? estamento
+        : serviceProfessionLabel(profile);
+    const id = [
+        estamentoKey || normalizeText(estamento) || "otros",
+        normalizeText(label) || "sin-informacion"
+    ].join("|");
+
+    return {
+        id,
+        label,
+        estamento,
+        estamentoKey,
+        color: serviceProfessionColor(label, index, estamentoKey)
+    };
+}
+
 function activeServiceProfessions() {
-    return [...new Set(
-        getProfiles()
-            .filter(isProfileActive)
-            .map(serviceProfessionLabel)
-    )]
-        .sort((a, b) => a.localeCompare(b, "es"))
-        .map((label, index) => ({
-            label,
-            color: serviceProfessionColor(label, index)
+    const groups = new Map();
+
+    getProfiles()
+        .filter(isProfileActive)
+        .forEach((profile, index) => {
+            const group = serviceGroupForProfile(profile, index);
+
+            if (!groups.has(group.id)) groups.set(group.id, group);
+        });
+
+    return [...groups.values()]
+        .sort((a, b) =>
+            serviceEstamentoRank(a.estamento) -
+                serviceEstamentoRank(b.estamento) ||
+            a.label.localeCompare(b.label, "es")
+        )
+        .map((group, index) => ({
+            ...group,
+            color: serviceProfessionColor(
+                group.label,
+                index,
+                group.estamentoKey
+            )
         }));
 }
 
 function cleanServiceProfessionFilters(professions) {
-    const available = new Set(professions.map(item => item.label));
+    const available = new Set(professions.map(item => item.id));
 
-    for (const label of dashboardState.serviceHiddenProfessions) {
-        if (!available.has(label)) {
-            dashboardState.serviceHiddenProfessions.delete(label);
+    for (const id of dashboardState.serviceHiddenProfessions) {
+        if (!available.has(id)) {
+            dashboardState.serviceHiddenProfessions.delete(id);
         }
     }
 }
@@ -345,7 +396,7 @@ function selectedServiceProfessions(professions) {
     cleanServiceProfessionFilters(professions);
 
     return professions.filter(item =>
-        !dashboardState.serviceHiddenProfessions.has(item.label)
+        !dashboardState.serviceHiddenProfessions.has(item.id)
     );
 }
 
@@ -365,7 +416,7 @@ export function buildDailyServiceRows(
             keyDay: keyFromDate(date),
             values: Object.fromEntries(
                 professions.map(profession => [
-                    profession.label,
+                    profession.id,
                     { day: 0, night: 0 }
                 ])
             )
@@ -374,8 +425,8 @@ export function buildDailyServiceRows(
 
     getProfiles()
         .filter(isProfileActive)
-        .forEach(profile => {
-            const profession = serviceProfessionLabel(profile);
+        .forEach((profile, index) => {
+            const profession = serviceGroupForProfile(profile, index);
 
             rows.forEach(row => {
                 const schedule = dashboardServiceSchedule(
@@ -385,11 +436,11 @@ export function buildDailyServiceRows(
                 );
 
                 if (!schedule) return;
-                if (!row.values[profession]) {
-                    row.values[profession] = { day: 0, night: 0 };
+                if (!row.values[profession.id]) {
+                    row.values[profession.id] = { day: 0, night: 0 };
                 }
-                if (schedule.day) row.values[profession].day += 1;
-                if (schedule.night) row.values[profession].night += 1;
+                if (schedule.day) row.values[profession.id].day += 1;
+                if (schedule.night) row.values[profession.id].night += 1;
             });
         });
 
@@ -979,26 +1030,28 @@ function serviceSeriesForChart(data) {
     professions.forEach(profession => {
         if (mode !== "night") {
             series.push({
-                profession: profession.label,
+                profession: profession.id,
+                estamento: profession.estamento,
                 shift: "day",
                 label: `${profession.label} \u00b7 d\u00eda`,
                 color: profession.color,
                 dashed: false,
                 values: data.rows.map(row =>
-                    row.values[profession.label]?.day || 0
+                    row.values[profession.id]?.day || 0
                 )
             });
         }
 
         if (mode !== "day") {
             series.push({
-                profession: profession.label,
+                profession: profession.id,
+                estamento: profession.estamento,
                 shift: "night",
                 label: `${profession.label} \u00b7 noche`,
                 color: profession.color,
                 dashed: true,
                 values: data.rows.map(row =>
-                    row.values[profession.label]?.night || 0
+                    row.values[profession.id]?.night || 0
                 )
             });
         }
@@ -1022,7 +1075,7 @@ export function renderDailyServiceChart(data) {
     }
 
     const width = Math.max(820, data.rows.length * 38 + 90);
-    const height = 320;
+    const height = 390;
     const pad = { top: 22, right: 28, bottom: 42, left: 42 };
     const plotWidth = width - pad.left - pad.right;
     const plotHeight = height - pad.top - pad.bottom;
@@ -1038,10 +1091,6 @@ export function renderDailyServiceChart(data) {
     const gridValues = Array.from({ length: 5 }, (_, index) =>
         Math.round((axisMax / 4) * (4 - index))
     );
-    const dayWidth = data.rows.length <= 1
-        ? plotWidth
-        : plotWidth / (data.rows.length - 1);
-
     return `
         <div class="dashboard-service">
             <div class="dashboard-service-summary">
@@ -1079,26 +1128,16 @@ export function renderDailyServiceChart(data) {
                             <title>${escapeHTML(`${series.label}: ${value} el d\u00eda ${data.rows[index].day}`)}</title>
                         </circle>
                     `).join("")).join("")}
-                    ${data.rows.map((row, index) => {
-                        const x = Math.max(
-                            pad.left,
-                            xFor(index) - dayWidth / 2
-                        );
-                        const nextX = Math.min(
-                            width - pad.right,
-                            xFor(index) + dayWidth / 2
-                        );
-
-                        return `
-                            <rect class="dashboard-service-hit"
-                                tabindex="0" role="button"
-                                aria-label="Ver dotaci\u00f3n del d\u00eda ${row.day}"
-                                data-dashboard-service-day="${escapeHTML(row.keyDay)}"
-                                x="${x}" y="${pad.top}"
-                                width="${Math.max(18, nextX - x)}"
-                                height="${plotHeight}"></rect>
-                        `;
-                    }).join("")}
+                    ${visibleSeries.map(series => series.values.map((value, index) => `
+                        <circle class="dashboard-service-hit"
+                            tabindex="0" role="button"
+                            aria-label="Ver ${escapeHTML(series.label)} del d\u00eda ${data.rows[index].day}"
+                            data-dashboard-service-day="${escapeHTML(data.rows[index].keyDay)}"
+                            data-dashboard-service-estamento="${escapeHTML(series.estamento)}"
+                            cx="${xFor(index)}" cy="${yFor(value, axisMax)}" r="12">
+                            <title>${escapeHTML(`Ver ${series.estamento} en servicio el d\u00eda ${data.rows[index].day}`)}</title>
+                        </circle>
+                    `).join("")).join("")}
                 </svg>
             </div>
             <div class="dashboard-chart-legend dashboard-service-legend">
@@ -1139,8 +1178,8 @@ function renderDailyServiceControls(data) {
                 ${data.professions.map(profession => `
                     <label style="--role-color:${profession.color}">
                         <input type="checkbox" data-dashboard-service-profession
-                            value="${escapeHTML(profession.label)}"
-                            ${dashboardState.serviceHiddenProfessions.has(profession.label) ? "" : "checked"}>
+                            value="${escapeHTML(profession.id)}"
+                            ${dashboardState.serviceHiddenProfessions.has(profession.id) ? "" : "checked"}>
                         <span>${escapeHTML(profession.label)}</span>
                     </label>
                 `).join("")}
@@ -1390,14 +1429,14 @@ function bindServiceDetailModal(backdrop) {
     });
 }
 
-function openServiceDetailModal(keyDay) {
+function openServiceDetailModal(keyDay, estamento = "") {
     const date = keyToDate(keyDay);
 
     if (Number.isNaN(date.getTime())) return;
 
     closeServiceDetailModal();
     serviceDetailState.date = date;
-    serviceDetailState.estamento = "";
+    serviceDetailState.estamento = String(estamento || "");
 
     document.body.insertAdjacentHTML("beforeend", `
         <div class="hm-modal-backdrop dashboard-service-modal-backdrop"
@@ -1529,7 +1568,10 @@ function bindDashboardControls(root) {
         .querySelectorAll("[data-dashboard-service-day]")
         .forEach(target => {
             const open = () =>
-                openServiceDetailModal(target.dataset.dashboardServiceDay);
+                openServiceDetailModal(
+                    target.dataset.dashboardServiceDay,
+                    target.dataset.dashboardServiceEstamento
+                );
 
             target.addEventListener("click", open);
             target.addEventListener("keydown", event => {

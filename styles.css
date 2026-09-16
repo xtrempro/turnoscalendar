@@ -6433,11 +6433,14 @@ body.theme-dark .dashboard-overtime {
 
 .dashboard-service-chart {
     min-width: 820px;
+    height: 390px;
     cursor: crosshair;
 }
 
 .dashboard-service-hit {
     fill: transparent;
+    stroke: transparent;
+    stroke-width: 12;
     cursor: pointer;
     outline: none;
     pointer-events: all;

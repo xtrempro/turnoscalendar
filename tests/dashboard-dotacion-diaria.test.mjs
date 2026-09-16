@@ -62,7 +62,7 @@ const norm = value => String(value || "")
 function professionKey(data, fragment) {
     return data.professions.find(item =>
         norm(item.label).includes(norm(fragment))
-    )?.label;
+    )?.id;
 }
 
 function setJSON(keyName, value) {
@@ -99,6 +99,27 @@ function seed() {
             estamento: "Profesional",
             profession: "TM Imagenologia",
             active: false
+        },
+        {
+            id: "p-5",
+            name: "Tania Tecnica",
+            estamento: "T\u00e9cnico",
+            profession: "T\u00e9cnico en Imagenologia",
+            active: true
+        },
+        {
+            id: "p-6",
+            name: "Mario Admin",
+            estamento: "Administrativo",
+            profession: "Secretariado",
+            active: true
+        },
+        {
+            id: "p-7",
+            name: "Luz Auxiliar",
+            estamento: "Auxiliar",
+            profession: "Aseo clinico",
+            active: true
         }
     ]);
 
@@ -115,6 +136,15 @@ function seed() {
     });
     setJSON("data_Eli Inactiva", {
         [key(1)]: TURNO.LARGA
+    });
+    setJSON("data_Tania Tecnica", {
+        [key(1)]: TURNO.LARGA
+    });
+    setJSON("data_Mario Admin", {
+        [key(1)]: TURNO.LARGA
+    });
+    setJSON("data_Luz Auxiliar", {
+        [key(1)]: TURNO.NOCHE
     });
     setJSON("absences_Dora Rojas", {
         [key(1)]: { type: "license" }
@@ -148,6 +178,23 @@ test("cuenta trabajadores diarios por profesion y separa dia/noche", () => {
     assert.equal(day3.values[tm].night, 1);
 });
 
+test("profesionales y tecnicos van por profesion, administrativos y auxiliares por estamento", () => {
+    seed();
+
+    const data = buildDailyServiceRows(YEAR, MONTH);
+    const labels = data.professions.map(item => item.label);
+    const tecnico = professionKey(data, "Tecnico en Imagenologia");
+    const administrativo = professionKey(data, "Administrativo");
+    const auxiliar = professionKey(data, "Auxiliar");
+
+    assert.ok(tecnico);
+    assert.equal(data.rows[0].values[tecnico].day, 1);
+    assert.equal(data.rows[0].values[administrativo].day, 1);
+    assert.equal(data.rows[0].values[auxiliar].night, 1);
+    assert.equal(labels.some(label => norm(label).includes("secretariado")), false);
+    assert.equal(labels.some(label => norm(label).includes("aseo clinico")), false);
+});
+
 test("no cuenta inactivos ni trabajadores con ausencia completa", () => {
     seed();
 
@@ -165,6 +212,8 @@ test("el grafico usa mismo color por profesion y clic por dia", () => {
     assert.match(chart, /stroke="#8a1f3d"/);
     assert.match(chart, /stroke-dasharray="8 7"/);
     assert.match(chart, /data-dashboard-service-day="2026-8-1"/);
+    assert.match(chart, /data-dashboard-service-estamento="T\u00e9cnico"/);
+    assert.match(chart, /data-dashboard-service-estamento="Auxiliar"/);
 });
 
 test("el eje X muestra todos los dias del mes", () => {
