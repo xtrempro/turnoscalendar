@@ -43,7 +43,11 @@ globalThis.document = {
 globalThis.alert = () => {};
 globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
 
-const { buildOvertimeByWorkerRows, renderOvertimeByWorker } =
+const {
+    buildOvertimeByWorkerRows,
+    overtimeProfessionFilters,
+    renderOvertimeByWorker
+} =
     await import("../js/dashboard.js");
 const { TURNO } = await import("../js/constants.js");
 
@@ -59,10 +63,16 @@ function seed() {
         // Otra profesion: no debe aparecer.
         { id: "p-3", name: "Carla Diaz", estamento: "Técnico", profession: "Técnico en Imagenología", active: true },
         // Inactiva: tampoco.
-        { id: "p-4", name: "Dora Rojas", estamento: "Profesional", profession: PROFESSION, active: false }
+        { id: "p-4", name: "Dora Rojas", estamento: "Profesional", profession: PROFESSION, active: false },
+        { id: "p-5", name: "Eduardo Admin Ruiz", estamento: "Administrativo", profession: "Tecnico en Administracion de Empresas", active: true },
+        { id: "p-6", name: "Fabian Auxiliar Lagos", estamento: "Auxiliar", profession: "Auxiliar de Servicio", active: true },
+        { id: "p-7", name: "Gala Sin Dato", estamento: "Profesional", profession: "Sin informacion", active: true }
     ]));
 
-    ["Ana Perez", "Bruno Soto Vera", "Carla Diaz", "Dora Rojas"].forEach(name => {
+    [
+        "Ana Perez", "Bruno Soto Vera", "Carla Diaz", "Dora Rojas",
+        "Eduardo Admin Ruiz", "Fabian Auxiliar Lagos", "Gala Sin Dato"
+    ].forEach(name => {
         localStorage.setItem(`shift_${name}`, JSON.stringify(true));
         localStorage.setItem(`rotativa_${name}`, JSON.stringify({
             type: "4turno", start: "", firstTurn: "larga"
@@ -79,7 +89,41 @@ function seed() {
     localStorage.setItem("data_Bruno Soto Vera", JSON.stringify({
         "2026-7-1": TURNO.LARGA
     }));
+    localStorage.setItem("data_Eduardo Admin Ruiz", JSON.stringify({
+        "2026-7-17": TURNO.LARGA
+    }));
+    localStorage.setItem("data_Fabian Auxiliar Lagos", JSON.stringify({
+        "2026-7-17": TURNO.LARGA
+    }));
 }
+
+test("agrupa auxiliares y administrativos, pero conserva las demas profesiones", () => {
+    seed();
+
+    const filters = overtimeProfessionFilters();
+    const labels = filters.map(filter => filter.label);
+
+    assert.equal(filters[0].label, PROFESSION);
+    assert.equal(labels.includes("Administrativo"), true);
+    assert.equal(labels.includes("Auxiliares"), true);
+    assert.equal(labels.includes("Técnico en Imagenología"), true);
+    assert.equal(labels.includes("Tecnico en Administracion de Empresas"), false);
+    assert.equal(labels.includes("Auxiliar de Servicio"), false);
+});
+
+test("los filtros agrupados incluyen a todo su estamento", async () => {
+    seed();
+
+    const administrativeRows = await buildOvertimeByWorkerRows(
+        "role:administrativo", YEAR, MONTH
+    );
+    const auxiliaryRows = await buildOvertimeByWorkerRows(
+        "role:auxiliar", YEAR, MONTH
+    );
+
+    assert.deepEqual(administrativeRows.map(row => row.name), ["Eduardo Admin Ruiz"]);
+    assert.deepEqual(auxiliaryRows.map(row => row.name), ["Fabian Auxiliar Lagos"]);
+});
 
 test("solo trae los trabajadores activos de la profesion pedida", async () => {
     seed();
@@ -129,11 +173,11 @@ test("el eje X usa nombre corto y el nombre completo va en el tooltip", async ()
     const rows = await buildOvertimeByWorkerRows(PROFESSION, YEAR, MONTH);
     const bruno = rows.find(row => row.name === "Bruno Soto Vera");
 
-    assert.equal(bruno.shortName, "Bruno Soto");
+    assert.equal(bruno.shortName, "B. Soto");
 
     const chart = renderOvertimeByWorker(rows);
 
-    assert.match(chart, /<small>Bruno Soto<\/small>/);
+    assert.match(chart, /<small>B\. Soto<\/small>/);
     assert.match(chart, /title="Bruno Soto Vera: 12 h totales/);
 });
 
@@ -190,5 +234,7 @@ test("los controles filtran por profesion y navegan por mes", async () => {
     );
     // Solo se calcula la profesion elegida: recorrer toda la unidad es lo que
     // hizo desactivar otros graficos por lentos.
-    assert.match(dashboard, /normalizeText\(profile\.profession \|\| ""\) === target/);
+    assert.match(dashboard, /profileMatchesOvertimeFilter\(profile, filter\)/);
+    assert.match(dashboard, /role:administrativo/);
+    assert.match(dashboard, /role:auxiliar/);
 });

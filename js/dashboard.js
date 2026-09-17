@@ -816,51 +816,185 @@ function renderLicenseRanking(rows) {
     `;
 }
 
-// ---- HH.EE por trabajador (filtrado por profesion, mes a mes) ----
+// ---- HH.EE por trabajador (filtrado por profesion/estamento, mes a mes) ----
 
-function overtimeProfessions() {
+const OVERTIME_ROLE_FILTERS = {
+    administrativo: {
+        key: "role:administrativo",
+        label: "Administrativo",
+        roleKey: "administrativo",
+        kind: "role"
+    },
+    auxiliar: {
+        key: "role:auxiliar",
+        label: "Auxiliares",
+        roleKey: "auxiliar",
+        kind: "role"
+    }
+};
+
+const OVERTIME_ESTAMENTO_RANK = {
+    profesional: 0,
+    tecnico: 1,
+    administrativo: 2,
+    auxiliar: 3
+};
+
+function overtimeNoInfo(label) {
+    return normalizeText(label) === "sin informacion";
+}
+
+function overtimeProfileFilter(profile) {
+    const estamentoKey = roleKey(profile?.estamento);
+
+    if (estamentoKey === "administrativo") {
+        return OVERTIME_ROLE_FILTERS.administrativo;
+    }
+
+    if (estamentoKey === "auxiliar") {
+        return OVERTIME_ROLE_FILTERS.auxiliar;
+    }
+
+    const label = String(profile?.profession || "").trim();
+
+    if (!label) return null;
+
+    return {
+        key: `profession:${normalizeText(label)}`,
+        label,
+        roleKey: estamentoKey,
+        kind: "profession"
+    };
+}
+
+function compareOvertimeFilters(a, b) {
+    const rankA = OVERTIME_ESTAMENTO_RANK[a.roleKey] ?? 9;
+    const rankB = OVERTIME_ESTAMENTO_RANK[b.roleKey] ?? 9;
+
+    return rankA - rankB ||
+        Number(overtimeNoInfo(a.label)) - Number(overtimeNoInfo(b.label)) ||
+        a.label.localeCompare(b.label, "es");
+}
+
+export function overtimeProfessionFilters() {
     const seen = new Map();
 
     getProfiles()
         .filter(isProfileActive)
         .forEach(profile => {
-            const label = String(profile.profession || "").trim();
+            const filter = overtimeProfileFilter(profile);
 
-            if (!label) return;
+            if (!filter || seen.has(filter.key)) return;
 
-            const key = normalizeText(label);
-
-            if (!seen.has(key)) seen.set(key, label);
+            seen.set(filter.key, filter);
         });
 
-    return [...seen.values()].sort((a, b) => a.localeCompare(b, "es"));
+    return [...seen.values()].sort(compareOvertimeFilters);
 }
 
-function activeOvertimeProfession() {
-    const professions = overtimeProfessions();
+function defaultOvertimeFilter(filters) {
+    return filters.find(filter =>
+        filter.kind === "profession" &&
+        filter.roleKey === "profesional" &&
+        !overtimeNoInfo(filter.label)
+    ) ||
+        filters.find(filter =>
+            filter.kind === "profession" &&
+            filter.roleKey === "profesional"
+        ) ||
+        filters.find(filter => !overtimeNoInfo(filter.label)) ||
+        filters[0] ||
+        null;
+}
 
-    if (!professions.length) return "";
+function activeOvertimeFilter() {
+    const filters = overtimeProfessionFilters();
+
+    if (!filters.length) return null;
 
     const current = dashboardState.overtimeProfession;
+    const normalizedCurrent = normalizeText(current);
 
-    return professions.includes(current) ? current : professions[0];
+    return filters.find(filter =>
+        filter.key === current ||
+        normalizeText(filter.label) === normalizedCurrent
+    ) || defaultOvertimeFilter(filters);
 }
 
-// Nombre corto para el eje X: los nombres completos no caben. El nombre
-// completo viaja en el tooltip de la barra.
+function overtimeFilterFromValue(value) {
+    const raw = String(value || "").trim();
+    const normalized = normalizeText(raw);
+
+    if (
+        raw === OVERTIME_ROLE_FILTERS.administrativo.key ||
+        normalized === "administrativo" ||
+        normalized === "administrativos"
+    ) {
+        return OVERTIME_ROLE_FILTERS.administrativo;
+    }
+
+    if (
+        raw === OVERTIME_ROLE_FILTERS.auxiliar.key ||
+        normalized === "auxiliar" ||
+        normalized === "auxiliares"
+    ) {
+        return OVERTIME_ROLE_FILTERS.auxiliar;
+    }
+
+    return {
+        key: raw.startsWith("profession:")
+            ? raw
+            : `profession:${normalized}`,
+        label: raw.replace(/^profession:/, ""),
+        roleKey: "",
+        kind: "profession"
+    };
+}
+
+function profileMatchesOvertimeFilter(profile, filter) {
+    const estamentoKey = roleKey(profile?.estamento);
+
+    if (filter.kind === "role") {
+        return estamentoKey === filter.roleKey;
+    }
+
+    if (estamentoKey === "administrativo" || estamentoKey === "auxiliar") {
+        return false;
+    }
+
+    return normalizeText(profile?.profession || "") ===
+        filter.key.replace(/^profession:/, "");
+}
+
+// Nombre corto para el eje X: la misma tecnica del tablero de asignacion de
+// tareas, inicial del primer nombre + primer apellido. El nombre completo viaja
+// en el tooltip de la barra.
+function workerNameParts(fullName) {
+    const words = String(fullName || "").trim().split(/\s+/).filter(Boolean);
+
+    if (!words.length) return null;
+    if (words.length === 1) return { first: words[0], surname: "" };
+
+    return {
+        first: words[0],
+        surname: words.length >= 3 ? words[words.length - 2] : words[1]
+    };
+}
+
 function shortWorkerName(fullName) {
-    const parts = String(fullName || "").trim().split(/\s+/).filter(Boolean);
+    const parts = workerNameParts(fullName);
 
-    if (parts.length <= 2) return parts.join(" ");
+    if (!parts) return "";
+    if (!parts.surname) return parts.first;
 
-    return `${parts[0]} ${parts[parts.length - 2]}`;
+    return `${parts.first.charAt(0)}. ${parts.surname}`;
 }
 
 export async function buildOvertimeByWorkerRows(profession, year, month) {
-    const target = normalizeText(profession);
+    const filter = overtimeFilterFromValue(profession);
     const profiles = getProfiles().filter(profile =>
         isProfileActive(profile) &&
-        normalizeText(profile.profession || "") === target
+        profileMatchesOvertimeFilter(profile, filter)
     );
 
     if (!profiles.length) return [];
@@ -905,16 +1039,16 @@ function formatOvertimeHours(value) {
         : rounded.toFixed(1).replace(".", ",");
 }
 
-function renderOvertimeControls(professions, profession) {
+function renderOvertimeControls(filters, activeFilter) {
     const monthName = `${MONTH_SHORT[dashboardState.overtimeMonth]} ${dashboardState.overtimeYear}`;
 
     return `
         <aside class="dashboard-control-card">
             <strong>Profesión</strong>
             <select data-dashboard-overtime-profession>
-                ${professions.map(item => `
-                    <option value="${escapeHTML(item)}" ${item === profession ? "selected" : ""}>
-                        ${escapeHTML(item)}
+                ${filters.map(item => `
+                    <option value="${escapeHTML(item.key)}" ${item.key === activeFilter?.key ? "selected" : ""}>
+                        ${escapeHTML(item.label)}
                     </option>
                 `).join("")}
             </select>
@@ -1645,8 +1779,8 @@ export async function renderDashboardPanel() {
 
             if (requestId !== renderRequest) return;
 
-            const professions = overtimeProfessions();
-            const profession = activeOvertimeProfession();
+            const overtimeFilters = overtimeProfessionFilters();
+            const overtimeFilter = activeOvertimeFilter();
             const serviceData = measurePerformance(
                 "dashboard:build-daily-service",
                 () => buildDailyServiceRows(
@@ -1658,15 +1792,15 @@ export async function renderDashboardPanel() {
                     month: dashboardState.serviceMonth
                 }
             );
-            const overtimeRows = profession
+            const overtimeRows = overtimeFilter
                 ? await measurePerformance(
                     "dashboard:build-overtime-by-worker",
                     () => buildOvertimeByWorkerRows(
-                        profession,
+                        overtimeFilter.key,
                         dashboardState.overtimeYear,
                         dashboardState.overtimeMonth
                     ),
-                    { profession }
+                    { profession: overtimeFilter.label }
                 )
                 : [];
 
@@ -1679,12 +1813,12 @@ export async function renderDashboardPanel() {
                     renderDailyServiceChart(serviceData),
                     renderDailyServiceControls(serviceData)
                 )}
-                ${professions.length
+                ${overtimeFilters.length
                     ? renderCard(
                         "Horas extras por trabajador",
-                        `${escapeHTML(profession)} \u00b7 ${MONTH_SHORT[dashboardState.overtimeMonth]} ${dashboardState.overtimeYear}.`,
+                        `${escapeHTML(overtimeFilter.label)} \u00b7 ${MONTH_SHORT[dashboardState.overtimeMonth]} ${dashboardState.overtimeYear}.`,
                         renderOvertimeByWorker(overtimeRows),
-                        renderOvertimeControls(professions, profession)
+                        renderOvertimeControls(overtimeFilters, overtimeFilter)
                     )
                     : ""}
                 ${renderCard(
