@@ -10293,6 +10293,11 @@ async function renderCalendarImpl(options = {}) {
                 legalCantidad: window.legalCantidad || 0,
                 licenseCantidad: window.licenseCantidad || 0,
                 licenseType: window.licenseType || "license",
+                // Capacitacion sobre un turno de Noche: solo si la unidad lo
+                // habilito, si no la casilla sigue sin poder marcarse.
+                allowNightTraining:
+                    getReplacementRequestConfig()
+                        .allowNightTrainingReplacement === true,
                 rotativa: activeRotativa,
                 holidays,
                 hourReturns,

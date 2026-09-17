@@ -409,10 +409,17 @@ export function getTrainingCoverageHours(profileName, keyDay) {
 
     if (!hours) return null;
 
-    return {
-        d: Number(hours.d) || 0,
-        n: Number(hours.n) || 0
-    };
+    const d = Number(hours.d) || 0;
+    const n = Number(hours.n) || 0;
+
+    // Cero horas no es una anulacion: es "sin anulacion". Pasa con la
+    // capacitacion de un turno de Noche, que exime la jornada COMPLETA y por
+    // eso no pregunta horario. Devolver {d:0,n:0} dimensionaba el reemplazo en
+    // cero horas en vez de la noche entera (ver calendar.js, overtimeHours del
+    // candidato).
+    if (!d && !n) return null;
+
+    return { d, n };
 }
 
 /**

@@ -337,6 +337,12 @@ function renderRequestsPanel() {
                     title: "Solicitar aceptacion al trabajador",
                     description: "Al cargar las sugerencias aparece la opcion de preguntarle al trabajador si puede realizar el reemplazo antes de anadirlo al calendario."
                 })}
+                ${checkboxHTML({
+                    id: "settingsAllowNightTrainingReplacement",
+                    checked: config.allowNightTrainingReplacement === true,
+                    title: "Permitir el reemplazo de capacitaciones cuando al funcionario le corresponde turno de noche",
+                    description: "El funcionario se exime de ir a su turno de noche. La capacitacion se aplica sin pedir horario -la noche se exime completa- y el turno queda pidiendo reemplazo."
+                })}
             </div>
 
             ${config.enableWorkerAcceptanceRequest !== false ? `
@@ -1048,6 +1054,10 @@ function readRequestConfig(backdrop) {
             hasInput("settingsEnableWorkerAcceptanceRequest")
                 ? checked("settingsEnableWorkerAcceptanceRequest")
                 : fallback.enableWorkerAcceptanceRequest,
+        allowNightTrainingReplacement:
+            hasInput("settingsAllowNightTrainingReplacement")
+                ? checked("settingsAllowNightTrainingReplacement")
+                : fallback.allowNightTrainingReplacement,
         expiresMinutes:
             Number.isFinite(expiresMinutes) && expiresMinutes > 0
                 ? Math.round(expiresMinutes)

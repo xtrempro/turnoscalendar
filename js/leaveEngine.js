@@ -28,6 +28,7 @@ import {
     getRotativa,
     getManualLeaveBalances,
     getProfileData,
+    getReplacementRequestConfig,
     isNoCoverageDay,
     saveManualLeaveBalances,
     setNoCoverageDay
@@ -401,7 +402,10 @@ export async function aplicarCapacitacion(
     const comp = getCompDays();
 
     if (
-        !esTurnoCapacitacionValido(turno) ||
+        !esTurnoCapacitacionValido(
+            turno,
+            getReplacementRequestConfig().allowNightTrainingReplacement === true
+        ) ||
         admin[key] ||
         legal[key] ||
         comp[key] ||

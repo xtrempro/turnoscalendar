@@ -993,7 +993,12 @@ const DEFAULT_REPLACEMENT_REQUEST_CONFIG = {
     expiresMinutes: 24 * 60,
     enableLinkedUnitSuggestions: true,
     enableCrossRoleSuggestions: true,
-    enableWorkerAcceptanceRequest: true
+    enableWorkerAcceptanceRequest: true,
+    // Capacitacion en un dia de Noche: el trabajador se exime de presentarse y
+    // su turno queda pidiendo reemplazo. Arranca DESACTIVADO porque no todas
+    // las unidades eximen de la noche por una capacitacion; sin esto, el modo
+    // capacitacion sigue admitiendo solo Larga y Diurno, como hasta ahora.
+    allowNightTrainingReplacement: false
 };
 
 const DEFAULT_REPORT_SIGNATURE_CONFIG = {
@@ -1030,6 +1035,9 @@ function normalizeReplacementRequestConfig(config = {}) {
             config.enableCrossRoleSuggestions !== false,
         enableWorkerAcceptanceRequest:
             config.enableWorkerAcceptanceRequest !== false,
+        // Por omision APAGADO: solo vale si la unidad lo pidio expresamente.
+        allowNightTrainingReplacement:
+            config.allowNightTrainingReplacement === true,
         expiresMinutes:
             Number.isFinite(expiresMinutes) && expiresMinutes > 0
                 ? Math.round(expiresMinutes)

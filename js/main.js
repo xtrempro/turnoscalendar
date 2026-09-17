@@ -412,7 +412,8 @@ import {
     getProfessionOptionsForEstamento,
     normalizeProfession,
     SIN_INFORMACION_PROFESSION,
-    getTurnChangeConfig
+    getTurnChangeConfig,
+    getReplacementRequestConfig
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import {
@@ -12025,8 +12026,17 @@ async function handleTrainingSelection(fecha) {
     const absences = getAbsences();
     const state = getTurnoBase(profile, keyDay);
 
-    if (!esTurnoCapacitacionValido(state)) {
-        alert("Selecciona un turno diurno (Larga o Diurno) para registrar capacitacion.");
+    // La NOCHE solo admite capacitacion si la unidad lo habilito: ahi el
+    // trabajador se exime de presentarse y su turno pide reemplazo.
+    const allowNight =
+        getReplacementRequestConfig().allowNightTrainingReplacement === true;
+
+    if (!esTurnoCapacitacionValido(state, allowNight)) {
+        alert(
+            allowNight
+                ? "Selecciona un turno Larga, Diurno o Noche para registrar capacitacion."
+                : "Selecciona un turno diurno (Larga o Diurno) para registrar capacitacion."
+        );
         clearSelectionMode();
         return;
     }
@@ -12039,6 +12049,28 @@ async function handleTrainingSelection(fecha) {
         getHourReturn(profile, keyDay)
     ) {
         alert("Este turno ya tiene un permiso, licencia, feriado, ausencia o devolucion aplicada.");
+        clearSelectionMode();
+        return;
+    }
+
+    // En la Noche el trabajador se exime del turno COMPLETO, asi que no hay
+    // tramo que preguntar: se aplica directo y el turno queda pidiendo
+    // reemplazo. Preguntar de que hora a que hora solo tiene sentido cuando la
+    // capacitacion ocupa una parte de la jornada, que es el caso de Larga y
+    // Diurno.
+    if (Number(state) === TURNO.NOCHE) {
+        const appliedNight = await aplicarCapacitacion(
+            fecha,
+            {},
+            {
+                beforeMutation: () => pushHistory()
+            }
+        );
+
+        if (appliedNight === false) {
+            alert("No se pudo registrar la capacitacion en ese turno.");
+        }
+
         clearSelectionMode();
         return;
     }

@@ -397,8 +397,20 @@ export function esTurnoAdministrativoValido(state, rotativa = "") {
     );
 }
 
-export function esTurnoCapacitacionValido(state) {
+/**
+ * .Admite este turno una capacitacion?
+ *
+ * Larga y Diurno siempre. La NOCHE solo si la unidad lo habilito: ahi el
+ * trabajador se exime de presentarse y su turno queda pidiendo reemplazo.
+ *
+ * El permiso llega por PARAMETRO y no se lee aqui: este archivo es de reglas
+ * puras y viaja en el bundle del servidor, que no tiene la configuracion de la
+ * unidad a mano. Por omision va apagado, asi que sin pasarlo nada cambia.
+ */
+export function esTurnoCapacitacionValido(state, allowNight = false) {
     const turno = Number(state) || TURNO.LIBRE;
+
+    if (allowNight && turno === TURNO.NOCHE) return true;
 
     return (
         turno === TURNO.LARGA ||
@@ -1209,7 +1221,10 @@ export function estaBloqueadoModo(
 
     if (selectionMode === "training") {
         return (
-            !esTurnoCapacitacionValido(state) ||
+            !esTurnoCapacitacionValido(
+                state,
+                options.allowNightTraining === true
+            ) ||
             hasHourReturn ||
             Boolean(tieneAusencia(
                 keyDay,
