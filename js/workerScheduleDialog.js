@@ -87,7 +87,7 @@ function campo(segmentKey, name, label, placeholder) {
 
 function segmentoHTML(segment) {
     return `
-        <fieldset class="ws-segment">
+        <fieldset class="ws-segment" data-ws-segment>
             <legend>${escapeHTML(segment.label)}</legend>
             <div class="ws-fields">
                 ${campo(segment.key, "entry", "Entrada", "08:00")}
@@ -232,6 +232,21 @@ export function openWorkerScheduleDialog(profile) {
                     }
                 }
             );
+
+            // El horario libre y las horas fijas son una cosa o la otra, asi
+            // que al marcarlo los tramos se desactivan. Un fieldset
+            // deshabilitado ademas no viaja en el envio, con lo que la forma
+            // guardada tampoco puede quedar con las dos cosas a la vez.
+            const libreCheck = backdrop.querySelector("[data-ws-free]");
+            const tramos = backdrop.querySelectorAll("[data-ws-segment]");
+            const aplicarLibre = () => {
+                tramos.forEach(tramo => {
+                    tramo.disabled = Boolean(libreCheck?.checked);
+                });
+            };
+
+            libreCheck?.addEventListener("change", aplicarLibre);
+            aplicarLibre();
 
             backdrop.querySelectorAll("[data-ws-remove]").forEach(button => {
                 button.addEventListener("click", () => {

@@ -27215,6 +27215,8 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
     cursor: pointer;
 }
 .ws-free-toggle input { width: 16px; height: 16px; }
+.ws-segment[disabled] { opacity: 0.45; }
+.ws-segment[disabled] legend { color: var(--text-soft); }
 
 
 /* Aviso de sesion sin sincronizacion. Va fijo abajo y ocupa poco: informa de

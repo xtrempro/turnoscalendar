@@ -15,6 +15,7 @@
 // Viene apagado para todos.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 class MemoryStorage {
     constructor() { this.values = new Map(); }
@@ -56,6 +57,11 @@ const {
     ATTENDANCE_INCIDENT_KINDS,
     buildAttendanceIncidents
 } = await import("../js/hoursReport.js");
+
+const dialogo = (await readFile(
+    new URL("../js/workerScheduleDialog.js", import.meta.url),
+    "utf8"
+)).replace(/\r\n/g, "\n");
 
 const NOMBRE = "TRABAJADOR DE PRUEBA";
 const RUT = "17816632-8";
@@ -384,4 +390,31 @@ test("los dos tipos entran al recuadro del inicio", () => {
 
     assert.ok(claves.includes("freeLateExit"), "salida tardia");
     assert.ok(claves.includes("freeShortDay"), "jornada incompleta");
+});
+
+/* =========================================================
+   Es una opcion o la otra
+========================================================= */
+
+test("con horario libre no se pueden editar las horas del turno", () => {
+    // Las dos cosas juntas se contradicen: no se le puede exigir una hora de
+    // entrada a quien no tiene hora de entrada.
+    assert.match(dialogo, /<fieldset class="ws-segment" data-ws-segment>/);
+    assert.match(
+        dialogo,
+        /tramo\.disabled = Boolean\(libreCheck\?\.checked\);/
+    );
+    assert.match(
+        dialogo,
+        /libreCheck\?\.addEventListener\("change", aplicarLibre\);/
+    );
+    // Y se aplica al dibujar, no solo al marcar la casilla.
+    assert.match(dialogo, /\n\s*aplicarLibre\(\);/);
+});
+
+test("y aunque llegaran horas escritas, no se guardan", () => {
+    // Un fieldset deshabilitado no viaja en el envio, pero el guardado no se
+    // apoya solo en eso: si vinieran, se descartan igual.
+    assert.match(dialogo, /if \(free\) return;/);
+    assert.match(dialogo, /if \(free\) period\.free = true;/);
 });
