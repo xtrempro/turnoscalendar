@@ -400,6 +400,14 @@ function selectedServiceProfessions(professions) {
     );
 }
 
+function emptyServiceValue() {
+    return {
+        day: 0,
+        night: 0,
+        workers: { day: [], night: [] }
+    };
+}
+
 export function buildDailyServiceRows(
     year = dashboardState.serviceYear,
     month = dashboardState.serviceMonth
@@ -417,7 +425,7 @@ export function buildDailyServiceRows(
             values: Object.fromEntries(
                 professions.map(profession => [
                     profession.id,
-                    { day: 0, night: 0 }
+                    emptyServiceValue()
                 ])
             )
         };
@@ -437,12 +445,36 @@ export function buildDailyServiceRows(
 
                 if (!schedule) return;
                 if (!row.values[profession.id]) {
-                    row.values[profession.id] = { day: 0, night: 0 };
+                    row.values[profession.id] = emptyServiceValue();
                 }
-                if (schedule.day) row.values[profession.id].day += 1;
-                if (schedule.night) row.values[profession.id].night += 1;
+
+                const value = row.values[profession.id];
+
+                if (schedule.day) {
+                    value.day += 1;
+                    value.workers.day.push({
+                        name: profile.name,
+                        shortName: shortWorkerName(profile.name),
+                        time: schedule.day
+                    });
+                }
+                if (schedule.night) {
+                    value.night += 1;
+                    value.workers.night.push({
+                        name: profile.name,
+                        shortName: shortWorkerName(profile.name),
+                        time: schedule.night
+                    });
+                }
             });
         });
+
+    rows.forEach(row => {
+        Object.values(row.values).forEach(value => {
+            value.workers?.day?.sort(compareServiceDetailRows);
+            value.workers?.night?.sort(compareServiceDetailRows);
+        });
+    });
 
     const max = rows.reduce((highest, row) => {
         const rowMax = Math.max(
@@ -1172,6 +1204,9 @@ function serviceSeriesForChart(data) {
                 dashed: false,
                 values: data.rows.map(row =>
                     row.values[profession.id]?.day || 0
+                ),
+                workers: data.rows.map(row =>
+                    row.values[profession.id]?.workers?.day || []
                 )
             });
         }
@@ -1186,6 +1221,9 @@ function serviceSeriesForChart(data) {
                 dashed: true,
                 values: data.rows.map(row =>
                     row.values[profession.id]?.night || 0
+                ),
+                workers: data.rows.map(row =>
+                    row.values[profession.id]?.workers?.night || []
                 )
             });
         }
@@ -1266,14 +1304,18 @@ export function renderDailyServiceChart(data) {
                         <circle class="dashboard-service-hit"
                             tabindex="0" role="button"
                             aria-label="Ver ${escapeHTML(series.label)} del d\u00eda ${data.rows[index].day}"
+                            data-dashboard-service-label="${escapeHTML(series.label)}"
+                            data-dashboard-service-shift="${escapeHTML(series.shift)}"
+                            data-dashboard-service-count="${value}"
+                            data-dashboard-service-workers="${escapeHTML(JSON.stringify(series.workers[index] || []))}"
                             data-dashboard-service-day="${escapeHTML(data.rows[index].keyDay)}"
                             data-dashboard-service-estamento="${escapeHTML(series.estamento)}"
                             cx="${xFor(index)}" cy="${yFor(value, axisMax)}" r="12">
-                            <title>${escapeHTML(`Ver ${series.estamento} en servicio el d\u00eda ${data.rows[index].day}`)}</title>
                         </circle>
                     `).join("")).join("")}
                 </svg>
             </div>
+            <div class="dashboard-service-tooltip" data-dashboard-service-tooltip hidden></div>
             <div class="dashboard-chart-legend dashboard-service-legend">
                 ${selectedServiceProfessions(data.professions).map(profession => `
                     <span><i style="background:${profession.color}"></i>${escapeHTML(profession.label)}</span>
@@ -1473,6 +1515,105 @@ const serviceDetailState = {
     estamento: ""
 };
 
+function parseServiceWorkers(value) {
+    try {
+        const workers = JSON.parse(value || "[]");
+
+        return Array.isArray(workers) ? workers : [];
+    } catch {
+        return [];
+    }
+}
+
+function serviceTooltipDateLabel(keyDay) {
+    const date = keyToDate(keyDay);
+
+    return Number.isNaN(date.getTime())
+        ? ""
+        : serviceDetailDateLabel(date);
+}
+
+function servicePointTooltipHTML(target) {
+    const workers = parseServiceWorkers(target.dataset.dashboardServiceWorkers);
+    const count = Number(target.dataset.dashboardServiceCount) || 0;
+    const label = target.dataset.dashboardServiceLabel || "Dotaci\u00f3n";
+    const shift = target.dataset.dashboardServiceShift === "night"
+        ? "De noche"
+        : "De d\u00eda";
+    const dateLabel = serviceTooltipDateLabel(
+        target.dataset.dashboardServiceDay
+    );
+
+    return `
+        <div class="dashboard-service-tooltip-head">
+            <strong>${escapeHTML(label)}</strong>
+            <span>${escapeHTML(dateLabel)}</span>
+        </div>
+        <div class="dashboard-service-tooltip-meta">
+            <span>${escapeHTML(shift)}</span>
+            <b>${count}</b>
+        </div>
+        ${workers.length
+            ? `<ul>
+                ${workers.map(worker => `
+                    <li>
+                        <span>${escapeHTML(worker.name)}</span>
+                        ${worker.time
+                            ? `<small>${escapeHTML(worker.time)}</small>`
+                            : ""}
+                    </li>
+                `).join("")}
+            </ul>`
+            : `<p>Sin trabajadores.</p>`}
+    `;
+}
+
+function positionServicePointTooltip(target, tooltip, event) {
+    const container = target.closest(".dashboard-service");
+
+    if (!container) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const clientX = Number.isFinite(event?.clientX)
+        ? event.clientX
+        : targetRect.left + (targetRect.width / 2);
+    const clientY = Number.isFinite(event?.clientY)
+        ? event.clientY
+        : targetRect.top;
+    const padding = 8;
+    const gap = 14;
+    const width = tooltip.offsetWidth || 320;
+    const height = tooltip.offsetHeight || 120;
+    const maxLeft = Math.max(padding, containerRect.width - width - padding);
+    let left = clientX - containerRect.left + gap;
+    let top = clientY - containerRect.top - height - gap;
+
+    if (left > maxLeft) left = clientX - containerRect.left - width - gap;
+    left = Math.min(Math.max(left, padding), maxLeft);
+
+    if (top < padding) {
+        top = clientY - containerRect.top + gap;
+    }
+
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${Math.max(padding, top)}px`;
+}
+
+function showServicePointTooltip(target, tooltip, event) {
+    if (!tooltip) return;
+
+    tooltip.innerHTML = servicePointTooltipHTML(target);
+    tooltip.hidden = false;
+    positionServicePointTooltip(target, tooltip, event);
+}
+
+function hideServicePointTooltip(tooltip) {
+    if (!tooltip) return;
+
+    tooltip.hidden = true;
+}
+
 function renderServiceDetailModal() {
     const backdrop = document.querySelector("[data-dashboard-service-modal]");
 
@@ -1653,6 +1794,10 @@ function renderCard(title, subtitle, chart, controls = "") {
 }
 
 function bindDashboardControls(root) {
+    const serviceTooltip = root.querySelector(
+        "[data-dashboard-service-tooltip]"
+    );
+
     root
         .querySelectorAll("[data-dashboard-service-month]")
         .forEach(button => {
@@ -1713,6 +1858,21 @@ function bindDashboardControls(root) {
 
                 event.preventDefault();
                 open();
+            });
+            target.addEventListener("pointerenter", event => {
+                showServicePointTooltip(target, serviceTooltip, event);
+            });
+            target.addEventListener("pointermove", event => {
+                showServicePointTooltip(target, serviceTooltip, event);
+            });
+            target.addEventListener("pointerleave", () => {
+                hideServicePointTooltip(serviceTooltip);
+            });
+            target.addEventListener("focus", event => {
+                showServicePointTooltip(target, serviceTooltip, event);
+            });
+            target.addEventListener("blur", () => {
+                hideServicePointTooltip(serviceTooltip);
             });
         });
 

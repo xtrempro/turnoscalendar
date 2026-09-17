@@ -6401,6 +6401,7 @@ body.theme-dark .dashboard-overtime {
 .dashboard-service {
     display: grid;
     gap: 10px;
+    position: relative;
 }
 
 .dashboard-service-summary {
@@ -6449,6 +6450,100 @@ body.theme-dark .dashboard-overtime {
 .dashboard-service-hit:hover,
 .dashboard-service-hit:focus-visible {
     fill: rgba(var(--brand-blue-rgb), 0.08);
+}
+
+.dashboard-service-tooltip {
+    position: absolute;
+    z-index: 25;
+    width: min(520px, calc(100% - 16px));
+    padding: 12px;
+    border: 1px solid rgba(15, 23, 42, 0.14);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 18px 42px rgba(15, 23, 42, 0.2);
+    color: var(--text-strong);
+    pointer-events: none;
+}
+
+.dashboard-service-tooltip[hidden] {
+    display: none;
+}
+
+.dashboard-service-tooltip-head,
+.dashboard-service-tooltip-meta,
+.dashboard-service-tooltip li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.dashboard-service-tooltip-head {
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.dashboard-service-tooltip-head strong {
+    min-width: 0;
+    font-size: 0.82rem;
+}
+
+.dashboard-service-tooltip-head span,
+.dashboard-service-tooltip small {
+    flex: none;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.dashboard-service-tooltip-meta {
+    justify-content: space-between;
+    margin-bottom: 8px;
+    color: var(--text-soft);
+    font-size: 0.74rem;
+    font-weight: 900;
+}
+
+.dashboard-service-tooltip-meta b {
+    min-width: 26px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(var(--brand-blue-rgb), 0.1);
+    color: var(--brand-blue);
+    text-align: center;
+}
+
+.dashboard-service-tooltip ul {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 5px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dashboard-service-tooltip li {
+    justify-content: space-between;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 10px;
+    background: var(--panel-alt);
+    font-size: 0.74rem;
+    font-weight: 900;
+}
+
+.dashboard-service-tooltip li span {
+    min-width: 0;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    text-overflow: ellipsis;
+}
+
+.dashboard-service-tooltip p {
+    margin: 0;
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    font-weight: 800;
 }
 
 .dashboard-service-legend i {

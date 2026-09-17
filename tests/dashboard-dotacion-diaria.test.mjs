@@ -216,6 +216,21 @@ test("el grafico usa mismo color por profesion y clic por dia", () => {
     assert.match(chart, /data-dashboard-service-estamento="Auxiliar"/);
 });
 
+test("el hover del punto lleva el listado de trabajadores", () => {
+    seed();
+
+    const data = buildDailyServiceRows(YEAR, MONTH);
+    const tm = professionKey(data, "TM Imagenologia");
+    const chart = renderDailyServiceChart(data);
+
+    assert.deepEqual(
+        data.rows[0].values[tm].workers.day.map(item => item.name),
+        ["Ana Perez"]
+    );
+    assert.match(chart, /data-dashboard-service-workers="[^"]*Ana Perez/);
+    assert.doesNotMatch(chart, /<title>Ver /);
+});
+
 test("el eje X muestra todos los dias del mes", () => {
     seed();
 
