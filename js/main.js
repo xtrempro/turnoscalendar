@@ -11751,6 +11751,12 @@ async function handleClockMarkSelection(fecha) {
         holidays
     });
 
+    // La seleccion termina con el cuadro de marcajes, y tiene que quedar limpia
+    // ANTES de ofrecer el reparto: openReplacementDialog no se abre mientras
+    // haya un modo de seleccion activo. Limpiandola al final, elegir "Buscar
+    // quien puede cubrir" cerraba el aviso y no mostraba nada.
+    clearSelectionMode();
+
     if (saved) {
         addAuditLog(
             AUDIT_CATEGORY.CALENDAR,
@@ -11766,8 +11772,6 @@ async function handleClockMarkSelection(fecha) {
         // repartirlas con otro trabajador (ver offerSplitShiftCoverage).
         await offerSplitShiftCoverage(profile, keyDay, fecha, holidays);
     }
-
-    clearSelectionMode();
 }
 
 /* ======================================================

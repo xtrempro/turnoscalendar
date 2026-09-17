@@ -378,9 +378,13 @@ test("un cupo de rotativa no busca una ausencia que no existe", () => {
     // La otra via que corta por lo mismo es el tramo (`coverWindow`): al cubrir
     // las horas que quedaron sin nadie, el reemplazo que ya existe es
     // justamente el que dejo el hueco y no puede bloquear el cuadro.
+    //
+    // Y la tercera: un turno cubierto a MEDIAS. Ahi el tramo no llega por
+    // parametro -se aprieta el "!" del dia- y el reemplazo parcial tampoco
+    // puede bloquear, o el badge promete algo que el click no cumple.
     assert.match(
         calendar,
-        /const existing = \(rota \|\| coverWindow\)\s*\n\s*\? null\s*\n\s*: getReplacementForCoveredShift\(profileName, keyDay\)/
+        /const existing = \(\s*\n\s*rota \|\|\s*\n\s*coverWindow \|\|\s*\n\s*!coveredShiftIsFullyCovered\(profileName, keyDay\)\s*\n\s*\)\s*\n\s*\? null\s*\n\s*: getReplacementForCoveredShift\(profileName, keyDay\)/
     );
     assert.match(
         calendar,

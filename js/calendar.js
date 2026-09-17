@@ -196,7 +196,8 @@ import {
 import {
     coverWindowLabel,
     coverageGapsForShift,
-    coveredShiftIsComplete
+    coveredShiftIsComplete,
+    shiftWindowFromRecords
 } from "./shiftCoverage.js";
 import {
     releaseLeaveHoldsForCoverage,
@@ -6133,7 +6134,16 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
             shiftUntil: shiftWindow?.until || ""
         }
         : {};
-    const existing = (rota || coverWindow)
+    // Un turno cubierto A MEDIAS sigue pidiendo cobertura, asi que el reemplazo
+    // que dejo el hueco no puede bloquear el cuadro que sirve justamente para
+    // taparlo. Se mide con la MISMA regla que enciende el "!" -cubierto
+    // ENTERO-, para que lo que el badge promete y lo que el click hace no
+    // puedan discrepar: antes el "!" aparecia y al apretarlo no pasaba nada.
+    const existing = (
+        rota ||
+        coverWindow ||
+        !coveredShiftIsFullyCovered(profileName, keyDay)
+    )
         ? null
         : getReplacementForCoveredShift(profileName, keyDay);
 
@@ -8843,9 +8853,25 @@ async function clickDia(
             return openPendingRequestsDialog({ profile: profileName, keyDay });
         }
 
+        // Cubierto a medias: lo que se busca es quien TAPA EL HUECO, no quien
+        // hace el turno entero. Sin pasarle el tramo, el reemplazo del segundo
+        // naceria sin horario y un reemplazo sin horario cubre todo el turno,
+        // con lo que el dia volveria a darse por resuelto dejando las mismas
+        // horas sin nadie.
+        const coveredRecords =
+            getActiveReplacementsForCoveredShift(profileName, keyDay);
+        const coveredShiftWindow = shiftWindowFromRecords(coveredRecords);
+        const pendingGap = coverageGapsForShift(
+            coveredShiftWindow,
+            coveredRecords
+        )[0] || null;
+
         return openReplacementDialog(
             profileName,
-            keyDay
+            keyDay,
+            pendingGap
+                ? { coverWindow: pendingGap, shiftWindow: coveredShiftWindow }
+                : {}
         );
     }
 

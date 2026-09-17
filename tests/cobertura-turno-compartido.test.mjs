@@ -253,11 +253,15 @@ test("el segundo trabajador queda con el horario del tramo", async () => {
 
 test("el reemplazo que dejo el hueco no bloquea las sugerencias", async () => {
     // Sin esto, el cuadro se negaba a abrir: ya existia un reemplazo del turno.
+    //
+    // No basta con eximir el caso en que el tramo llega por parametro: al
+    // apretar el "!" no llega ninguno, y ahi el cuadro volvia a negarse. Por eso
+    // la guarda mide cubierto ENTERO, que es la misma regla del badge.
     const calendar = await leer("../js/calendar.js");
 
     assert.match(
         calendar,
-        /const existing = \(rota \|\| coverWindow\)\s*\n\s*\? null/
+        /const existing = \(\s*\n\s*rota \|\|\s*\n\s*coverWindow \|\|\s*\n\s*!coveredShiftIsFullyCovered\(profileName, keyDay\)\s*\n\s*\)\s*\n\s*\? null/
     );
 });
 
@@ -292,6 +296,57 @@ test("las siete superficies miden cubierto ENTERO", async () => {
     assert.match(
         leaveHold,
         /const takenByReplacement = coveredShiftIsComplete\(/
+    );
+});
+
+/* =========================================================
+   Que el aviso lleve a alguna parte
+
+   Las dos salidas que ofrecen buscar a un segundo trabajador terminaban en
+   nada: el modal se cerraba y no se abria el de sugerencias.
+========================================================= */
+
+test("la seleccion se limpia ANTES de ofrecer el reparto", async () => {
+    // openReplacementDialog no se abre con un modo de seleccion activo. Como
+    // el marcaje se guarda dentro de una seleccion y esta se limpiaba al final,
+    // elegir "Buscar quien puede cubrir" no mostraba nada.
+    const main = await leer("../js/main.js");
+    // Se mide DESDE que el cuadro de marcajes resuelve: mas arriba hay otro
+    // clearSelectionMode -el de la salida temprana, cuando el dia no tiene
+    // turno- que no es el que decide esto y haria pasar la prueba de balde.
+    const bloque = main.slice(
+        main.indexOf("const saved = await openClockMarkDialog(")
+    );
+    const limpia = bloque.indexOf("clearSelectionMode();");
+    const ofrece = bloque.indexOf("await offerSplitShiftCoverage(");
+
+    assert.ok(limpia > 0 && ofrece > 0, "las dos llamadas siguen ahi");
+    assert.ok(
+        limpia < ofrece,
+        "la seleccion se limpia antes de ofrecer el reparto"
+    );
+});
+
+test("el cuadro sigue abortando si hay una seleccion activa", async () => {
+    // La guarda no se quita: lo que se corrigio es QUIEN la deja activa.
+    const calendar = await leer("../js/calendar.js");
+
+    assert.match(calendar, /if \(existing \|\| window\.selectionMode\) \{/);
+});
+
+test("apretar el '!' de un turno a medias busca quien tape el TRAMO", async () => {
+    // Sin el tramo, el reemplazo del segundo nace sin horario, y un reemplazo
+    // sin horario cubre el turno entero: el dia se daria por resuelto con las
+    // mismas horas sin nadie.
+    const calendar = await leer("../js/calendar.js");
+
+    assert.match(
+        calendar,
+        /const pendingGap = coverageGapsForShift\(\s*\n\s*coveredShiftWindow,\s*\n\s*coveredRecords\s*\n\s*\)\[0\] \|\| null;/
+    );
+    assert.match(
+        calendar,
+        /pendingGap\s*\n\s*\? \{ coverWindow: pendingGap, shiftWindow: coveredShiftWindow \}\s*\n\s*: \{\}/
     );
 });
 
