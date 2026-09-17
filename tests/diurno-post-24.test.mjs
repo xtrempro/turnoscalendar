@@ -330,13 +330,17 @@ test("el horario del Diurno es 08:00 a 17:00, y 16:00 los viernes", async () => 
         "utf8"
     );
 
+    // El horario ordinario vive ahora en diurnoEndAt, que devuelve la FECHA y
+    // no la hora suelta: la jornada corta del 17-09, 24-12 y 31-12 termina a
+    // las 12:30, y una hora entera no alcanzaba para decirlo (ver
+    // tests/jornada-corta-fiestas.test.mjs). Fuera de esos tres dias, esto.
     assert.match(
         source,
-        /function normalDiurnoEndHour\(date\) \{\s*\n\s*return date\.getDay\(\) === 5 \? 16 : 17;/
+        /return dateAt\(date, isFriday \? 16 : 17\);/
     );
     assert.match(
         source,
-        /id: "diurno",[\s\S]{0,160}start: dateAt\(date, 8\),\s*\n\s*end: dateAt\(date, normalDiurnoEndHour\(date\)\)/
+        /id: "diurno",[\s\S]{0,160}start: dateAt\(date, 8\),\s*\n\s*end: diurnoEndAt\(date\)/
     );
 });
 

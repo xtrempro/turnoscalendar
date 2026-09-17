@@ -37,8 +37,37 @@ function roundExtraMinutes(minutes) {
     return Math.floor(minutes / BLOCK_MINUTES) * BLOCK_MINUTES;
 }
 
-function normalDiurnoEndHour(date) {
-    return date.getDay() === 5 ? 16 : 17;
+// Dias de JORNADA CORTA por fiestas: la vispera del 18 de septiembre, la de
+// Navidad y la de Ano Nuevo. Esos dias la jornada diurna se anticipa y termina
+// 12:30 -y los viernes 12:00, como si a todos les dieran medio administrativo
+// de tarde-.
+//
+// Van como "mes-dia" y sin ano porque son fechas fijas. Solo aplican en dia
+// habil, que es lo que ya comprueba quien arma el tramo diurno.
+const SHORT_DIURNO_DAYS = new Set(["9-17", "12-24", "12-31"]);
+
+function isShortDiurnoDay(date) {
+    return SHORT_DIURNO_DAYS.has(
+        `${date.getMonth() + 1}-${date.getDate()}`
+    );
+}
+
+/**
+ * A que hora termina la jornada diurna de ese dia.
+ *
+ * Devuelve la fecha y no la hora suelta porque la jornada corta termina a las
+ * 12:30, y una hora entera no alcanza para decirlo.
+ */
+function diurnoEndAt(date) {
+    const isFriday = date.getDay() === 5;
+
+    if (isShortDiurnoDay(date)) {
+        return isFriday
+            ? dateAt(date, 12)
+            : dateAt(date, 12, 30);
+    }
+
+    return dateAt(date, isFriday ? 16 : 17);
 }
 
 function minDate(...dates) {
@@ -589,7 +618,7 @@ export function getScheduledSegmentsForState(date, state, holidays = {}) {
             id: "diurno",
             label: "Diurno",
             start: dateAt(date, 8),
-            end: dateAt(date, normalDiurnoEndHour(date))
+            end: diurnoEndAt(date)
         }];
     }
 
@@ -601,7 +630,7 @@ export function getScheduledSegmentsForState(date, state, holidays = {}) {
                 id: "diurno",
                 label: "Diurno",
                 start: dateAt(date, 8),
-                end: dateAt(date, normalDiurnoEndHour(date))
+                end: diurnoEndAt(date)
             });
         }
 
