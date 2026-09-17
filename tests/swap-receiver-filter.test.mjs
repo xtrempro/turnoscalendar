@@ -43,6 +43,9 @@ const {
 const { getEligibleSwapReceivers } = await import("../js/swaps.js");
 
 const DAY = "2026-6-10";
+// Dia en que la contraparte devuelve el turno. Sin uno, nadie puede completar
+// el cambio y el combobox -que ahora exige devolucion posible- sale vacio.
+const DEVOLUCION = "2026-6-17";
 
 function profile(name, estamento = "Profesional") {
     return {
@@ -72,12 +75,12 @@ beforeEach(() => {
         limitMonthlySwaps: false
     });
 
-    saveBaseProfileData({ [DAY]: 1 }, "Ana");
-    saveBaseProfileData({ [DAY]: 0 }, "Bruno");
-    saveBaseProfileData({ [DAY]: 1 }, "Carla");
-    saveBaseProfileData({ [DAY]: 2 }, "Diego");
-    saveBaseProfileData({ [DAY]: 0 }, "Eva");
-    saveBaseProfileData({ [DAY]: 0 }, "Tomas");
+    saveBaseProfileData({ [DAY]: 1, [DEVOLUCION]: 0 }, "Ana");
+    saveBaseProfileData({ [DAY]: 0, [DEVOLUCION]: 1 }, "Bruno");
+    saveBaseProfileData({ [DAY]: 1, [DEVOLUCION]: 1 }, "Carla");
+    saveBaseProfileData({ [DAY]: 2, [DEVOLUCION]: 2 }, "Diego");
+    saveBaseProfileData({ [DAY]: 0, [DEVOLUCION]: 1 }, "Eva");
+    saveBaseProfileData({ [DAY]: 0, [DEVOLUCION]: 1 }, "Tomas");
     setJSON("absences_Eva", { [DAY]: { type: "license" } });
 });
 

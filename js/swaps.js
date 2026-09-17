@@ -967,6 +967,58 @@ export function getSwapDateBlockReason({
     return "";
 }
 
+/**
+ * .Tiene esta pareja alguna fecha de devolucion posible en el mes?
+ *
+ * Un candidato que no puede devolver ningun dia no sirve como contraparte: al
+ * elegirlo, el calendario de devolucion sale vacio y el cambio no se llega a
+ * registrar. Pasa tipicamente con el ajuste de "solo el mismo tipo de turno"
+ * apagado, cuando uno entrega Noches y el otro solo tiene Largas.
+ *
+ * Se pregunta con las DOS validaciones cruzadas, igual que al registrar, y se
+ * corta en el primer dia que sirve para no recorrer el mes entero de balde.
+ */
+export function hasPossibleReturnDate(giver, receiver, keyDay) {
+    const date = parseKeyDate(keyDay);
+
+    if (!date) return true;
+
+    const giverTurn = getSwapTurnState(giver, keyDay);
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const days = new Date(year, month + 1, 0).getDate();
+
+    for (let day = 1; day <= days; day++) {
+        const returnKey = `${year}-${month}-${day}`;
+
+        if (returnKey === keyDay) continue;
+
+        const returnTurn = getSwapTurnState(receiver, returnKey);
+
+        if (!isSwapExchangeableTurn(returnTurn)) continue;
+
+        const bloqueaEntrega = getSwapDateBlockReason({
+            giver,
+            receiver,
+            keyDay,
+            requiredTurn: returnTurn
+        });
+
+        if (bloqueaEntrega) continue;
+
+        const bloqueaDevolucion = getSwapDateBlockReason({
+            giver: receiver,
+            receiver: giver,
+            keyDay: returnKey,
+            requiredTurn: giverTurn
+        });
+
+        if (!bloqueaDevolucion) return true;
+    }
+
+    return false;
+}
+
 export function getEligibleSwapReceivers(giver, keyDay = "") {
     if (!giver) return [];
 
@@ -981,7 +1033,10 @@ export function getEligibleSwapReceivers(giver, keyDay = "") {
                 receiver: profile.name,
                 keyDay
             })
-        )
+        ) &&
+        // Elegido el turno que se entrega, solo quedan los que PUEDEN devolver
+        // algo compatible. Va al final porque recorre el mes.
+        (!keyDay || hasPossibleReturnDate(giver, profile.name, keyDay))
     );
 }
 

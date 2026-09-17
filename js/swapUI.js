@@ -593,6 +593,49 @@ export function renderSwapPanel(){
 
 window.renderSwapPanel = renderSwapPanel;
 
+/**
+ * Los tipos de turno que estos dos pueden intercambiar ENTRE SI este mes, o
+ * null cuando el ajuste permite cruzarlos y no hay nada que restringir.
+ *
+ * Con "Permitir Cambios de Turno entre diferentes tipos" apagado solo se
+ * devuelve el MISMO tipo, pero eso se notaba recien al hacer clic: mientras no
+ * hay fecha elegida `requiredTurn` vale 0, la guarda exige un turno
+ * intercambiable y por eso no se evaluaba. Los dos calendarios se pintaban
+ * enteros -uno ofreciendo Noches y el otro Largas- y al elegir una fecha el
+ * calendario de enfrente quedaba vacio sin explicar por que.
+ *
+ * Aca se cruzan los tipos que cada uno puede ofrecer de verdad: si no coinciden
+ * en ninguno, se ve desde el principio y con su motivo.
+ */
+function tiposIntercambiablesComunes(from, to) {
+    if (getTurnChangeConfig().allowDifferentTurnTypes) return null;
+
+    const tiposDe = (giver, receiver) => {
+        const tipos = new Set();
+        const y = getSwapYear();
+        const m = getSwapMonth();
+        const dias = new Date(y, m + 1, 0).getDate();
+
+        for (let d = 1; d <= dias; d++) {
+            const key = `${y}-${m}-${d}`;
+            const turno = Number(getSwapTurnState(giver, key));
+
+            if (!esTurnoIntercambiable(turno)) continue;
+            if (getSwapDateBlockReason({ giver, receiver, keyDay: key })) continue;
+
+            tipos.add(turno);
+        }
+
+        return tipos;
+    };
+    const entrega = tiposDe(from, to);
+    const devuelve = tiposDe(to, from);
+
+    return new Set(
+        [...entrega].filter(turno => devuelve.has(turno))
+    );
+}
+
 function renderMiniCalendarios(){
     const from = getCurrentProfile();
     const to = document.getElementById("swapTo")?.value;
@@ -638,13 +681,16 @@ function renderMiniCalendarios(){
         selectedDevolucionTurn = 0;
     }
 
+    const tiposComunes = tiposIntercambiablesComunes(from, to);
+
     renderMiniCalendar(
         "swapCalendar1",
         from,
         true,
         from,
         to,
-        selectedDevolucionTurn
+        selectedDevolucionTurn,
+        tiposComunes
     );
 
     renderMiniCalendar(
@@ -653,7 +699,8 @@ function renderMiniCalendarios(){
         false,
         to,
         from,
-        selectedCambioTurn
+        selectedCambioTurn,
+        tiposComunes
     );
 }
 
@@ -663,10 +710,15 @@ function renderMiniCalendar(
     esCambio,
     giver,
     receiver,
-    requiredTurn = 0
+    requiredTurn = 0,
+    // Tipos de turno que los dos pueden intercambiar entre si, o null si el
+    // ajuste permite cruzarlos (ver tiposIntercambiablesComunes).
+    tiposComunes = null
 ){
     const div = document.getElementById(id);
     if (!div) return;
+
+    let ofrecidos = 0;
 
     const y = getSwapYear();
     const m = getSwapMonth();
@@ -690,14 +742,26 @@ function renderMiniCalendar(
             m,
             d
         );
-        const motivoBloqueo =
-            getSwapDateBlockReason({
+        // El tipo que ese dia se entregaria. No es el turno base que se dibuja:
+        // un Diurno con extension horaria entrega una Larga.
+        const turnoDelDia = Number(getSwapTurnState(trabajador, key));
+        const fueraDeTipo = Boolean(
+            tiposComunes &&
+            esTurnoIntercambiable(turnoDelDia) &&
+            !tiposComunes.has(turnoDelDia)
+        );
+        const motivoBloqueo = fueraDeTipo
+            ? "El ajuste de la unidad solo permite devolver el mismo tipo de "
+                + "turno, y no hay dias compatibles con el otro trabajador."
+            : getSwapDateBlockReason({
                 giver,
                 receiver,
                 keyDay: key,
                 requiredTurn
             });
         const valido = !motivoBloqueo;
+
+        if (valido) ofrecidos++;
 
         const turnoClass = turnoBase === 1
             ? "mini-turn-larga"
@@ -735,7 +799,24 @@ function renderMiniCalendar(
 
     html += `</div>`;
 
-    div.innerHTML = html;
+    // Un calendario sin ningun dia disponible tiene que decir POR QUE. Antes
+    // quedaba en blanco y el supervisor no tenia como saber si era un problema
+    // de los turnos, de las fechas o de un ajuste de la unidad.
+    div.innerHTML = ofrecidos
+        ? html
+        : `
+            <div class="empty-state empty-state--compact">
+                ${escapeHTML(
+                    tiposComunes && !tiposComunes.size
+                        ? "El ajuste de la unidad solo permite cambiar Larga por"
+                            + " Larga y Noche por Noche, y estos dos"
+                            + " trabajadores no tienen días compatibles en este"
+                            + " mes."
+                        : "No hay días disponibles para este trabajador en este"
+                            + " mes."
+                )}
+            </div>
+        `;
 
     div.querySelectorAll(".mini-on, .mini-selected")
         .forEach(item => {

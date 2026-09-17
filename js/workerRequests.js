@@ -929,15 +929,22 @@ async function applySwapRequest(request, profile) {
 
     const keyCambio = keyFromDate(date);
     const keyDevolucion = keyFromDate(returnDate);
+    // El turno que la OTRA fecha devuelve. Sin el, la regla de "solo se permite
+    // devolver el mismo tipo de turno" no se evalua -su guarda exige un turno
+    // intercambiable y por omision llega 0-, asi que al aceptar una solicitud de
+    // la app el ajuste de la unidad quedaba ignorado en silencio. El panel del
+    // supervisor (js/swapUI.js) siempre lo paso; este camino no.
     const motivoCambio = getSwapDateBlockReason({
         giver: from,
         receiver: to,
-        keyDay: keyCambio
+        keyDay: keyCambio,
+        requiredTurn: getSwapTurnState(to, keyDevolucion)
     });
     const motivoDevolucion = getSwapDateBlockReason({
         giver: to,
         receiver: from,
-        keyDay: keyDevolucion
+        keyDay: keyDevolucion,
+        requiredTurn: getSwapTurnState(from, keyCambio)
     });
 
     if (motivoCambio) {

@@ -1100,7 +1100,7 @@ const TESTS = [
     {
         name: "Cambio de turno: permite noche si el dia siguiente queda libre",
         run() {
-            const { changeKey } = setupSwapSelfTest();
+            const { changeKey, returnKey } = setupSwapSelfTest();
             const nextKey = key(2026, 5, 11);
 
             saveTurnChangeConfig({
@@ -1113,9 +1113,14 @@ const TESTS = [
             saveBaseProfileData({
                 [changeKey]: TURNO.NOCHE
             }, FAKE_PROFILE);
+            // Guarda su dia de devolucion: este mapa REEMPLAZA al del setup, y
+            // sin un turno que devolver el receptor ya no se ofrece como
+            // contraparte -no se podria completar el cambio-. Lo que esta
+            // prueba mira es la regla del 24 invertido, no esa otra.
             saveBaseProfileData({
                 [changeKey]: TURNO.LIBRE,
-                [nextKey]: TURNO.LIBRE
+                [nextKey]: TURNO.LIBRE,
+                [returnKey]: TURNO.NOCHE
             }, FAKE_SWAP_RECEIVER);
 
             assertEqual(
