@@ -194,6 +194,7 @@ import {
     toggleContingencyDay
 } from "./contingency.js";
 import {
+    coverWindowFromRecord,
     coverWindowLabel,
     coverageGapsForShift,
     coveredShiftIsComplete,
@@ -5487,7 +5488,11 @@ function replacementDialogHTML({
     preassignMode = false,
     // Cupo por rotativa incompleta. Cambia el encabezado: no hay una persona
     // ausente que nombrar, sino un grupo al que le falta alguien.
-    rota = null
+    rota = null,
+    // Tramo que se busca cubrir, cuando el turno ya esta cubierto a medias. Va
+    // en el encabezado: sin las horas a la vista, quien elige al segundo cree
+    // que lo esta poniendo a hacer el turno entero.
+    coverWindow = null
 }) {
     // Documento de respaldo, junto a "Anular permiso": si todavia no hay
     // documento el boton invita a subirlo, y si ya lo hay lo abre. Este modal es
@@ -5497,6 +5502,17 @@ function replacementDialogHTML({
     const leaveDocsButton = documentsButtonHTML(
         dayDocumentsTarget(profileName, keyDay)
     );
+    // Quien ya esta cubriendo el turno, y en que horario. Solo interesa cuando
+    // se busca al SEGUNDO: ver el tramo que falta sin saber quien hace el otro
+    // deja la decision a medias -no se sabe con quien se va a repartir el dia-.
+    const alreadyCovering = coverWindow
+        ? getActiveReplacementsForCoveredShift(profileName, keyDay)
+            .map(record => ({
+                worker: String(record.worker || ""),
+                window: coverWindowFromRecord(record)
+            }))
+            .filter(item => item.worker && item.window)
+        : [];
 
     const replacementConfig = getReplacementRequestConfig();
     const allowLinkedSuggestions =
@@ -5677,17 +5693,23 @@ function replacementDialogHTML({
     // Las solicitudes enviadas NO llevan lista propia: cada una se muestra sobre
     // la tarjeta del candidato al que se le pidio, con su boton de anular. Antes
     // habia dos listas y el mismo trabajador aparecia dos veces.
-    const bulkActions = isRequestMode
+    // Las dos piezas del modo solicitud van separadas: la casilla acompaña al
+    // buscador y el boton baja con el resto de acciones. Antes compartian un
+    // recuadro propio entre el buscador y la lista, que partia el modal en dos
+    // y dejaba el boton de enviar lejos de los demas botones.
+    const sendAllCheckbox = isRequestMode
         ? `
-            <div class="replacement-bulk-actions">
-                <label>
-                    <input type="checkbox" data-action="select-all-requests" ${allSelected ? "checked" : ""} ${availableWorkers.length ? "" : "disabled"}>
-                    <span>Enviar solicitud a todos</span>
-                </label>
-                <button class="primary-button" type="button" data-action="send-selected-requests" ${selectedCount ? "" : "disabled"}>
-                    Enviar a seleccionados (${selectedCount})
-                </button>
-            </div>
+            <label class="replacement-send-all">
+                <input type="checkbox" data-action="select-all-requests" ${allSelected ? "checked" : ""} ${availableWorkers.length ? "" : "disabled"}>
+                <span>Enviar solicitud a todos</span>
+            </label>
+        `
+        : "";
+    const sendSelectedButton = isRequestMode
+        ? `
+            <button class="primary-button" type="button" data-action="send-selected-requests" ${selectedCount ? "" : "disabled"}>
+                Enviar a seleccionados (${selectedCount})
+            </button>
         `
         : "";
     const scopeControls = [
@@ -5803,26 +5825,35 @@ function replacementDialogHTML({
                 ${
                     rota
                         ? `El grupo ${escapeHTML(rota.group)} requiere 1 ${escapeHTML(rota.estamento)} para ${escapeHTML(turnoReplacementLabel(neededTurn))}: su rotativa está incompleta frente a los demás grupos.`
-                        : `${escapeHTML(profileName)} requiere cobertura para ${escapeHTML(turnoReplacementLabel(neededTurn))} por ${escapeHTML(absenceType)}.`
+                        : `${escapeHTML(profileName)} requiere cobertura para ${escapeHTML(turnoReplacementLabel(neededTurn))} por ${escapeHTML(absenceType)}.${coverWindow ? ` Se cubrirá solo el tramo ${escapeHTML(coverWindowLabel(coverWindow))}, que es lo que quedó sin cubrir.` : ""}`
                 }
             </p>
+            ${alreadyCovering.length ? `
+                <div class="replacement-dialog-note">
+                    ${alreadyCovering.map(item =>
+                        `${escapeHTML(item.worker)} ya cubre `
+                        + `${escapeHTML(coverWindowLabel(item.window))}.`
+                    ).join(" ")}
+                </div>
+            ` : ""}
             <div class="replacement-options-panel ${optionsOpen ? "" : "is-hidden"}" data-options-panel>
                 ${optionControls}
             </div>
-            <input
-                type="search"
-                class="replacement-search is-hidden"
-                data-replacement-search
-                placeholder="Buscar reemplazo por nombre"
-                autocomplete="off"
-            >
+            <div class="replacement-search-row">
+                <input
+                    type="search"
+                    class="replacement-search is-hidden"
+                    data-replacement-search
+                    placeholder="Buscar reemplazo por nombre"
+                    autocomplete="off"
+                >
+                ${sendAllCheckbox}
+            </div>
             ${linkedMode ? `
                 <div class="replacement-dialog-note">
                     Sugerencias de unidades enlazadas activas: se muestran trabajadores compatibles y disponibles segun su unidad. Al asignar, se registra como prestamo en ambas unidades.
                 </div>
             ` : ""}
-            ${bulkActions}
-
             ${forceMode ? `
                 <div class="replacement-dialog-note">
                     Modo forzado activo: se muestran trabajadores disponibles aunque no coincidan por profesion o estamento.
@@ -5832,8 +5863,12 @@ function replacementDialogHTML({
                 ${items}
             </div>
             <div class="turn-change-dialog__actions replacement-dialog__actions">
+                ${sendSelectedButton}
                 <button class="leave-detail-undo" type="button" data-action="cancel-leave">
                     Anular permiso
+                </button>
+                <button class="secondary-button" type="button" data-action="no-coverage" ${preassignMode ? "disabled" : ""}>
+                    No requiere cobertura
                 </button>
                 ${leaveDocsButton}
                 <button class="secondary-button" type="button" data-action="cancel">
@@ -6325,44 +6360,50 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
             };
         }
 
-        const noCoverageButton =
-            backdrop.querySelector("[data-action='no-coverage']");
-        if (noCoverageButton) {
-            noCoverageButton.onclick = async () => {
-                // Segundo modal: confirma y ademas deja registrado POR QUE no
-                // necesita cobertura, con motivos predefinidos reutilizables.
-                const result = await openNoCoverageReasonDialog(
-                    profileName,
-                    keyDay
+        // Hay DOS botones con esta accion: el del panel de opciones -que vive
+        // plegado tras el icono- y el de la fila de abajo, a la vista. Comparten
+        // handler y se enlazan TODOS: querySelector se queda con el primero del
+        // DOM -el del panel- y dejaria al otro sin hacer nada.
+        const markNoCoverage = async () => {
+            // Segundo modal: confirma y ademas deja registrado POR QUE no
+            // necesita cobertura, con motivos predefinidos reutilizables.
+            const result = await openNoCoverageReasonDialog(
+                profileName,
+                keyDay
+            );
+
+            if (!result) return;
+
+            const reason = result.reason || "";
+
+            await withBusyState(async () => {
+                if (typeof window.pushUndoState === "function") {
+                    window.pushUndoState("Marcar sin cobertura");
+                }
+
+                setNoCoverageDay(profileName, keyDay, true, reason);
+                // Declarar que este turno no necesita reemplazo tambien
+                // resuelve la cobertura: libera el permiso que estaba en
+                // espera y lo manda a la PWA. Ver js/leaveHold.js.
+                releaseLeaveHoldsForCoverage(profileName);
+                addAuditLog(
+                    AUDIT_CATEGORY.CALENDAR,
+                    "Marco sin cobertura",
+                    `${profileName}: marco el ${keyDay} como no requiere cobertura.${reason ? ` Motivo: ${reason}.` : ""}`,
+                    { profile: profileName, keyDay }
                 );
+                close();
+                await updateDayCell(profileName, keyDay);
+                updateTimelineCells(profileName, [keyDay]);
+                await updateVisibleCalendarDays({ updateSummary: true });
+            }, { label: "Guardando..." });
+        };
 
-                if (!result) return;
-
-                const reason = result.reason || "";
-
-                await withBusyState(async () => {
-                    if (typeof window.pushUndoState === "function") {
-                        window.pushUndoState("Marcar sin cobertura");
-                    }
-
-                    setNoCoverageDay(profileName, keyDay, true, reason);
-                    // Declarar que este turno no necesita reemplazo tambien
-                    // resuelve la cobertura: libera el permiso que estaba en
-                    // espera y lo manda a la PWA. Ver js/leaveHold.js.
-                    releaseLeaveHoldsForCoverage(profileName);
-                    addAuditLog(
-                        AUDIT_CATEGORY.CALENDAR,
-                        "Marco sin cobertura",
-                        `${profileName}: marco el ${keyDay} como no requiere cobertura.${reason ? ` Motivo: ${reason}.` : ""}`,
-                        { profile: profileName, keyDay }
-                    );
-                    close();
-                    await updateDayCell(profileName, keyDay);
-                    updateTimelineCells(profileName, [keyDay]);
-                    await updateVisibleCalendarDays({ updateSummary: true });
-                }, { label: "Guardando..." });
-            };
-        }
+        backdrop
+            .querySelectorAll("[data-action='no-coverage']")
+            .forEach(button => {
+                button.onclick = markNoCoverage;
+            });
 
         const compatibleScopeButton =
             backdrop.querySelector("[data-action='scope-compatible']");
@@ -6942,6 +6983,7 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
             selectedRequestWorkers,
             optionsOpen,
             preassignMode,
+            coverWindow,
             rota,
             linkedStatus: scope === "linked"
                 ? linkedReplacementStatus

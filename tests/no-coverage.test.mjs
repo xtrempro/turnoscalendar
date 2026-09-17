@@ -50,6 +50,33 @@ test("el '!' se suprime con isNoCoverageDay en calendario, timeline y staffing",
     assert.match(modules, /\["noCoverage_", "turnos"\]/);
 });
 
+test("el boton tambien esta a la vista, junto a Anular permiso", async () => {
+    // Vivia SOLO dentro del panel plegado tras el icono de opciones, donde casi
+    // nadie lo encontraba. Ahora hay dos y hacen exactamente lo mismo.
+    const calendar = await readFile(
+        new URL("../js/calendar.js", import.meta.url),
+        "utf8"
+    );
+
+    // En la fila de acciones, a la derecha de "Anular permiso".
+    assert.match(
+        calendar,
+        /data-action="cancel-leave">\s*\n\s*Anular permiso\s*\n\s*<\/button>\s*\n\s*<button class="secondary-button" type="button" data-action="no-coverage"/
+    );
+    // Se enlazan los DOS. querySelector se queda con el primero del DOM -el del
+    // panel, que se dibuja antes- y dejaria al de abajo sin hacer nada.
+    assert.match(
+        calendar,
+        /querySelectorAll\("\[data-action='no-coverage'\]"\)\s*\n\s*\.forEach\(button => \{\s*\n\s*button\.onclick = markNoCoverage;/
+    );
+    // Y el nuevo respeta la misma regla que el del panel: en modo preasignar la
+    // excepcion de cobertura no aplica.
+    assert.match(
+        calendar,
+        /class="secondary-button" type="button" data-action="no-coverage" \$\{preassignMode \? "disabled" : ""\}/
+    );
+});
+
 test("el modal agrupa opciones, agrega No requiere cobertura y renombra", async () => {
     const calendar = await readFile(
         new URL("../js/calendar.js", import.meta.url),

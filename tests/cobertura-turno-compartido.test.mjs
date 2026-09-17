@@ -350,6 +350,49 @@ test("apretar el '!' de un turno a medias busca quien tape el TRAMO", async () =
     );
 });
 
+test("el modal dice QUE TRAMO se va a cubrir", async () => {
+    // Sin las horas a la vista, quien elige al segundo trabajador cree que lo
+    // esta poniendo a hacer el turno entero.
+    const calendar = await leer("../js/calendar.js");
+
+    assert.match(
+        calendar,
+        /Se cubrirá solo el tramo \$\{escapeHTML\(coverWindowLabel\(coverWindow\)\)\}/
+    );
+    // Y solo cuando hay tramo: una cobertura normal no cambia de texto.
+    assert.match(calendar, /\$\{coverWindow \? ` Se cubrirá solo el tramo/);
+});
+
+test("y dice quien quedo cubriendo el OTRO tramo", async () => {
+    // Ver el tramo que falta sin saber quien hace el otro deja la decision a
+    // medias: no se sabe con quien se va a repartir el dia.
+    const calendar = await leer("../js/calendar.js");
+
+    assert.match(
+        calendar,
+        /const alreadyCovering = coverWindow\s*\n\s*\? getActiveReplacementsForCoveredShift\(profileName, keyDay\)/
+    );
+    assert.match(
+        calendar,
+        /\$\{escapeHTML\(item\.worker\)\} ya cubre `\s*\n\s*\+ `\$\{escapeHTML\(coverWindowLabel\(item\.window\)\)\}\./
+    );
+    // Solo los reemplazos CON tramo: uno sin horario cubre el turno entero y no
+    // hay nada que informar.
+    assert.match(calendar, /window: coverWindowFromRecord\(record\)/);
+    assert.match(calendar, /\.filter\(item => item\.worker && item\.window\)/);
+});
+
+test("el tramo viaja como parametro del armador, no como nombre suelto", async () => {
+    // replacementDialogHTML es OTRA funcion: tomar un nombre del ambito de
+    // openReplacementDialog es sintaxis valida y revienta recien al dibujar,
+    // tumbando el modal entero. Ya paso con `rota` (ver
+    // tests/modal-reemplazo-identificadores.test.mjs, que compara firma contra
+    // llamada y cubre esto de forma general).
+    const calendar = await leer("../js/calendar.js");
+
+    assert.match(calendar, /coverWindow = null/);
+});
+
 test("el reporte dice que tramo cubrio", async () => {
     const report = await leer("../js/hoursReport.js");
 

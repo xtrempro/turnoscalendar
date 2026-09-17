@@ -9190,6 +9190,38 @@ body.auth-gate-active .app-shell {
     display: none;
 }
 
+/* El buscador y la casilla de "enviar a todos", en una sola fila. El is-hidden
+   se le sigue aplicando SOLO al input -el buscador aparece cuando la lista
+   desborda-, asi que la casilla sobrevive aunque el buscador no este. Los
+   margenes viven en los hijos y no en la fila: con los dos ocultos, la fila no
+   deja un hueco. */
+.replacement-search-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.replacement-search-row .replacement-search {
+    flex: 1 1 auto;
+}
+
+.replacement-send-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 2px 0 12px;
+    white-space: nowrap;
+    color: var(--text-soft);
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
+.replacement-send-all input {
+    width: 17px;
+    height: 17px;
+    accent-color: var(--blue);
+}
+
 .replacement-candidate.is-search-hidden {
     display: none;
 }
@@ -9670,39 +9702,6 @@ body.theme-light .replacement-candidate-warning {
 
 .replacement-preassign-toggle.is-active .replacement-preassign-switch::after {
     transform: translateX(20px);
-}
-
-.replacement-bulk-actions {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    margin: -4px 0 12px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    background: var(--panel-alt);
-}
-
-.replacement-bulk-actions label {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-soft);
-    font-size: 0.84rem;
-    font-weight: 800;
-}
-
-.replacement-bulk-actions input {
-    width: 17px;
-    height: 17px;
-    accent-color: var(--blue);
-}
-
-.replacement-bulk-actions button {
-    min-height: 38px;
-    padding-inline: 14px;
-    white-space: nowrap;
 }
 
 /* La solicitud enviada se muestra SOBRE la tarjeta del candidato al que se le

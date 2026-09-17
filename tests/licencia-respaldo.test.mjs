@@ -198,9 +198,12 @@ test("el detalle del permiso muestra adjuntar o ver, segun corresponda", () => {
 });
 
 test("el cuadro de reemplazo lo muestra junto a Anular permiso", () => {
+    // Entre los dos va "No requiere cobertura", que se saco del panel plegado
+    // para dejarlo a la vista. Lo que este pin cuida es que el documento de
+    // respaldo siga en esa fila y en ese orden, no que sean vecinos exactos.
     assert.match(
         calendar,
-        /data-action="cancel-leave">\s*\n\s*Anular permiso\s*\n\s*<\/button>\s*\n\s*\$\{leaveDocsButton\}/
+        /data-action="cancel-leave">\s*\n\s*Anular permiso\s*\n\s*<\/button>\s*\n\s*<button class="secondary-button" type="button" data-action="no-coverage"[\s\S]{0,200}?\$\{leaveDocsButton\}/
     );
     assert.match(
         calendar,
