@@ -27112,6 +27112,14 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 .ws-period b { display: block; font-size: 0.86rem; }
 .ws-period small { color: var(--text-soft); font-size: 0.82rem; }
 .ws-validity legend { color: var(--text-soft); }
+.ws-free-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88rem;
+    cursor: pointer;
+}
+.ws-free-toggle input { width: 16px; height: 16px; }
 
 
 /* Aviso de sesion sin sincronizacion. Va fijo abajo y ocupa poco: informa de

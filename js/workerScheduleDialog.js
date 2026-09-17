@@ -34,6 +34,10 @@ function vigenciaLabel(period) {
 }
 
 function horasLabel(period, segments) {
+    if (period.free) {
+        return "Horario libre: sin hora fija, cumple las horas de su jornada";
+    }
+
     return segments
         .map(segment => {
             const actual = period[segment.key];
@@ -103,7 +107,13 @@ function segmentoHTML(segment) {
  */
 export function openWorkerScheduleDialog(profile) {
     return new Promise(resolve => {
-        const segments = scheduleSegmentsForRotativa(getRotativa(profile).type);
+        const rotativa = getRotativa(profile).type;
+        const segments = scheduleSegmentsForRotativa(rotativa);
+        // El horario libre solo tiene sentido en el diurno: es una jornada de
+        // horas (9 de lunes a jueves, 8 los viernes) y no un turno con su hora
+        // de entrada. Una Larga o una Noche cubren una franja del dia que si
+        // tiene que estar cubierta a su hora.
+        const libre = rotativa === "diurno";
 
         if (!segments.length) {
             resolve(false);
@@ -150,6 +160,24 @@ export function openWorkerScheduleDialog(profile) {
                             </p>
                         </fieldset>
 
+                        ${libre ? `
+                            <fieldset class="ws-segment ws-free">
+                                <legend>Horario libre</legend>
+                                <label class="ws-free-toggle">
+                                    <input type="checkbox" name="free" data-ws-free>
+                                    <span>Sin hora fija de entrada ni de salida</span>
+                                </label>
+                                <p class="ws-note">
+                                    No se le miden atrasos: lo que se le exige es
+                                    cumplir las horas de su jornada — 9 horas de
+                                    lunes a jueves y 8 los viernes. Si el marcaje
+                                    muestra que se quedó de más, el reporte lo
+                                    avisa para decidir si corresponden horas
+                                    extras.
+                                </p>
+                            </fieldset>
+                        ` : ""}
+
                         ${segments.map(segmentoHTML).join("")}
 
                         <p class="ws-note">
@@ -173,18 +201,30 @@ export function openWorkerScheduleDialog(profile) {
                     event.preventDefault();
 
                     const period = {};
+                    const data = new FormData(event.currentTarget);
+                    // Una casilla marcada llega como "on", no como true.
+                    const free = data.get("free") !== null;
 
-                    new FormData(event.currentTarget).forEach((value, name) => {
+                    data.forEach((value, name) => {
+                        if (name === "free") return;
+
                         if (!name.includes(".")) {
                             period[name] = String(value || "");
                             return;
                         }
+
+                        // Con horario libre las horas no se guardan aunque
+                        // queden escritas en el formulario: un periodo no puede
+                        // ser libre y exigir una hora de entrada a la vez.
+                        if (free) return;
 
                         const [segmentKey, field] = name.split(".");
 
                         period[segmentKey] = period[segmentKey] || {};
                         period[segmentKey][field] = String(value || "");
                     });
+
+                    if (free) period.free = true;
 
                     if (addWorkerSchedulePeriod(profile, period)) {
                         changed = true;

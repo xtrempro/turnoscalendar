@@ -102,6 +102,8 @@ test("son los que pidio el usuario, en orden", () => {
             "Entrada anticipada",
             "Salida temprana",
             "Salida posterior",
+            "Salida tardía",
+            "Jornada incompleta",
             "Marcas sin justificar",
             "Marcaje en día libre"
         ]

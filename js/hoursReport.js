@@ -13,7 +13,10 @@ import {
     isProfileActive
 } from "./storage.js";
 import { fetchHolidays } from "./holidays.js";
-import { AVERAGE_DIURNAL_WORKDAY_HOURS } from "./overtimeRules.js";
+import {
+    AVERAGE_DIURNAL_WORKDAY_HOURS,
+    diurnoExtraDayHoursWithHolidays
+} from "./overtimeRules.js";
 import { calcExtraHours } from "./calculations.js";
 import {
     attendanceCoverage,
@@ -25,6 +28,7 @@ import {
 } from "./attendanceImport.js";
 import {
     getWorkerScheduleAt,
+    isFreeScheduleAt,
     workerEntryTime,
     workerExitTime
 } from "./workerSchedule.js";
@@ -918,6 +922,15 @@ function attendanceDay(profileName, keyDay, date, holidays, data, day) {
         ),
         previousWorkedShift: actualStateForReport(
             profileName, data, previousDayKey(keyDay)
+        ),
+        // HORARIO LIBRE: no se le exige entrar ni salir a una hora determinada,
+        // sino cumplir las horas de su jornada. Viaja con el dia porque el
+        // acuerdo es por periodos: el mes pasado pudo no tenerlo.
+        freeSchedule: isFreeScheduleAt(profileName, date),
+        // Las horas que ese dia le exigen: 9 de lunes a jueves y 8 los viernes.
+        // Un sabado, un domingo o un feriado dan 0 y por eso no se juzga.
+        requiredMinutes: Math.round(
+            diurnoExtraDayHoursWithHolidays(date, holidays) * 60
         )
     };
 }
@@ -1027,6 +1040,42 @@ function missingPartLabels(missingParts, side) {
         .filter(Boolean);
 }
 
+// Cuanto se puede desviar un dia de horario libre antes de avisar.
+//
+// Es mas estrecho que el margen de una frontera de turno (60 min) porque aqui
+// no se juzga una hora de llegada sino el total del dia, que el trabajador
+// controla entero: media hora de mas ya son horas trabajadas sin registrar, y
+// media hora de menos es jornada que quedo debiendo.
+const FREE_SCHEDULE_ALERT_MINUTES = 30;
+
+/**
+ * Minutos efectivamente trabajados segun las marcas, sumando los tramos.
+ *
+ * Devuelve null cuando no se puede medir -falta una marca, o el tramo viene de
+ * largo del dia anterior-, porque un dia a medio marcar no dice nada sobre las
+ * horas cumplidas y ya tiene su propia incidencia.
+ */
+function workedMinutesFromCells(cells) {
+    const segments = cells?.segments || [];
+
+    if (!segments.length) return null;
+
+    let total = 0;
+
+    for (const segment of segments) {
+        if (segment.entryArrow || segment.exitArrow) return null;
+
+        const entry = minutesFromTime(segment.entry?.time);
+        const exit = minutesFromTime(segment.exit?.time);
+
+        if (entry === null || exit === null || exit <= entry) return null;
+
+        total += exit - entry;
+    }
+
+    return total;
+}
+
 /**
  * Que paso con el marcaje de ese dia, antes de decidir como se dibuja.
  *
@@ -1068,7 +1117,11 @@ function attendanceDayFacts(profile, iso, day) {
         scheduledEntry: day.scheduledEntry,
         nextScheduledEntry: day.nextScheduledEntry
     });
-    const delay = entryDelayForDay({
+    // Con HORARIO LIBRE no hay hora de entrada ni de salida que cumplir, asi
+    // que no se le miden atrasos ni fronteras corridas. Lo que se le exige son
+    // las horas del dia, y eso se mide mas abajo.
+    const libre = Boolean(medible && day.freeSchedule);
+    const rawDelay = entryDelayForDay({
         baseShift: day.baseShift,
         extraShift: day.extraShift,
         workedShift: day.workedShift,
@@ -1084,6 +1137,9 @@ function attendanceDayFacts(profile, iso, day) {
         // habia nada que marcar, asi que ni cruz ni atraso.
         hasPassed: day.hasPassed && !cells.entryArrow
     });
+    // El horario es libre; marcar no. La marca que falta se sigue exigiendo
+    // igual, porque sin ella no hay forma de saber cuantas horas cumplio.
+    const delay = libre ? { ...rawDelay, minutes: 0 } : rawDelay;
 
     // Contra que horas se miden las marcas. Las dos puntas se miden sobre las
     // MARCAS del tramo y no sobre el texto de la celda: un turno de dos tramos
@@ -1102,8 +1158,12 @@ function attendanceDayFacts(profile, iso, day) {
     const worstExit = drifts
         .filter(item => item.exit !== null)
         .sort((a, b) => Math.abs(b.exit) - Math.abs(a.exit))[0] || null;
-    const exitDrift = medible && !day.exitMoved ? worstExit?.exit ?? null : null;
-    const earlyMinutes = medible && !day.entryMoved ? worstEarly?.early || 0 : 0;
+    const exitDrift = medible && !day.exitMoved && !libre
+        ? worstExit?.exit ?? null
+        : null;
+    const earlyMinutes = medible && !day.entryMoved && !libre
+        ? worstEarly?.early || 0
+        : 0;
     // Las marcas que le faltan a un tramo del medio. Se exigen con el mismo
     // criterio que las de las puntas: solo cuando el turno ya habia terminado
     // al subir la ultima planilla, o serian faltas que solo dicen que el
@@ -1113,6 +1173,15 @@ function attendanceDayFacts(profile, iso, day) {
         drifts,
         medible && day.hasPassed
     );
+    // Lo unico que se le exige a un dia de horario libre: las horas. Se compara
+    // lo trabajado con lo que ese dia pide -9 de lunes a jueves, 8 los viernes-
+    // y solo cuando el dia ya termino y esta marcado entero.
+    const freeWorkedMinutes = libre && day.hasPassed
+        ? workedMinutesFromCells(cells)
+        : null;
+    const freeBalance = freeWorkedMinutes !== null && day.requiredMinutes > 0
+        ? freeWorkedMinutes - day.requiredMinutes
+        : null;
 
     return {
         cells,
@@ -1148,7 +1217,7 @@ function attendanceDayFacts(profile, iso, day) {
         // volver a las 22:10 en vez de a las 20:00 es justamente lo que hay
         // que ver. Con una sola hora por celda esa llegada no se comparaba
         // contra nada.
-        lateOnExtra: Boolean(!delay.minutes && worstLate),
+        lateOnExtra: Boolean(!libre && !delay.minutes && worstLate),
         // Llego MUCHO antes de su hora. El caso que esto busca es el turno
         // extra o la extension horaria que se acordo de palabra y nadie
         // alcanzo a registrar: sin este aviso esas horas no aparecen en el
@@ -1182,6 +1251,23 @@ function attendanceDayFacts(profile, iso, day) {
             (cells.entrada || cells.salida) &&
             Number(day.workedShift) <= TURNO.LIBRE &&
             !day.absent
+        ),
+        // Las dos del horario libre. Cuanto trabajo y cuanto le pedian van
+        // tambien en los hechos, porque el detalle de la incidencia los nombra:
+        // el supervisor decide mirando las cifras, no la etiqueta.
+        freeSchedule: libre,
+        freeWorkedMinutes,
+        freeRequiredMinutes: libre ? day.requiredMinutes : 0,
+        freeBalance,
+        // Se quedo de mas. No es una falta: es un tramo trabajado que nadie
+        // registro, y por eso el aviso pide ir a ver si corresponde pagarlo.
+        freeLateExit: Boolean(
+            freeBalance !== null && freeBalance >= FREE_SCHEDULE_ALERT_MINUTES
+        ),
+        // Y el espejo: se fue habiendo cumplido menos horas de las que el dia
+        // le pedia. Con el mismo margen, porque nadie marca al minuto exacto.
+        freeShortDay: Boolean(
+            freeBalance !== null && freeBalance <= -FREE_SCHEDULE_ALERT_MINUTES
         )
     };
 }
@@ -1197,6 +1283,8 @@ export const ATTENDANCE_INCIDENT_KINDS = [
     { key: "earlyEntry", label: "Entrada anticipada" },
     { key: "earlyExit", label: "Salida temprana" },
     { key: "lateExit", label: "Salida posterior" },
+    { key: "freeLateExit", label: "Salida tardía" },
+    { key: "freeShortDay", label: "Jornada incompleta" },
     { key: "unexplainedMarks", label: "Marcas sin justificar" },
     { key: "markOnFreeDay", label: "Marcaje en día libre" }
 ];
@@ -1302,6 +1390,23 @@ function pushIncidents(events, profile, iso, facts) {
                 + `${formatDrift(facts.exitDrift)} después de las `
                 + `${facts.scheduledExit}. Revisar si falta registrarle un `
                 + "turno extra o una extensión horaria"
+        });
+    }
+
+    if (facts.freeLateExit || facts.freeShortDay) {
+        const cumplio = formatDrift(facts.freeWorkedMinutes);
+        const pedian = formatDrift(facts.freeRequiredMinutes);
+        const diferencia = formatDrift(facts.freeBalance);
+
+        events.push({
+            ...base,
+            kind: facts.freeLateExit ? "freeLateExit" : "freeShortDay",
+            detail: facts.freeLateExit
+                ? `Salió ${cells.salida}: trabajó ${cumplio} y su jornada es `
+                    + `de ${pedian}, ${diferencia} de más. Revisar si `
+                    + "corresponde modificar el marcaje y agregarle horas extras"
+                : `Trabajó ${cumplio} y su jornada es de ${pedian}: quedó `
+                    + `debiendo ${diferencia}`
         });
     }
 

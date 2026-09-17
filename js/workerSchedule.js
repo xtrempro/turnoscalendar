@@ -101,12 +101,17 @@ function normalizeSegments(value) {
 
 function normalizePeriod(value) {
     const segments = normalizeSegments(value);
+    // HORARIO LIBRE: no se le exige entrar ni salir a una hora determinada, solo
+    // cumplir las horas de su jornada. Es un periodo SIN horas, que hasta ahora
+    // se descartaba por venir vacio, asi que se reconoce por su propia marca.
+    const free = value?.free === true;
 
-    if (!Object.keys(segments).length) return null;
+    if (!free && !Object.keys(segments).length) return null;
 
     return {
         from: isDate(value?.from) ? value.from : "",
         to: isDate(value?.to) ? value.to : "",
+        ...(free ? { free: true } : {}),
         ...segments
     };
 }
@@ -221,6 +226,22 @@ export function getWorkerScheduleAt(profile, date) {
         (!period.from || period.from <= iso) &&
         (!period.to || iso <= period.to)
     ) || {};
+}
+
+/**
+ * .Ese dia trabaja con HORARIO LIBRE?
+ *
+ * Sin hora fija de entrada ni de salida: lo que se le exige es cumplir las
+ * horas de su jornada -9 de lunes a jueves, 8 los viernes-, asi que no se le
+ * miden atrasos ni salidas fuera de hora. Lo que si se mira es cuanto trabajo
+ * de verdad (ver js/hoursReport.js).
+ *
+ * @param {string} profile
+ * @param {Date|string} date
+ * @returns {boolean}
+ */
+export function isFreeScheduleAt(profile, date) {
+    return getWorkerScheduleAt(profile, date).free === true;
 }
 
 /**
