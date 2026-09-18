@@ -2791,7 +2791,7 @@ function coberturaRow(item, kind) {
             </div>`
             : "";
     return `
-        <div class="hm-cob-row">
+        <div class="hm-cob-row" data-cob-kind="${esc(kind)}">
             <div class="hm-cob-top">
                 <span class="hm-turno hm-turno--${item.turnoClass}">${esc(item.turnoLabel)}</span>
                 <span class="hm-cob-date">${esc(item.dateLabel)}</span>
@@ -2919,9 +2919,12 @@ function coberturaBody() {
     // Las dos casillas del resumen ABREN el detalle: es donde el ojo cae
     // primero y donde se hace clic por instinto. Hasta ahora eran un div mudo y
     // el detalle solo se alcanzaba por el switch de la cabecera.
+    // Cada casilla abre el detalle poniendo LO SUYO primero. En cero no hay
+    // nada que mostrar, asi que queda deshabilitada: un boton que no lleva a
+    // ninguna parte promete algo que no cumple.
     const summary =
-        `<button class="hm-cob-chip hm-cob-chip--crit" type="button" data-hm="cob-chip"><span class="hm-cob-chip-ico">${svg(IC.alertTri)}</span><span><span class="hm-cob-chip-num">${uncovered.length}</span><span class="hm-cob-chip-lbl">Sin cubrir</span></span></button>` +
-        `<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="cob-chip"><span class="hm-cob-chip-ico">${svg(IC.clock)}</span><span><span class="hm-cob-chip-num">${preassigned.length}</span><span class="hm-cob-chip-lbl">Preasignados</span></span></button>`;
+        `<button class="hm-cob-chip hm-cob-chip--crit" type="button" data-hm="cob-chip" data-cob-kind="sincubrir"${uncovered.length ? "" : " disabled"}><span class="hm-cob-chip-ico">${svg(IC.alertTri)}</span><span><span class="hm-cob-chip-num">${uncovered.length}</span><span class="hm-cob-chip-lbl">Sin cubrir</span></span></button>` +
+        `<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="cob-chip" data-cob-kind="preasignado"${preassigned.length ? "" : " disabled"}><span class="hm-cob-chip-ico">${svg(IC.clock)}</span><span><span class="hm-cob-chip-num">${preassigned.length}</span><span class="hm-cob-chip-lbl">Preasignados</span></span></button>`;
 
     let list =
         uncovered.map(i => coberturaRow(i, "sincubrir")).join("") +
@@ -3009,10 +3012,12 @@ function brechaBody() {
         cargos.set(clave, (cargos.get(clave) || 0) + 1);
     });
 
-    // Igual que en Cobertura: las casillas del resumen abren el detalle.
+    // Igual que en Cobertura: abren el detalle, y en cero quedan deshabilitadas.
+    // Aqui no hay orden que elegir -las dos cifras cuentan la MISMA lista, una
+    // por cargo y otra por turno-, asi que ambas abren lo mismo.
     const summary =
-        `<button class="hm-cob-chip hm-cob-chip--warn" type="button" data-hm="brecha-chip"><span class="hm-cob-chip-ico">${svg(IC.users)}</span><span><span class="hm-cob-chip-num">${cargos.size}</span><span class="hm-cob-chip-lbl">${cargos.size === 1 ? "Cargo faltante" : "Cargos faltantes"}</span></span></button>` +
-        `<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="brecha-chip"><span class="hm-cob-chip-ico">${svg(IC.calendar)}</span><span><span class="hm-cob-chip-num">${rows.length}</span><span class="hm-cob-chip-lbl">Turnos afectados</span></span></button>`;
+        `<button class="hm-cob-chip hm-cob-chip--warn" type="button" data-hm="brecha-chip"${cargos.size ? "" : " disabled"}><span class="hm-cob-chip-ico">${svg(IC.users)}</span><span><span class="hm-cob-chip-num">${cargos.size}</span><span class="hm-cob-chip-lbl">${cargos.size === 1 ? "Cargo faltante" : "Cargos faltantes"}</span></span></button>` +
+        `<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="brecha-chip"${rows.length ? "" : " disabled"}><span class="hm-cob-chip-ico">${svg(IC.calendar)}</span><span><span class="hm-cob-chip-num">${rows.length}</span><span class="hm-cob-chip-lbl">Turnos afectados</span></span></button>`;
 
     const list = rows.length
         ? rows.slice(0, BRECHA_MAX_ROWS).map(brechaRow).join("") +
@@ -4388,11 +4393,26 @@ function wire(panel) {
     // detalle abierto.
     panel.querySelectorAll('[data-hm="cob-chip"]').forEach(chip => {
         chip.addEventListener("click", () => {
+            const kind = chip.dataset.cobKind || "";
+            const card = chip.closest(".hm-card");
+
             coverageDetail = true;
 
             if (detail) detail.checked = true;
 
             reRenderCoverage(panel);
+
+            // Primero lo que se pidio, y debajo lo otro. Se MUEVEN los nodos en
+            // vez de reescribir la lista: asi las filas conservan sus botones
+            // -se enlazan una sola vez, como el resto del archivo- y el orden de
+            // lectura sigue al visual, cosa que un `order` de CSS no haria.
+            const list = card?.querySelector(".hm-cob-list");
+
+            if (!list || !kind) return;
+
+            list.prepend(
+                ...list.querySelectorAll(`[data-cob-kind="${kind}"]`)
+            );
         });
     });
 

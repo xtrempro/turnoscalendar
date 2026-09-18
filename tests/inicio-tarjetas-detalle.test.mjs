@@ -36,25 +36,19 @@ test("Cobertura: las dos casillas son botones con su gancho", () => {
 
     assert.match(
         body,
-        /<button class="hm-cob-chip hm-cob-chip--crit" type="button" data-hm="cob-chip">/
+        /data-hm="cob-chip" data-cob-kind="sincubrir"/
     );
     assert.match(
         body,
-        /<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="cob-chip">/
+        /data-hm="cob-chip" data-cob-kind="preasignado"/
     );
 });
 
 test("Brecha RRHH: lo mismo", () => {
     const body = cuerpo(home, "brechaBody");
 
-    assert.match(
-        body,
-        /<button class="hm-cob-chip hm-cob-chip--warn" type="button" data-hm="brecha-chip">/
-    );
-    assert.match(
-        body,
-        /<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="brecha-chip">/
-    );
+    assert.match(body, /class="hm-cob-chip hm-cob-chip--warn" type="button"/);
+    assert.match(body, /data-hm="brecha-chip"/);
 });
 
 test("ya no queda ninguna casilla muda", () => {
@@ -93,6 +87,47 @@ test("el enlace sobrevive a los plegados", () => {
     assert.match(render, /summary\.hidden = coverageDetail;/);
     assert.match(render, /list\.hidden = !coverageDetail;/);
     assert.doesNotMatch(render, /innerHTML/);
+});
+
+/* =========================================================
+   En cero no hay nada que abrir
+========================================================= */
+
+test("Cobertura: la casilla en cero queda deshabilitada", () => {
+    const body = cuerpo(home, "coberturaBody");
+
+    assert.match(body, /data-cob-kind="sincubrir"\$\{uncovered\.length \? "" : " disabled"\}/);
+    assert.match(body, /data-cob-kind="preasignado"\$\{preassigned\.length \? "" : " disabled"\}/);
+});
+
+test("Brecha RRHH: lo mismo", () => {
+    const body = cuerpo(home, "brechaBody");
+
+    assert.match(body, /data-hm="brecha-chip"\$\{cargos\.size \? "" : " disabled"\}/);
+    assert.match(body, /data-hm="brecha-chip"\$\{rows\.length \? "" : " disabled"\}/);
+});
+
+/* =========================================================
+   Primero lo que se pidio
+========================================================= */
+
+test("cada fila dice de que grupo es", () => {
+    // Sin esta marca no hay como reordenar sin reescribir la lista.
+    assert.match(
+        home,
+        /<div class="hm-cob-row" data-cob-kind="\$\{esc\(kind\)\}">/
+    );
+});
+
+test("el clic sube su grupo al principio, MOVIENDO los nodos", () => {
+    // Reescribir la lista dejaria mudos los botones de cada fila, que se
+    // enlazan una sola vez. Moverlos conserva los manejadores y ademas deja el
+    // orden de lectura igual al visual.
+    assert.match(
+        home,
+        /list\.prepend\(\s*\n\s*\.\.\.list\.querySelectorAll\(`\[data-cob-kind="\$\{kind\}"\]`\)\s*\n\s*\);/
+    );
+    assert.match(home, /const kind = chip\.dataset\.cobKind \|\| "";/);
 });
 
 /* =========================================================
