@@ -2916,9 +2916,12 @@ function coberturaBody() {
     const { uncovered, preassigned } = coverageData;
     const total = uncovered.length + preassigned.length;
 
+    // Las dos casillas del resumen ABREN el detalle: es donde el ojo cae
+    // primero y donde se hace clic por instinto. Hasta ahora eran un div mudo y
+    // el detalle solo se alcanzaba por el switch de la cabecera.
     const summary =
-        `<div class="hm-cob-chip hm-cob-chip--crit"><span class="hm-cob-chip-ico">${svg(IC.alertTri)}</span><span><span class="hm-cob-chip-num">${uncovered.length}</span><span class="hm-cob-chip-lbl">Sin cubrir</span></span></div>` +
-        `<div class="hm-cob-chip hm-cob-chip--accent"><span class="hm-cob-chip-ico">${svg(IC.clock)}</span><span><span class="hm-cob-chip-num">${preassigned.length}</span><span class="hm-cob-chip-lbl">Preasignados</span></span></div>`;
+        `<button class="hm-cob-chip hm-cob-chip--crit" type="button" data-hm="cob-chip"><span class="hm-cob-chip-ico">${svg(IC.alertTri)}</span><span><span class="hm-cob-chip-num">${uncovered.length}</span><span class="hm-cob-chip-lbl">Sin cubrir</span></span></button>` +
+        `<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="cob-chip"><span class="hm-cob-chip-ico">${svg(IC.clock)}</span><span><span class="hm-cob-chip-num">${preassigned.length}</span><span class="hm-cob-chip-lbl">Preasignados</span></span></button>`;
 
     let list =
         uncovered.map(i => coberturaRow(i, "sincubrir")).join("") +
@@ -3006,9 +3009,10 @@ function brechaBody() {
         cargos.set(clave, (cargos.get(clave) || 0) + 1);
     });
 
+    // Igual que en Cobertura: las casillas del resumen abren el detalle.
     const summary =
-        `<div class="hm-cob-chip hm-cob-chip--warn"><span class="hm-cob-chip-ico">${svg(IC.users)}</span><span><span class="hm-cob-chip-num">${cargos.size}</span><span class="hm-cob-chip-lbl">${cargos.size === 1 ? "Cargo faltante" : "Cargos faltantes"}</span></span></div>` +
-        `<div class="hm-cob-chip hm-cob-chip--accent"><span class="hm-cob-chip-ico">${svg(IC.calendar)}</span><span><span class="hm-cob-chip-num">${rows.length}</span><span class="hm-cob-chip-lbl">Turnos afectados</span></span></div>`;
+        `<button class="hm-cob-chip hm-cob-chip--warn" type="button" data-hm="brecha-chip"><span class="hm-cob-chip-ico">${svg(IC.users)}</span><span><span class="hm-cob-chip-num">${cargos.size}</span><span class="hm-cob-chip-lbl">${cargos.size === 1 ? "Cargo faltante" : "Cargos faltantes"}</span></span></button>` +
+        `<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="brecha-chip"><span class="hm-cob-chip-ico">${svg(IC.calendar)}</span><span><span class="hm-cob-chip-num">${rows.length}</span><span class="hm-cob-chip-lbl">Turnos afectados</span></span></button>`;
 
     const list = rows.length
         ? rows.slice(0, BRECHA_MAX_ROWS).map(brechaRow).join("") +
@@ -4060,6 +4064,18 @@ function wire(panel) {
         });
     }
 
+    // Igual que en Cobertura: las casillas del resumen abren el detalle, y el
+    // switch se mueve con ellas para que las dos cosas digan lo mismo.
+    panel.querySelectorAll('[data-hm="brecha-chip"]').forEach(chip => {
+        chip.addEventListener("click", () => {
+            brechaDetail = true;
+
+            if (brechaSwitch) brechaSwitch.checked = true;
+
+            reRenderBrecha(panel);
+        });
+    });
+
     // --- Brecha RRHH: cubrir el cargo sin salir del inicio ---
     //
     // Abre el mismo modal de sugerencias del calendario, en su modo de cupo de
@@ -4364,6 +4380,21 @@ function wire(panel) {
             reRenderCoverage(panel);
         });
     }
+
+    // Las casillas del resumen abren el MISMO detalle que el switch. El
+    // re-render solo alterna `hidden` sobre el DOM que ya existe, asi que este
+    // enlace sobrevive a los plegados; lo que si hay que mover a mano es el
+    // switch, porque la cabecera no se repinta y quedaria en "apagado" con el
+    // detalle abierto.
+    panel.querySelectorAll('[data-hm="cob-chip"]').forEach(chip => {
+        chip.addEventListener("click", () => {
+            coverageDetail = true;
+
+            if (detail) detail.checked = true;
+
+            reRenderCoverage(panel);
+        });
+    });
 
     const requestDetail = panel.querySelector('[data-hm="req-detail"]');
     if (requestDetail) {

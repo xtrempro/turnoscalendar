@@ -1807,7 +1807,11 @@ body[data-active-view="home"] .secondary-grid {
    tercio los dos chips lado a lado dejaban "Preasignados" cortado a la mitad. */
 .hm-cob-summary { display: flex; flex-direction: column; gap: 8px; }
 .hm-cob-summary[hidden], .hm-cob-list[hidden] { display: none; }
-.hm-cob-chip { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 13px; background: var(--panel-alt); border: 1px solid var(--border); }
+/* Es un <button>: abre el detalle de la tarjeta. Lleva el reset de fuente,
+   color y alineacion porque un boton no los hereda, y el 100% de ancho porque
+   el resumen es una columna flex y sin el se encogeria al contenido. */
+.hm-cob-chip { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 13px; background: var(--panel-alt); border: 1px solid var(--border); width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.hm-cob-chip:hover { border-color: rgba(var(--brand-blue-rgb), 0.45); }
 .hm-cob-chip-ico { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; flex: none; }
 .hm-cob-chip-ico svg { width: 19px; height: 19px; }
 .hm-cob-chip--crit .hm-cob-chip-ico { background: var(--hm-red-soft); color: var(--hm-red); }
