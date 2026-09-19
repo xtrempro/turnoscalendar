@@ -10,6 +10,7 @@
 // pedir cobertura sobre el turno NUEVO y el "!" aparece solo.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 const {
     protectedLeaveKeys,
@@ -172,4 +173,77 @@ test("las licencias protegidas son exactamente dos", () => {
         [...PROTECTED_ABSENCE_TYPES].sort(),
         ["license", "professional_license"]
     );
+});
+
+/* =========================================================
+   El boton "Modificar rotativa" comparte las reglas
+=========================================================
+
+   Se puede cambiar de rotativa por dos caminos: arrastrando la tarjeta en
+   Titulares y con el boton del calendario. Los dos terminan en
+   cleanupFutureSchedule, asi que las protecciones de arriba ya valian para
+   ambos; lo que NO compartian era el aviso. El boton del calendario solo
+   decia algo cuando habia otra rotativa por delante: en el caso normal
+   reescribia el calendario sin advertir nada.
+
+   main.js no se puede importar desde las pruebas, asi que esto se fija sobre
+   el texto. */
+
+const main = await readFile(
+    new URL("../js/main.js", import.meta.url),
+    "utf8"
+);
+
+test("el boton del calendario avisa antes de reescribir", async () => {
+    assert.match(
+        main,
+        /!await confirmRotationOverwrite\(profile\.name, fecha\)/
+    );
+});
+
+test("y usa el MISMO recuento del tablero, no uno propio", async () => {
+    // Si se reimplementara aqui, el aviso y el del tablero podrian separarse.
+    assert.match(
+        main,
+        /const perdidas = countAffectedFrom\(profileName, startDate, holidays\);/
+    );
+    assert.match(
+        main,
+        /import \{\s*\n\s*countAffectedFrom,\s*\n\s*loadLeaveHolidays,/
+    );
+
+    const holders = await readFile(
+        new URL("../js/shiftHolders.js", import.meta.url),
+        "utf8"
+    );
+
+    assert.match(holders, /export async function loadLeaveHolidays\(profileName\)/);
+});
+
+test("en modo 'aplicar hasta' NO se muestra el recuento", () => {
+    // Ahi el cambio va acotado por una fecha final, y contar hacia adelante
+    // sin tope exageraria la perdida.
+    assert.match(
+        main,
+        /overlapDecision\.mode !== "limit" &&\s*\n\s*!await confirmRotationOverwrite/
+    );
+});
+
+test("cancelar conserva el modo de seleccion", () => {
+    // El `return` va ANTES de clearSelectionMode: asi se puede elegir otra
+    // fecha sin tener que volver a entrar al menu.
+    assert.match(
+        main,
+        /!await confirmRotationOverwrite\(profile\.name, fecha\)\s*\n\s*\) \{\s*\n\s*return;\s*\n\s*\}\s*\n+\s*pendingRotationChange = null;\s*\n\s*clearSelectionMode\(false\);/
+    );
+});
+
+test("el dialogo de solapamiento ya no promete borrar las licencias", () => {
+    // Su nota decia que se anulan "permisos y ausencias de ese tramo", que
+    // desde el cambio anterior es falso.
+    assert.match(
+        main,
+        /salvo las licencias médicas y los permisos que ya venían/
+    );
+    assert.doesNotMatch(main, /ausencias de ese tramo; o aplicarla/);
 });

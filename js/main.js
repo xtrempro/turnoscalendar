@@ -237,6 +237,8 @@ import {
 import { renderTaskAssignmentsPanel } from "./taskAssignments.js";
 import { renderKanbanBoard } from "./kanban.js";
 import {
+    countAffectedFrom,
+    loadLeaveHolidays,
     renderShiftHoldersPanel,
     setGroupChangeApplier
 } from "./shiftHolders.js";
@@ -3063,6 +3065,39 @@ function openCalendarRotationConfigModal() {
     render();
 }
 
+/**
+ * Aviso de lo que se reescribe al cambiar la rotativa desde el calendario.
+ *
+ * Es el MISMO recuento del tablero de Titulares -dias habiles para F. Legal y
+ * F. Compensatorio, montos para el administrativo, y sin contar lo que se
+ * conserva-, porque los dos botones hacen exactamente lo mismo y no tiene
+ * sentido que uno avise y el otro no.
+ *
+ * @returns {Promise<boolean>} false si el supervisor se arrepiente.
+ */
+async function confirmRotationOverwrite(profileName, startDate) {
+    const holidays = await loadLeaveHolidays(profileName);
+    const perdidas = countAffectedFrom(profileName, startDate, holidays);
+
+    if (!perdidas.length) return true;
+
+    const detalle = perdidas
+        .map(item => `• ${item.label}: ${item.count}`)
+        .join("\n");
+
+    return showConfirm(
+        `El calendario de ${profileName} se reescribe desde el ` +
+        `${formatDisplayDate(toInputDate(startDate))}.\n\n` +
+        `Se perderá lo que tenga aplicado de ahí en adelante:\n${detalle}\n\n` +
+        "Las licencias médicas y los permisos que ya venían corriendo desde " +
+        "antes de esa fecha se conservan.",
+        {
+            title: "Se reescribe el calendario",
+            confirmText: "Cambiar rotativa"
+        }
+    );
+}
+
 async function applyCalendarRotationChange(fecha) {
     const profile = getPerfilActual();
     const pending = pendingRotationChange;
@@ -3141,6 +3176,24 @@ async function applyCalendarRotationChange(fecha) {
     });
 
     if (!overlapDecision) {
+        return;
+    }
+
+    // El mismo aviso que da el tablero de Titulares antes de soltar la
+    // tarjeta: este boton reescribe el calendario igual, y hasta ahora solo
+    // decia algo cuando habia otra rotativa por delante. En el caso normal
+    // aplicaba sin avisar nada.
+    //
+    // En modo "aplicar hasta" se omite a proposito: ahi el cambio va acotado
+    // por una fecha final, y un recuento hacia adelante sin tope exageraria la
+    // perdida. Ese camino ya explica su limite en su propio dialogo.
+    //
+    // Si se cancela NO se limpia el modo de seleccion, para poder elegir otra
+    // fecha sin volver a entrar al menu.
+    if (
+        overlapDecision.mode !== "limit" &&
+        !await confirmRotationOverwrite(profile.name, fecha)
+    ) {
         return;
     }
 
@@ -9558,7 +9611,8 @@ function requestRotationOverlapDecision({
                 <div class="firebase-dialog-note">
                     Puedes reemplazar la rotativa vigente, lo que resetea el calendario del trabajador desde
                     ${escapeHTML(formatDisplayDate(requestedStart))}, anulando turnos extras, cambios de turno,
-                    permisos y ausencias de ese tramo; o aplicarla solo hasta el
+                    permisos y ausencias de ese tramo —salvo las licencias médicas y los permisos que ya venían
+                    corriendo desde antes de esa fecha, que se conservan—; o aplicarla solo hasta el
                     ${escapeHTML(formatDisplayDate(overlap.endISO))}, sin pisar la rotativa que comienza el
                     ${escapeHTML(formatDisplayDate(overlap.currentStart))}.
                 </div>

@@ -797,7 +797,7 @@ export function setGroupChangeApplier(applier) {
  * Feriados de los anios en que el trabajador tiene F. Legal o F. Compensatorio.
  * Sin ellos el recuento de lo que se perderia contaria dias corridos.
  */
-async function loadLeaveHolidays(profileName) {
+export async function loadLeaveHolidays(profileName) {
     const years = new Set();
 
     ["legal_", "comp_"].forEach(prefix => {
