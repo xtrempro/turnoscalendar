@@ -2118,6 +2118,37 @@ body[data-active-view="home"] .secondary-grid {
 .tt-move-note { font-size: 0.86rem; color: var(--text-soft); }
 .tt-move-note--pending { font-style: italic; }
 
+/* El calendario del cuadro reutiliza la grilla mini de los cambios de turno
+   (.mini-grid y compania). Lo propio es el encabezado del mes y el aviso. */
+.tt-move-cal { margin: 10px 0; }
+.tt-move-cal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    text-transform: capitalize;
+}
+.mini-weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 6px;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-align: center;
+}
+.tt-move-pick { font-size: 0.9rem; }
+.tt-move-warn {
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    background: rgba(239, 68, 68, 0.08);
+    font-size: 0.86rem;
+}
+.tt-move-losses { margin: 6px 0 0; padding-left: 18px; }
+
 .tt-list {
     list-style: none;
     margin: 0;

@@ -20,10 +20,18 @@
 // Solo entran trabajadores de 4to turno: el diurno no tiene fases y el 3er turno
 // tiene un ciclo de seis dias, que serian otras tantas columnas.
 
-import { getProfiles, isProfileActive, getRotativa } from "./storage.js";
+import {
+    getProfiles,
+    getRotativa,
+    getSwaps,
+    isProfileActive
+} from "./storage.js";
+import { getJSON } from "./persistence.js";
+import { getHourReturns } from "./hourReturns.js";
+import { cambioEstaAnulado } from "./swaps.js";
 import { getTurnoBase } from "./turnEngine.js";
 import { rotationStartIndex } from "./rotationUtils.js";
-import { keyFromDate } from "./dateUtils.js";
+import { keyFromDate, keyToDate, toISODate } from "./dateUtils.js";
 import { runCooperativeRange } from "./mainThreadScheduler.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { TURNO } from "./constants.js";
@@ -660,51 +668,208 @@ export function firstTurnForColumnAt(letter, date) {
     };
 }
 
+const MESES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+];
+
 /**
- * Cuadro de "pasar a otro grupo".
+ * Que se perderia si la nueva rotativa arranca en `fromDate`.
  *
- * Todavia NO aplica nada: falta el calendario para elegir la fecha y el
- * recuento de lo que se perderia desde ella. El boton de confirmar esta
- * deshabilitado a proposito -el gesto se prueba sin tocar datos-.
+ * Cambiar la rotativa REESCRIBE el calendario desde esa fecha, y en el camino
+ * se lleva los permisos, las ausencias, las devoluciones de horas y los cambios
+ * de turno de ese tramo. Se cuentan para poder decirlo con cifras en vez de en
+ * prosa.
+ *
+ * NO se cuentan los turnos de `data_`/`baseData_`: casi todos son los dias que
+ * pinta la propia rotativa, y sumarlos daria una cifra enorme y sin sentido.
+ * Que el calendario se repinta se dice aparte, con palabras.
+ *
+ * Las claves se leen DIRECTO: getAdminDays y compania miran el perfil abierto
+ * en Perfiles, y aqui se pregunta por otro trabajador.
+ */
+export function countAffectedFrom(profileName, fromDate) {
+    if (!profileName || !(fromDate instanceof Date)) return [];
+
+    const desde = key => {
+        const date = keyToDate(key);
+
+        return !Number.isNaN(date.getTime()) && date >= fromDate;
+    };
+    const contar = prefix =>
+        Object.keys(getJSON(`${prefix}${profileName}`, {})).filter(desde).length;
+    const iso = toISODate(fromDate);
+    const cambios = getSwaps().filter(swap =>
+        !cambioEstaAnulado(swap) &&
+        (swap.from === profileName || swap.to === profileName) &&
+        (String(swap.fecha || "") >= iso || String(swap.devolucion || "") >= iso)
+    ).length;
+
+    return [
+        { label: "P. Administrativo", count: contar("admin_") },
+        { label: "F. Legal", count: contar("legal_") },
+        { label: "F. Compensatorio", count: contar("comp_") },
+        { label: "Licencias y ausencias", count: contar("absences_") },
+        {
+            label: "Devoluciones de horas",
+            count: Object.keys(getHourReturns(profileName) || {})
+                .filter(desde).length
+        },
+        { label: "Cambios de turno", count: cambios }
+    ].filter(item => item.count > 0);
+}
+
+/** Una celda del calendario del trabajador. */
+function moveDayHTML(profileName, date, selectedKey) {
+    const key = keyFromDate(date);
+    const turno = Number(getTurnoBase(profileName, key)) || TURNO.LIBRE;
+    const clase = turnClass(turno);
+    const sigla = turno === TURNO.LARGA
+        ? "L"
+        : turno === TURNO.NOCHE ? "N" : "·";
+    const estado = key === selectedKey
+        ? `mini-selected mini-turn-${clase}`
+        : `mini-on mini-turn-${clase}`;
+
+    return `
+        <div class="mini-day ${estado}" data-tt-day="${escapeHTML(key)}"
+            title="${escapeHTML(`${date.getDate()} de ${MESES[date.getMonth()]}`)}">
+            <span>${date.getDate()}</span>
+            <small>${sigla}</small>
+        </div>`;
+}
+
+/**
+ * Cuadro de "pasar a otro grupo": el calendario del trabajador, la fecha desde
+ * la que empieza en la nueva rotativa, y lo que se perderia.
+ *
+ * Todavia NO aplica: el boton de confirmar sigue deshabilitado. Lo que falta es
+ * escribir la rotativa, y ese camino hoy trabaja sobre "el perfil abierto".
  */
 function openGroupChangeDialog(profileName, fromLetter, toLetter) {
     const backdrop = document.createElement("div");
+    const hoy = new Date();
+    let cursor = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+    let selected = null;
 
     backdrop.className = "turn-change-dialog-backdrop";
-    backdrop.innerHTML = `
-        <section class="turn-change-dialog tt-move-dialog" role="dialog"
-            aria-modal="true" aria-labelledby="ttMoveTitle">
-            <strong id="ttMoveTitle">Pasar a otro grupo</strong>
-            <p>
-                <b>${escapeHTML(profileName)}</b> pasa del grupo
-                <b>${escapeHTML(fromLetter)}</b> al grupo
-                <b>${escapeHTML(toLetter)}</b>: se suma a esa rotativa como uno
-                más.
-            </p>
-            <p class="tt-move-note">
-                El grupo no es un dato guardado, es la rotativa que su
-                calendario viene haciendo. Por eso lo que hay que indicar es
-                <b>desde qué fecha</b> empieza en la nueva: el turno con el que
-                parte lo determina el grupo de destino.
-            </p>
 
-            <div data-tt-calendar></div>
-            <div data-tt-summary></div>
+    const render = () => {
+        const year = cursor.getFullYear();
+        const month = cursor.getMonth();
+        const dias = new Date(year, month + 1, 0).getDate();
+        // La semana parte el lunes, como el resto de los calendarios.
+        const primero = (new Date(year, month, 1).getDay() + 6) % 7;
+        const selectedKey = selected ? keyFromDate(selected) : "";
+        const celdas = [];
 
-            <p class="tt-move-note tt-move-note--pending">
-                Por ahora esto no aplica ningún cambio: falta el calendario para
-                elegir la fecha y el detalle de lo que se reescribiría.
-            </p>
+        for (let i = 0; i < primero; i++) {
+            celdas.push('<div class="mini-day mini-spacer" aria-hidden="true"></div>');
+        }
 
-            <div class="turn-change-dialog__actions">
-                <button class="primary-button" type="button" disabled>
-                    Cambiar de grupo
-                </button>
-                <button class="secondary-button" type="button" data-tt-close>
-                    Cerrar
-                </button>
-            </div>
-        </section>`;
+        for (let d = 1; d <= dias; d++) {
+            celdas.push(
+                moveDayHTML(profileName, new Date(year, month, d), selectedKey)
+            );
+        }
+
+        const parte = selected ? firstTurnForColumnAt(toLetter, selected) : null;
+        const perdidas = selected ? countAffectedFrom(profileName, selected) : [];
+
+        backdrop.innerHTML = `
+            <section class="turn-change-dialog tt-move-dialog" role="dialog"
+                aria-modal="true" aria-labelledby="ttMoveTitle">
+                <strong id="ttMoveTitle">Pasar a otro grupo</strong>
+                <p>
+                    <b>${escapeHTML(profileName)}</b> pasa del grupo
+                    <b>${escapeHTML(fromLetter)}</b> al grupo
+                    <b>${escapeHTML(toLetter)}</b>: se suma a esa rotativa como
+                    uno más.
+                </p>
+                <p class="tt-move-note">
+                    Elige <b>desde qué fecha</b> empieza en la nueva rotativa.
+                    El turno con el que parte lo determina el grupo de destino,
+                    así que no hay que elegirlo.
+                </p>
+
+                <div class="tt-move-cal">
+                    <div class="tt-move-cal-head">
+                        <button class="ghost-button" type="button" data-tt-month="-1"
+                            aria-label="Mes anterior">&lt;</button>
+                        <b>${escapeHTML(`${MESES[month]} de ${year}`)}</b>
+                        <button class="ghost-button" type="button" data-tt-month="1"
+                            aria-label="Mes siguiente">&gt;</button>
+                    </div>
+                    <div class="mini-weekdays">
+                        <span>L</span><span>M</span><span>M</span><span>J</span><span>V</span><span>S</span><span>D</span>
+                    </div>
+                    <div class="mini-grid">${celdas.join("")}</div>
+                </div>
+
+                ${parte ? `
+                    <p class="tt-move-pick">
+                        Desde el
+                        <b>${escapeHTML(`${selected.getDate()} de ${MESES[selected.getMonth()]} de ${selected.getFullYear()}`)}</b>
+                        parte con <b>${escapeHTML(parte.label)}</b>, que es lo
+                        que hace el grupo ${escapeHTML(toLetter)} ese día.
+                    </p>
+                ` : `
+                    <p class="tt-move-note">Todavía no has elegido la fecha.</p>
+                `}
+
+                ${selected ? `
+                    <div class="tt-move-warn">
+                        <b>Su calendario se reescribe desde esa fecha.</b>
+                        ${perdidas.length ? `
+                            Se perderá lo que tenga aplicado de ahí en adelante:
+                            <ul class="tt-move-losses">
+                                ${perdidas.map(item => `
+                                    <li>${escapeHTML(item.label)}:
+                                    <b>${item.count}</b></li>`).join("")}
+                            </ul>
+                        ` : `
+                            No tiene permisos, ausencias ni cambios de turno
+                            aplicados después de esa fecha.
+                        `}
+                    </div>
+                ` : ""}
+
+                <p class="tt-move-note tt-move-note--pending">
+                    Por ahora esto no aplica ningún cambio: falta escribir la
+                    nueva rotativa.
+                </p>
+
+                <div class="turn-change-dialog__actions">
+                    <button class="primary-button" type="button" disabled>
+                        Cambiar de grupo
+                    </button>
+                    <button class="secondary-button" type="button" data-tt-close>
+                        Cerrar
+                    </button>
+                </div>
+            </section>`;
+
+        backdrop.querySelector("[data-tt-close]")
+            .addEventListener("click", close);
+
+        backdrop.querySelectorAll("[data-tt-month]").forEach(button => {
+            button.addEventListener("click", () => {
+                cursor = new Date(
+                    cursor.getFullYear(),
+                    cursor.getMonth() + Number(button.dataset.ttMonth),
+                    1
+                );
+                render();
+            });
+        });
+
+        backdrop.querySelectorAll("[data-tt-day]").forEach(cell => {
+            cell.addEventListener("click", () => {
+                selected = keyToDate(cell.dataset.ttDay);
+                render();
+            });
+        });
+    };
 
     const close = () => {
         document.removeEventListener("keydown", onKeydown);
@@ -714,7 +879,7 @@ function openGroupChangeDialog(profileName, fromLetter, toLetter) {
         if (event.key === "Escape") close();
     };
 
-    backdrop.querySelector("[data-tt-close]").addEventListener("click", close);
+    render();
     backdrop.addEventListener("click", event => {
         if (event.target === backdrop) close();
     });

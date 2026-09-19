@@ -56,6 +56,7 @@ const {
     cyclePositionAt,
     detectHolderPlacement,
     compareHolders,
+    countAffectedFrom,
     firstTurnForColumnAt,
     formatHolderStreak,
     holderColorKey,
@@ -934,6 +935,77 @@ test("pintar sin DOM real no revienta", async () => {
     }
 
     assert.match(nodo.innerHTML, /data-tt-worker="Ana Perez"/);
+});
+
+test("el recuento dice QUE se perderia desde esa fecha", () => {
+    // Cambiar la rotativa reescribe el calendario desde ahi. Contarlo permite
+    // decirlo con cifras en vez de advertir en prosa.
+    const nombre = "Ana Perez";
+
+    sembrar([{ name: nombre, start: "2026-01-05" }]);
+
+    const antes = keyFromDate(addDays(HOY, -3));
+    const despues = keyFromDate(addDays(HOY, 5));
+
+    localStorage.setItem(`admin_${nombre}`, JSON.stringify({
+        [antes]: 1,
+        [despues]: 1,
+        [keyFromDate(addDays(HOY, 9))]: "0.5M"
+    }));
+    localStorage.setItem(`absences_${nombre}`, JSON.stringify({
+        [despues]: { type: "license" }
+    }));
+
+    const perdidas = countAffectedFrom(nombre, HOY);
+    const porEtiqueta = Object.fromEntries(
+        perdidas.map(item => [item.label, item.count])
+    );
+
+    // Los dos administrativos posteriores, no el anterior.
+    assert.equal(porEtiqueta["P. Administrativo"], 2);
+    assert.equal(porEtiqueta["Licencias y ausencias"], 1);
+    // Lo que no tiene nada no aparece en la lista.
+    assert.equal(porEtiqueta["F. Legal"], undefined);
+});
+
+test("sin nada aplicado despues, no hay nada que perder", () => {
+    const nombre = "Ana Perez";
+
+    sembrar([{ name: nombre, start: "2026-01-05" }]);
+    localStorage.setItem(`admin_${nombre}`, JSON.stringify({
+        [keyFromDate(addDays(HOY, -10))]: 1
+    }));
+
+    assert.deepEqual(countAffectedFrom(nombre, HOY), []);
+});
+
+test("el recuento lee al trabajador que se arrastra, no al perfil abierto", () => {
+    // getAdminDays y compania miran el perfil abierto en Perfiles; aqui se
+    // pregunta por OTRO. Si se leyeran esas funciones, el cuadro mostraria los
+    // permisos de quien no es.
+    sembrar([
+        { name: "Ana Perez", start: "2026-01-05" },
+        { name: "Otro Uno", start: "2026-01-06" }
+    ]);
+    localStorage.setItem("admin_Ana Perez", JSON.stringify({
+        [keyFromDate(addDays(HOY, 2))]: 1
+    }));
+
+    assert.deepEqual(countAffectedFrom("Otro Uno", HOY), []);
+    assert.equal(countAffectedFrom("Ana Perez", HOY).length, 1);
+});
+
+test("el cuadro muestra el calendario y la fecha elegida", async () => {
+    const source = await read("../js/shiftHolders.js");
+
+    // Reutiliza la grilla mini que ya existe, en vez de inventar otra.
+    assert.match(source, /<div class="mini-grid">\$\{celdas\.join\(""\)\}<\/div>/);
+    assert.match(source, /data-tt-day="\$\{escapeHTML\(key\)\}"/);
+    // Y el turno con el que parte sale de la columna de destino.
+    assert.match(
+        source,
+        /const parte = selected \? firstTurnForColumnAt\(toLetter, selected\) : null;/
+    );
 });
 
 test("el cuadro todavia no aplica nada", async () => {
