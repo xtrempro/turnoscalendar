@@ -620,6 +620,173 @@ export async function buildShiftHolders(today = new Date()) {
 }
 
 /* ==========================================================================
+   Pasar a un trabajador de grupo
+
+   Un grupo NO es un dato guardado: es la fase del ciclo que el calendario del
+   trabajador viene haciendo. Asi que sumar a alguien a otro grupo es cambiarle
+   la rotativa, y lo unico que hay que preguntar es DESDE CUANDO: con la fecha y
+   la columna de destino, el turno con el que parte sale solo.
+   ========================================================================== */
+
+// Vocabulario de `rotationStartIndex("4turno", ...)`, en el orden de las fases.
+const ROTATION_FIRST_TURNS = ["larga", "noche", "libre1", "libre2"];
+const FIRST_TURN_LABEL = [
+    "Largo",
+    "Noche",
+    "Primer libre",
+    "Segundo libre"
+];
+
+/**
+ * Con que turno parte quien se suma a `letter` el dia `date`.
+ *
+ * La columna es una FASE anclada a una fecha fija, asi que cualquier dia esa
+ * columna esta en una fase concreta y el que entra tiene que partir en esa. Por
+ * eso el cuadro no pregunta el turno: preguntarlo dejaria elegir uno que pondria
+ * al trabajador en otra columna, contradiciendo el arrastre.
+ */
+export function firstTurnForColumnAt(letter, date) {
+    const letterIndex = COLUMN_LETTERS.indexOf(String(letter || "").trim());
+
+    if (letterIndex === -1 || !(date instanceof Date)) return null;
+
+    const position = cyclePositionAt(letterIndex, ANCHOR, date);
+
+    return {
+        position,
+        firstTurn: ROTATION_FIRST_TURNS[position],
+        label: FIRST_TURN_LABEL[position],
+        turno: CYCLE[position]
+    };
+}
+
+/**
+ * Cuadro de "pasar a otro grupo".
+ *
+ * Todavia NO aplica nada: falta el calendario para elegir la fecha y el
+ * recuento de lo que se perderia desde ella. El boton de confirmar esta
+ * deshabilitado a proposito -el gesto se prueba sin tocar datos-.
+ */
+function openGroupChangeDialog(profileName, fromLetter, toLetter) {
+    const backdrop = document.createElement("div");
+
+    backdrop.className = "turn-change-dialog-backdrop";
+    backdrop.innerHTML = `
+        <section class="turn-change-dialog tt-move-dialog" role="dialog"
+            aria-modal="true" aria-labelledby="ttMoveTitle">
+            <strong id="ttMoveTitle">Pasar a otro grupo</strong>
+            <p>
+                <b>${escapeHTML(profileName)}</b> pasa del grupo
+                <b>${escapeHTML(fromLetter)}</b> al grupo
+                <b>${escapeHTML(toLetter)}</b>: se suma a esa rotativa como uno
+                más.
+            </p>
+            <p class="tt-move-note">
+                El grupo no es un dato guardado, es la rotativa que su
+                calendario viene haciendo. Por eso lo que hay que indicar es
+                <b>desde qué fecha</b> empieza en la nueva: el turno con el que
+                parte lo determina el grupo de destino.
+            </p>
+
+            <div data-tt-calendar></div>
+            <div data-tt-summary></div>
+
+            <p class="tt-move-note tt-move-note--pending">
+                Por ahora esto no aplica ningún cambio: falta el calendario para
+                elegir la fecha y el detalle de lo que se reescribiría.
+            </p>
+
+            <div class="turn-change-dialog__actions">
+                <button class="primary-button" type="button" disabled>
+                    Cambiar de grupo
+                </button>
+                <button class="secondary-button" type="button" data-tt-close>
+                    Cerrar
+                </button>
+            </div>
+        </section>`;
+
+    const close = () => {
+        document.removeEventListener("keydown", onKeydown);
+        backdrop.remove();
+    };
+    const onKeydown = event => {
+        if (event.key === "Escape") close();
+    };
+
+    backdrop.querySelector("[data-tt-close]").addEventListener("click", close);
+    backdrop.addEventListener("click", event => {
+        if (event.target === backdrop) close();
+    });
+    document.addEventListener("keydown", onKeydown);
+    document.body.appendChild(backdrop);
+}
+
+let draggedHolder = null;
+
+function clearDragOver(root) {
+    root.querySelectorAll(".tt-column.is-drag-over").forEach(column => {
+        column.classList.remove("is-drag-over");
+    });
+}
+
+function wireBoardDrag(root) {
+    // El tablero tambien se pinta fuera del navegador -las pruebas capturan el
+    // HTML con un nodo de mentira-, y ahi no hay nada que enlazar. Sin esta
+    // guarda, agregar el arrastre rompia el render entero en vez de quedarse
+    // sin gesto.
+    if (typeof root?.querySelectorAll !== "function") return;
+
+    root.querySelectorAll("[data-tt-worker]").forEach(card => {
+        card.ondragstart = event => {
+            draggedHolder = {
+                name: card.dataset.ttWorker,
+                from: card.dataset.ttFrom
+            };
+            card.classList.add("is-dragging");
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", draggedHolder.name);
+        };
+
+        card.ondragend = () => {
+            card.classList.remove("is-dragging");
+            clearDragOver(root);
+            draggedHolder = null;
+        };
+    });
+
+    root.querySelectorAll("[data-tt-column]").forEach(column => {
+        const letter = column.dataset.ttColumn;
+        // Soltar en la MISMA columna no cambia nada. No se acepta el arrastre,
+        // asi el cursor lo dice ANTES de soltar en vez de abrir un cuadro que
+        // no tiene nada que ofrecer.
+        const accepts = () => Boolean(draggedHolder) && draggedHolder.from !== letter;
+
+        column.ondragover = event => {
+            if (!accepts()) return;
+
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            column.classList.add("is-drag-over");
+        };
+
+        column.ondragleave = () => column.classList.remove("is-drag-over");
+
+        column.ondrop = event => {
+            event.preventDefault();
+            column.classList.remove("is-drag-over");
+
+            if (!accepts()) return;
+
+            const moved = draggedHolder;
+
+            draggedHolder = null;
+            openGroupChangeDialog(moved.name, moved.from, letter);
+        };
+    });
+}
+
+/* ==========================================================================
    Render
    ========================================================================== */
 
@@ -645,7 +812,11 @@ function workerCardHTML(worker) {
     const warn = worker.changedGroup || worker.unmatched || worker.shortHistory;
 
     return `
-        <li class="tt-worker tt-color-${worker.colorIndex}">
+        <li class="tt-worker tt-color-${worker.colorIndex}"
+            draggable="true"
+            data-tt-worker="${escapeHTML(worker.profile.name)}"
+            data-tt-from="${escapeHTML(worker.letter)}"
+            title="Arrástralo a otro grupo para sumarlo a esa rotativa">
             <span class="tt-worker-name">${escapeHTML(worker.profile.name)}</span>
             <span class="tt-worker-meta">${escapeHTML(profession)}</span>
             <span class="tt-worker-note ${warn ? "is-warn" : ""}">${
@@ -686,7 +857,7 @@ function columnHTML(column) {
         : `<p class="tt-empty">Sin titulares en este grupo.</p>`;
 
     return `
-        <section class="tt-column">
+        <section class="tt-column" data-tt-column="${escapeHTML(column.letter)}">
             <header class="tt-column-head tt-column-head--${turnClass(column.todayTurn)}">
                 <span class="tt-letter">${escapeHTML(column.letter)}</span>
                 <span class="tt-today">hoy ${escapeHTML(column.todayTurnLabel)}</span>
@@ -786,4 +957,5 @@ export async function renderShiftHoldersPanel() {
     if (!node) return;
 
     node.innerHTML = boardHTML(board, today);
+    wireBoardDrag(node);
 }

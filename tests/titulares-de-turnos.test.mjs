@@ -56,6 +56,7 @@ const {
     cyclePositionAt,
     detectHolderPlacement,
     compareHolders,
+    firstTurnForColumnAt,
     formatHolderStreak,
     holderColorKey,
     renderShiftHoldersPanel
@@ -833,6 +834,118 @@ test("el recuadro tiene estilo propio y no se confunde con un trabajador", async
     assert.ok(css.includes(".tt-vacancy-badge {"));
     // El mismo rojo de la insignia del hueco de reemplazo de la semanal.
     assert.ok(css.includes("background: #ef4444;"));
+});
+
+/* ======================================================================
+   Pasar a un trabajador de grupo: el gesto
+
+   Un grupo no es un dato guardado, es la fase que el calendario viene
+   haciendo. Por eso arrastrar a alguien a otra columna es cambiarle la
+   rotativa, y lo unico que hay que preguntar es desde cuando: el turno con el
+   que parte lo determina la columna de destino.
+   ====================================================================== */
+
+test("el turno inicial sale de la columna y la fecha, no se pregunta", () => {
+    // Para una MISMA fecha, las cuatro columnas dan las cuatro fases distintas:
+    // es lo que garantiza que quien entra caiga justo en el grupo donde se
+    // solto, sin que nadie elija nada.
+    const turnos = COLUMN_LETTERS.map(letra =>
+        firstTurnForColumnAt(letra, HOY).firstTurn
+    );
+
+    assert.deepEqual(
+        [...turnos].sort(),
+        ["larga", "libre1", "libre2", "noche"]
+    );
+});
+
+test("y son los que entiende la rotativa del 4to turno", async () => {
+    // El vocabulario tiene que ser EL de rotationStartIndex("4turno", ...), o
+    // la rotativa se guardaria con un primer turno que el motor no reconoce.
+    const { rotationStartIndex } = await import("../js/rotationUtils.js");
+
+    COLUMN_LETTERS.forEach(letra => {
+        const elegido = firstTurnForColumnAt(letra, HOY);
+
+        assert.equal(
+            rotationStartIndex("4turno", elegido.firstTurn),
+            elegido.position,
+            `${letra} deberia mapear a su propia fase`
+        );
+    });
+});
+
+test("al avanzar un dia, la columna avanza una fase", () => {
+    // El ciclo corre: sumarse a A manana no es lo mismo que sumarse hoy.
+    const hoy = firstTurnForColumnAt("A", HOY);
+    const manana = firstTurnForColumnAt("A", addDays(HOY, 1));
+
+    assert.equal(manana.position, (hoy.position + 1) % 4);
+});
+
+test("una letra que no existe no devuelve nada", () => {
+    assert.equal(firstTurnForColumnAt("Z", HOY), null);
+    assert.equal(firstTurnForColumnAt("A", "2026-09-10"), null);
+});
+
+test("las tarjetas se arrastran y las columnas reciben", async () => {
+    const source = await read("../js/shiftHolders.js");
+
+    assert.match(source, /draggable="true"/);
+    assert.match(source, /data-tt-worker="\$\{escapeHTML\(worker\.profile\.name\)\}"/);
+    assert.match(source, /data-tt-from="\$\{escapeHTML\(worker\.letter\)\}"/);
+    assert.match(source, /data-tt-column="\$\{escapeHTML\(column\.letter\)\}"/);
+});
+
+test("soltar en la MISMA columna no hace nada", async () => {
+    // Sin esto el cuadro se abriria para un cambio que no cambia nada, y el
+    // cursor no lo advertiria antes de soltar.
+    const source = await read("../js/shiftHolders.js");
+
+    assert.match(
+        source,
+        /const accepts = \(\) => Boolean\(draggedHolder\) && draggedHolder\.from !== letter;/
+    );
+});
+
+test("pintar sin DOM real no revienta", async () => {
+    // El tablero se pinta tambien fuera del navegador: estas mismas pruebas
+    // capturan el HTML con un nodo de mentira. Agregar el arrastre rompio el
+    // render entero hasta que el cableado dejo de dar por hecho un DOM.
+    const source = await read("../js/shiftHolders.js");
+
+    assert.match(
+        source,
+        /if \(typeof root\?\.querySelectorAll !== "function"\) return;/
+    );
+
+    const nodo = { innerHTML: "" };
+
+    sembrar([
+        { name: "Ana Perez", start: "2026-01-05", estamento: "Profesional", profession: "Enfermería" }
+    ]);
+    globalThis.document.getElementById = id =>
+        (id === "shiftHoldersPanel" ? nodo : null);
+
+    try {
+        await renderShiftHoldersPanel();
+    } finally {
+        globalThis.document.getElementById = () => null;
+    }
+
+    assert.match(nodo.innerHTML, /data-tt-worker="Ana Perez"/);
+});
+
+test("el cuadro todavia no aplica nada", async () => {
+    // Lo acordado para esta primera entrega: se prueba el gesto sin tocar
+    // datos. El boton de confirmar nace deshabilitado.
+    const source = await read("../js/shiftHolders.js");
+
+    assert.match(
+        source,
+        /<button class="primary-button" type="button" disabled>/
+    );
+    assert.match(source, /Por ahora esto no aplica ningún cambio/);
 });
 
 /* ======================================================================
