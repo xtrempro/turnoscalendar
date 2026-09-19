@@ -1008,16 +1008,114 @@ test("el cuadro muestra el calendario y la fecha elegida", async () => {
     );
 });
 
-test("el cuadro todavia no aplica nada", async () => {
-    // Lo acordado para esta primera entrega: se prueba el gesto sin tocar
-    // datos. El boton de confirmar nace deshabilitado.
+test("confirmar espera una fecha, y algo que sepa aplicarla", async () => {
+    const source = await read("../js/shiftHolders.js");
+
+    // Sin fecha no hay desde cuando escribir; sin inyector no hay quien
+    // escriba. Cualquiera de las dos cosas deja el boton apagado.
+    assert.match(
+        source,
+        /data-tt-apply\$\{\s*\n\s*selected && groupChangeApplier \? "" : " disabled"\s*\n\s*\}>/
+    );
+    // Y ya no queda rastro de la entrega anterior, que no tocaba datos.
+    assert.doesNotMatch(source, /Por ahora esto no aplica ningún cambio/);
+});
+
+test("el turno con el que parte lo decide la columna, no se pregunta", async () => {
     const source = await read("../js/shiftHolders.js");
 
     assert.match(
         source,
-        /<button class="primary-button" type="button" disabled>/
+        /const turno = firstTurnForColumnAt\(toLetter, selected\);/
     );
-    assert.match(source, /Por ahora esto no aplica ningún cambio/);
+    assert.match(source, /firstTurn: turno\.firstTurn,/);
+});
+
+test("al aplicar se repinta el tablero, que es lo que recalcula los cupos", async () => {
+    // Los cupos no se guardan: salen de comparar las cuatro columnas, y las
+    // columnas se derivan del calendario. Repintar es recalcular.
+    const source = await read("../js/shiftHolders.js");
+
+    assert.match(
+        source,
+        /await groupChangeApplier\(\{[\s\S]{0,220}\}\);\s*\n\s*await renderShiftHoldersPanel\(\);/
+    );
+    // Y se cierra ANTES, para no dejar el cuadro sobre un tablero ya cambiado.
+    assert.match(source, /close\(\);\s*\n\s*await groupChangeApplier\(\{/);
+});
+
+test("escribir la rotativa se inyecta: main.js no se puede importar", async () => {
+    // main.js importa ESTE modulo, asi que la flecha no puede ir de vuelta.
+    // Mismo patron que setCalendarSelectionHandler.
+    const source = await read("../js/shiftHolders.js");
+    const main = await read("../js/main.js");
+
+    assert.match(source, /export function setGroupChangeApplier\(applier\) \{/);
+    assert.doesNotMatch(source, /from "\.\/main\.js"/);
+    assert.match(
+        main,
+        /setGroupChangeApplier\(async \(\{ profile, startISO, firstTurn, toLetter \}\) => \{/
+    );
+});
+
+test("escribe sobre el trabajador ARRASTRADO, no sobre el perfil abierto", async () => {
+    // El riesgo real de esta funcion. cleanupFutureSchedule y rotationApply
+    // parten de getCurrentProfile(), y de ahi salen getAdminDays(),
+    // getLegalDays(), getCompDays() y getAbsences(), que no reciben
+    // trabajador: sin cambiar el perfil activo, arrastrar una tarjeta borraria
+    // los permisos y ausencias de quien estuviera abierto en Perfiles.
+    const main = await read("../js/main.js");
+
+    // El cambio se restaura SIEMPRE, incluso si la escritura falla.
+    assert.match(
+        main,
+        /async function withProfile\(profileName, task\) \{[\s\S]{0,220}finally \{\s*\n\s*setCurrentProfile\(previousProfile\);/
+    );
+    // Y todo lo que escribe va dentro.
+    assert.match(
+        main,
+        /await withProfile\(profile, async \(\) => \{[\s\S]{0,700}await applyDraftRotation\("4turno", startISO, firstTurn\);\s*\n\s*\}\);/
+    );
+    // La rotativa ademas se guarda con el trabajador explicito, no por defecto.
+    assert.match(
+        main,
+        /saveRotativa\(\s*\n\s*\{ type: "4turno", start: startISO, firstTurn \},\s*\n\s*profile\s*\n\s*\);/
+    );
+    // El repintado va despues de restaurar: aplicar toca el calendario visible.
+    assert.match(main, /Despues de restaurar el perfil[\s\S]{0,180}refreshAll\(\);/);
+});
+
+test("el cuadro cabe en la pantalla y los botones no se van fuera", async () => {
+    // Seis filas de calendario, mas los textos y el aviso de lo que se pierde,
+    // pasaban del alto de la pantalla; y lo primero que se salia eran los
+    // botones, de modo que el cuadro no se podia ni cerrar.
+    const source = await read("../js/shiftHolders.js");
+    const css = await read("../styles.css");
+
+    // La clave es estructural: el pie va FUERA de lo que hace scroll. Si
+    // quedara dentro volveria a irse con el resto del contenido.
+    assert.match(source, /<div class="tt-move-body">/);
+    assert.match(
+        source,
+        /<\/div>\s*\n+\s*<div class="turn-change-dialog__actions">/
+    );
+
+    // Se limita al viewport igual que .plans-dialog, y el cuerpo hace scroll.
+    assert.match(
+        css,
+        /\.turn-change-dialog\.tt-move-dialog \{[^}]*max-height: calc\(100vh - 48px\);/
+    );
+    assert.match(css, /\.tt-move-body \{[^}]*overflow-y: auto;/);
+    // Y ademas mas ancho, que es lo que se pidio: la base son 440px.
+    assert.match(
+        css,
+        /\.turn-change-dialog\.tt-move-dialog \{[^}]*width: min\(520px, 100%\);/
+    );
+
+    // El selector va doble a proposito. `.turn-change-dialog` fija su ancho
+    // mas abajo en el archivo y, a igual especificidad, gana el ultimo: con
+    // una sola clase el ensanchado se perdia en silencio.
+    assert.doesNotMatch(css, /\n\.tt-move-dialog \{/);
 });
 
 /* ======================================================================

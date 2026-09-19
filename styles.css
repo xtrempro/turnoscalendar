@@ -2118,6 +2118,32 @@ body[data-active-view="home"] .secondary-grid {
 .tt-move-note { font-size: 0.86rem; color: var(--text-soft); }
 .tt-move-note--pending { font-style: italic; }
 
+/* El calendario son seis filas de celdas mas los textos y el aviso: en una
+   pantalla baja el cuadro crecia hasta dejar los botones FUERA. Se limita la
+   altura al viewport -como ya hace .plans-dialog-, el contenido hace scroll y
+   el pie queda fijo, que es lo que garantiza poder cerrarlo siempre.
+
+   El selector va doble a proposito: .turn-change-dialog define su ancho MAS
+   ABAJO en este archivo, y a igual especificidad gana el ultimo, de modo que
+   una sola clase aqui se perderia sin avisar. */
+.turn-change-dialog.tt-move-dialog {
+    width: min(520px, 100%);
+    max-height: calc(100vh - 48px);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.tt-move-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+.tt-move-dialog .turn-change-dialog__actions {
+    flex: none;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+
 /* El calendario del cuadro reutiliza la grilla mini de los cambios de turno
    (.mini-grid y compania). Lo propio es el encabezado del mes y el aviso. */
 .tt-move-cal { margin: 10px 0; }

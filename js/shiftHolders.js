@@ -739,12 +739,26 @@ function moveDayHTML(profileName, date, selectedKey) {
         </div>`;
 }
 
+/* ==========================================================================
+   Aplicar el cambio de grupo
+   ========================================================================== */
+
+// Escribir la rotativa vive en main.js: usa cleanupFutureSchedule,
+// applyDraftRotation y el historial, que son privados de ahi. Y main.js importa
+// ESTE modulo, de modo que no se puede importar de vuelta. Se inyecta, igual
+// que setCalendarSelectionHandler o setAutoCoverageCandidateProvider.
+let groupChangeApplier = null;
+
+export function setGroupChangeApplier(applier) {
+    groupChangeApplier = typeof applier === "function" ? applier : null;
+}
+
 /**
  * Cuadro de "pasar a otro grupo": el calendario del trabajador, la fecha desde
  * la que empieza en la nueva rotativa, y lo que se perderia.
  *
- * Todavia NO aplica: el boton de confirmar sigue deshabilitado. Lo que falta es
- * escribir la rotativa, y ese camino hoy trabaja sobre "el perfil abierto".
+ * Confirmar solo se habilita con una fecha elegida: sin ella no hay desde
+ * cuando escribir.
  */
 function openGroupChangeDialog(profileName, fromLetter, toLetter) {
     const backdrop = document.createElement("div");
@@ -779,6 +793,7 @@ function openGroupChangeDialog(profileName, fromLetter, toLetter) {
         backdrop.innerHTML = `
             <section class="turn-change-dialog tt-move-dialog" role="dialog"
                 aria-modal="true" aria-labelledby="ttMoveTitle">
+                <div class="tt-move-body">
                 <strong id="ttMoveTitle">Pasar a otro grupo</strong>
                 <p>
                     <b>${escapeHTML(profileName)}</b> pasa del grupo
@@ -834,13 +849,12 @@ function openGroupChangeDialog(profileName, fromLetter, toLetter) {
                     </div>
                 ` : ""}
 
-                <p class="tt-move-note tt-move-note--pending">
-                    Por ahora esto no aplica ningún cambio: falta escribir la
-                    nueva rotativa.
-                </p>
+                </div>
 
                 <div class="turn-change-dialog__actions">
-                    <button class="primary-button" type="button" disabled>
+                    <button class="primary-button" type="button" data-tt-apply${
+                        selected && groupChangeApplier ? "" : " disabled"
+                    }>
                         Cambiar de grupo
                     </button>
                     <button class="secondary-button" type="button" data-tt-close>
@@ -869,6 +883,27 @@ function openGroupChangeDialog(profileName, fromLetter, toLetter) {
                 render();
             });
         });
+
+        const apply = backdrop.querySelector("[data-tt-apply]");
+
+        if (apply && !apply.disabled) {
+            apply.addEventListener("click", async () => {
+                const turno = firstTurnForColumnAt(toLetter, selected);
+
+                if (!turno) return;
+
+                // Se cierra ANTES de aplicar: al terminar se repinta el tablero
+                // entero y el cuadro quedaria flotando sobre otro tablero.
+                close();
+                await groupChangeApplier({
+                    profile: profileName,
+                    startISO: toISODate(selected),
+                    firstTurn: turno.firstTurn,
+                    toLetter
+                });
+                await renderShiftHoldersPanel();
+            });
+        }
     };
 
     const close = () => {

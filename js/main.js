@@ -235,7 +235,10 @@ import {
 } from "./staffing.js";
 import { renderTaskAssignmentsPanel } from "./taskAssignments.js";
 import { renderKanbanBoard } from "./kanban.js";
-import { renderShiftHoldersPanel } from "./shiftHolders.js";
+import {
+    renderShiftHoldersPanel,
+    setGroupChangeApplier
+} from "./shiftHolders.js";
 import { renderAgendaPanel } from "./agenda.js";
 import { renderDashboardPanel } from "./dashboard.js";
 import { renderHomePanel, refreshHomeTasks } from "./home.js";
@@ -9866,6 +9869,68 @@ async function applyDraftRotation(
 
     await aplicarCuartoTurnoDesde(startDate, firstTurn, { endISO });
 }
+
+// TODO el camino de escritura de una rotativa -cleanupFutureSchedule,
+// applyDraftRotation y rotationApply- trabaja sobre EL PERFIL ABIERTO: parte de
+// getCurrentProfile() y de ahi salen getAdminDays(), getLegalDays(),
+// getCompDays() y getAbsences(), que NO reciben trabajador. En el tablero de
+// Titulares el trabajador es otro, asi que sin esto el borrado de permisos,
+// feriados legales, compensados y ausencias caeria sobre quien estuviera
+// abierto en Perfiles, en silencio.
+//
+// Mismo recurso que usa workerRequests.js al aceptar una solicitud: cambiar el
+// perfil activo, hacer el trabajo y restaurarlo SIEMPRE, incluso si falla.
+async function withProfile(profileName, task) {
+    const previousProfile = getCurrentProfile();
+
+    setCurrentProfile(profileName);
+
+    try {
+        return await task();
+    } finally {
+        setCurrentProfile(previousProfile);
+    }
+}
+
+// Sumar a un trabajador a otro grupo del 4to turno arrastrando su tarjeta. El
+// turno con el que parte lo decide la columna de destino en la fecha elegida:
+// no se pregunta, porque es el grupo el que lo determina.
+setGroupChangeApplier(async ({ profile, startISO, firstTurn, toLetter }) => {
+    if (!profile || !startISO) return;
+
+    await withBusyState(async () => {
+        pushHistory();
+
+        await withProfile(profile, async () => {
+            // Conserva lo anterior a la fecha antes de mover el inicio, igual
+            // que al cambiar la rotativa desde el calendario. En Honorarios NO
+            // se congela, por la misma razon que alla: el motor base computa
+            // todo anclado al primer contrato y congelar dejaria turnos
+            // explicitos mezclados con la rotativa nueva.
+            if (!isHonorariaProfile(profile)) {
+                freezePriorRotationSchedule(startISO);
+            }
+            saveRotativa(
+                { type: "4turno", start: startISO, firstTurn },
+                profile
+            );
+            await applyDraftRotation("4turno", startISO, firstTurn);
+        });
+
+        addAuditLog(
+            AUDIT_CATEGORY.CALENDAR,
+            "Cambio de grupo en Titulares de Turnos",
+            `${profile}: pasa al grupo ${toLetter} desde el ` +
+            `${formatDisplayDate(startISO)}, iniciando con ` +
+            `${getRotationFirstTurnLabel(firstTurn, "4turno")}.`,
+            { profile, date: startISO, group: toLetter, firstTurn }
+        );
+    });
+
+    // Despues de restaurar el perfil: aplicar repinta el calendario visible, y
+    // lo hizo mientras el perfil activo era el arrastrado.
+    refreshAll();
+});
 
 async function requestShiftAssignmentEffectiveMonth(assigned) {
     const action = assigned
