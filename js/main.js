@@ -9765,23 +9765,35 @@ async function cleanupFutureSchedule(startDate, options = {}) {
 
     // Lo que se conserva no se borra NI se devuelve al saldo: el trabajador
     // sigue ausente esos dias, asi que el permiso no vuelve a su bolsa.
-    const keptKeys = protectedLeaveKeys(
+    const kept = protectedLeaveKeys(
         { admin, legal, comp, absences },
         startDate
     );
-    const overwritable = keys => keys.filter(key => !keptKeys.has(key));
+    // Cada permiso mira SU propio conjunto: una licencia del dia X no puede
+    // salvar al administrativo del mismo dia X.
+    const overwritable = (name, keys) =>
+        keys.filter(key => !kept[name].has(key));
 
-    overwritable(scheduleWindowKeys(legal, startDate, endISO)).forEach(key => {
+    overwritable(
+        "legal",
+        scheduleWindowKeys(legal, startDate, endISO)
+    ).forEach(key => {
         delete legal[key];
         pushReturnKey(returnedLegal, key);
     });
 
-    overwritable(scheduleWindowKeys(comp, startDate, endISO)).forEach(key => {
+    overwritable(
+        "comp",
+        scheduleWindowKeys(comp, startDate, endISO)
+    ).forEach(key => {
         delete comp[key];
         pushReturnKey(returnedComp, key);
     });
 
-    overwritable(scheduleWindowKeys(admin, startDate, endISO)).forEach(key => {
+    overwritable(
+        "admin",
+        scheduleWindowKeys(admin, startDate, endISO)
+    ).forEach(key => {
         const amount = admin[key] === 1 ? 1 : 0.5;
         const year = key.split("-")[0];
 
@@ -9791,6 +9803,7 @@ async function cleanupFutureSchedule(startDate, options = {}) {
     });
 
     overwritable(
+        "absences",
         scheduleWindowKeys(absences, startDate, endISO)
     ).forEach(key => {
         delete absences[key];

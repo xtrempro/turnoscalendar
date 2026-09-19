@@ -965,7 +965,9 @@ test("el recuento dice QUE se perderia desde esa fecha", () => {
     // el monto y no las claves, porque asi es como se devuelve el saldo
     // (returnAdminBalances) y contar claves inventaba medio dia de mas.
     assert.equal(porEtiqueta["P. Administrativo"], 1.5);
-    assert.equal(porEtiqueta["Licencias y ausencias"], 1);
+    // La licencia medica NO se anuncia: ya no se sobreescribe, asi que
+    // avisarla prometia una perdida que no iba a ocurrir.
+    assert.equal(porEtiqueta["Ausencias"], undefined);
     // Lo que no tiene nada no aparece en la lista.
     assert.equal(porEtiqueta["F. Legal"], undefined);
 });

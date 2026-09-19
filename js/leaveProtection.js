@@ -54,12 +54,22 @@ function isNextDayKey(previousKey, key) {
  *        Mapas de permisos por clave. La entrada `absences` se trata aparte,
  *        porque ahi conviven tipos distintos y solo las licencias se protegen.
  * @param {Date} startDate Desde cuando se reescribe el calendario.
- * @returns {Set<string>} Claves a conservar.
+ * @returns {Object<string, Set<string>>} Claves a conservar, UNA POR MAPA.
+ *
+ * Va separado por mapa a proposito. Con un solo conjunto de fechas, una
+ * licencia del dia X impedia borrar el P. Administrativo del MISMO dia X:
+ * la proteccion de un permiso se contagiaba a los otros tres.
  */
 export function protectedLeaveKeys(maps, startDate) {
-    const keys = new Set();
+    const kept = {};
 
     Object.entries(maps || {}).forEach(([name, map]) => {
+        const keys = new Set();
+
+        // Se registra de inmediato: lo que se agregue despues muta este mismo
+        // conjunto, incluido el barrido de licencias del final.
+        kept[name] = keys;
+
         const ordered = Object.keys(map || {}).sort((left, right) =>
             keyToDate(left).getTime() - keyToDate(right).getTime()
         );
@@ -107,5 +117,5 @@ export function protectedLeaveKeys(maps, startDate) {
         });
     });
 
-    return keys;
+    return kept;
 }

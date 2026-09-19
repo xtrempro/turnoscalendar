@@ -556,7 +556,14 @@ export function cancelFutureReplacementsForWorker(
     const replacements = getReplacements().map(replacement => {
         if (
             !replacementActive(replacement) ||
-            replacement.worker !== profile ||
+            // Las DOS puntas del reemplazo. Antes solo se miraba a quien va a
+            // cubrir: si a este trabajador lo cubria otro, ese registro
+            // sobrevivia a la rotativa nueva y quedaba cubriendo un turno que
+            // ya no existe como estaba.
+            (
+                replacement.worker !== profile &&
+                replacement.replaced !== profile
+            ) ||
             !replacement.date ||
             String(replacement.date) < boundary
         ) {
@@ -616,7 +623,11 @@ export function cancelReplacementsForWorkerRange(
 
         if (
             !replacementActive(replacement) ||
-            replacement.worker !== profile ||
+            // Las dos puntas, igual que en cancelFutureReplacementsForWorker.
+            (
+                replacement.worker !== profile &&
+                replacement.replaced !== profile
+            ) ||
             !inRange
         ) {
             return replacement;

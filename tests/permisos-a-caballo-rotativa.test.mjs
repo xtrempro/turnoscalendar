@@ -34,7 +34,7 @@ const ordenar = set => [...set].sort();
 test("un bloque que cruza la fecha se conserva completo", () => {
     // Del 7 al 21, con la rotativa nueva empezando el 15.
     const legal = dias([7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
-    const keys = protectedLeaveKeys({ legal }, CAMBIO);
+    const { legal: keys } = protectedLeaveKeys({ legal }, CAMBIO);
 
     assert.equal(keys.size, 15);
     // Tambien los dias ANTERIORES al cambio: el bloque es uno solo.
@@ -46,20 +46,20 @@ test("un bloque que cruza la fecha se conserva completo", () => {
 test("un bloque que empieza DESPUES se sobreescribe", () => {
     const legal = dias([20, 21, 22, 23]);
 
-    assert.equal(protectedLeaveKeys({ legal }, CAMBIO).size, 0);
+    assert.equal(protectedLeaveKeys({ legal }, CAMBIO).legal.size, 0);
 });
 
 test("un bloque que empieza JUSTO en la fecha tambien se sobreescribe", () => {
     // Cae entero bajo la rotativa nueva, asi que se rehace con ella.
     const legal = dias([15, 16, 17]);
 
-    assert.equal(protectedLeaveKeys({ legal }, CAMBIO).size, 0);
+    assert.equal(protectedLeaveKeys({ legal }, CAMBIO).legal.size, 0);
 });
 
 test("un bloque que termina antes no se protege", () => {
     const comp = dias([1, 2, 3, 4, 5]);
 
-    assert.equal(protectedLeaveKeys({ comp }, CAMBIO).size, 0);
+    assert.equal(protectedLeaveKeys({ comp }, CAMBIO).comp.size, 0);
 });
 
 test("un hueco corta el bloque: ya no cruza", () => {
@@ -67,16 +67,33 @@ test("un hueco corta el bloque: ya no cruza", () => {
     // distintos y ninguno cruza la fecha.
     const admin = dias([13, 14, 16, 17]);
 
-    assert.equal(protectedLeaveKeys({ admin }, CAMBIO).size, 0);
+    assert.equal(protectedLeaveKeys({ admin }, CAMBIO).admin.size, 0);
 });
+
+/* =========================================================
+   Cada permiso lleva SU conjunto
+========================================================= */
 
 test("cada tipo de permiso arma su propio bloque", () => {
     // El administrativo cruza; el compensatorio va entero despues.
     const admin = dias([14, 15]);
     const comp = dias([18, 19]);
-    const keys = protectedLeaveKeys({ admin, comp }, CAMBIO);
+    const kept = protectedLeaveKeys({ admin, comp }, CAMBIO);
 
-    assert.deepEqual(ordenar(keys), [dic(14), dic(15)].sort());
+    assert.deepEqual(ordenar(kept.admin), [dic(14), dic(15)].sort());
+    assert.equal(kept.comp.size, 0);
+});
+
+test("una licencia NO protege otro permiso del mismo dia", () => {
+    // Con un unico conjunto de fechas compartido, la licencia del dia 20
+    // impedia borrar el administrativo del MISMO dia 20: la proteccion de un
+    // permiso se contagiaba a los otros tres.
+    const absences = dias([20], { type: "license" });
+    const admin = dias([20]);
+    const kept = protectedLeaveKeys({ admin, absences }, CAMBIO);
+
+    assert.equal(kept.absences.size, 1);
+    assert.equal(kept.admin.size, 0);
 });
 
 /* =========================================================
@@ -85,28 +102,27 @@ test("cada tipo de permiso arma su propio bloque", () => {
 
 test("una licencia medica posterior se conserva igual", () => {
     const absences = dias([20, 21, 22], { type: "license" });
-    const keys = protectedLeaveKeys({ absences }, CAMBIO);
 
-    assert.equal(keys.size, 3);
+    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).absences.size, 3);
 });
 
 test("la LM Profesional tambien", () => {
     const absences = dias([25], { type: "professional_license" });
 
-    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).size, 1);
+    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).absences.size, 1);
 });
 
 test("pero el resto de las ausencias si se sobreescribe", () => {
     const absences = dias([20, 21], { type: "union_leave" });
 
-    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).size, 0);
+    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).absences.size, 0);
 });
 
 test("una ausencia comun que CRUZA la fecha se conserva igual", () => {
     // Por la regla del bloque a caballo, no por ser licencia.
     const absences = dias([14, 15, 16], { type: "union_leave" });
 
-    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).size, 3);
+    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).absences.size, 3);
 });
 
 test("dos tipos pegados no forman un bloque comun", () => {
@@ -115,7 +131,7 @@ test("dos tipos pegados no forman un bloque comun", () => {
         ...dias([13, 14], { type: "union_leave" }),
         ...dias([15, 16], { type: "license" })
     };
-    const keys = protectedLeaveKeys({ absences }, CAMBIO);
+    const { absences: keys } = protectedLeaveKeys({ absences }, CAMBIO);
 
     assert.deepEqual(ordenar(keys), [dic(15), dic(16)].sort());
 });
@@ -124,7 +140,7 @@ test("la ausencia guardada como texto tambien se reconoce", () => {
     // El mapa acepta texto u objeto segun quien la haya escrito.
     const absences = dias([20], "license");
 
-    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).size, 1);
+    assert.equal(protectedLeaveKeys({ absences }, CAMBIO).absences.size, 1);
 });
 
 /* =========================================================
@@ -132,8 +148,21 @@ test("la ausencia guardada como texto tambien se reconoce", () => {
 ========================================================= */
 
 test("sin permisos no hay nada que conservar", () => {
-    assert.equal(protectedLeaveKeys({}, CAMBIO).size, 0);
-    assert.equal(protectedLeaveKeys(null, CAMBIO).size, 0);
+    assert.deepEqual(protectedLeaveKeys({}, CAMBIO), {});
+    assert.deepEqual(protectedLeaveKeys(null, CAMBIO), {});
+});
+
+test("cada mapa pedido vuelve con su conjunto, aunque este vacio", () => {
+    // Quien llama hace `kept[name].has(...)` sin preguntar: si faltara la
+    // entrada, reventaria justo en el camino que borra datos.
+    const kept = protectedLeaveKeys(
+        { admin: {}, legal: {}, comp: {}, absences: {} },
+        CAMBIO
+    );
+
+    ["admin", "legal", "comp", "absences"].forEach(name => {
+        assert.ok(kept[name] instanceof Set, `falta el conjunto: ${name}`);
+    });
 });
 
 test("las licencias protegidas son exactamente dos", () => {

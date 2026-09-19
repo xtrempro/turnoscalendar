@@ -30,6 +30,7 @@ import { getJSON } from "./persistence.js";
 import { getHourReturns } from "./hourReturns.js";
 import { isBusinessDay } from "./calculations.js";
 import { fetchHolidays } from "./holidays.js";
+import { protectedLeaveKeys } from "./leaveProtection.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import { getTurnoBase } from "./turnEngine.js";
 import { rotationStartIndex } from "./rotationUtils.js";
@@ -698,24 +699,36 @@ export function countAffectedFrom(profileName, fromDate, holidays = {}) {
 
         return !Number.isNaN(date.getTime()) && date >= fromDate;
     };
-    const claves = prefix =>
-        Object.keys(getJSON(`${prefix}${profileName}`, {})).filter(desde);
-    const contar = prefix => claves(prefix).length;
+    const mapa = prefix => getJSON(`${prefix}${profileName}`, {});
+    const maps = {
+        admin: mapa("admin_"),
+        legal: mapa("legal_"),
+        comp: mapa("comp_"),
+        absences: mapa("absences_")
+    };
+    // Lo que NO se sobreescribe tampoco se anuncia como perdida. El recuadro
+    // contaba las licencias medicas y los bloques a caballo, que justamente se
+    // conservan, y avisaba de una perdida que no iba a ocurrir. Se llama a la
+    // MISMA funcion que decide el borrado para que el aviso y el efecto no
+    // puedan discrepar nunca.
+    const conservadas = protectedLeaveKeys(maps, fromDate);
+    const claves = name => Object.keys(maps[name])
+        .filter(desde)
+        .filter(key => !conservadas[name].has(key));
+    const contar = name => claves(name).length;
     // F. Legal y F. Compensatorio se piden y se devuelven por dia HABIL: un
     // bloque del 7 al 21 de diciembre son 15 dias corridos pero 10 de saldo, y
     // contar los corridos avisaba de una perdida que no existe. Es el mismo
     // criterio de countBusinessKeys, que es quien devuelve el saldo al borrar.
-    const contarHabiles = prefix => claves(prefix).filter(key => {
+    const contarHabiles = name => claves(name).filter(key => {
         const date = keyToDate(key);
 
         return isBusinessDay(date, holidays[date.getFullYear()] || {});
     }).length;
     // El administrativo se guarda como dia entero o medio: contar las claves
     // convertiria dos medios dias en dos dias.
-    const adminDays = getJSON(`admin_${profileName}`, {});
-    const admin = Object.keys(adminDays)
-        .filter(desde)
-        .reduce((total, key) => total + (adminDays[key] === 1 ? 1 : 0.5), 0);
+    const admin = claves("admin")
+        .reduce((total, key) => total + (maps.admin[key] === 1 ? 1 : 0.5), 0);
     const iso = toISODate(fromDate);
     const cambios = getSwaps().filter(swap =>
         !cambioEstaAnulado(swap) &&
@@ -725,9 +738,11 @@ export function countAffectedFrom(profileName, fromDate, holidays = {}) {
 
     return [
         { label: "P. Administrativo", count: admin },
-        { label: "F. Legal", count: contarHabiles("legal_") },
-        { label: "F. Compensatorio", count: contarHabiles("comp_") },
-        { label: "Licencias y ausencias", count: contar("absences_") },
+        { label: "F. Legal", count: contarHabiles("legal") },
+        { label: "F. Compensatorio", count: contarHabiles("comp") },
+        // Las licencias no se sobreescriben nunca, asi que lo que queda aqui
+        // son las demas ausencias: gremial, capacitacion, permiso sin goce.
+        { label: "Ausencias", count: contar("absences") },
         {
             label: "Devoluciones de horas",
             count: Object.keys(getHourReturns(profileName) || {})
