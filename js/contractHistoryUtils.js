@@ -180,7 +180,8 @@ export function recordProfileContractHistory(
     profileName,
     previousSnapshot,
     nextSnapshot,
-    gradeEffectiveDate
+    gradeEffectiveDate,
+    actor = null
 ) {
     const changes = contractHistoryChanges(
         previousSnapshot,
@@ -199,6 +200,47 @@ export function recordProfileContractHistory(
                 ?.effectiveDate ||
             "",
         summary: "Cambio de datos contractuales",
+        actor,
+        changes
+    });
+}
+
+/**
+ * Registra un cambio de rotativa hecho FUERA de la ficha del perfil: el boton
+ * "modificar rotativa" del calendario y el arrastre del tablero de Titulares.
+ *
+ * Ninguno de los dos pasa por recordProfileContractHistory -que solo corre al
+ * guardar la ficha-, de modo que el cambio no dejaba ningun rastro: ni cuando
+ * se hizo, ni quien lo hizo, ni desde cuando rige.
+ *
+ * @param {string} profileName
+ * @param {{type?: string, start?: string, firstTurn?: string}} previousRotation
+ * @param {{type?: string, start?: string, firstTurn?: string}} nextRotation
+ * @param {{name?: string, email?: string}|null} actor
+ */
+export function recordRotationChange(
+    profileName,
+    previousRotation,
+    nextRotation,
+    actor = null
+) {
+    if (!profileName) return;
+
+    const changes = contractHistoryChanges(
+        { rotativa: previousRotation || {} },
+        { rotativa: nextRotation || {} },
+        ""
+    );
+
+    if (!changes.length) return;
+
+    addContractHistoryEntry(profileName, {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: new Date().toISOString(),
+        effectiveDate:
+            normalizeStoredStart(nextRotation?.start || "") || "",
+        summary: "Cambio de rotativa",
+        actor,
         changes
     });
 }

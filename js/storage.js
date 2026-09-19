@@ -570,6 +570,21 @@ function normalizeContractHistoryChange(change = {}) {
     };
 }
 
+// Quien hizo el cambio. Va aparte porque este normalizador es una LISTA
+// BLANCA: un campo que no se nombre aqui se pierde al guardar, sin aviso.
+// Las entradas viejas no lo traen y quedan en null, que es lo correcto: no se
+// puede inventar un autor para algo que se registro cuando no se guardaba.
+function normalizeContractHistoryActor(actor) {
+    if (!actor) return null;
+
+    const name = String(actor.name || "").trim();
+    const email = String(actor.email || "").trim();
+
+    if (!name && !email) return null;
+
+    return { name, email };
+}
+
 function normalizeContractHistoryEntry(entry = {}) {
     const changes = (Array.isArray(entry.changes)
         ? entry.changes
@@ -594,6 +609,7 @@ function normalizeContractHistoryEntry(entry = {}) {
         effectiveDate:
             normalizeHistoryDate(entry.effectiveDate) || "",
         summary: String(entry.summary || "").trim(),
+        actor: normalizeContractHistoryActor(entry.actor),
         changes
     };
 }

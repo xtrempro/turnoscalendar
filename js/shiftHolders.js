@@ -28,6 +28,8 @@ import {
 } from "./storage.js";
 import { getJSON } from "./persistence.js";
 import { getHourReturns } from "./hourReturns.js";
+import { isBusinessDay } from "./calculations.js";
+import { fetchHolidays } from "./holidays.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import { getTurnoBase } from "./turnEngine.js";
 import { rotationStartIndex } from "./rotationUtils.js";
@@ -688,7 +690,7 @@ const MESES = [
  * Las claves se leen DIRECTO: getAdminDays y compania miran el perfil abierto
  * en Perfiles, y aqui se pregunta por otro trabajador.
  */
-export function countAffectedFrom(profileName, fromDate) {
+export function countAffectedFrom(profileName, fromDate, holidays = {}) {
     if (!profileName || !(fromDate instanceof Date)) return [];
 
     const desde = key => {
@@ -696,8 +698,24 @@ export function countAffectedFrom(profileName, fromDate) {
 
         return !Number.isNaN(date.getTime()) && date >= fromDate;
     };
-    const contar = prefix =>
-        Object.keys(getJSON(`${prefix}${profileName}`, {})).filter(desde).length;
+    const claves = prefix =>
+        Object.keys(getJSON(`${prefix}${profileName}`, {})).filter(desde);
+    const contar = prefix => claves(prefix).length;
+    // F. Legal y F. Compensatorio se piden y se devuelven por dia HABIL: un
+    // bloque del 7 al 21 de diciembre son 15 dias corridos pero 10 de saldo, y
+    // contar los corridos avisaba de una perdida que no existe. Es el mismo
+    // criterio de countBusinessKeys, que es quien devuelve el saldo al borrar.
+    const contarHabiles = prefix => claves(prefix).filter(key => {
+        const date = keyToDate(key);
+
+        return isBusinessDay(date, holidays[date.getFullYear()] || {});
+    }).length;
+    // El administrativo se guarda como dia entero o medio: contar las claves
+    // convertiria dos medios dias en dos dias.
+    const adminDays = getJSON(`admin_${profileName}`, {});
+    const admin = Object.keys(adminDays)
+        .filter(desde)
+        .reduce((total, key) => total + (adminDays[key] === 1 ? 1 : 0.5), 0);
     const iso = toISODate(fromDate);
     const cambios = getSwaps().filter(swap =>
         !cambioEstaAnulado(swap) &&
@@ -706,9 +724,9 @@ export function countAffectedFrom(profileName, fromDate) {
     ).length;
 
     return [
-        { label: "P. Administrativo", count: contar("admin_") },
-        { label: "F. Legal", count: contar("legal_") },
-        { label: "F. Compensatorio", count: contar("comp_") },
+        { label: "P. Administrativo", count: admin },
+        { label: "F. Legal", count: contarHabiles("legal_") },
+        { label: "F. Compensatorio", count: contarHabiles("comp_") },
         { label: "Licencias y ausencias", count: contar("absences_") },
         {
             label: "Devoluciones de horas",
@@ -760,11 +778,36 @@ export function setGroupChangeApplier(applier) {
  * Confirmar solo se habilita con una fecha elegida: sin ella no hay desde
  * cuando escribir.
  */
+/**
+ * Feriados de los anios en que el trabajador tiene F. Legal o F. Compensatorio.
+ * Sin ellos el recuento de lo que se perderia contaria dias corridos.
+ */
+async function loadLeaveHolidays(profileName) {
+    const years = new Set();
+
+    ["legal_", "comp_"].forEach(prefix => {
+        Object.keys(getJSON(`${prefix}${profileName}`, {})).forEach(key => {
+            const date = keyToDate(key);
+
+            if (!Number.isNaN(date.getTime())) years.add(date.getFullYear());
+        });
+    });
+
+    const map = {};
+
+    for (const year of years) {
+        map[year] = await fetchHolidays(year);
+    }
+
+    return map;
+}
+
 function openGroupChangeDialog(profileName, fromLetter, toLetter) {
     const backdrop = document.createElement("div");
     const hoy = new Date();
     let cursor = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
     let selected = null;
+    let holidays = {};
 
     backdrop.className = "turn-change-dialog-backdrop";
 
@@ -788,7 +831,9 @@ function openGroupChangeDialog(profileName, fromLetter, toLetter) {
         }
 
         const parte = selected ? firstTurnForColumnAt(toLetter, selected) : null;
-        const perdidas = selected ? countAffectedFrom(profileName, selected) : [];
+        const perdidas = selected
+            ? countAffectedFrom(profileName, selected, holidays)
+            : [];
 
         backdrop.innerHTML = `
             <section class="turn-change-dialog tt-move-dialog" role="dialog"
@@ -920,6 +965,15 @@ function openGroupChangeDialog(profileName, fromLetter, toLetter) {
     });
     document.addEventListener("keydown", onKeydown);
     document.body.appendChild(backdrop);
+
+    // Los feriados llegan por red la primera vez. El cuadro ya se ve: cuando
+    // llegan se repinta, y hasta entonces el recuento solo descuenta fines de
+    // semana. No se espera para abrir porque la fecha aun no esta elegida.
+    void loadLeaveHolidays(profileName).then(map => {
+        holidays = map;
+
+        if (backdrop.isConnected) render();
+    });
 }
 
 let draggedHolder = null;

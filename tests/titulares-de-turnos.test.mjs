@@ -961,8 +961,10 @@ test("el recuento dice QUE se perderia desde esa fecha", () => {
         perdidas.map(item => [item.label, item.count])
     );
 
-    // Los dos administrativos posteriores, no el anterior.
-    assert.equal(porEtiqueta["P. Administrativo"], 2);
+    // Un dia entero y un MEDIO dia posteriores, no el anterior: 1,5. Se suma
+    // el monto y no las claves, porque asi es como se devuelve el saldo
+    // (returnAdminBalances) y contar claves inventaba medio dia de mas.
+    assert.equal(porEtiqueta["P. Administrativo"], 1.5);
     assert.equal(porEtiqueta["Licencias y ausencias"], 1);
     // Lo que no tiene nada no aparece en la lista.
     assert.equal(porEtiqueta["F. Legal"], undefined);

@@ -98,7 +98,8 @@ import {
 } from "./professionUtils.js";
 import {
     formatHistoryDateTime,
-    recordProfileContractHistory
+    recordProfileContractHistory,
+    recordRotationChange
 } from "./contractHistoryUtils.js";
 import {
     auditProfileSnapshot,
@@ -341,6 +342,7 @@ import { withBusyState } from "./busy.js";
 import {
     addAuditLog,
     AUDIT_CATEGORY,
+    getCurrentActor,
     getLeaveApplicationInfo,
     renderAuditLogPanel
 } from "./auditLog.js";
@@ -367,6 +369,7 @@ import {
     moveShiftConfigBlockReason,
     moveShiftTargetCombina24
 } from "./rulesEngine.js";
+import { protectedLeaveKeys } from "./leaveProtection.js";
 import {
     calcularHorasMesPerfil,
     renderSummaryHTML
@@ -1499,14 +1502,26 @@ function renderContractHistory(profile) {
         });
     });
     contractHistory.forEach(entry => {
+        // Son DOS fechas distintas y antes solo se veia una: la grande es desde
+        // cuando rige el cambio, y esta otra cuando se hizo. Sin la segunda no
+        // habia forma de saber quien movio una rotativa ni cuando.
+        const quien = entry.actor?.name || entry.actor?.email || "";
+        const meta = [
+            entry.createdAt
+                ? `Registrado el ${formatHistoryDateTime(entry.createdAt)}`
+                : "",
+            quien ? `por ${quien}` : ""
+        ].filter(Boolean).join(" ");
+
         timeline.push({
             sort: String(entry.effectiveDate || entry.createdAt || ""),
             date: entry.effectiveDate
                 ? formatDisplayDate(entry.effectiveDate)
                 : formatHistoryDateTime(entry.createdAt),
-            title: "Cambio contractual",
+            title: entry.summary || "Cambio contractual",
             badge: "Cambio",
             dot: "a",
+            meta,
             sub: (entry.changes || [])
                 .map(change => `${change.label}: ${change.from || "—"} → ${change.to || "—"}`)
                 .join(" · ")
@@ -1549,6 +1564,7 @@ function renderContractHistory(profile) {
                             <time>${escapeHTML(item.date)}</time>
                         </div>
                         ${item.sub ? `<p>${escapeHTML(item.sub)}</p>` : ""}
+                        ${item.meta ? `<p class="pf-tl-meta">${escapeHTML(item.meta)}</p>` : ""}
                     </div>
                 </div>
             `).join("")}
@@ -3131,6 +3147,9 @@ async function applyCalendarRotationChange(fecha) {
     pendingRotationChange = null;
     clearSelectionMode(false);
 
+    // Antes de guardar la nueva: es el "desde" del historial contractual.
+    const previousRotation = getRotativa(profile.name);
+
     await withBusyState(async () => {
         pushHistory();
 
@@ -3181,6 +3200,12 @@ async function applyCalendarRotationChange(fecha) {
                 ? "Aplic\u00f3 rotativa historica desde calendario"
                 : "Modifico rotativa desde calendario";
 
+        recordRotationChange(
+            profile.name,
+            previousRotation,
+            getRotativa(profile.name),
+            getCurrentActor()
+        );
         addAuditLog(
             AUDIT_CATEGORY.CALENDAR,
             actionLabel,
@@ -9738,17 +9763,25 @@ async function cleanupFutureSchedule(startDate, options = {}) {
         delete blocked[key];
     });
 
-    scheduleWindowKeys(legal, startDate, endISO).forEach(key => {
+    // Lo que se conserva no se borra NI se devuelve al saldo: el trabajador
+    // sigue ausente esos dias, asi que el permiso no vuelve a su bolsa.
+    const keptKeys = protectedLeaveKeys(
+        { admin, legal, comp, absences },
+        startDate
+    );
+    const overwritable = keys => keys.filter(key => !keptKeys.has(key));
+
+    overwritable(scheduleWindowKeys(legal, startDate, endISO)).forEach(key => {
         delete legal[key];
         pushReturnKey(returnedLegal, key);
     });
 
-    scheduleWindowKeys(comp, startDate, endISO).forEach(key => {
+    overwritable(scheduleWindowKeys(comp, startDate, endISO)).forEach(key => {
         delete comp[key];
         pushReturnKey(returnedComp, key);
     });
 
-    scheduleWindowKeys(admin, startDate, endISO).forEach(key => {
+    overwritable(scheduleWindowKeys(admin, startDate, endISO)).forEach(key => {
         const amount = admin[key] === 1 ? 1 : 0.5;
         const year = key.split("-")[0];
 
@@ -9757,7 +9790,9 @@ async function cleanupFutureSchedule(startDate, options = {}) {
             (returnedAdmin[year] || 0) + amount;
     });
 
-    scheduleWindowKeys(absences, startDate, endISO).forEach(key => {
+    overwritable(
+        scheduleWindowKeys(absences, startDate, endISO)
+    ).forEach(key => {
         delete absences[key];
     });
 
@@ -9898,6 +9933,9 @@ async function withProfile(profileName, task) {
 setGroupChangeApplier(async ({ profile, startISO, firstTurn, toLetter }) => {
     if (!profile || !startISO) return;
 
+    // Antes de escribir la nueva: es el "desde" del historial contractual.
+    const previousRotation = getRotativa(profile);
+
     await withBusyState(async () => {
         pushHistory();
 
@@ -9917,6 +9955,12 @@ setGroupChangeApplier(async ({ profile, startISO, firstTurn, toLetter }) => {
             await applyDraftRotation("4turno", startISO, firstTurn);
         });
 
+        recordRotationChange(
+            profile,
+            previousRotation,
+            getRotativa(profile),
+            getCurrentActor()
+        );
         addAuditLog(
             AUDIT_CATEGORY.CALENDAR,
             "Cambio de grupo en Titulares de Turnos",
@@ -10417,7 +10461,8 @@ async function guardarPerfil() {
                 nextName,
                 previousSnapshot,
                 nextSnapshot,
-                compensationEffectiveDate
+                compensationEffectiveDate,
+                getCurrentActor()
             );
         }
 

@@ -278,7 +278,7 @@ function getCurrentActorLabel() {
         "Usuario";
 }
 
-function getCurrentActor() {
+export function getCurrentActor() {
     const user = getCurrentFirebaseUser();
     const name = getCurrentActorLabel();
 
