@@ -237,6 +237,7 @@ import {
 import { renderTaskAssignmentsPanel } from "./taskAssignments.js";
 import { renderKanbanBoard } from "./kanban.js";
 import {
+    SPLIT_BY_PROFESSION,
     countAffectedFrom,
     loadLeaveHolidays,
     renderShiftHoldersPanel,
@@ -9399,7 +9400,9 @@ async function validateProfileSavePreflight({
     isCreating,
     isEditing,
     nextName,
-    nextEmailKey
+    nextEmailKey,
+    nextEstamento = "",
+    nextProfession = ""
 }) {
     const profiles = getProfiles();
     const originalName = isEditing
@@ -9412,6 +9415,41 @@ async function validateProfileSavePreflight({
 
     if ((isCreating || isEditing) && nameExists) {
         alert("Ese perfil ya existe.");
+        return false;
+    }
+
+    // Sin estamento el trabajador no entra en NINGUNA comparacion de dotacion
+    // -ni en los cupos del tablero de Titulares ni en la brecha del inicio-,
+    // asi que el hueco real de su grupo queda invisible.
+    if (!String(nextEstamento || "").trim()) {
+        alert(
+            "Falta el estamento. Es obligatorio: sin el, el trabajador no " +
+            "entra en la comparacion de dotacion de los grupos."
+        );
+        DOM.profileRoleSelect?.focus();
+        return false;
+    }
+
+    // En Profesional y Tecnico la dotacion se compara POR PROFESION, asi que
+    // sin ella el cupo no sabe a quien pedir. Se lee de la MISMA constante que
+    // decide abrirlos por profesion, y no de una lista repetida aqui: si esa
+    // regla cambia, esta validacion la sigue sola.
+    //
+    // Ojo con el centinela: la ficha nace con "Sin informacion" como profesion,
+    // que es un valor real del catalogo. Comprobar solo que no este vacia
+    // dejaria pasar justamente los perfiles que se quieren evitar.
+    if (
+        SPLIT_BY_PROFESSION.has(String(nextEstamento).trim()) &&
+        (
+            !String(nextProfession || "").trim() ||
+            nextProfession === SIN_INFORMACION_PROFESSION
+        )
+    ) {
+        alert(
+            `Falta la profesion. En ${nextEstamento} es obligatoria, porque ` +
+            "la dotacion de los grupos se compara por profesion."
+        );
+        DOM.profileProfessionSelect?.focus();
         return false;
     }
 
@@ -10335,7 +10373,9 @@ async function guardarPerfil() {
             isCreating,
             isEditing,
             nextName,
-            nextEmailKey
+            nextEmailKey,
+            nextEstamento,
+            nextProfession
         })
     ) {
         return false;

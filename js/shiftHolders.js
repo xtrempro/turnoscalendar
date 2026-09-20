@@ -244,7 +244,7 @@ const ESTAMENTO_ORDER = [
 // kinesiologia y matroneria, y en Tecnico los TENS con los de imagenologia: un
 // cupo "profesional" no dice a quien llamar. Administrativo y Auxiliar se
 // comparan por estamento, que es como los pidio el supervisor.
-const SPLIT_BY_PROFESSION = new Set(["Profesional", "Técnico"]);
+export const SPLIT_BY_PROFESSION = new Set(["Profesional", "Técnico"]);
 
 /**
  * La profesion que define el bloque, o "" si no corresponde abrirlo.

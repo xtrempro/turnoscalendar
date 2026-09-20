@@ -207,10 +207,16 @@ test("y usa el MISMO recuento del tablero, no uno propio", async () => {
         main,
         /const perdidas = countAffectedFrom\(profileName, startDate, holidays\);/
     );
-    assert.match(
-        main,
-        /import \{\s*\n\s*countAffectedFrom,\s*\n\s*loadLeaveHolidays,/
+    // Lo que importa es que SALGAN de shiftHolders.js, no en que orden estan
+    // dentro del import: fijar la posicion rompia la prueba en cuanto alguien
+    // agregaba otro nombre al bloque, sin que nada estuviera mal.
+    const importBlock = main.slice(
+        main.indexOf("import {", main.indexOf('} from "./shiftHolders.js";') - 400),
+        main.indexOf('} from "./shiftHolders.js";')
     );
+
+    assert.match(importBlock, /countAffectedFrom,/);
+    assert.match(importBlock, /loadLeaveHolidays,/);
 
     const holders = await readFile(
         new URL("../js/shiftHolders.js", import.meta.url),

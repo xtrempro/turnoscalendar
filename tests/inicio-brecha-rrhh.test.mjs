@@ -122,6 +122,75 @@ test("quien cubre desde otro grupo tambien cuenta", () => {
     );
 });
 
+/* ======================================================================
+   Y lo mismo abierto por profesion
+
+   La dotacion del turno es la que manda: si ese dia ya hay alguien de la
+   profesion que falta -un 3er turno al que le toca, o alguien que el
+   supervisor agrego a mano-, el turno esta cubierto y no hay brecha que
+   avisar.
+   ====================================================================== */
+
+/** Al grupo C le falta una enfermera: tiene 1 y el mejor dotado tiene 2. */
+const CARENCIA_PROFESION = [{
+    estamento: "Profesional",
+    profession: "Enfermería",
+    label: "Enfermería",
+    count: 1,
+    reference: 2,
+    missing: 1
+}];
+
+function faltanPorProfesion(gente) {
+    return weeklyRotaGapsForCell(
+        () => new Map([["C", CARENCIA_PROFESION]]),
+        new Date(2026, 8, 1),
+        value => String(value || "").trim()
+    )("C", gente);
+}
+
+const enfermera = () => ({
+    type: "profile",
+    profile: { estamento: "Profesional", profession: "Enfermería" }
+});
+const kinesiologo = () => ({
+    type: "profile",
+    profile: { estamento: "Profesional", profession: "Kinesiología" }
+});
+
+test("un kinesiologo NO tapa la falta de una enfermera", () => {
+    // Los dos son "Profesional": si se contara por estamento, el turno se
+    // veria completo y la brecha desapareceria sin que nadie la cubra.
+    const gaps = faltanPorProfesion([enfermera(), kinesiologo()]);
+
+    assert.equal(gaps.length, 1);
+    assert.equal(gaps[0].missing, 1);
+});
+
+test("una segunda enfermera SI la tapa, venga de donde venga", () => {
+    // Es el caso que importa: da igual si es de otro grupo, si hace 3er turno
+    // y le toco ese dia, o si la agregaron a mano. La brecha se mide contra la
+    // dotacion del TURNO, no contra el padron del grupo.
+    assert.deepEqual(faltanPorProfesion([enfermera(), enfermera()]), []);
+});
+
+test("y el ausente con su hueco SI cuenta, para no pedirlo dos veces", () => {
+    // Regla deliberada del modulo, la misma que ya fija "un ausente no cuenta
+    // dos veces" para el estamento: el ausente ya tiene su propia casilla por
+    // la ausencia, asi que si ademas engordara la brecha de rotativa el mismo
+    // turno pediria dos personas por una sola falta.
+    assert.deepEqual(
+        faltanPorProfesion([
+            enfermera(),
+            {
+                type: "replacement-slot",
+                profile: { estamento: "Profesional", profession: "Enfermería" }
+            }
+        ]),
+        []
+    );
+});
+
 test("una celda sin grupo no tiene carencia de rotativa", () => {
     // El diurno no pertenece a ningun grupo del 4to turno.
     const sinGrupo = weeklyRotaGapsForCell(
