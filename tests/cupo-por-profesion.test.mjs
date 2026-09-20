@@ -286,3 +286,34 @@ test("el clic del cupo esta enganchado al tablero", () => {
         /root\.querySelectorAll\("\[data-tt-gap\]"\)\.forEach\(card => \{[\s\S]{0,300}openGapDialog\(/
     );
 });
+
+/* =========================================================
+   El cuadro de eleccion
+========================================================= */
+
+test("el radio de cada opcion no se estira", async () => {
+    // La hoja tiene una regla general de formularios -`input, select,
+    // textarea { width: 100%; padding: 12px 14px; border: ...; }`- que alcanza
+    // TAMBIEN a los input[type=radio]. Sin este reset el circulo se dibujaba
+    // como una barra ancha y, al quedarse con el ancho de la fila, empujaba el
+    // nombre del candidato a una columna angosta que lo partia en dos lineas.
+    //
+    // Esta prueba existe para que el reset no se borre por parecer redundante:
+    // no lo es mientras esa regla general siga alcanzando a los radio.
+    const styles = (await readFile(
+        new URL("../styles.css", import.meta.url),
+        "utf8"
+    )).replace(/\r\n/g, "\n");
+    const bloque = styles.slice(
+        styles.indexOf('.app-dialog__choice input[type="radio"] {')
+    );
+
+    assert.notEqual(
+        styles.indexOf('.app-dialog__choice input[type="radio"] {'),
+        -1,
+        "falta el reset del radio del cuadro de eleccion"
+    );
+    assert.match(bloque.slice(0, 260), /flex: none;/);
+    assert.match(bloque.slice(0, 260), /width: 17px;/);
+    assert.match(bloque.slice(0, 260), /height: 17px;/);
+});

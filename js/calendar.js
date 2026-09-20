@@ -5833,7 +5833,7 @@ function replacementDialogHTML({
             <p>
                 ${
                     rota
-                        ? `El grupo ${escapeHTML(rota.group)} requiere 1 ${escapeHTML(rota.estamento)} para ${escapeHTML(turnoReplacementLabel(neededTurn))}: su rotativa está incompleta frente a los demás grupos.`
+                        ? `El grupo ${escapeHTML(rota.group)} requiere 1 ${escapeHTML(rota.label || rota.estamento)} para ${escapeHTML(turnoReplacementLabel(neededTurn))}: su rotativa está incompleta frente a los demás grupos.`
                         : `${escapeHTML(profileName)} requiere cobertura para ${escapeHTML(turnoReplacementLabel(neededTurn))} por ${escapeHTML(absenceType)}.${coverWindow ? ` Se cubrirá solo el tramo ${escapeHTML(coverWindowLabel(coverWindow))}, que es lo que quedó sin cubrir.` : ""}`
                 }
             </p>

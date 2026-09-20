@@ -242,6 +242,23 @@ body.app-dialog-open {
     box-shadow: 0 0 0 3px var(--dialog-tone-soft);
 }
 
+/* El radio, a salvo de la regla general de formularios.
+   `input, select, textarea { width: 100%; padding: 12px 14px; border: ...; }`
+   alcanza TAMBIEN a los radio: sin este reset el circulo se estiraba como una
+   barra ancha y, al quedarse con el ancho de la fila, empujaba el nombre a una
+   columna angosta que lo partia en dos lineas. */
+.app-dialog__choice input[type="radio"] {
+    flex: none;
+    width: 17px;
+    height: 17px;
+    /* Alineado con la PRIMERA linea del texto, no con el centro del bloque:
+       las opciones traen una pista debajo y el radio quedaria flotando. */
+    margin: 1px 0 0;
+    padding: 0;
+    border-radius: 50%;
+    accent-color: var(--dialog-tone);
+}
+
 .app-dialog__choice-text {
     display: grid;
     gap: 2px;

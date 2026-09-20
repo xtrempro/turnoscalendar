@@ -110,7 +110,7 @@ test("el encabezado del modal distingue los dos casos", () => {
     // Un cupo de rotativa no tiene a quien nombrar: no falto nadie.
     assert.match(
         source,
-        /El grupo \$\{escapeHTML\(rota\.group\)\} requiere 1 \$\{escapeHTML\(rota\.estamento\)\}/
+        /El grupo \$\{escapeHTML\(rota\.group\)\} requiere 1 \$\{escapeHTML\(rota\.label \|\| rota\.estamento\)\}/
     );
     assert.match(
         source,

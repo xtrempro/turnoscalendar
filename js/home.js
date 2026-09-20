@@ -4105,6 +4105,7 @@ function wire(panel) {
                     rota: {
                         group,
                         estamento,
+                        label: etiqueta,
                         turno: Number(button.dataset.brechaTurno),
                         motive: `Completar rotativa de ${
                             BRECHA_PLURAL[etiqueta] || `${etiqueta.toLowerCase()}s`

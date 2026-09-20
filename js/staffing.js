@@ -2983,6 +2983,7 @@ function weeklyRotaGapHTML(gap, group, date, shift, people) {
             type="button"
             data-weekly-rota-group="${escapeHTML(group)}"
             data-weekly-rota-estamento="${escapeHTML(gap.estamento)}"
+            data-weekly-rota-label="${escapeHTML(etiqueta)}"
             data-weekly-rota-reference="${escapeHTML(reference)}"
             data-weekly-rota-key="${escapeHTML(keyDay)}"
             data-weekly-rota-turno="${turno}"
@@ -3720,6 +3721,10 @@ function activateStaffingWeeklyCalendar(target, view, options = {}) {
 
                 const estamento = button.dataset.weeklyRotaEstamento;
                 const group = button.dataset.weeklyRotaGroup;
+                // La etiqueta que se leyo EN el cupo. Sin esto el motivo que
+                // quedaba registrado decia "profesionales" mientras el boton
+                // que se apreto mostraba "Enfermeria".
+                const etiqueta = button.dataset.weeklyRotaLabel || estamento;
 
                 window.openReplacementDialog(
                     button.dataset.weeklyRotaReference,
@@ -3728,8 +3733,9 @@ function activateStaffingWeeklyCalendar(target, view, options = {}) {
                         rota: {
                             group,
                             estamento,
+                            label: etiqueta,
                             turno: Number(button.dataset.weeklyRotaTurno),
-                            motive: weeklyRotaMotive(estamento, group)
+                            motive: weeklyRotaMotive(etiqueta, group)
                         }
                     }
                 );

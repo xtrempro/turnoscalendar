@@ -394,9 +394,11 @@ test("un cupo de rotativa no busca una ausencia que no existe", () => {
 });
 
 test("el modal explica de que grupo se trata", () => {
+    // Con la etiqueta del cupo: la profesion cuando la hay -"requiere 1
+    // Enfermeria"- y el estamento cuando no.
     assert.match(
         calendar,
-        /El grupo \$\{escapeHTML\(rota\.group\)\} requiere 1 \$\{escapeHTML\(rota\.estamento\)\}/
+        /El grupo \$\{escapeHTML\(rota\.group\)\} requiere 1 \$\{escapeHTML\(rota\.label \|\| rota\.estamento\)\}/
     );
 });
 
@@ -420,7 +422,14 @@ test("al aplicarlo no se repinta un ausente que no existe", () => {
 
 test("el ! de la casilla abre ese modal con el motivo escrito", () => {
     assert.match(staffing, /querySelectorAll\("\[data-weekly-rota-group\]"\)/);
-    assert.match(staffing, /motive: weeklyRotaMotive\(estamento, group\)/);
+    // El motivo se arma con la ETIQUETA que muestra el boton, no con el
+    // estamento: si no, el cupo decia "Enfermeria" y el motivo que quedaba
+    // registrado decia "profesionales".
+    assert.match(staffing, /motive: weeklyRotaMotive\(etiqueta, group\)/);
+    assert.match(
+        staffing,
+        /const etiqueta = button\.dataset\.weeklyRotaLabel \|\| estamento;/
+    );
     assert.match(staffing, /turno: Number\(button\.dataset\.weeklyRotaTurno\)/);
 });
 
