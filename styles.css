@@ -4793,6 +4793,15 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     text-transform: none;
 }
 
+.profile-mini-day .replacement-contract-preview-turn {
+    display: block;
+    margin-bottom: 3px;
+    color: inherit;
+    font-size: 0.66rem;
+    font-weight: 900;
+    line-height: 1;
+}
+
 .profile-mini-day .contract-day-label--new {
     background: #2563eb;
 }

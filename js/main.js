@@ -2571,6 +2571,14 @@ function openRotationConfigModal(
             const key = `${y}-${m}-${d}`;
             const iso = calendarKeyToInputDate(key);
             const stateTurn = getModalPreviewTurn(key, iso);
+            const stateTurnLabel = turnoLabel(stateTurn);
+            const isNewReplacementContractDay =
+                isReplacement &&
+                state.contractLeaveRef &&
+                state.contractStart &&
+                state.contractEnd &&
+                iso >= state.contractStart &&
+                iso <= state.contractEnd;
             const existingContract = existingContracts.find(contract =>
                 contract.start <= iso &&
                 contract.end >= iso
@@ -2617,16 +2625,19 @@ function openRotationConfigModal(
                     cell.classList.add("is-contract-end");
                 }
 
-                if (
-                    state.contractLeaveRef &&
-                    state.contractStart &&
-                    state.contractEnd &&
-                    iso >= state.contractStart &&
-                    iso <= state.contractEnd
-                ) {
+                if (isNewReplacementContractDay) {
                     cell.classList.add("is-contract-range");
+                    if (
+                        state.contractRotationMode ===
+                            REPLACEMENT_ROTATION_MODE.INHERIT &&
+                        stateTurn > TURNO.LIBRE
+                    ) {
+                        cell.classList.add(
+                            "has-replacement-preview-turn"
+                        );
+                    }
                     cell.title =
-                        `Nuevo Contrato: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)} | Reemplaza a: ${state.contractReplaces || "sin trabajador"}`;
+                        `Nuevo Contrato: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)} | Reemplaza a: ${state.contractReplaces || "sin trabajador"}${stateTurnLabel ? ` | Turno: ${stateTurnLabel}` : ""}`;
                 }
             }
 
@@ -2635,14 +2646,14 @@ function openRotationConfigModal(
                 <span>${d}</span>
                 <small>${
                     isReplacement
-                        ? (
-                            state.contractLeaveRef &&
-                            state.contractStart &&
-                            state.contractEnd &&
-                            iso >= state.contractStart &&
-                            iso <= state.contractEnd
-                        )
-                            ? '<span class="contract-day-label contract-day-label--new">Nuevo Contrato</span>'
+                        ? isNewReplacementContractDay
+                            ? `${
+                                state.contractRotationMode ===
+                                    REPLACEMENT_ROTATION_MODE.INHERIT &&
+                                stateTurnLabel
+                                    ? `<span class="replacement-contract-preview-turn">${escapeHTML(stateTurnLabel)}</span>`
+                                    : ""
+                            }<span class="contract-day-label contract-day-label--new">Nuevo Contrato</span>`
                             : existingContract
                                 ? '<span class="contract-day-label contract-day-label--current">Contrato vigente</span>'
                             : ""
@@ -2741,8 +2752,16 @@ function openRotationConfigModal(
 
             if (
                 resolvedReplacementSelection.leaveOption &&
-                state.contractLeaveRef !==
-                    resolvedReplacementSelection.leaveOption.id
+                (
+                    state.contractLeaveRef !==
+                        resolvedReplacementSelection.leaveOption.id ||
+                    state.contractStart !==
+                        resolvedReplacementSelection.leaveOption.start ||
+                    state.contractEnd !==
+                        resolvedReplacementSelection.leaveOption.end ||
+                    state.contractReason !==
+                        resolvedReplacementSelection.leaveOption.label
+                )
             ) {
                 applyReplacementLeaveOptionToState(
                     resolvedReplacementSelection.leaveOption

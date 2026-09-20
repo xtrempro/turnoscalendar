@@ -9,6 +9,10 @@ const source = await readFile(
     new URL("../js/main.js", import.meta.url),
     "utf8"
 );
+const styles = await readFile(
+    new URL("../styles.css", import.meta.url),
+    "utf8"
+);
 
 test("la previsualizacion hereda el turno base del reemplazado", () => {
     assert.match(
@@ -21,5 +25,23 @@ test("la previsualizacion libre no pinta turnos en el contrato nuevo", () => {
     assert.match(
         source,
         /state\.contractRotationMode ===\s*REPLACEMENT_ROTATION_MODE\.FREE[\s\S]{0,120}return TURNO\.LIBRE;/
+    );
+});
+
+test("un permiso preseleccionado igual carga fechas para pintar el calendario", () => {
+    assert.match(
+        source,
+        /state\.contractLeaveRef !==\s*resolvedReplacementSelection\.leaveOption\.id[\s\S]{0,260}state\.contractStart !==\s*resolvedReplacementSelection\.leaveOption\.start[\s\S]{0,180}state\.contractEnd !==\s*resolvedReplacementSelection\.leaveOption\.end/
+    );
+});
+
+test("el mini calendario muestra el turno heredado junto al contrato", () => {
+    assert.match(
+        source,
+        /replacement-contract-preview-turn/
+    );
+    assert.match(
+        styles,
+        /\.profile-mini-day \.replacement-contract-preview-turn/
     );
 });
