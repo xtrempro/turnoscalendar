@@ -5810,16 +5810,25 @@ function replacementDialogHTML({
         <div class="turn-change-dialog replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="replacementDialogTitle">
             <div class="replacement-dialog-header">
                 <strong id="replacementDialogTitle">Seleccionar reemplazo</strong>
-                <button
-                    class="replacement-options-icon ${optionsOpen ? "is-open" : ""}"
-                    type="button"
-                    data-action="toggle-options"
-                    aria-expanded="${optionsOpen ? "true" : "false"}"
-                    aria-label="Más opciones"
-                    title="Más opciones"
-                >
-                    ${REPLACEMENT_OPTIONS_ICON}
-                </button>
+                <div class="replacement-dialog-header-actions">
+                    <button
+                        class="replacement-options-icon ${optionsOpen ? "is-open" : ""}"
+                        type="button"
+                        data-action="toggle-options"
+                        aria-expanded="${optionsOpen ? "true" : "false"}"
+                        aria-label="Más opciones"
+                        title="Más opciones"
+                    >
+                        ${REPLACEMENT_OPTIONS_ICON}
+                    </button>
+                    <button
+                        class="replacement-dialog-close"
+                        type="button"
+                        data-action="close"
+                        aria-label="Cerrar"
+                        title="Cerrar"
+                    >&times;</button>
+                </div>
             </div>
             <p>
                 ${
@@ -5871,9 +5880,6 @@ function replacementDialogHTML({
                     No requiere cobertura
                 </button>
                 ${leaveDocsButton}
-                <button class="secondary-button" type="button" data-action="cancel">
-                    Cancelar
-                </button>
             </div>
         </div>
     `;
@@ -6310,8 +6316,11 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
     });
 
     const bindActions = () => {
+        // La cruz de la cabecera reemplaza al viejo boton "Cancelar" del pie.
+        // Se deja SIN `?.` a proposito: si algun dia desaparece del marcado,
+        // mejor que reviente aqui y no que quede un modal imposible de cerrar.
         backdrop
-            .querySelector("[data-action='cancel']")
+            .querySelector("[data-action='close']")
             .onclick = close;
 
         const optionsTrigger =
@@ -7006,7 +7015,7 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
 
         (
             backdrop.querySelector(".replacement-candidate") ||
-            backdrop.querySelector("[data-action='cancel']")
+            backdrop.querySelector("[data-action='close']")
         )?.focus();
     }, {
         label: "Calculando sugerencias..."

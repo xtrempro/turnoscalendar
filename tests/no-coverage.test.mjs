@@ -128,7 +128,8 @@ test("se puede revertir desde el detalle del permiso (Sí requiere cobertura)", 
     assert.match(calendar, /"Reactivo cobertura"/);
 });
 
-test("el footer Anular/Cancelar queda en 2 columnas", async () => {
+// "Cancelar" salio del pie: ahora se cierra con la cruz de la cabecera.
+test("el footer queda en 2 columnas", async () => {
     const css = await readFile(
         new URL("../styles.css", import.meta.url),
         "utf8"

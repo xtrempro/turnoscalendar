@@ -9249,6 +9249,46 @@ body.auth-gate-active .app-shell {
     border-color: rgba(var(--brand-blue-rgb), 0.5);
 }
 
+/* La cabecera es un flex con el titulo a la izquierda: los dos controles van
+   agrupados para que sigan juntos a la derecha. */
+.replacement-dialog-header-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* La cruz de cerrar, que reemplaza al boton "Cancelar" del pie. Toma la misma
+   caja que el de "Mas opciones" para que la cabecera quede pareja. */
+.replacement-dialog-close {
+    flex: 0 0 auto;
+    display: inline-grid;
+    place-items: center;
+    width: 40px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--field);
+    color: var(--text-soft);
+    font: inherit;
+    font-size: 1.35rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.replacement-dialog-close:hover {
+    background: rgba(var(--brand-blue-rgb), 0.12);
+    border-color: rgba(var(--brand-blue-rgb), 0.5);
+    color: var(--text);
+}
+
+/* Sin "Cancelar" el pie puede quedar con un numero impar de botones: el
+   ultimo, si queda solo en su fila, la ocupa entera en vez de dejar un hueco. */
+.replacement-dialog__actions > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+}
+
 .replacement-search {
     width: 100%;
     min-height: 40px;
