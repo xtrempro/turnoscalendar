@@ -6827,6 +6827,48 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
             // El tramo del reparto pisa al del cuadro: cada uno de los dos
             // elegidos guarda el suyo, y los dos juntos tapan el turno.
             const appliedWindow = options.coverWindow || coverWindow;
+            const coveringWorker = button.dataset.worker;
+
+            // Reemplazante (tipo contrato reemplazo) sin contrato vigente ese
+            // dia: ofrecer crear un contrato usando el permiso del ausente como
+            // respaldo. Si dice que no, se asigna solo el turno y queda con la
+            // cruz de sin contrato.
+            //
+            // VA FUERA del estado ocupado, y ese es el punto: preguntar no es
+            // trabajar. Adentro, el cuerpo se quedaba esperando la respuesta
+            // con `app-is-busy` puesto, asi que el puntero seguia en "cargando"
+            // sobre un cuadro que justamente pedia un clic. Parecia que habia
+            // que esperar a que algo terminara.
+            //
+            // De paso, el punto de deshacer se registra despues: si se desvia
+            // al editor de contrato, ya no queda una entrada por una accion que
+            // no llego a ocurrir.
+            if (
+                !button.dataset.workerWorkspaceId &&
+                coveringWorker &&
+                isReplacementProfile(coveringWorker) &&
+                !hasContractForDate(coveringWorker, keyDay)
+            ) {
+                const addContract = await showConfirm(
+                    `${coveringWorker} no tiene un contrato de reemplazo vigente en esta fecha.\n\n¿Agregar un contrato usando el permiso de ${profileName} como respaldo? Si eliges "No", se asigna solo este turno y quedara marcado sin contrato.`,
+                    {
+                        title: "Sin contrato vigente",
+                        tone: "warning",
+                        confirmText: "Agregar contrato",
+                        cancelText: "Solo este turno"
+                    }
+                );
+
+                if (addContract) {
+                    close();
+                    window.startReplacementContractEdit?.(
+                        coveringWorker,
+                        keyDay,
+                        { replaced: profileName }
+                    );
+                    return;
+                }
+            }
 
             await withBusyState(async () => {
                 if (typeof window.pushUndoState === "function") {
@@ -6919,39 +6961,6 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
 
                     await renderContent();
                     return;
-                }
-
-                const coveringWorker = button.dataset.worker;
-
-                // Reemplazante (tipo contrato reemplazo) sin contrato
-                // vigente ese dia: ofrecer crear un contrato usando el
-                // permiso del ausente como respaldo. Si dice que no, se
-                // asigna solo el turno y queda con la cruz de sin contrato.
-                if (
-                    !button.dataset.workerWorkspaceId &&
-                    coveringWorker &&
-                    isReplacementProfile(coveringWorker) &&
-                    !hasContractForDate(coveringWorker, keyDay)
-                ) {
-                    const addContract = await showConfirm(
-                        `${coveringWorker} no tiene un contrato de reemplazo vigente en esta fecha.\n\n¿Agregar un contrato usando el permiso de ${profileName} como respaldo? Si eliges "No", se asigna solo este turno y quedara marcado sin contrato.`,
-                        {
-                            title: "Sin contrato vigente",
-                            tone: "warning",
-                            confirmText: "Agregar contrato",
-                            cancelText: "Solo este turno"
-                        }
-                    );
-
-                    if (addContract) {
-                        close();
-                        window.startReplacementContractEdit?.(
-                            coveringWorker,
-                            keyDay,
-                            { replaced: profileName }
-                        );
-                        return;
-                    }
                 }
 
                 if (button.dataset.workerWorkspaceId) {
