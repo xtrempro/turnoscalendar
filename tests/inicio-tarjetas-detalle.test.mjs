@@ -103,7 +103,10 @@ test("Cobertura: la casilla en cero queda deshabilitada", () => {
 test("Brecha RRHH: lo mismo", () => {
     const body = cuerpo(home, "brechaBody");
 
-    assert.match(body, /data-hm="brecha-chip"\$\{cargos\.size \? "" : " disabled"\}/);
+    // La casilla del cargo lleva gancho PROPIO: ya no abre el mismo detalle
+    // que la de turnos, sino el cuadro que lo llena.
+    assert.match(body, /data-hm="brecha-cargo-chip"/);
+    assert.match(body, /\$\{cargos\.size \? "" : " disabled"\}/);
     assert.match(body, /data-hm="brecha-chip"\$\{rows\.length \? "" : " disabled"\}/);
 });
 

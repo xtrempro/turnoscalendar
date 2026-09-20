@@ -57,6 +57,10 @@ import {
     getRotaGapShifts,
     showStaffingWeekFor
 } from "./staffing.js";
+// El mismo cuadro que abre un cupo del tablero de Titulares: elegir un diurno
+// de esa profesion y pasarlo a esa rotativa. Es lo que corresponde a una
+// brecha, que es estructural -al grupo le falta gente- y no un turno suelto.
+import { openGapDialog } from "./shiftHolders.js";
 import {
     cambiosDelMes,
     cambioEstaAnulado,
@@ -2962,6 +2966,10 @@ const BRECHA_WINDOW_DAYS = 30;
 const BRECHA_MAX_ROWS = 8;
 
 let brechaDetail = false;
+// Cual de las dos listas del detalle se ve: los CARGOS que faltan o los TURNOS
+// que afectan. No es un orden distinto de la misma lista -como en Cobertura-,
+// son dos listas con contenido distinto.
+let brechaView = "turnos";
 
 function getBrechaRows() {
     // Un mes por delante. La carencia no es una falta puntual -es un cargo que
@@ -3003,6 +3011,35 @@ function brechaRow(row) {
         </div>`;
 }
 
+/** Los datos que el cuadro necesita para llenar ese cargo. */
+function cargoDataAttrs(cargo) {
+    return `data-cargo-group="${esc(cargo.group)}"` +
+        ` data-cargo-estamento="${esc(cargo.estamento)}"` +
+        ` data-cargo-profession="${esc(cargo.profession)}"` +
+        ` data-cargo-label="${esc(cargo.label)}"`;
+}
+
+/**
+ * Un cargo que le falta a un grupo, con los turnos que arrastra.
+ *
+ * Al pulsarlo se abre el MISMO cuadro que un cupo del tablero de Titulares:
+ * pasa a alguien del diurno a esa rotativa. Es distinto del boton CUBRIR de
+ * cada turno, que solo registra un turno extra puntual.
+ */
+function brechaCargoRow(cargo) {
+    return `
+        <button class="hm-cob-row hm-cob-row--action" type="button"
+            data-hm="brecha-cargo" ${cargoDataAttrs(cargo)}
+            title="Pasa a alguien del turno diurno a la rotativa del grupo ${esc(cargo.group)}">
+            <span class="hm-cob-top">
+                <span class="hm-cob-status hm-cob-status--brecha">Falta 1 ${esc(cargo.label)}</span>
+            </span>
+            <span class="hm-cob-meta">
+                <b>Grupo ${esc(cargo.group)}:</b> deja ${cargo.turnos} ${cargo.turnos === 1 ? "turno corto" : "turnos cortos"} en los próximos ${BRECHA_WINDOW_DAYS} días.
+            </span>
+        </button>`;
+}
+
 function brechaBody() {
     const rows = getBrechaRows();
     const cargos = new Map();
@@ -3011,15 +3048,30 @@ function brechaBody() {
         // Con la profesion: en un mismo grupo, faltar una enfermera y faltar
         // un kinesiologo son DOS cargos, no uno repetido.
         const clave = `${row.group}|${row.estamento}|${row.profession || ""}`;
+        const previo = cargos.get(clave);
 
-        cargos.set(clave, (cargos.get(clave) || 0) + 1);
+        if (previo) {
+            previo.turnos += 1;
+            return;
+        }
+
+        cargos.set(clave, {
+            group: row.group,
+            estamento: row.estamento,
+            profession: row.profession || "",
+            label: row.label || row.estamento,
+            turnos: 1
+        });
     });
 
-    // Igual que en Cobertura: abren el detalle, y en cero quedan deshabilitadas.
-    // Aqui no hay orden que elegir -las dos cifras cuentan la MISMA lista, una
-    // por cargo y otra por turno-, asi que ambas abren lo mismo.
+    // Con UN solo cargo la casilla lleva sus datos encima y abre el cuadro de
+    // una: obligar a desplegar una lista de un elemento para volver a pulsar
+    // lo mismo es un clic de puro tramite.
+    const unico = cargos.size === 1 ? [...cargos.values()][0] : null;
+    // Gancho propio: esta casilla ya NO abre el mismo detalle que la de
+    // turnos, asi que no puede compartir el de aquella.
     const summary =
-        `<button class="hm-cob-chip hm-cob-chip--warn" type="button" data-hm="brecha-chip"${cargos.size ? "" : " disabled"}><span class="hm-cob-chip-ico">${svg(IC.users)}</span><span><span class="hm-cob-chip-num">${cargos.size}</span><span class="hm-cob-chip-lbl">${cargos.size === 1 ? "Cargo faltante" : "Cargos faltantes"}</span></span></button>` +
+        `<button class="hm-cob-chip hm-cob-chip--warn" type="button" data-hm="brecha-cargo-chip"${unico ? ` ${cargoDataAttrs(unico)}` : ""}${cargos.size ? "" : " disabled"}><span class="hm-cob-chip-ico">${svg(IC.users)}</span><span><span class="hm-cob-chip-num">${cargos.size}</span><span class="hm-cob-chip-lbl">${cargos.size === 1 ? "Cargo faltante" : "Cargos faltantes"}</span></span></button>` +
         `<button class="hm-cob-chip hm-cob-chip--accent" type="button" data-hm="brecha-chip"${rows.length ? "" : " disabled"}><span class="hm-cob-chip-ico">${svg(IC.calendar)}</span><span><span class="hm-cob-chip-num">${rows.length}</span><span class="hm-cob-chip-lbl">Turnos afectados</span></span></button>`;
 
     const list = rows.length
@@ -3028,12 +3080,15 @@ function brechaBody() {
                 ? `<div class="hm-cob-meta hm-cob-more">y ${rows.length - BRECHA_MAX_ROWS} más en los próximos ${BRECHA_WINDOW_DAYS} días.</div>`
                 : "")
         : `<div class="hm-empty">Los cuatro grupos están parejos.</div>`;
+    const cargosList = cargos.size
+        ? [...cargos.values()].map(brechaCargoRow).join("")
+        : `<div class="hm-empty">Los cuatro grupos están parejos.</div>`;
 
-    return { total: rows.length, summary, list };
+    return { total: rows.length, summary, list, cargosList };
 }
 
 function brechaWidget() {
-    const { total, summary, list } = brechaBody();
+    const { total, summary, list, cargosList } = brechaBody();
 
     return `
         <div class="hm-card hm-col-4">
@@ -3044,7 +3099,8 @@ function brechaWidget() {
                 <span class="hm-count">${total}</span>`
             )}
             <div class="hm-cob-summary" ${brechaDetail ? "hidden" : ""}>${summary}</div>
-            <div class="hm-cob-list hm-scroller" ${brechaDetail ? "" : "hidden"}>${list}</div>
+            <div class="hm-cob-list hm-scroller" data-hm="brecha-list-cargos" ${brechaDetail && brechaView === "cargos" ? "" : "hidden"}>${cargosList}</div>
+            <div class="hm-cob-list hm-scroller" data-hm="brecha-list-turnos" ${brechaDetail && brechaView !== "cargos" ? "" : "hidden"}>${list}</div>
         </div>`;
 }
 
@@ -4072,15 +4128,56 @@ function wire(panel) {
         });
     }
 
-    // Igual que en Cobertura: las casillas del resumen abren el detalle, y el
-    // switch se mueve con ellas para que las dos cosas digan lo mismo.
+    // "Turnos afectados": abre el detalle con la lista de turnos, y el switch
+    // se mueve con ella para que las dos cosas digan lo mismo.
     panel.querySelectorAll('[data-hm="brecha-chip"]').forEach(chip => {
         chip.addEventListener("click", () => {
             brechaDetail = true;
+            brechaView = "turnos";
 
             if (brechaSwitch) brechaSwitch.checked = true;
 
             reRenderBrecha(panel);
+        });
+    });
+
+    // "Cargo faltante": con UNO solo va directo al cuadro que lo llena -sus
+    // datos vienen en la propia casilla-; con varios hay que elegir cual, asi
+    // que despliega la lista de cargos.
+    panel.querySelectorAll('[data-hm="brecha-cargo-chip"]').forEach(chip => {
+        chip.addEventListener("click", () => {
+            if (chip.dataset.cargoGroup) {
+                void openGapDialog(
+                    chip.dataset.cargoGroup,
+                    chip.dataset.cargoEstamento,
+                    chip.dataset.cargoProfession,
+                    chip.dataset.cargoLabel
+                );
+                return;
+            }
+
+            brechaDetail = true;
+            brechaView = "cargos";
+
+            if (brechaSwitch) brechaSwitch.checked = true;
+
+            reRenderBrecha(panel);
+        });
+    });
+
+    // --- Brecha RRHH: llenar el cargo pasando a alguien del diurno ---
+    //
+    // El MISMO cuadro que un cupo del tablero de Titulares. No confundir con el
+    // boton CUBRIR de cada turno: aquel registra un turno extra puntual, este
+    // cambia la rotativa del trabajador de aqui en adelante.
+    panel.querySelectorAll('[data-hm="brecha-cargo"]').forEach(row => {
+        row.addEventListener("click", () => {
+            void openGapDialog(
+                row.dataset.cargoGroup,
+                row.dataset.cargoEstamento,
+                row.dataset.cargoProfession,
+                row.dataset.cargoLabel
+            );
         });
     });
 
@@ -4621,10 +4718,14 @@ function reRenderBrecha(panel) {
     if (!card) return;
 
     const summary = card.querySelector(".hm-cob-summary");
-    const list = card.querySelector(".hm-cob-list");
+    // Son DOS listas con contenido distinto -los cargos y los turnos-, no la
+    // misma en otro orden: se alterna cual se ve, sin repintar nada.
+    const cargos = card.querySelector('[data-hm="brecha-list-cargos"]');
+    const turnos = card.querySelector('[data-hm="brecha-list-turnos"]');
 
     if (summary) summary.hidden = brechaDetail;
-    if (list) list.hidden = !brechaDetail;
+    if (cargos) cargos.hidden = !brechaDetail || brechaView !== "cargos";
+    if (turnos) turnos.hidden = !brechaDetail || brechaView === "cargos";
 }
 
 function reRenderRequestsSummary(panel) {

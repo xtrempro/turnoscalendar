@@ -270,7 +270,11 @@ test("el resumen cuenta cargos y turnos, que no son lo mismo", () => {
 
     assert.match(body, /Cargo faltante/);
     assert.match(body, /Turnos afectados/);
-    assert.match(body, /cargos\.set\(clave, \(cargos\.get\(clave\) \|\| 0\) \+ 1\)/);
+    // El acumulador guarda el CARGO y le va sumando los turnos que arrastra,
+    // en vez de contar solo cuantos hay: la lista de cargos necesita el grupo
+    // y la profesion para poder abrir el cuadro que lo llena.
+    assert.match(body, /previo\.turnos \+= 1;/);
+    assert.match(body, /turnos: 1/);
 });
 
 test("cuando los grupos estan parejos lo dice", () => {
@@ -278,6 +282,64 @@ test("cuando los grupos estan parejos lo dice", () => {
         grab(home, "brechaBody"),
         /Los cuatro grupos están parejos/
     );
+});
+
+/* ======================================================================
+   Llenar el cargo desde el inicio
+
+   Es el MISMO cuadro que un cupo del tablero de Titulares: pasa a alguien del
+   turno diurno a esa rotativa. No confundir con el boton CUBRIR de cada turno,
+   que registra un turno extra puntual y no toca la rotativa de nadie.
+   ====================================================================== */
+
+test("con UN solo cargo la casilla abre el cuadro de una", () => {
+    // Sus datos viajan en la propia casilla. Desplegar una lista de un
+    // elemento para volver a pulsar lo mismo es un clic de puro tramite.
+    const body = grab(home, "brechaBody");
+
+    assert.match(body, /const unico = cargos\.size === 1 \? \[\.\.\.cargos\.values\(\)\]\[0\] : null;/);
+    assert.match(body, /\$\{unico \? ` \$\{cargoDataAttrs\(unico\)\}` : ""\}/);
+    assert.match(
+        grab(home, "wire"),
+        /if \(chip\.dataset\.cargoGroup\) \{\s*\n\s*void openGapDialog\(/
+    );
+});
+
+test("con varios, despliega la lista de cargos para elegir", () => {
+    assert.match(
+        grab(home, "wire"),
+        /brechaView = "cargos";/
+    );
+});
+
+test("y cada cargo de la lista abre el cuadro", () => {
+    assert.match(
+        grab(home, "wire"),
+        /querySelectorAll\('\[data-hm="brecha-cargo"\]'\)[\s\S]{0,220}openGapDialog\(/
+    );
+});
+
+test("son DOS listas distintas, no la misma en otro orden", () => {
+    // Los cargos y los turnos no son el mismo contenido reordenado, asi que
+    // las dos tienen que existir en el DOM y alternarse.
+    assert.match(home, /data-hm="brecha-list-cargos"/);
+    assert.match(home, /data-hm="brecha-list-turnos"/);
+
+    const render = grab(home, "reRenderBrecha");
+
+    assert.match(render, /cargos\.hidden = !brechaDetail \|\| brechaView !== "cargos";/);
+    assert.match(render, /turnos\.hidden = !brechaDetail \|\| brechaView === "cargos";/);
+    // Sigue sin repintar: solo alterna `hidden`.
+    assert.doesNotMatch(render, /innerHTML/);
+});
+
+test("el cuadro es el del tablero, no una copia", async () => {
+    // Si se reimplementara aqui, el inicio y Titulares podrian ofrecer
+    // candidatos distintos para el mismo cupo.
+    const holders = await read("shiftHolders.js");
+
+    assert.match(holders, /export async function openGapDialog\(/);
+    assert.match(home, /import \{ openGapDialog \} from "\.\/shiftHolders\.js";/);
 });
 
 test("la fila dice de que grupo es y cuantos tiene", () => {

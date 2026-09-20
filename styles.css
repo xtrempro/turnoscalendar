@@ -1865,6 +1865,11 @@ body[data-active-view="home"] .secondary-grid {
 
 .hm-cob-list { display: flex; flex-direction: column; gap: 8px; }
 .hm-cob-row { padding: 11px 13px; border-radius: 13px; border: 1px solid var(--border); background: var(--panel-alt); display: flex; flex-direction: column; gap: 5px; }
+/* La fila de un cargo faltante es un BOTON: se pulsa para abrir el cuadro que
+   lo llena. Un boton no hereda tipografia ni alineacion, y sin el ancho
+   completo se encogeria al contenido dentro de la columna. */
+.hm-cob-row--action { width: 100%; font: inherit; text-align: left; cursor: pointer; }
+.hm-cob-row--action:hover { border-color: var(--hm-warn); background: var(--hm-warn-soft); }
 .hm-cob-top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .hm-cob-date { min-width: 0; font-size: 0.86rem; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .hm-cob-status { margin-left: auto; font-size: 0.71rem; font-weight: 800; padding: 3px 10px; border-radius: 999px; }

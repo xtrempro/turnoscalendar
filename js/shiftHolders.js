@@ -1115,7 +1115,7 @@ function clearDragOver(root) {
  * Si no hay ninguno se dice y no se abre nada: un cuadro con la lista vacia
  * obliga a cerrarlo para enterarse de lo mismo.
  */
-async function openGapDialog(letter, estamento, profession, label) {
+export async function openGapDialog(letter, estamento, profession, label) {
     const candidatos = getProfiles()
         .filter(isProfileActive)
         .filter(profile => getRotativa(profile.name).type === "diurno")
