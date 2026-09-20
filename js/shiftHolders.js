@@ -37,6 +37,7 @@ import { rotationStartIndex } from "./rotationUtils.js";
 import { keyFromDate, keyToDate, toISODate } from "./dateUtils.js";
 import { runCooperativeRange } from "./mainThreadScheduler.js";
 import { escapeHTML } from "./htmlUtils.js";
+import { showAlert, showChoice } from "./dialogs.js";
 import { TURNO } from "./constants.js";
 
 // Ciclo del 4to turno, sin rotar. El indice dentro de este arreglo es la "fase".
@@ -238,6 +239,26 @@ const ESTAMENTO_ORDER = [
     "Administrativo",
     "Auxiliar"
 ];
+
+// Solo estos dos se abren por profesion. En Profesional conviven enfermeria,
+// kinesiologia y matroneria, y en Tecnico los TENS con los de imagenologia: un
+// cupo "profesional" no dice a quien llamar. Administrativo y Auxiliar se
+// comparan por estamento, que es como los pidio el supervisor.
+const SPLIT_BY_PROFESSION = new Set(["Profesional", "Técnico"]);
+
+/**
+ * La profesion que define el bloque, o "" si no corresponde abrirlo.
+ *
+ * Vacia en dos casos: en los estamentos que no se abren, y cuando la ficha no
+ * trae profesion cargada. Ese segundo caso importa: en una unidad que todavia
+ * no las carga, el cupo debe seguir viendose como antes -por estamento- en vez
+ * de desaparecer por falta de un dato.
+ */
+function bucketProfession(profile) {
+    if (!SPLIT_BY_PROFESSION.has(profileEstamento(profile))) return "";
+
+    return String(profile?.profession || "").trim();
+}
 
 function profileEstamento(profile) {
     return String(profile?.estamento || "").trim() || "Sin estamento";
@@ -466,25 +487,6 @@ function countEstamento(column, estamento) {
 }
 
 /**
- * Estamentos presentes en el tablero, en el orden en que se muestran: primero
- * los del catalogo y despues los que no lo estan -datos antiguos-, igual que
- * como ordena compareHolders dentro de la columna.
- */
-function estamentoBuckets(columns) {
-    const present = [...new Set(
-        columns.flatMap(column =>
-            column.workers.map(worker => profileEstamento(worker.profile))
-        )
-    )];
-    const known = ESTAMENTO_ORDER.filter(estamento => present.includes(estamento));
-    const unknown = present
-        .filter(estamento => !ESTAMENTO_ORDER.includes(estamento))
-        .sort((left, right) => left.localeCompare(right, "es"));
-
-    return [...known, ...unknown];
-}
-
-/**
  * Cuantos trabajadores le faltan a cada grupo, estamento por estamento.
  *
  * La referencia es el grupo MEJOR DOTADO de ese estamento: si tres grupos
@@ -501,31 +503,126 @@ export function buildEstamentoGaps(columns) {
     // las cuatro se miden contra ella. Un estamento que no existe en la unidad
     // no entra -no hay contra que compararlo-, y el orden del catalogo se
     // conserva porque un Map recuerda en que orden se llenó.
+    // Una sola implementacion: la comparacion por profesion ES esta, abierta
+    // en Profesional y Tecnico. Se conserva el nombre porque lo consume
+    // getShiftGroupGaps, y con el la brecha del inicio y el calendario semanal:
+    // los tres tienen que medir lo mismo o dirian cosas distintas del mismo
+    // grupo.
+    return buildProfessionGaps(columns);
+}
+
+function countBucket(column, estamento, profession) {
+    return column.workers.filter(worker =>
+        profileEstamento(worker.profile) === estamento &&
+        bucketProfession(worker.profile) === profession
+    ).length;
+}
+
+/**
+ * Un estamento fuera del catalogo no es un cargo: decirle al supervisor que le
+ * "falta un sin estamento" no le sirve de nada.
+ *
+ * La profesion NO se exige: sin ella el bloque cae al estamento y el cupo se
+ * sigue contando, que es como se comportaba antes de abrirlos por profesion.
+ */
+function bucketIsComparable({ estamento }) {
+    return ESTAMENTO_ORDER.includes(estamento);
+}
+
+/**
+ * Los bloques del tablero en orden de pantalla: los estamentos del catalogo y,
+ * dentro de cada uno, las profesiones alfabeticamente. Es el mismo orden de
+ * compareHolders, asi que el cupo cae junto a los suyos.
+ *
+ * Devuelve TODAS las parejas presentes, incluidas las de ficha incompleta: de
+ * estos bloques cuelga tambien la gente, y dejarlas fuera borraria del tablero
+ * a quien no tenga la profesion cargada. Quien no puede compararse se filtra
+ * despues, al calcular los cupos.
+ */
+function professionBuckets(columns) {
+    const seen = new Map();
+
+    columns.forEach(column => {
+        column.workers.forEach(worker => {
+            const estamento = profileEstamento(worker.profile);
+            const profession = bucketProfession(worker.profile);
+            const key = `${estamento}${profession}`;
+
+            if (!seen.has(key)) {
+                seen.set(key, {
+                    estamento,
+                    profession,
+                    key,
+                    // Lo que se lee en la tarjeta: la profesion en los
+                    // estamentos que se abren por profesion, y el estamento
+                    // en los que no.
+                    label: profession || estamento
+                });
+            }
+        });
+    });
+
+    const rank = bucket => {
+        const index = ESTAMENTO_ORDER.indexOf(bucket.estamento);
+
+        return index === -1 ? ESTAMENTO_ORDER.length : index;
+    };
+
+    return [...seen.values()].sort((left, right) =>
+        rank(left) - rank(right) ||
+        left.estamento.localeCompare(right.estamento, "es") ||
+        left.profession.localeCompare(right.profession, "es")
+    );
+}
+
+/**
+ * Cuantos trabajadores le faltan a cada grupo, PROFESION por profesion.
+ *
+ * Misma regla que buildEstamentoGaps -la referencia es el grupo mejor dotado-
+ * pero abierta por profesion, que es lo que el tablero necesita para decir de
+ * que es el cupo y para salir a buscar quien lo llene: "falta una enfermera"
+ * se puede resolver, "falta un profesional" no dice a quien llamar.
+ *
+ * Va APARTE y no reemplaza a buildEstamentoGaps: esa la consume el calendario
+ * semanal (weeklyRotaGapsForCell en staffing.js), que cruza `gap.estamento`
+ * con el estamento de la gente asignada. Abrirla por profesion le entregaria
+ * varias entradas del mismo estamento y contaria de mas.
+ */
+export function buildProfessionGaps(columns) {
     const reference = new Map();
 
-    ESTAMENTO_ORDER.forEach(estamento => {
-        const most = Math.max(
-            ...columns.map(column => countEstamento(column, estamento))
-        );
+    professionBuckets(columns)
+        .filter(bucketIsComparable)
+        .forEach(bucket => {
+            const most = Math.max(
+                ...columns.map(column =>
+                    countBucket(column, bucket.estamento, bucket.profession)
+                )
+            );
 
-        if (most > 0) reference.set(estamento, most);
-    });
+            if (most > 0) reference.set(bucket.key, { ...bucket, most });
+        });
 
     return columns.map(column => {
         // Un grupo sin NINGUN titular no esta corto de personal: o no se usa en
         // esta unidad, o el calendario todavia no alcanza para reconocerlo.
-        // Llenarlo de cupos seria ruido, y la columna ya dice que esta vacia.
         if (!column.workers.length) return [];
 
-        return [...reference].reduce((gaps, [estamento, most]) => {
-            const count = countEstamento(column, estamento);
+        return [...reference.values()].reduce((gaps, bucket) => {
+            const count = countBucket(
+                column,
+                bucket.estamento,
+                bucket.profession
+            );
 
-            if (count < most) {
+            if (count < bucket.most) {
                 gaps.push({
-                    estamento,
+                    estamento: bucket.estamento,
+                    profession: bucket.profession,
+                    label: bucket.label,
                     count,
-                    reference: most,
-                    missing: most - count
+                    reference: bucket.most,
+                    missing: bucket.most - count
                 });
             }
 
@@ -535,22 +632,28 @@ export function buildEstamentoGaps(columns) {
 }
 
 /**
- * Contenido de la columna en orden de pantalla: cada bloque de estamento con
+ * Contenido de la columna en orden de pantalla: cada bloque de profesion con
  * sus titulares y, cerrando el bloque, un cupo por cada trabajador que falta.
  *
- * Se recorre la lista de estamentos en vez de insertar dentro de la lista ya
- * ordenada porque un grupo puede no tener NINGUN trabajador del estamento que
- * le falta, y entonces no habria bloque donde colgar el cupo.
+ * Se recorre la lista de bloques en vez de insertar dentro de la lista ya
+ * ordenada porque un grupo puede no tener NINGUN trabajador de la profesion
+ * que le falta, y entonces no habria bloque donde colgar el cupo.
  */
 function columnItems(workers, gaps, buckets) {
     const items = [];
 
-    buckets.forEach(estamento => {
+    buckets.forEach(({ estamento, profession }) => {
         workers
-            .filter(worker => profileEstamento(worker.profile) === estamento)
+            .filter(worker =>
+                profileEstamento(worker.profile) === estamento &&
+                bucketProfession(worker.profile) === profession
+            )
             .forEach(worker => items.push({ type: "worker", worker }));
 
-        const gap = gaps.find(item => item.estamento === estamento);
+        const gap = gaps.find(item =>
+            item.estamento === estamento &&
+            item.profession === profession
+        );
 
         if (!gap) return;
 
@@ -612,8 +715,8 @@ export async function buildShiftHolders(today = new Date()) {
         };
     });
 
-    const gaps = buildEstamentoGaps(columns);
-    const buckets = estamentoBuckets(columns);
+    const gaps = buildProfessionGaps(columns);
+    const buckets = professionBuckets(columns);
 
     columns.forEach((column, index) => {
         column.gaps = gaps[index];
@@ -856,8 +959,11 @@ function openGroupChangeDialog(profileName, fromLetter, toLetter) {
                 <div class="tt-move-body">
                 <strong id="ttMoveTitle">Pasar a otro grupo</strong>
                 <p>
-                    <b>${escapeHTML(profileName)}</b> pasa del grupo
-                    <b>${escapeHTML(fromLetter)}</b> al grupo
+                    <b>${escapeHTML(profileName)}</b> pasa ${
+                        fromLetter
+                            ? `del grupo <b>${escapeHTML(fromLetter)}</b>`
+                            : "del turno <b>diurno</b>"
+                    } al grupo
                     <b>${escapeHTML(toLetter)}</b>: se suma a esa rotativa como
                     uno más.
                 </p>
@@ -999,6 +1105,55 @@ function clearDragOver(root) {
     });
 }
 
+/**
+ * Llenar un cupo con alguien del turno diurno.
+ *
+ * El cupo ya dice QUE falta; los candidatos son los diurnos activos de esa
+ * misma profesion (o estamento, en los que no se abren por profesion), porque
+ * mover a un titular de otro grupo solo trasladaria el hueco.
+ *
+ * Si no hay ninguno se dice y no se abre nada: un cuadro con la lista vacia
+ * obliga a cerrarlo para enterarse de lo mismo.
+ */
+async function openGapDialog(letter, estamento, profession, label) {
+    const candidatos = getProfiles()
+        .filter(isProfileActive)
+        .filter(profile => getRotativa(profile.name).type === "diurno")
+        .filter(profile =>
+            profileEstamento(profile) === estamento &&
+            bucketProfession(profile) === profession
+        )
+        .sort((left, right) =>
+            String(left.name).localeCompare(String(right.name), "es")
+        );
+
+    if (!candidatos.length) {
+        await showAlert(
+            `No hay funcionarios en horario diurno de ${label} disponibles ` +
+            `para tomar este cupo del grupo ${letter}.`,
+            { title: "Sin funcionarios disponibles" }
+        );
+        return;
+    }
+
+    const elegido = await showChoice(
+        `¿Quién toma el cupo de ${label} en el grupo ${letter}?`,
+        {
+            title: "Llenar el cupo",
+            choices: candidatos.map(profile => ({
+                value: profile.name,
+                label: profile.name,
+                hint: `${profileProfession(profile)} · hoy en turno diurno`
+            }))
+        }
+    );
+
+    if (!elegido) return;
+
+    // Sin columna de origen: viene del diurno, no de otro grupo.
+    openGroupChangeDialog(elegido, "", letter);
+}
+
 function wireBoardDrag(root) {
     // El tablero tambien se pinta fuera del navegador -las pruebas capturan el
     // HTML con un nodo de mentira-, y ahi no hay nada que enlazar. Sin esta
@@ -1053,6 +1208,17 @@ function wireBoardDrag(root) {
             openGroupChangeDialog(moved.name, moved.from, letter);
         };
     });
+
+    root.querySelectorAll("[data-tt-gap]").forEach(card => {
+        card.onclick = () => {
+            void openGapDialog(
+                card.dataset.ttGap,
+                card.dataset.ttGapEstamento,
+                card.dataset.ttGapProfession,
+                card.dataset.ttGapLabel
+            );
+        };
+    });
 }
 
 /* ==========================================================================
@@ -1099,21 +1265,33 @@ function workerCardHTML(worker) {
  * la programacion semanal -caja al aire y una insignia roja- para que se lea
  * como "aqui falta alguien" y no como un trabajador mas de la lista.
  */
-function gapCardHTML(gap) {
-    const detalle = `${gap.estamento}: este grupo tiene ${gap.count} y el grupo con más tiene ${gap.reference}.`;
+function gapCardHTML(gap, letter) {
+    // La profesion, no el estamento: "falta una enfermera" se puede resolver,
+    // "falta un profesional" no dice a quien llamar.
+    const detalle = `${gap.label}: este grupo tiene ${gap.count} y el grupo con más tiene ${gap.reference}.`;
 
+    // Es un boton: el cupo se aprieta para salir a buscar quien lo llene.
     return `
-        <li class="tt-vacancy" title="${escapeHTML(detalle)}">
-            <span class="tt-vacancy-badge" aria-hidden="true">!</span>
-            <span class="tt-vacancy-body">
-                <span class="tt-vacancy-title">Cupo disponible</span>
-                <span class="tt-vacancy-meta">${escapeHTML(gap.estamento)}</span>
-            </span>
+        <li>
+            <button class="tt-vacancy" type="button"
+                title="${escapeHTML(detalle)}"
+                data-tt-gap="${escapeHTML(letter || "")}"
+                data-tt-gap-estamento="${escapeHTML(gap.estamento)}"
+                data-tt-gap-profession="${escapeHTML(gap.profession || "")}"
+                data-tt-gap-label="${escapeHTML(gap.label)}">
+                <span class="tt-vacancy-badge" aria-hidden="true">!</span>
+                <span class="tt-vacancy-body">
+                    <span class="tt-vacancy-title">Cupo disponible</span>
+                    <span class="tt-vacancy-meta">${escapeHTML(gap.label)}</span>
+                </span>
+            </button>
         </li>`;
 }
 
-function itemHTML(item) {
-    return item.type === "gap" ? gapCardHTML(item.gap) : workerCardHTML(item.worker);
+function itemHTML(item, letter) {
+    return item.type === "gap"
+        ? gapCardHTML(item.gap, letter)
+        : workerCardHTML(item.worker);
 }
 
 function columnHTML(column) {
@@ -1122,7 +1300,9 @@ function columnHTML(column) {
         worker
     }));
     const body = items.length
-        ? `<ul class="tt-list">${items.map(itemHTML).join("")}</ul>`
+        ? `<ul class="tt-list">${
+            items.map(item => itemHTML(item, column.letter)).join("")
+        }</ul>`
         : `<p class="tt-empty">Sin titulares en este grupo.</p>`;
 
     return `
@@ -1165,7 +1345,7 @@ function gapNoteHTML(board) {
     return `
             <p class="tt-note tt-note--gaps">
                 Los recuadros con <strong>!</strong> son cupos disponibles: ese
-                grupo tiene menos trabajadores de ese estamento que el grupo
+                grupo tiene menos trabajadores de esa profesión que el grupo
                 mejor dotado.
             </p>`;
 }

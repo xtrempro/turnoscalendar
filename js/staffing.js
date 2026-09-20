@@ -2828,9 +2828,18 @@ function weeklyRotaGapsForCell(group, people) {
 
     return (getShiftGroupGaps(currentDate).get(group) || [])
         .map(gap => {
+            // La profesion viaja EN el cupo: en Profesional y Tecnico viene
+            // cargada y hay que cruzarla tambien, porque tres enfermeras no
+            // tapan la falta de un kinesiologo. En los estamentos que no se
+            // abren llega vacia y se compara como siempre.
             const assigned = people.filter(item =>
                 normalizeStaffingEstamento(item.profile?.estamento) ===
-                    gap.estamento
+                    gap.estamento &&
+                (
+                    !gap.profession ||
+                    String(item.profile?.profession || "").trim() ===
+                        gap.profession
+                )
             ).length;
 
             return {
@@ -2887,14 +2896,22 @@ export function getRotaGapShifts({
                         turno: shift.key === "noche" ? TURNO.NOCHE : TURNO.LARGA,
                         group,
                         estamento: gap.estamento,
+                        profession: gap.profession || "",
+                        // Lo que se lee: la profesion donde el estamento se
+                        // abre, y el estamento donde no.
+                        label: gap.label || gap.estamento,
                         missing: gap.missing,
                         count: gap.count,
                         reference: gap.reference,
-                        motive: weeklyRotaMotive(gap.estamento, group),
+                        motive: weeklyRotaMotive(
+                            gap.label || gap.estamento,
+                            group
+                        ),
                         reference_profile: weeklyRotaReference(
                             people,
                             group,
-                            gap.estamento
+                            gap.estamento,
+                            gap.profession
                         )
                     });
                 });
@@ -2904,13 +2921,23 @@ export function getRotaGapShifts({
     return rows;
 }
 
-function weeklyRotaReference(people, group, estamento) {
+function weeklyRotaReference(people, group, estamento, profession = "") {
     // Alguien del grupo que SI esta trabajando ese turno: sirve de molde para
     // los candidatos -"otro como Angelica"- y, por estar presente, no arrastra
     // capacitaciones ni medias jornadas que le cambiarian las horas al calculo.
     const working = people.filter(item =>
         item.type !== "replacement-slot" && item.group === group
     );
+    const mismoCargo = profession
+        ? working.find(item =>
+            normalizeStaffingEstamento(item.profile?.estamento) === estamento &&
+            String(item.profile?.profession || "").trim() === profession
+        )
+        : null;
+
+    // Primero alguien de la MISMA profesion: es el molde mas parecido.
+    if (mismoCargo) return mismoCargo.profile.name;
+
     const sameEstamento = working.find(item =>
         normalizeStaffingEstamento(item.profile?.estamento) === estamento
     );
@@ -2936,8 +2963,17 @@ function weeklyRotaGapHTML(gap, group, date, shift, people) {
         date.getDate()
     );
     const turno = shift.key === "noche" ? TURNO.NOCHE : TURNO.LARGA;
-    const motive = weeklyRotaMotive(gap.estamento, group);
-    const reference = weeklyRotaReference(people, group, gap.estamento);
+    // La etiqueta es la profesion donde el estamento se abre, y el estamento
+    // donde no. Los cupos de los arneses de prueba no la traen: por eso el
+    // respaldo.
+    const etiqueta = gap.label || gap.estamento;
+    const motive = weeklyRotaMotive(etiqueta, group);
+    const reference = weeklyRotaReference(
+        people,
+        group,
+        gap.estamento,
+        gap.profession
+    );
 
     if (!reference) return "";
 
@@ -2954,8 +2990,8 @@ function weeklyRotaGapHTML(gap, group, date, shift, people) {
         >
             <span class="staffing-weekly-rota-gap__badge" aria-hidden="true">!</span>
             <span class="staffing-weekly-rota-gap__body">
-                <strong>Falta 1 ${escapeHTML(gap.estamento)}</strong>
-                <small>Grupo ${escapeHTML(group)} · ${gap.count} de ${gap.reference} ${escapeHTML(weeklyEstamentoPlural(gap.estamento))}</small>
+                <strong>Falta 1 ${escapeHTML(etiqueta)}</strong>
+                <small>Grupo ${escapeHTML(group)} · ${gap.count} de ${gap.reference} ${escapeHTML(weeklyEstamentoPlural(etiqueta))}</small>
             </span>
         </button>
     `).join("");

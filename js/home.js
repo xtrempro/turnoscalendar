@@ -2982,10 +2982,10 @@ function brechaRow(row) {
             <div class="hm-cob-top">
                 <span class="hm-turno hm-turno--${row.shiftKey === "noche" ? "noche" : "larga"}">${esc(row.turnoLabel)}</span>
                 <span class="hm-cob-date">${esc(shortDateFromDate(row.date))}</span>
-                <span class="hm-cob-status hm-cob-status--brecha">Falta 1 ${esc(row.estamento)}</span>
+                <span class="hm-cob-status hm-cob-status--brecha">Falta 1 ${esc(row.label || row.estamento)}</span>
             </div>
             <div class="hm-cob-meta">
-                <b>Grupo ${esc(row.group)}:</b> ${row.count} de ${row.reference} ${esc(row.estamento.toLowerCase())}
+                <b>Grupo ${esc(row.group)}:</b> ${row.count} de ${row.reference} ${esc(String(row.label || row.estamento).toLowerCase())}
             </div>
             <div class="hm-cob-actions hm-cob-actions--stack">
                 <button class="hm-cob-btn hm-cob-btn--ver" type="button" data-hm="brecha-cubrir"
@@ -2993,6 +2993,7 @@ function brechaRow(row) {
                     data-brecha-key="${esc(row.keyDay)}"
                     data-brecha-group="${esc(row.group)}"
                     data-brecha-estamento="${esc(row.estamento)}"
+                    data-brecha-label="${esc(row.label || row.estamento)}"
                     data-brecha-turno="${row.turno}"
                     ${row.reference_profile ? "" : "disabled title=\"No hay a quién parecerse: la unidad no tiene a nadie de ese estamento.\""}>CUBRIR</button>
                 <button class="hm-cob-btn hm-cob-btn--auto" type="button" data-hm="brecha-semanal"
@@ -3007,7 +3008,9 @@ function brechaBody() {
     const cargos = new Map();
 
     rows.forEach(row => {
-        const clave = `${row.group}|${row.estamento}`;
+        // Con la profesion: en un mismo grupo, faltar una enfermera y faltar
+        // un kinesiologo son DOS cargos, no uno repetido.
+        const clave = `${row.group}|${row.estamento}|${row.profession || ""}`;
 
         cargos.set(clave, (cargos.get(clave) || 0) + 1);
     });
@@ -4090,6 +4093,10 @@ function wire(panel) {
         button.addEventListener("click", () => {
             const estamento = button.dataset.brechaEstamento;
             const group = button.dataset.brechaGroup;
+            // Lo que se lee en la fila: la profesion cuando la hay, y el
+            // estamento cuando no. El motivo tiene que decir lo mismo que el
+            // recuadro que se apreto.
+            const etiqueta = button.dataset.brechaLabel || estamento;
 
             window.openReplacementDialog?.(
                 button.dataset.brechaReference,
@@ -4100,7 +4107,7 @@ function wire(panel) {
                         estamento,
                         turno: Number(button.dataset.brechaTurno),
                         motive: `Completar rotativa de ${
-                            BRECHA_PLURAL[estamento] || `${estamento.toLowerCase()}s`
+                            BRECHA_PLURAL[etiqueta] || `${etiqueta.toLowerCase()}s`
                         } del grupo ${group}`
                     }
                 }

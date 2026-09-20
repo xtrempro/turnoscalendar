@@ -214,7 +214,8 @@ test("cuando los grupos estan parejos lo dice", () => {
 test("la fila dice de que grupo es y cuantos tiene", () => {
     const row = grab(home, "brechaRow");
 
-    assert.match(row, /Falta 1 \$\{esc\(row\.estamento\)\}/);
+    // La profesion cuando la hay, y el estamento cuando no.
+    assert.match(row, /Falta 1 \$\{esc\(row\.label \|\| row\.estamento\)\}/);
     assert.match(row, /Grupo \$\{esc\(row\.group\)\}:<\/b> \$\{row\.count\} de \$\{row\.reference\}/);
 });
 
@@ -243,7 +244,9 @@ test("el boton abre el mismo modal del calendario", () => {
 test("con el mismo motivo que escribe el calendario semanal", () => {
     // Las dos superficies tienen que dejar el registro con el mismo texto.
     assert.match(home, /Completar rotativa de \$\{/);
-    assert.match(home, /BRECHA_PLURAL\[estamento\]/);
+    // Por la etiqueta: la profesion cuando la hay, y el estamento cuando no.
+    // El motivo tiene que decir lo mismo que el recuadro que se apreto.
+    assert.match(home, /BRECHA_PLURAL\[etiqueta\]/);
     assert.match(staffing, /Completar rotativa de \$\{weeklyEstamentoPlural\(estamento\)\}/);
 });
 

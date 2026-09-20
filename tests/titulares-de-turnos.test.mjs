@@ -613,8 +613,16 @@ test("tres grupos con cuatro auxiliares y uno con dos: dos cupos", () => {
     ));
 
     assert.deepEqual(gaps.slice(0, 3), [[], [], []]);
+    // Auxiliar no se abre por profesion: la etiqueta cae al estamento.
     assert.deepEqual(gaps[3], [
-        { estamento: AUX, count: 2, reference: 4, missing: 2 }
+        {
+            estamento: AUX,
+            profession: "",
+            label: AUX,
+            count: 2,
+            reference: 4,
+            missing: 2
+        }
     ]);
 });
 
@@ -637,7 +645,14 @@ test("la referencia es el grupo mejor dotado", () => {
     assert.deepEqual(gaps[0], []);
     gaps.slice(1).forEach(columna => {
         assert.deepEqual(columna, [
-            { estamento: TEC, count: 3, reference: 5, missing: 2 }
+            {
+                estamento: TEC,
+                profession: "",
+                label: TEC,
+                count: 3,
+                reference: 5,
+                missing: 2
+            }
         ]);
     });
 });
@@ -652,11 +667,26 @@ test("cada estamento se compara por su cuenta", () => {
         [PRO, PRO, TEC, TEC]
     ));
 
+    // Sin profesion cargada, el bloque de cada uno es su estamento.
     assert.deepEqual(gaps[0], [
-        { estamento: TEC, count: 1, reference: 2, missing: 1 }
+        {
+            estamento: TEC,
+            profession: "",
+            label: TEC,
+            count: 1,
+            reference: 2,
+            missing: 1
+        }
     ]);
     assert.deepEqual(gaps[1], [
-        { estamento: PRO, count: 1, reference: 2, missing: 1 }
+        {
+            estamento: PRO,
+            profession: "",
+            label: PRO,
+            count: 1,
+            reference: 2,
+            missing: 1
+        }
     ]);
     assert.deepEqual(gaps[2], []);
     assert.deepEqual(gaps[3], []);
@@ -668,7 +698,14 @@ test("un grupo sin nadie de un estamento los muestra todos", () => {
     ));
 
     assert.deepEqual(gaps[3], [
-        { estamento: AUX, count: 0, reference: 2, missing: 2 }
+        {
+            estamento: AUX,
+            profession: "",
+            label: AUX,
+            count: 0,
+            reference: 2,
+            missing: 2
+        }
     ]);
 });
 
@@ -709,7 +746,14 @@ test("y no arrastra a los estamentos de verdad", () => {
     ));
 
     assert.deepEqual(gaps[1], [
-        { estamento: TEC, count: 1, reference: 2, missing: 1 }
+        {
+            estamento: TEC,
+            profession: "",
+            label: TEC,
+            count: 1,
+            reference: 2,
+            missing: 1
+        }
     ]);
 });
 
@@ -792,7 +836,7 @@ async function pintar() {
     return nodo.innerHTML;
 }
 
-test("el cupo se pinta como recuadro y dice de que estamento es", async () => {
+test("el cupo se pinta como recuadro y dice de que PROFESION es", async () => {
     sembrar([
         { name: "Tec Uno", start: "2026-01-05", estamento: TEC, profession: "Técnico en Enfermería" },
         { name: "Tec Dos", start: "2026-01-06", estamento: TEC, profession: "Técnico en Enfermería" },
@@ -804,10 +848,12 @@ test("el cupo se pinta como recuadro y dice de que estamento es", async () => {
     assert.equal((html.match(/class="tt-vacancy"/g) || []).length, 1);
     assert.match(html, /class="tt-vacancy-badge"[^>]*>!</);
     assert.ok(html.includes("Cupo disponible"));
-    assert.ok(html.includes('class="tt-vacancy-meta">Técnico<'));
+    // La PROFESION, no el estamento: "falta una enfermera" se puede resolver,
+    // "falta un profesional" no dice a quien llamar.
+    assert.ok(html.includes('class="tt-vacancy-meta">Técnico en Enfermería<'));
     // El detalle dice contra que se esta comparando.
     assert.ok(html.includes(
-        'title="Técnico: este grupo tiene 1 y el grupo con más tiene 2."'
+        'title="Técnico en Enfermería: este grupo tiene 1 y el grupo con más tiene 2."'
     ));
     // Y la nota al pie explica el recuadro.
     assert.ok(html.includes("cupos disponibles"));
