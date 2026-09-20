@@ -236,6 +236,10 @@ module.exports = {
   applyEntry,
   canCover,
   findCompatibleReplacementCandidates,
+  // Lo usa tambien la busqueda de ausencias (linkedAbsenceSearch.js): resolver
+  // los enlaces aceptados es el mismo problema, y copiarlo dejaria dos
+  // criterios de "unidad enlazada" que pueden separarse.
+  listAcceptedLinks,
   profilesAreCompatible,
   searchWorkspaceCandidates
 };

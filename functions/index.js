@@ -29,6 +29,13 @@ const {
   findCompatibleReplacementCandidates
 } = require("./linkedReplacementSearch");
 const {
+  findLinkedUnitAbsences
+} = require("./linkedAbsenceSearch");
+const {
+  createInterUnitAbsenceRequestHandler,
+  respondInterUnitAbsenceRequestHandler
+} = require("./interUnitAbsenceRequests");
+const {
   advanceAutoCoverageCampaigns
 } = require("./autoCoverageScheduler");
 const {
@@ -4164,6 +4171,103 @@ exports.findCompatibleReplacementInLinkedUnits = onCall(
         workspaceName: unit.workspaceName,
         candidateCount: unit.candidates.length
       })),
+      failedUnits: result.failedUnits,
+      message
+    };
+  }
+);
+
+// Pedir y responder el permiso para usar la ausencia de otra unidad. Los dos
+// guardias viajan inyectados para que el modulo tenga prueba unitaria propia
+// (functions/test/interUnitAbsenceRequests.test.js).
+exports.createInterUnitAbsenceRequest = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => createInterUnitAbsenceRequestHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    requireWorkspaceRequestManager,
+    requireAcceptedWorkspaceLink
+  })
+);
+
+exports.respondInterUnitAbsenceRequest = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => respondInterUnitAbsenceRequestHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    requireWorkspaceRequestManager
+  })
+);
+
+// Ausencias de las unidades enlazadas, para respaldar el contrato de un
+// trabajador a reemplazo. Devuelve los dias CRUDOS: agrupar los rangos exige
+// los feriados del año y eso vive en el navegador, que ademas ya tiene la
+// funcion que lo hace para sus propias ausencias (js/replacementLeaveGrouping).
+exports.findLinkedUnitAbsences = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  async (request) => {
+    const uid = request.auth?.uid;
+
+    if (!uid) {
+      throw new HttpsError(
+        "unauthenticated",
+        "Debes iniciar sesion para consultar unidades enlazadas."
+      );
+    }
+
+    const data = request.data || {};
+    const requesterWorkspaceId =
+      cleanCallableText(data.requesterWorkspaceId, 160);
+    const fromISO = cleanCallableText(data.fromISO, 10);
+    const sourceWorkspaceId =
+      cleanCallableText(data.sourceWorkspaceId, 160);
+
+    if (!requesterWorkspaceId || !validISODate(fromISO)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "La consulta de ausencias no es valida."
+      );
+    }
+
+    await requireWorkspaceRequestManager(
+      requesterWorkspaceId,
+      uid,
+      request.auth.token
+    );
+
+    const result = await findLinkedUnitAbsences({
+      db,
+      requesterWorkspaceId,
+      fromISO,
+      sourceWorkspaceId
+    });
+    const total = result.units.reduce(
+      (sum, unit) => sum + unit.workers.length,
+      0
+    );
+    let message = "";
+
+    if (!result.units.length && !result.failedUnits.length) {
+      message = "No hay unidades enlazadas aceptadas para esta unidad.";
+    } else if (!total && result.failedUnits.length) {
+      message = `No se pudo consultar: ${result.failedUnits.join(", ")}.`;
+    } else if (!total) {
+      message = "No hay ausencias disponibles en las unidades enlazadas.";
+    }
+
+    return {
+      units: result.units,
       failedUnits: result.failedUnits,
       message
     };

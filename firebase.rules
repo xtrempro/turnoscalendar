@@ -608,6 +608,52 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Permiso para usar la ausencia de OTRA unidad como respaldo del contrato
+    // de un trabajador a reemplazo.
+    //
+    // Vive en el nivel superior, como workspaceLinks, porque las dos unidades
+    // tienen que verlo: la que pide y la que autoriza. Lo crea unicamente el
+    // servidor (createInterUnitAbsenceRequest), que es quien puede comprobar
+    // que el enlace entre ambas esta aceptado.
+    //
+    // Campos: requesterWorkspaceId/Name, ownerWorkspaceId/Name, linkId,
+    // requestedByUid/Name, replacementProfileName, absenceProfileName,
+    // leaveRef, leaveType, leaveLabel, leaveStart, leaveEnd, rotationMode,
+    // status, createdAt, updatedAt y los de resolucion.
+    match /interUnitAbsenceRequests/{requestId} {
+      allow create: if false;
+
+      allow read: if canReadRequests(resource.data.requesterWorkspaceId) ||
+        canReadRequests(resource.data.ownerWorkspaceId);
+
+      // Solo autoriza o rechaza quien gestiona solicitudes en la unidad DUEÑA
+      // de la ausencia, y solo mientras siga pendiente. La identidad de la
+      // solicitud no se puede reescribir: sin esto, quien responde podria
+      // apuntarla a otra ausencia o a otra unidad al aprobarla.
+      allow update: if resource.data.status == "pending" &&
+        canManageRequests(resource.data.ownerWorkspaceId) &&
+        request.resource.data.status in ["approved", "rejected"] &&
+        request.resource.data.requesterWorkspaceId ==
+          resource.data.requesterWorkspaceId &&
+        request.resource.data.ownerWorkspaceId ==
+          resource.data.ownerWorkspaceId &&
+        request.resource.data.leaveRef == resource.data.leaveRef &&
+        request.resource.data.absenceProfileName ==
+          resource.data.absenceProfileName &&
+        request.resource.data.replacementProfileName ==
+          resource.data.replacementProfileName &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status",
+          "resolvedAt",
+          "resolvedByUid",
+          "resolvedByName",
+          "rejectReason",
+          "updatedAt"
+        ]);
+
+      allow delete: if false;
+    }
+
     match /workerAppEmailInvites/{emailKey}/items/{inviteId} {
       // Un trabajador solo puede leer las invitaciones dirigidas a SU propio
       // correo (la clave del documento es el email normalizado en minusculas).
