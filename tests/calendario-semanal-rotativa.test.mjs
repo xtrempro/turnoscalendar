@@ -193,6 +193,25 @@ test("el molde es alguien del grupo que SI esta trabajando", () => {
     assert.match(fuente, /getProfiles\(\)\s*\n\s*\.filter\(isProfileActive\)/);
 });
 
+test("con profesion en el cupo, el molde es de ESA profesion", () => {
+    // El defecto que se vio en produccion: un cupo de "TM Imagenologia" abria
+    // el modal ofreciendo enfermeras.
+    //
+    // El filtro de candidatos compara contra este molde, y el respaldo por
+    // estamento lo elegia mal. Ademas fallaba SIEMPRE, no en un caso raro: si
+    // el grupo tuviera a alguien de esa profesion trabajando ese turno, no
+    // habria cupo que cubrir.
+    const fuente = grab(staffing, "weeklyRotaReference");
+
+    assert.match(fuente, /if \(buscada\) \{/);
+    assert.match(
+        fuente,
+        /normalizeProfession\(profile\.profession, estamento\) === buscada/
+    );
+    // Y sin nadie de esa profesion en la unidad, no se ofrece a nadie.
+    assert.match(fuente, /return cualquiera\?\.name \|\| "";/);
+});
+
 test("sin molde no se dibuja la casilla", () => {
     // Sin referencia el modal no sabria a quien ofrecer.
     assert.match(grab(staffing, "weeklyRotaGapHTML"), /if \(!reference\) return "";/);

@@ -2928,15 +2928,37 @@ function weeklyRotaReference(people, group, estamento, profession = "") {
     const working = people.filter(item =>
         item.type !== "replacement-slot" && item.group === group
     );
-    const mismoCargo = profession
-        ? working.find(item =>
-            normalizeStaffingEstamento(item.profile?.estamento) === estamento &&
-            String(item.profile?.profession || "").trim() === profession
-        )
-        : null;
+    const buscada = profession
+        ? normalizeProfession(profession, estamento)
+        : "";
 
-    // Primero alguien de la MISMA profesion: es el molde mas parecido.
-    if (mismoCargo) return mismoCargo.profile.name;
+    // Con profesion en el cupo, el molde TIENE que ser de esa profesion, y no
+    // hay respaldo por estamento a proposito.
+    //
+    // Era el defecto: el filtro de candidatos del modal compara contra este
+    // molde, asi que caer al estamento ofrecia enfermeras para un cupo de TM
+    // Imagenologia. Y pasaba SIEMPRE, no en un caso raro: si el grupo tuviera
+    // a alguien de esa profesion trabajando ese turno, no habria cupo.
+    if (buscada) {
+        const presente = working.find(item =>
+            normalizeStaffingEstamento(item.profile?.estamento) === estamento &&
+            normalizeProfession(item.profile?.profession, estamento) === buscada
+        );
+
+        if (presente) return presente.profile.name;
+
+        const cualquiera = getProfiles()
+            .filter(isProfileActive)
+            .find(profile =>
+                normalizeStaffingEstamento(profile.estamento) === estamento &&
+                normalizeProfession(profile.profession, estamento) === buscada
+            );
+
+        // Sin nadie de esa profesion en la unidad no se ofrece a nadie: el
+        // boton queda deshabilitado con su "no hay a quien parecerse", que es
+        // mas honesto que proponer a quien no corresponde.
+        return cualquiera?.name || "";
+    }
 
     const sameEstamento = working.find(item =>
         normalizeStaffingEstamento(item.profile?.estamento) === estamento
