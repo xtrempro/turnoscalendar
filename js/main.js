@@ -2456,7 +2456,29 @@ function openRotationConfigModal(
     // los anteriores conservan el estado actual. Es solo visual: si no se acepta
     // el modal, no se escribe nada y se mantiene la rotativa anterior.
     const getModalPreviewTurn = (key, iso) => {
-        if (isReplacement || !state.rotationStart) {
+        if (isReplacement) {
+            const inNewContractRange =
+                state.contractLeaveRef &&
+                state.contractStart &&
+                state.contractEnd &&
+                iso >= state.contractStart &&
+                iso <= state.contractEnd;
+
+            if (!inNewContractRange) {
+                return getProfileRotationState(profile?.name, key);
+            }
+
+            if (
+                state.contractRotationMode ===
+                    REPLACEMENT_ROTATION_MODE.FREE
+            ) {
+                return TURNO.LIBRE;
+            }
+
+            return getTurnoBase(state.contractReplaces, key);
+        }
+
+        if (!state.rotationStart) {
             return getProfileRotationState(profile?.name, key);
         }
 
