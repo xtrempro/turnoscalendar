@@ -5795,6 +5795,7 @@ function replacementDialogHTML({
                 ${assignmentControls}
             </div>
         </div>
+        ${rota ? "" : `
         <div class="replacement-coverage-exception ${preassignMode ? "is-disabled" : ""}">
             <span class="replacement-coverage-exception-copy">
                 <strong>Excepci&oacute;n de cobertura</strong>
@@ -5804,6 +5805,20 @@ function replacementDialogHTML({
                 No requiere cobertura
             </button>
         </div>
+        `}
+    `;
+
+    // Los tres botones del caso "alguien falto": anular su permiso, marcar el
+    // dia sin cobertura y su documento de respaldo. Van juntos en una sola
+    // pieza para poder sacarlos de una cuando esto es un cupo de rotativa.
+    const leaveActions = `
+                <button class="leave-detail-undo" type="button" data-action="cancel-leave">
+                    Anular permiso
+                </button>
+                <button class="secondary-button" type="button" data-action="no-coverage" ${preassignMode ? "disabled" : ""}>
+                    No requiere cobertura
+                </button>
+                ${leaveDocsButton}
     `;
 
     return `
@@ -5873,13 +5888,7 @@ function replacementDialogHTML({
             </div>
             <div class="turn-change-dialog__actions replacement-dialog__actions">
                 ${sendSelectedButton}
-                <button class="leave-detail-undo" type="button" data-action="cancel-leave">
-                    Anular permiso
-                </button>
-                <button class="secondary-button" type="button" data-action="no-coverage" ${preassignMode ? "disabled" : ""}>
-                    No requiere cobertura
-                </button>
-                ${leaveDocsButton}
+                ${rota ? "" : leaveActions}
             </div>
         </div>
     `;

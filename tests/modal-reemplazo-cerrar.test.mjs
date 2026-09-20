@@ -43,6 +43,20 @@ function footer() {
     return calendar.slice(start, calendar.indexOf("</div>", start));
 }
 
+/**
+ * Las acciones del caso "alguien falto", que el pie interpola.
+ *
+ * Viven en una constante aparte para poder omitirlas ENTERAS en el cupo de
+ * rotativa, donde no hay permiso que anular.
+ */
+function leaveActionsBlock() {
+    const start = calendar.indexOf("const leaveActions = `");
+
+    assert.notEqual(start, -1, "no se encontro el bloque leaveActions");
+
+    return calendar.slice(start, calendar.indexOf("`;", start));
+}
+
 /* =========================================================
    La cruz
 ========================================================= */
@@ -95,9 +109,22 @@ test("el pie ya no trae el boton Cancelar", () => {
 
     assert.doesNotMatch(acciones, /Cancelar/);
     assert.doesNotMatch(acciones, /data-action="cancel"/);
-    // Lo que si debe seguir estando.
+});
+
+test("pero sigue llevando las acciones del permiso, ahora agrupadas", () => {
+    // Se sacaron a una constante para poder omitirlas de una en el cupo de
+    // rotativa: ahi no hay permiso que anular ni documento que adjuntar, y el
+    // perfil del modal es solo el molde de referencia.
+    //
+    // El pie las interpola, asi que lo que antes se leia de corrido ahi ahora
+    // se lee en dos partes. Las dos siguen siendo ciertas.
+    assert.match(footer(), /\$\{rota \? "" : leaveActions\}/);
+
+    const acciones = leaveActionsBlock();
+
     assert.match(acciones, /data-action="cancel-leave"/);
     assert.match(acciones, /data-action="no-coverage"/);
+    assert.match(acciones, /\$\{leaveDocsButton\}/);
 });
 
 /* =========================================================

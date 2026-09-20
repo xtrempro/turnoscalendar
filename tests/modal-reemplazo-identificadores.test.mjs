@@ -117,3 +117,24 @@ test("el encabezado del modal distingue los dos casos", () => {
         /\$\{escapeHTML\(profileName\)\} requiere cobertura para/
     );
 });
+
+test("en un cupo de rotativa no se ofrece anular ningun permiso", () => {
+    // No hay permiso que anular: la brecha sale de que al grupo le falta
+    // gente, no de que alguien se ausentara.
+    //
+    // El perfil con el que se abre el modal es solo el MOLDE de referencia, y
+    // estos botones apuntaban a EL: "Anular permiso" llegaba a preguntar
+    // "se anulara Completar rotativa de tm imagenologias del grupo A de
+    // amsmax", tomando el motivo del cupo como si fuera un permiso suyo.
+    assert.match(source, /\$\{rota \? "" : leaveActions\}/);
+});
+
+test("ni la excepcion de cobertura del panel", () => {
+    // Por lo mismo: marcaria el dia del molde. Y ni siquiera serviria para
+    // esconder el cupo, porque la brecha sale de comparar las rotativas de los
+    // cuatro grupos, no de esa marca.
+    assert.match(
+        source,
+        /\$\{rota \? "" : `\s*\n\s*<div class="replacement-coverage-exception/
+    );
+});
