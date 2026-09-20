@@ -10167,6 +10167,136 @@ body.theme-dark .overtime-backup-subsection {
     margin-bottom: 18px;
 }
 
+/* Reparto de un turno entre dos: una fila por trabajador, con su tramo. */
+.cover-split-dialog {
+    width: min(480px, 100%);
+}
+
+.cover-split-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 0;
+    border-top: 1px solid var(--border);
+}
+
+.cover-split-row label {
+    display: grid;
+    gap: 4px;
+    font-size: 0.8rem;
+    font-weight: 800;
+    color: var(--text-soft);
+}
+
+.cover-split-row input {
+    min-height: 38px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--field);
+    color: var(--text-strong);
+    font: inherit;
+    font-weight: 700;
+}
+
+.cover-split-hint {
+    margin: -6px 0 10px;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+/* El nombre es el asa: se toca para tomarlo y se toca otro para permutar. */
+.cover-split-worker {
+    padding: 8px 10px;
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-strong);
+    font: inherit;
+    font-weight: 800;
+    text-align: left;
+    cursor: pointer;
+}
+
+.cover-split-worker.is-taken {
+    border-style: solid;
+    border-color: rgba(var(--brand-blue-rgb), 0.6);
+    background: rgba(var(--brand-blue-rgb), 0.12);
+}
+
+.cover-split-row.is-drop-target {
+    background: rgba(var(--brand-blue-rgb), 0.08);
+}
+
+/* Media hora arriba o abajo: el reloj no se escribe a mano, se mueve a pasos.
+   Asi no hay forma de tipear un horario que se pise con el de al lado. */
+.cover-split-step {
+    min-width: 34px;
+    min-height: 34px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--field);
+    color: var(--text-strong);
+    font: inherit;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.cover-split-step:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.cover-split-time {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cover-split-time > b {
+    min-width: 52px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+/* El hueco es un bloque mas de la tira, no la ausencia de uno: se ve, dice
+   cuanto dura y lleva encima las dos decisiones posibles. */
+.cover-split-row--gap {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    border-top: 1px dashed var(--border);
+    background: rgba(var(--brand-amber-rgb, 217, 119, 6), 0.08);
+}
+
+.cover-split-gap-label {
+    font-weight: 800;
+    color: var(--text-soft);
+}
+
+.cover-split-gap-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.cover-split-row--gap.is-no-coverage {
+    opacity: 0.65;
+}
+
+/* En el celular las dos horas no caben junto al nombre. */
+@media (max-width: 480px) {
+    .cover-split-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .cover-split-row > .cover-split-worker {
+        grid-column: 1 / -1;
+    }
+}
+
 .training-time-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

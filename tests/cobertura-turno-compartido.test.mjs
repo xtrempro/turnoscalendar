@@ -238,7 +238,16 @@ test("el tramo cubierto queda anotado en el reemplazo", async () => {
     );
     assert.match(calendar, /setReplacementCoverWindow\(covering\.id, sameWindow/);
     // Y al elegir al segundo, su reemplazo nace con el tramo.
-    assert.match(calendar, /\.\.\.coverWindowPayload/);
+    //
+    // El spread paso a ser CONDICIONAL al extraer el guardado a un aplicador
+    // compartido: el tramo puede llegar por parametro -uno por cada elegido,
+    // cuando el turno se reparte entre dos desde el modal- o ser el del cuadro,
+    // que es el camino de siempre. Las dos ramas tienen que seguir ahi.
+    assert.match(calendar, /: coverWindowPayload\)/);
+    assert.match(
+        calendar,
+        /coverFrom: appliedWindow\.from,\s*\n\s*coverUntil: appliedWindow\.until,/
+    );
 });
 
 test("el segundo trabajador queda con el horario del tramo", async () => {
@@ -248,7 +257,11 @@ test("el segundo trabajador queda con el horario del tramo", async () => {
         calendar,
         /function writeCoverWindowClockMark\(worker, keyDay, date, window, holidays\)/
     );
-    assert.match(calendar, /if \(coverWindow\) \{\s*\n\s*writeCoverWindowClockMark\(/);
+    // `appliedWindow` es el tramo que rige ESTA aplicacion: el que llega por
+    // parametro al repartir entre dos, o el del cuadro cuando se viene a tapar
+    // un hueco. Antes se leia `coverWindow` a secas, cuando el guardado vivia
+    // dentro del manejador del clic y no habia otra entrada posible.
+    assert.match(calendar, /if \(appliedWindow\) \{\s*\n\s*writeCoverWindowClockMark\(/);
 });
 
 test("el reemplazo que dejo el hueco no bloquea las sugerencias", async () => {

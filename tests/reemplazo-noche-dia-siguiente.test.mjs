@@ -126,13 +126,16 @@ test("la tarjeta pinta el aviso y el fondo de advertencia", async () => {
         /replacement-candidate-state">\n\s*\$\{escapeHTML\(candidateStateLabel[\s\S]{0,200}?replacement-candidate-next-shift/
     );
     assert.match(calendar, /Al día siguiente tiene turno \$\{turnoReplacementLabel\(turn\)\}\./);
-    // Y en las DOS tarjetas: sugerencia directa y modo solicitud.
+    // Y en TODAS las tarjetas, que hoy son tres: sugerencia directa, modo
+    // solicitud y reparto del turno entre dos. El numero es un sustituto de
+    // "todas": al agregar una cuarta forma de listar candidatos, el aviso tiene
+    // que ir tambien ahi y este conteo es lo que lo recuerda.
     assert.equal(
         calendar.split("replacement-candidate--next-day-shift").length - 1,
-        2
+        3
     );
     assert.equal(
         calendar.split("replacement-candidate-next-shift\">").length - 1,
-        2
+        3
     );
 });

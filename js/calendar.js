@@ -211,6 +211,7 @@ import {
     getClockNetExtraHours,
     getClockScheduleState,
     getScheduledSegmentsForProfile,
+    getScheduledSegmentsForState,
     getWorkedIntervalsForState,
     saveClockMarks,
     hasClockNetExtra,
@@ -5492,7 +5493,13 @@ function replacementDialogHTML({
     // Tramo que se busca cubrir, cuando el turno ya esta cubierto a medias. Va
     // en el encabezado: sin las horas a la vista, quien elige al segundo cree
     // que lo esta poniendo a hacer el turno entero.
-    coverWindow = null
+    coverWindow = null,
+    // Reparto del turno entre dos: las filas pasan a ser casillas y nada se
+    // guarda hasta apretar "Aceptar". Sin esto, el primer clic cerraba el
+    // cuadro y al segundo trabajador habia que llegar por el marcaje del
+    // primero, que es el rodeo que este modo elimina.
+    splitMode = false,
+    selectedCoverWorkers = null
 }) {
     // Documento de respaldo, junto a "Anular permiso": si todavia no hay
     // documento el boton invita a subirlo, y si ya lo hay lo abre. Este modal es
@@ -5529,6 +5536,21 @@ function replacementDialogHTML({
         allowWorkerAcceptanceRequest &&
         !linkedMode &&
         requestMode;
+    // Reparto del turno entre dos. Es EXCLUYENTE con los otros dos modos -en
+    // solicitar y en preasignar una casilla marcada ya significa otra cosa- y
+    // no aplica cuando se viene a tapar un tramo suelto: ahi las horas que
+    // faltan ya estan decididas y elegir a dos repartiria el hueco, no el
+    // turno. Tampoco en un cupo de rotativa, que no parte de nadie ausente.
+    const isSplitMode =
+        splitMode &&
+        !isRequestMode &&
+        !preassignMode &&
+        !coverWindow &&
+        !rota;
+    const coverSelection = selectedCoverWorkers || new Set();
+    const coverSelectedCount = candidates.filter(candidate =>
+        coverSelection.has(candidate.profile.name)
+    ).length;
     const pendingByWorker = new Map(
         (pendingRequests || []).map(request => [request.worker, request])
     );
@@ -5590,6 +5612,49 @@ function replacementDialogHTML({
             const closeSlot = pendingRequest
                 ? `${cancelButton}</div>`
                 : "";
+
+            // Reparto: la fila es una casilla y NO guarda nada al marcarla. Se
+            // queda con las mismas clases del modo solicitud para heredar su
+            // rejilla -casilla, datos, horas- sin una regla de estilo nueva.
+            // Lleva los mismos data-* que el boton de asignar directo porque
+            // el guardado del final reusa esos mismos ayudantes, que solo leen
+            // el dataset y no les importa de que elemento cuelgue.
+            if (isSplitMode) {
+                return `
+                <label class="replacement-candidate replacement-candidate--request replacement-candidate--split ${candidate.isForced ? "replacement-candidate--forced" : ""} ${candidate.isLinked ? "replacement-candidate--linked" : ""} ${candidate.blockedDay ? "replacement-candidate--worker-blocked" : ""} ${nextDayNote ? "replacement-candidate--next-day-shift" : ""} ${limitNote ? "replacement-candidate--over-limit" : ""} ${contingencyNote ? "replacement-candidate--contingency" : ""}">
+                    <input
+                        class="replacement-candidate-checkbox"
+                        type="checkbox"
+                        data-cover-worker="${escapeHTML(candidate.profile.name)}"
+                        data-worker="${escapeHTML(candidate.profile.name)}"
+                        data-worker-profile-id="${escapeHTML(candidate.profile.id || "")}"
+                        data-worker-workspace-id="${escapeHTML(candidate.workspaceId || "")}"
+                        data-worker-workspace-name="${escapeHTML(candidate.workspaceName || "")}"
+                        data-worker-link-id="${escapeHTML(candidate.linkId || "")}"
+                        ${replacementCandidateCoverageAttrs(candidate)}
+                        ${coverSelection.has(candidate.profile.name) ? "checked" : ""}
+                    >
+                    <span>
+                        <strong>${escapeHTML(candidate.profile.name)}</strong>
+                        <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
+                        ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
+                        <small class="replacement-candidate-state">
+                            ${escapeHTML(candidateStateLabel(candidate, null))}
+                            ${nextDayNote ? `<span class="replacement-candidate-next-shift">${escapeHTML(nextDayNote)}</span>` : ""}
+                            ${limitNote ? `<span class="replacement-candidate-over-limit">${escapeHTML(limitNote)}</span>` : ""}
+                            ${contingencyNote ? `<span class="replacement-candidate-contingency">${escapeHTML(contingencyNote)}</span>` : ""}
+                        </small>
+                        ${warning ? `<small class="replacement-candidate-warning">${escapeHTML(warning)}</small>` : ""}
+                    </span>
+                    <span>
+                        ${candidate.isLinked ? "<em>Unidad enlazada</em>" : ""}
+                        ${candidate.isForced ? "<em>Forzado</em>" : ""}
+                        ${candidate.blockedDay ? "<em>Dia bloqueado</em>" : ""}
+                        ${candidateHours}
+                    </span>
+                </label>
+                `;
+            }
 
             if (isRequestMode) {
                 return `
@@ -5709,6 +5774,16 @@ function replacementDialogHTML({
         ? `
             <button class="primary-button" type="button" data-action="send-selected-requests" ${selectedCount ? "" : "disabled"}>
                 Enviar a seleccionados (${selectedCount})
+            </button>
+        `
+        : "";
+    // El reparto no se cierra solo: se eligen los dos y recien aqui se guarda.
+    // Con uno marcado tambien sirve -cubre el turno entero, como siempre-, y
+    // asi no hay que salir del modo para el caso corriente.
+    const acceptSplitButton = isSplitMode
+        ? `
+            <button class="primary-button" type="button" data-action="accept-split" ${coverSelectedCount ? "" : "disabled"}>
+                Aceptar (${coverSelectedCount})
             </button>
         `
         : "";
@@ -5888,6 +5963,7 @@ function replacementDialogHTML({
             </div>
             <div class="turn-change-dialog__actions replacement-dialog__actions">
                 ${sendSelectedButton}
+                ${acceptSplitButton}
                 ${rota ? "" : leaveActions}
             </div>
         </div>
@@ -6221,6 +6297,12 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
     let selectedRequestWorkers = new Set();
     let optionsOpen = false;
     let preassignMode = false;
+    // Elegir a dos en vez de uno. Lo enciende el ajuste de la unidad; el modal
+    // decide ademas en que casos aplica (ver isSplitMode). Es const: el modo no
+    // se apaga desde el cuadro, a diferencia de los otros tres.
+    const splitMode =
+        getTurnChangeConfig().allowSplitShiftCoverage === true;
+    let selectedCoverWorkers = new Set();
     const normalizeReplacementDialogState = () => {
         const replacementConfig = getReplacementRequestConfig();
 
@@ -6733,228 +6815,417 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                 };
             });
 
-        backdrop
-            .querySelectorAll("[data-worker]")
-            .forEach(button => {
-                button.onclick = async () => {
-                    if (button.disabled) return;
+        // Aplica a UN candidato. Vive aparte porque ahora hay DOS entradas -el
+        // clic directo de la fila y el boton Aceptar del reparto- y duplicar
+        // este cuerpo las condenaria a desincronizarse: la pregunta por el
+        // contrato de reemplazo, el turno ya agregado sin motivo y las unidades
+        // enlazadas viven todas aqui.
+        //
+        // `button` es cualquier elemento que traiga los data-*: el boton de la
+        // fila o la casilla del reparto. Solo se lee su dataset.
+        const applyCandidate = async (button, options = {}) => {
+            // El tramo del reparto pisa al del cuadro: cada uno de los dos
+            // elegidos guarda el suyo, y los dos juntos tapan el turno.
+            const appliedWindow = options.coverWindow || coverWindow;
 
-                    await withBusyState(async () => {
-                        if (typeof window.pushUndoState === "function") {
-                            window.pushUndoState(
-                                preassignMode
-                                    ? "Preasignar turno"
-                                    : requestMode
-                                        ? "Crear solicitud de reemplazo"
-                                        : "Asignar reemplazo"
-                            );
-                        }
+            await withBusyState(async () => {
+                if (typeof window.pushUndoState === "function") {
+                    window.pushUndoState(
+                        preassignMode
+                            ? "Preasignar turno"
+                            : requestMode
+                                ? "Crear solicitud de reemplazo"
+                                : "Asignar reemplazo"
+                    );
+                }
 
-                        // Modo preasignar: reserva tentativa (no proyecta turno ni
-                        // suma horas). Solo candidatos de esta unidad.
-                        if (preassignMode) {
-                            const coveringWorker = button.dataset.worker;
+                // Modo preasignar: reserva tentativa (no proyecta turno ni
+                // suma horas). Solo candidatos de esta unidad.
+                if (preassignMode) {
+                    const coveringWorker = button.dataset.worker;
 
-                            if (button.dataset.workerWorkspaceId) {
-                                alert("La preasignación no está disponible para unidades enlazadas.");
-                                return;
-                            }
+                    if (button.dataset.workerWorkspaceId) {
+                        alert("La preasignación no está disponible para unidades enlazadas.");
+                        return;
+                    }
 
-                            addPreassignment({
-                                worker: coveringWorker,
-                                replaced: profileName,
-                                keyDay,
-                                turno: neededTurn,
-                                absenceType,
-                                ...replacementCoverageFromDataset(
-                                    button.dataset
-                                )
-                            });
-                            addAuditLog(
-                                AUDIT_CATEGORY.CALENDAR,
-                                "Preasigno turno",
-                                `${profileName}: ${coveringWorker} preasignado para el ${keyDay}.`,
-                                { profile: profileName, keyDay }
-                            );
+                    addPreassignment({
+                        worker: coveringWorker,
+                        replaced: profileName,
+                        keyDay,
+                        turno: neededTurn,
+                        absenceType,
+                        ...replacementCoverageFromDataset(
+                            button.dataset
+                        )
+                    });
+                    addAuditLog(
+                        AUDIT_CATEGORY.CALENDAR,
+                        "Preasigno turno",
+                        `${profileName}: ${coveringWorker} preasignado para el ${keyDay}.`,
+                        { profile: profileName, keyDay }
+                    );
 
-                            close();
-                            await updateDayCell(profileName, keyDay);
-                            if (
-                                coveringWorker &&
-                                coveringWorker !== profileName
-                            ) {
-                                await updateDayCell(coveringWorker, keyDay);
-                            }
-                            updateTimelineCells(profileName, [keyDay]);
-                            if (coveringWorker) {
-                                updateTimelineCells(coveringWorker, [keyDay]);
-                            }
-                            return;
-                        }
+                    close();
+                    await updateDayCell(profileName, keyDay);
+                    if (
+                        coveringWorker &&
+                        coveringWorker !== profileName
+                    ) {
+                        await updateDayCell(coveringWorker, keyDay);
+                    }
+                    updateTimelineCells(profileName, [keyDay]);
+                    if (coveringWorker) {
+                        updateTimelineCells(coveringWorker, [keyDay]);
+                    }
+                    return;
+                }
 
-                        if (
-                            requestMode &&
-                            getReplacementRequestConfig()
-                                .enableWorkerAcceptanceRequest !== false
-                        ) {
-                            const request = createReplacementRequest({
-                                worker: button.dataset.worker,
-                                replaced: profileName,
-                                keyDay,
-                                turno: neededTurn,
-                                absenceType,
-                                scope,
-                                source: scope === "all-local"
-                                    ? "forced_replacement_request"
-                                    : "replacement_request",
-                                ...replacementCoverageFromDataset(
-                                    button.dataset
-                                )
-                            });
-                            const whatsappUrl =
-                                buildReplacementRequestWhatsAppUrl(request);
+                if (
+                    requestMode &&
+                    getReplacementRequestConfig()
+                        .enableWorkerAcceptanceRequest !== false
+                ) {
+                    const request = createReplacementRequest({
+                        worker: button.dataset.worker,
+                        replaced: profileName,
+                        keyDay,
+                        turno: neededTurn,
+                        absenceType,
+                        scope,
+                        source: scope === "all-local"
+                            ? "forced_replacement_request"
+                            : "replacement_request",
+                        ...replacementCoverageFromDataset(
+                            button.dataset
+                        )
+                    });
+                    const whatsappUrl =
+                        buildReplacementRequestWhatsAppUrl(request);
 
-                            if (request.channel === "whatsapp") {
-                                if (whatsappUrl) {
-                                    window.open(
-                                        whatsappUrl,
-                                        "_blank",
-                                        "noopener"
-                                    );
-                                } else {
-                                    alert(
-                                        "La solicitud quedo pendiente, pero este trabajador no tiene celular registrado para preparar el WhatsApp."
-                                    );
-                                }
-                            }
-
-                            await renderContent();
-                            return;
-                        }
-
-                        const coveringWorker = button.dataset.worker;
-
-                        // Reemplazante (tipo contrato reemplazo) sin contrato
-                        // vigente ese dia: ofrecer crear un contrato usando el
-                        // permiso del ausente como respaldo. Si dice que no, se
-                        // asigna solo el turno y queda con la cruz de sin contrato.
-                        if (
-                            !button.dataset.workerWorkspaceId &&
-                            coveringWorker &&
-                            isReplacementProfile(coveringWorker) &&
-                            !hasContractForDate(coveringWorker, keyDay)
-                        ) {
-                            const addContract = await showConfirm(
-                                `${coveringWorker} no tiene un contrato de reemplazo vigente en esta fecha.\n\n¿Agregar un contrato usando el permiso de ${profileName} como respaldo? Si eliges "No", se asigna solo este turno y quedara marcado sin contrato.`,
-                                {
-                                    title: "Sin contrato vigente",
-                                    tone: "warning",
-                                    confirmText: "Agregar contrato",
-                                    cancelText: "Solo este turno"
-                                }
-                            );
-
-                            if (addContract) {
-                                close();
-                                window.startReplacementContractEdit?.(
-                                    coveringWorker,
-                                    keyDay,
-                                    { replaced: profileName }
-                                );
-                                return;
-                            }
-                        }
-
-                        if (button.dataset.workerWorkspaceId) {
-                            await saveLinkedUnitReplacement(button);
-                        } else if (button.dataset.backsPendingExtra === "true") {
-                            // Ya tiene el turno puesto a mano y sin motivo: no
-                            // se le suma otro -seria trabajarlo dos veces-, se
-                            // respalda el que tiene con esta ausencia. Es el
-                            // mismo registro que deja el cuadro de motivo al
-                            // cruzarlo con un permiso, y por eso `addsShift`
-                            // va en false.
-                            saveReplacement({
-                                worker: button.dataset.worker,
-                                replaced: profileName,
-                                keyDay,
-                                turno: neededTurn,
-                                absenceType,
-                                source: "manual_extra",
-                                addsShift: false,
-                                ...replacementCoverageFromDataset(
-                                    button.dataset
-                                )
-                            });
-                            addAuditLog(
-                                AUDIT_CATEGORY.CALENDAR,
-                                "Respaldo un turno agregado",
-                                `${profileName}: el turno que ${button.dataset.worker} `
-                                + `ya tenia el ${keyDay} quedo respaldado con este permiso.`,
-                                { profile: profileName, keyDay }
+                    if (request.channel === "whatsapp") {
+                        if (whatsappUrl) {
+                            window.open(
+                                whatsappUrl,
+                                "_blank",
+                                "noopener"
                             );
                         } else {
-                            saveReplacement({
-                                worker: button.dataset.worker,
-                                // Un cupo de rotativa no reemplaza a nadie: es
-                                // un turno extra, y el motivo va en `reason`.
-                                replaced: rota ? "" : profileName,
-                                reason: rota ? rota.motive : "",
-                                keyDay,
-                                turno: neededTurn,
-                                absenceType: rota ? "" : absenceType,
-                                source: rota
-                                    ? "rota_gap"
-                                    : scope === "all-local"
-                                        ? "forced_replacement"
-                                        : "replacement",
-                                ...replacementCoverageFromDataset(
-                                    button.dataset
-                                ),
-                                ...coverWindowPayload
-                            });
-
-                            // Toma solo un tramo: queda con ese horario en su
-                            // marcaje, que es lo que se le va a pedir trabajar.
-                            if (coverWindow) {
-                                writeCoverWindowClockMark(
-                                    button.dataset.worker,
-                                    keyDay,
-                                    dateFromKeyDay(keyDay),
-                                    coverWindow,
-                                    await fetchHolidays(
-                                        dateFromKeyDay(keyDay).getFullYear()
-                                    )
-                                );
-                            }
+                            alert(
+                                "La solicitud quedo pendiente, pero este trabajador no tiene celular registrado para preparar el WhatsApp."
+                            );
                         }
+                    }
 
+                    await renderContent();
+                    return;
+                }
+
+                const coveringWorker = button.dataset.worker;
+
+                // Reemplazante (tipo contrato reemplazo) sin contrato
+                // vigente ese dia: ofrecer crear un contrato usando el
+                // permiso del ausente como respaldo. Si dice que no, se
+                // asigna solo el turno y queda con la cruz de sin contrato.
+                if (
+                    !button.dataset.workerWorkspaceId &&
+                    coveringWorker &&
+                    isReplacementProfile(coveringWorker) &&
+                    !hasContractForDate(coveringWorker, keyDay)
+                ) {
+                    const addContract = await showConfirm(
+                        `${coveringWorker} no tiene un contrato de reemplazo vigente en esta fecha.\n\n¿Agregar un contrato usando el permiso de ${profileName} como respaldo? Si eliges "No", se asigna solo este turno y quedara marcado sin contrato.`,
+                        {
+                            title: "Sin contrato vigente",
+                            tone: "warning",
+                            confirmText: "Agregar contrato",
+                            cancelText: "Solo este turno"
+                        }
+                    );
+
+                    if (addContract) {
                         close();
+                        window.startReplacementContractEdit?.(
+                            coveringWorker,
+                            keyDay,
+                            { replaced: profileName }
+                        );
+                        return;
+                    }
+                }
 
-                        // En un cupo de rotativa no hay ausente que repintar.
-                        if (!rota) await updateDayCell(profileName, keyDay);
-
-                        // Actualiza solo las casillas afectadas del timeline (el
-                        // trabajador ausente y quien lo cubre) sin reconstruirlo.
-                        if (
-                            coveringWorker &&
-                            coveringWorker !== profileName
-                        ) {
-                            await updateDayCell(coveringWorker, keyDay);
-                        }
-
-                        updateTimelineCells(profileName, [keyDay]);
-
-                        if (coveringWorker) {
-                            updateTimelineCells(coveringWorker, [keyDay]);
-                        }
-                    }, {
-                        label: requestMode
-                            ? "Creando solicitud..."
-                            : "Guardando reemplazo..."
+                if (button.dataset.workerWorkspaceId) {
+                    await saveLinkedUnitReplacement(button);
+                } else if (button.dataset.backsPendingExtra === "true") {
+                    // Ya tiene el turno puesto a mano y sin motivo: no
+                    // se le suma otro -seria trabajarlo dos veces-, se
+                    // respalda el que tiene con esta ausencia. Es el
+                    // mismo registro que deja el cuadro de motivo al
+                    // cruzarlo con un permiso, y por eso `addsShift`
+                    // va en false.
+                    saveReplacement({
+                        worker: button.dataset.worker,
+                        replaced: profileName,
+                        keyDay,
+                        turno: neededTurn,
+                        absenceType,
+                        source: "manual_extra",
+                        addsShift: false,
+                        ...replacementCoverageFromDataset(
+                            button.dataset
+                        )
                     });
+                    addAuditLog(
+                        AUDIT_CATEGORY.CALENDAR,
+                        "Respaldo un turno agregado",
+                        `${profileName}: el turno que ${button.dataset.worker} `
+                        + `ya tenia el ${keyDay} quedo respaldado con este permiso.`,
+                        { profile: profileName, keyDay }
+                    );
+                } else {
+                    saveReplacement({
+                        worker: button.dataset.worker,
+                        // Un cupo de rotativa no reemplaza a nadie: es
+                        // un turno extra, y el motivo va en `reason`.
+                        replaced: rota ? "" : profileName,
+                        reason: rota ? rota.motive : "",
+                        keyDay,
+                        turno: neededTurn,
+                        absenceType: rota ? "" : absenceType,
+                        source: rota
+                            ? "rota_gap"
+                            : scope === "all-local"
+                                ? "forced_replacement"
+                                : "replacement",
+                        ...replacementCoverageFromDataset(
+                            button.dataset
+                        ),
+                        ...(options.coverWindow
+                            ? {
+                                coverFrom: appliedWindow.from,
+                                coverUntil: appliedWindow.until,
+                                shiftFrom:
+                                    options.shiftWindow?.from || "",
+                                shiftUntil:
+                                    options.shiftWindow?.until || ""
+                            }
+                            : coverWindowPayload)
+                    });
+
+                    // Toma solo un tramo: queda con ese horario en su
+                    // marcaje, que es lo que se le va a pedir trabajar.
+                    if (appliedWindow) {
+                        writeCoverWindowClockMark(
+                            button.dataset.worker,
+                            keyDay,
+                            dateFromKeyDay(keyDay),
+                            appliedWindow,
+                            await fetchHolidays(
+                                dateFromKeyDay(keyDay).getFullYear()
+                            )
+                        );
+                    }
+                }
+
+                // Al repartir entre dos, el cuadro se cierra una sola
+                // vez al final: cerrarlo con el primero dejaria al
+                // segundo sin guardar.
+                if (!options.deferClose) close();
+
+                // En un cupo de rotativa no hay ausente que repintar.
+                if (!rota) await updateDayCell(profileName, keyDay);
+
+                // Actualiza solo las casillas afectadas del timeline (el
+                // trabajador ausente y quien lo cubre) sin reconstruirlo.
+                if (
+                    coveringWorker &&
+                    coveringWorker !== profileName
+                ) {
+                    await updateDayCell(coveringWorker, keyDay);
+                }
+
+                updateTimelineCells(profileName, [keyDay]);
+
+                if (coveringWorker) {
+                    updateTimelineCells(coveringWorker, [keyDay]);
+                }
+            }, {
+                label: requestMode
+                    ? "Creando solicitud..."
+                    : "Guardando reemplazo..."
+            });
+        };
+
+        // Solo los BOTONES: las casillas del reparto llevan los mismos data-*
+        // -para que los ayudantes de guardado las lean igual-, y con el
+        // selector a secas marcar una casilla disparaba la asignacion directa
+        // y cerraba el cuadro, que es justo lo que ese modo viene a evitar.
+        backdrop
+            .querySelectorAll("button[data-worker]")
+            .forEach(button => {
+                button.onclick = () => {
+                    if (button.disabled) return;
+
+                    return applyCandidate(button);
                 };
             });
+
+        const updateSplitControls = () => {
+            const accept =
+                backdrop.querySelector("[data-action='accept-split']");
+
+            if (!accept) return;
+
+            accept.disabled = selectedCoverWorkers.size === 0;
+            accept.textContent =
+                `Aceptar (${selectedCoverWorkers.size})`;
+        };
+
+        backdrop
+            .querySelectorAll("[data-cover-worker]")
+            .forEach(input => {
+                input.onchange = () => {
+                    const worker = input.dataset.coverWorker || "";
+
+                    if (input.checked) {
+                        // Sin tope de personas: el limite real es el reloj -a
+                        // cada uno le tiene que quedar al menos COVER_MIN_TRAMO
+                        // minutos-, y eso lo decide el cuadro de horas, que es
+                        // el unico que conoce el largo del turno.
+                        selectedCoverWorkers.add(worker);
+                    } else {
+                        selectedCoverWorkers.delete(worker);
+                    }
+
+                    updateSplitControls();
+                };
+            });
+
+        const acceptSplit =
+            backdrop.querySelector("[data-action='accept-split']");
+        if (acceptSplit) {
+            acceptSplit.onclick = async () => {
+                const elegidos = [
+                    ...backdrop.querySelectorAll("[data-cover-worker]")
+                ].filter(input =>
+                    selectedCoverWorkers.has(input.dataset.coverWorker)
+                );
+
+                if (!elegidos.length) return;
+
+                // Uno solo: cubre el turno entero, igual que el clic directo
+                // de siempre. No hay nada que repartir ni horas que pedir.
+                if (elegidos.length === 1) {
+                    await applyCandidate(elegidos[0]);
+                    return;
+                }
+
+                if (elegidos.some(input =>
+                    input.dataset.workerWorkspaceId
+                )) {
+                    alert("El reparto por horas no está disponible para trabajadores de unidades enlazadas.");
+                    return;
+                }
+
+                const date = dateFromKeyDay(keyDay);
+                const holidays = await fetchHolidays(date.getFullYear());
+                // La ventana sale del TURNO, no de la ficha del ausente: es la
+                // franja que hay que repartir, y el ausente justamente no la
+                // trabaja.
+                const shiftWindow = windowFromIntervals(
+                    getScheduledSegmentsForState(date, neededTurn, holidays)
+                );
+
+                if (!shiftWindow) {
+                    alert("No se pudo determinar el horario de este turno, así que no se puede repartir.");
+                    return;
+                }
+
+                // TODOS los candidatos, no solo los marcados: desde el cuadro
+                // de horas se puede sumar a alguien mas para tapar un hueco, y
+                // al guardar hay que poder encontrar su fila para leer sus
+                // data-* igual que los demas.
+                const porNombre = new Map(
+                    [...backdrop.querySelectorAll("[data-cover-worker]")]
+                        .map(input => [input.dataset.coverWorker, input])
+                );
+                const reparto = await openCoverSplitDialog({
+                    workers: elegidos.map(input =>
+                        input.dataset.coverWorker
+                    ),
+                    shiftWindow,
+                    turnLabel: turnoReplacementLabel(neededTurn),
+                    pickWorker: yaPuestos => openCoverWorkerPicker(
+                        [...porNombre.keys()].filter(nombre =>
+                            !yaPuestos.includes(nombre) &&
+                            !porNombre.get(nombre).dataset.workerWorkspaceId
+                        )
+                    )
+                });
+
+                if (!reparto) return;
+
+                const tramos = reparto.tramos;
+
+                for (const [index, tramo] of tramos.entries()) {
+                    const input = porNombre.get(tramo.worker);
+
+                    if (!input) continue;
+
+                    await applyCandidate(input, {
+                        coverWindow: {
+                            from: tramo.from,
+                            until: tramo.until
+                        },
+                        shiftWindow,
+                        // El ultimo cierra: con el primero quedarian los demas
+                        // sin guardar.
+                        deferClose: index < tramos.length - 1
+                    });
+                }
+
+                // Los huecos que se resolvieron EN el cuadro ya no se
+                // preguntan: el supervisor ya dijo que esas horas no necesitan
+                // a nadie.
+                reparto.gaps
+                    .filter(gap => gap.noCoverage)
+                    .forEach(gap => {
+                        setNoCoverageDay(
+                            profileName,
+                            keyDay,
+                            true,
+                            `Turno cubierto salvo ${coverWindowLabel(gap)}.`
+                        );
+                        releaseLeaveHoldsForCoverage(profileName);
+                        addAuditLog(
+                            AUDIT_CATEGORY.CALENDAR,
+                            "Marco sin cobertura el tramo restante",
+                            `${profileName}: las horas ${coverWindowLabel(gap)} del ${keyDay} quedan sin cubrir por decision del supervisor.`,
+                            { profile: profileName, keyDay }
+                        );
+                    });
+
+                addAuditLog(
+                    AUDIT_CATEGORY.CALENDAR,
+                    "Repartio un turno entre varios",
+                    `${profileName}: el ${keyDay} lo cubren `
+                    + tramos.map(tramo =>
+                        `${tramo.worker} de ${tramo.from} a ${tramo.until}`
+                    ).join(", ")
+                    + ".",
+                    { profile: profileName, keyDay }
+                );
+
+                // Los tramos no tienen por que tapar el turno entero. Por cada
+                // hueco que quede se pregunta que hacer, en vez de dejar un "!"
+                // mudo que alguien tiene que descubrir despues.
+                await askCoverageForRemainingGaps(
+                    profileName,
+                    keyDay,
+                    shiftWindow
+                );
+            };
+        }
     };
 
     const renderContent = async () => withBusyState(async () => {
@@ -7002,6 +7273,8 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
             optionsOpen,
             preassignMode,
             coverWindow,
+            splitMode,
+            selectedCoverWorkers,
             rota,
             linkedStatus: scope === "linked"
                 ? linkedReplacementStatus
@@ -8608,6 +8881,572 @@ function windowFromIntervals(intervals = []) {
     return from && until ? { from, until } : null;
 }
 
+/** "HH:MM" a minutos del dia. Devuelve null si no se puede leer. */
+function coverTimeToMinutes(value) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || "").trim());
+
+    if (!match) return null;
+
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+    return (hour * 60) + minute;
+}
+
+/** Minutos del dia a "HH:MM", dando la vuelta a la medianoche. */
+function coverMinutesToTime(minutes) {
+    const total = ((Math.round(minutes) % 1440) + 1440) % 1440;
+
+    return `${String(Math.floor(total / 60)).padStart(2, "0")}`
+        + `:${String(total % 60).padStart(2, "0")}`;
+}
+
+// Lo minimo que se le puede pedir a alguien que venga a cubrir. Media hora es
+// el piso que fijo el usuario: por debajo, el viaje cuesta mas que el turno.
+const COVER_MIN_TRAMO = 30;
+
+/** Lo que dura un tramo, dando la vuelta a la medianoche. */
+function coverSpanMinutes(from, until) {
+    const start = coverTimeToMinutes(from);
+    const end = coverTimeToMinutes(until);
+
+    if (start === null || end === null) return 0;
+
+    // Iguales = el turno entero (un 24), no cero.
+    return ((end - start + 1440) % 1440) || 1440;
+}
+
+/**
+ * El turno como una TIRA CONTINUA de bloques, de punta a punta.
+ *
+ * Un bloque sin `worker` es un hueco. Que la tira sea continua por construccion
+ * es lo que hace imposible el traslape: no hay dos bloques que puedan ocupar el
+ * mismo minuto, porque cada uno termina donde empieza el siguiente.
+ *
+ * Todo se calcula en minutos DESDE el inicio del turno -no en horas de reloj-
+ * porque la noche cruza la medianoche y ahi "02:00" es posterior a "22:00".
+ */
+function coverShiftSegments(shiftWindow, workers) {
+    const span = coverSpanMinutes(shiftWindow?.from, shiftWindow?.until);
+    const total = workers.length;
+
+    if (!span || !total || (span / total) < COVER_MIN_TRAMO) return [];
+
+    return workers.map((worker, index) => ({
+        worker,
+        desde: Math.round((span * index) / total),
+        hasta: Math.round((span * (index + 1)) / total)
+    }));
+}
+
+/**
+ * Mueve el limite entre dos bloques, arrastrando al vecino.
+ *
+ * Es el gesto que pidio el usuario: al retroceder la salida del primero, la
+ * entrada del segundo se pega sola a esa hora. Por eso no puede abrirse un
+ * hueco por aqui -los dos bloques siguen tocandose- y el paso es de media hora.
+ *
+ * Se niega a dejar a cualquiera de los dos por debajo del minimo.
+ */
+function coverStepBoundary(segments, index, pasos) {
+    const actual = segments[index];
+    const siguiente = segments[index + 1];
+
+    if (!actual || !siguiente) return segments;
+
+    const limite = actual.hasta + (pasos * COVER_MIN_TRAMO);
+
+    if (limite - actual.desde < COVER_MIN_TRAMO) return segments;
+    if (siguiente.hasta - limite < COVER_MIN_TRAMO) return segments;
+
+    return segments.map((segment, i) => {
+        if (i === index) return { ...segment, hasta: limite };
+        if (i === index + 1) return { ...segment, desde: limite };
+
+        return segment;
+    });
+}
+
+/**
+ * Atrasa la entrada de un bloque ABRIENDO un hueco delante de el.
+ *
+ * Es el otro gesto: a diferencia de mover el limite, aqui el vecino NO lo
+ * sigue, y las horas que quedan en medio no las hace nadie. El hueco es un
+ * bloque mas de la tira, para que se vea y se pueda decidir que hacer con el.
+ *
+ * Adelantar la entrada come el hueco de vuelta, y si lo cierra del todo el
+ * bloque vacio desaparece en vez de quedar de cero minutos.
+ */
+function coverOpenGapBefore(segments, index, pasos) {
+    const actual = segments[index];
+
+    if (!actual) return segments;
+
+    const nuevaEntrada = actual.desde + (pasos * COVER_MIN_TRAMO);
+
+    if (actual.hasta - nuevaEntrada < COVER_MIN_TRAMO) return segments;
+
+    // El piso es el ultimo bloque CON gente: por encima de eso el gesto seria
+    // mover el limite compartido, que es el otro boton y arrastra al vecino.
+    const previoConGente = segments
+        .slice(0, index)
+        .reverse()
+        .find(segment => segment.worker);
+    const piso = previoConGente ? previoConGente.hasta : 0;
+
+    if (nuevaEntrada < piso) return segments;
+
+    // Los huecos que habia ANTES de este bloque se quitan y coverFillGaps los
+    // repone del tamano que corresponda. Asi adelantar la entrada se come el
+    // hueco de vuelta, y nunca quedan dos bloques vacios seguidos.
+    return coverFillGaps(
+        segments
+            .filter((segment, i) => segment.worker || i >= index)
+            .map(segment => (
+                segment === actual
+                    ? { ...segment, desde: nuevaEntrada }
+                    : segment
+            ))
+    );
+}
+
+/**
+ * Cierra la tira: donde dos bloques dejaron de tocarse, mete un hueco.
+ *
+ * Un hueco pegado a otro hueco se funde con el: dos bloques vacios seguidos
+ * dirian lo mismo dos veces y pedirian dos decisiones para una sola franja.
+ */
+function coverFillGaps(segments) {
+    const salida = [];
+
+    segments.forEach(segment => {
+        const previo = salida[salida.length - 1];
+
+        if (previo && previo.hasta < segment.desde) {
+            if (!previo.worker) {
+                previo.hasta = segment.desde;
+            } else {
+                salida.push({
+                    worker: "",
+                    desde: previo.hasta,
+                    hasta: segment.desde
+                });
+            }
+        }
+
+        salida.push({ ...segment });
+    });
+
+    return salida.filter(segment =>
+        segment.worker || segment.hasta > segment.desde
+    );
+}
+
+/** Los bloques a horas de reloj, solo los que tienen a alguien. */
+function coverSegmentsToTramos(segments, shiftWindow) {
+    const inicio = coverTimeToMinutes(shiftWindow?.from);
+
+    if (inicio === null) return [];
+
+    return segments
+        .filter(segment => segment.worker)
+        .map(segment => ({
+            worker: segment.worker,
+            from: coverMinutesToTime(inicio + segment.desde),
+            until: coverMinutesToTime(inicio + segment.hasta)
+        }));
+}
+
+/** Los huecos de la tira, a horas de reloj. */
+function coverSegmentsToGaps(segments, shiftWindow) {
+    const inicio = coverTimeToMinutes(shiftWindow?.from);
+
+    if (inicio === null) return [];
+
+    return segments
+        .filter(segment => !segment.worker)
+        .map(segment => ({
+            from: coverMinutesToTime(inicio + segment.desde),
+            until: coverMinutesToTime(inicio + segment.hasta)
+        }));
+}
+
+/**
+ * El primer par de tramos que se pisan, o null si no hay traslape.
+ *
+ * Comparar "13:00 < 15:00" a secas miente en la noche: las 02:00 de un tramo de
+ * madrugada son POSTERIORES a las 22:00 de otro. Por eso cada tramo se lleva a
+ * minutos transcurridos desde que empieza el turno, y ahi si se pueden comparar.
+ */
+function coverOverlapPair(tramos, shiftWindow) {
+    const inicio = coverTimeToMinutes(shiftWindow?.from);
+
+    if (inicio === null) return null;
+
+    const rangos = (tramos || [])
+        .filter(tramo => coverTimeToMinutes(tramo?.from) !== null)
+        .map(tramo => {
+            const desde =
+                ((coverTimeToMinutes(tramo.from) - inicio) + 1440) % 1440;
+
+            return {
+                tramo,
+                desde,
+                hasta: desde + coverSpanMinutes(tramo.from, tramo.until)
+            };
+        });
+
+    for (let i = 0; i < rangos.length; i += 1) {
+        for (let j = i + 1; j < rangos.length; j += 1) {
+            if (
+                rangos[i].desde < rangos[j].hasta &&
+                rangos[j].desde < rangos[i].hasta
+            ) {
+                return [rangos[i].tramo, rangos[j].tramo];
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Pide el horario de cada uno cuando un turno se reparte entre varios.
+ *
+ * Llega repartido en partes iguales y editable: repartir parejo es lo
+ * corriente, y dejar las horas en blanco obligaria a escribirlas todas para el
+ * caso normal.
+ *
+ * Los relojes son CASILLAS FIJAS y lo que se mueve es la persona: intercambiar
+ * -por boton, tocando o arrastrando- no toca las horas, cambia quien esta en
+ * cada una. Es como lo pidio el usuario, "se ubica en el reloj de otro", y
+ * ademas evita tener que reescribir cuatro horas para permutar a dos.
+ *
+ * No exige que los tramos tapen el turno entero. Si queda un hueco, el que
+ * llama se encarga de preguntar que hacer con el (ver el boton Aceptar).
+ *
+ * @returns {Promise<Array<{worker: string, from: string, until: string}>|null>}
+ *   null si se cancela.
+ */
+/**
+ * Elige a alguien mas para un hueco del reparto.
+ *
+ * No guarda nada: devuelve el nombre y el cuadro de horas sigue abierto detras
+ * con el bloque ya ocupado. Lo decidio el usuario asi para poder ver el turno
+ * completo antes de confirmar, en vez de guardar a medias y volver a empezar.
+ *
+ * @returns {Promise<string|null>} null si se cierra sin elegir.
+ */
+function openCoverWorkerPicker(nombres) {
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.innerHTML = `
+            <div class="turn-change-dialog cover-split-dialog" role="dialog" aria-modal="true">
+                <strong>&iquest;Qui&eacute;n cubre este tramo?</strong>
+                ${nombres.length
+                    ? `<div class="replacement-candidate-list">
+                        ${nombres.map(nombre => `
+                            <button class="replacement-candidate" type="button" data-cover-pick="${escapeHTML(nombre)}">
+                                <span><strong>${escapeHTML(nombre)}</strong></span>
+                            </button>
+                        `).join("")}
+                    </div>`
+                    : `<div class="empty-state empty-state--compact">
+                        No quedan trabajadores disponibles para este tramo.
+                    </div>`}
+                <div class="turn-change-dialog__actions">
+                    <button class="secondary-button" type="button" data-action="cancel">Volver</button>
+                </div>
+            </div>
+        `;
+
+        const close = value => {
+            document.removeEventListener("keydown", onKeydown);
+            backdrop.remove();
+            resolve(value);
+        };
+        const onKeydown = event => {
+            if (event.key === "Escape") close(null);
+        };
+
+        backdrop.querySelector("[data-action='cancel']").onclick =
+            () => close(null);
+        backdrop.querySelectorAll("[data-cover-pick]").forEach(boton => {
+            boton.onclick = () => close(boton.dataset.coverPick);
+        });
+
+        document.addEventListener("keydown", onKeydown);
+        document.body.appendChild(backdrop);
+    });
+}
+
+function openCoverSplitDialog({ workers, shiftWindow, turnLabel, pickWorker }) {
+    return new Promise(resolve => {
+        // La tira: bloques contiguos que cubren el turno de punta a punta. Un
+        // bloque sin nombre es un hueco. Nada de esto se escribe a mano -los
+        // relojes se mueven de media hora en media hora-, y por eso no hay
+        // forma de construir un traslape.
+        let segments = coverShiftSegments(shiftWindow, workers);
+
+        if (!segments.length) {
+            alert(`No alcanza: repartir este turno entre ${workers.length} deja tramos de menos de ${COVER_MIN_TRAMO} minutos.`);
+            resolve(null);
+            return;
+        }
+
+        const backdrop = document.createElement("div");
+        let tomado = -1;
+
+        backdrop.className = "turn-change-dialog-backdrop";
+
+        const close = value => {
+            document.removeEventListener("keydown", onKeydown);
+            backdrop.remove();
+            resolve(value);
+        };
+        const onKeydown = event => {
+            if (event.key === "Escape") close(null);
+        };
+        const hora = minutos => coverMinutesToTime(
+            coverTimeToMinutes(shiftWindow.from) + minutos
+        );
+        const paso = (accion, index, signo, activo) => `
+            <button class="cover-split-step" type="button"
+                data-cover-${accion}="${index}" data-cover-signo="${signo}"
+                aria-label="${signo > 0 ? "Media hora m&aacute;s tarde" : "Media hora antes"}"
+                ${activo ? "" : "disabled"}>${signo > 0 ? "+" : "&minus;"}</button>
+        `;
+        // Dos gestos distintos a proposito: la SALIDA arrastra al vecino -los
+        // dos siguen pegados- y la ENTRADA se despega, abriendo un hueco.
+        const filaTrabajador = (segment, index) => `
+            <div class="cover-split-row" data-cover-row="${index}" draggable="true">
+                <button class="cover-split-worker" type="button" data-cover-take="${index}">
+                    ${escapeHTML(segment.worker)}
+                </button>
+                <label>
+                    <span>Desde</span>
+                    <span class="cover-split-time">
+                        ${paso("entrada", index, -1, true)}
+                        <b>${escapeHTML(hora(segment.desde))}</b>
+                        ${paso("entrada", index, 1, true)}
+                    </span>
+                </label>
+                <label>
+                    <span>Hasta</span>
+                    <span class="cover-split-time">
+                        ${paso("limite", index, -1, index < segments.length - 1)}
+                        <b>${escapeHTML(hora(segment.hasta))}</b>
+                        ${paso("limite", index, 1, index < segments.length - 1)}
+                    </span>
+                </label>
+            </div>
+        `;
+        const filaHueco = (segment, index) => `
+            <div class="cover-split-row cover-split-row--gap ${segment.noCoverage ? "is-no-coverage" : ""}">
+                <span class="cover-split-gap-label">
+                    Sin cubrir de ${escapeHTML(hora(segment.desde))} a ${escapeHTML(hora(segment.hasta))}
+                    ${segment.noCoverage ? " &middot; no requiere cobertura" : ""}
+                </span>
+                <span class="cover-split-gap-actions">
+                    <button class="secondary-button" type="button" data-cover-fill="${index}">
+                        Buscar qui&eacute;n cubre
+                    </button>
+                    <button class="secondary-button" type="button" data-cover-nocov="${index}">
+                        ${segment.noCoverage ? "Requiere cobertura" : "No requiere cobertura"}
+                    </button>
+                </span>
+            </div>
+        `;
+        const render = () => {
+            backdrop.innerHTML = `
+                <form class="turn-change-dialog cover-split-dialog" role="dialog" aria-modal="true">
+                    <strong>Horario de cada uno</strong>
+                    <p>
+                        ${escapeHTML(turnLabel)}: ${escapeHTML(coverWindowLabel(shiftWindow))}.
+                        Se reparte en partes iguales; muevelo de media hora en media hora.
+                    </p>
+                    <p class="cover-split-hint">
+                        La salida de uno arrastra la entrada del siguiente. Para dejar
+                        horas sin cubrir, atrasa la entrada: el hueco aparece solo.
+                        Toca un nombre y luego otro para intercambiarlos.
+                    </p>
+                    ${segments.map((segment, index) => (
+                        segment.worker
+                            ? filaTrabajador(segment, index)
+                            : filaHueco(segment, index)
+                    )).join("")}
+                    <div class="turn-change-dialog__actions">
+                        ${segments.filter(segment => segment.worker).length === 2
+                            ? `<button class="secondary-button" type="button" data-action="swap">Intercambiar</button>`
+                            : ""}
+                        <button class="secondary-button" type="button" data-action="cancel">Volver</button>
+                        <button class="primary-button" type="submit">Guardar reparto</button>
+                    </div>
+                </form>
+            `;
+            bind();
+        };
+        const intercambiar = (a, b) => {
+            const uno = segments[a];
+            const otro = segments[b];
+
+            if (a === b || !uno?.worker || !otro?.worker) return;
+
+            const nombre = uno.worker;
+
+            uno.worker = otro.worker;
+            otro.worker = nombre;
+            tomado = -1;
+            render();
+        };
+        const bind = () => {
+            const dialog = backdrop.querySelector("form");
+
+            dialog.querySelector("[data-action='cancel']").onclick =
+                () => close(null);
+
+            const swapButton = dialog.querySelector("[data-action='swap']");
+            if (swapButton) {
+                swapButton.onclick = () => {
+                    const conGente = segments
+                        .map((segment, index) => (segment.worker ? index : -1))
+                        .filter(index => index >= 0);
+
+                    intercambiar(conGente[0], conGente[1]);
+                };
+            }
+
+            dialog.querySelectorAll("[data-cover-limite]").forEach(boton => {
+                boton.onclick = () => {
+                    segments = coverStepBoundary(
+                        segments,
+                        Number(boton.dataset.coverLimite),
+                        Number(boton.dataset.coverSigno)
+                    );
+                    render();
+                };
+            });
+
+            dialog.querySelectorAll("[data-cover-entrada]").forEach(boton => {
+                boton.onclick = () => {
+                    segments = coverOpenGapBefore(
+                        segments,
+                        Number(boton.dataset.coverEntrada),
+                        Number(boton.dataset.coverSigno)
+                    );
+                    render();
+                };
+            });
+
+            dialog.querySelectorAll("[data-cover-nocov]").forEach(boton => {
+                boton.onclick = () => {
+                    const segment = segments[Number(boton.dataset.coverNocov)];
+
+                    if (!segment) return;
+
+                    segment.noCoverage = !segment.noCoverage;
+                    render();
+                };
+            });
+
+            // Elegir a alguien para el hueco NO guarda nada: vuelve a este
+            // mismo cuadro con el bloque ocupado, para poder seguir ajustando
+            // el turno completo antes de confirmar.
+            dialog.querySelectorAll("[data-cover-fill]").forEach(boton => {
+                boton.onclick = async () => {
+                    const index = Number(boton.dataset.coverFill);
+                    const elegido = await pickWorker?.(
+                        segments
+                            .filter(segment => segment.worker)
+                            .map(segment => segment.worker)
+                    );
+
+                    if (!elegido || !segments[index]) return;
+
+                    segments[index].worker = elegido;
+                    delete segments[index].noCoverage;
+                    render();
+                };
+            });
+
+            // Tocar y tocar: el unico camino que funciona en el celular, donde
+            // el arrastre del navegador no existe. El arrastre es el atajo del
+            // computador y termina en el mismo intercambio.
+            dialog.querySelectorAll("[data-cover-take]").forEach(boton => {
+                const index = Number(boton.dataset.coverTake);
+
+                boton.classList.toggle("is-taken", index === tomado);
+                boton.onclick = () => {
+                    if (tomado === -1 || tomado === index) {
+                        tomado = tomado === index ? -1 : index;
+                        render();
+                        return;
+                    }
+
+                    intercambiar(tomado, index);
+                };
+            });
+
+            dialog.querySelectorAll("[data-cover-row]").forEach(row => {
+                row.ondragstart = event => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(
+                        "text/plain",
+                        row.dataset.coverRow
+                    );
+                };
+                row.ondragover = event => {
+                    event.preventDefault();
+                    row.classList.add("is-drop-target");
+                };
+                row.ondragleave = () => {
+                    row.classList.remove("is-drop-target");
+                };
+                row.ondrop = event => {
+                    event.preventDefault();
+                    row.classList.remove("is-drop-target");
+                    intercambiar(
+                        Number(event.dataTransfer.getData("text/plain")),
+                        Number(row.dataset.coverRow)
+                    );
+                };
+            });
+
+            dialog.onsubmit = event => {
+                event.preventDefault();
+
+                const tramos = coverSegmentsToTramos(segments, shiftWindow);
+
+                if (!tramos.length) {
+                    alert("No queda nadie cubriendo este turno.");
+                    return;
+                }
+
+                // Los huecos viajan con la decision que se tomo sobre cada uno:
+                // el que llama marca los resueltos y pregunta por el resto.
+                close({
+                    tramos,
+                    gaps: segments
+                        .filter(segment => !segment.worker)
+                        .map(segment => ({
+                            from: hora(segment.desde),
+                            until: hora(segment.hasta),
+                            noCoverage: Boolean(segment.noCoverage)
+                        }))
+                });
+            };
+        };
+
+        document.addEventListener("keydown", onKeydown);
+        document.body.appendChild(backdrop);
+        render();
+    });
+}
+
 /**
  * Deja escrito el marcaje de quien toma un tramo del turno.
  *
@@ -8655,6 +9494,69 @@ function writeCoverWindowClockMark(worker, keyDay, date, window, holidays) {
     saveClockMarks(worker, marks);
 
     return true;
+}
+
+/**
+ * Pregunta que hacer con las horas que quedaron sin nadie.
+ *
+ * Repartir un turno entre varios no obliga a taparlo entero. Por cada hueco se
+ * ofrecen las MISMAS tres salidas que ofrece el aviso del marcaje -buscar a
+ * alguien, marcarlo sin cobertura o dejarlo para despues-, en vez de dejar un
+ * "!" mudo que alguien tiene que descubrir por su cuenta mas adelante.
+ *
+ * Se detiene al abrir las sugerencias: ese cuadro toma el control de ese tramo,
+ * y encadenar otra pregunta encima dejaria dos modales peleando.
+ */
+async function askCoverageForRemainingGaps(profileName, keyDay, shiftWindow) {
+    const gaps = coverageGapsForShift(
+        shiftWindow,
+        getActiveReplacementsForCoveredShift(profileName, keyDay)
+    );
+
+    for (const gap of gaps) {
+        const decision = await showConfirm(
+            `Quedan sin cubrir las horas ${coverWindowLabel(gap)} del turno de ${profileName}.`,
+            {
+                title: "Horas del turno sin cubrir",
+                tone: "warning",
+                confirmText: "Buscar quién puede cubrir",
+                cancelText: "Decidir más tarde",
+                extraActions: [
+                    { text: "No requiere cobertura", value: "no-coverage" }
+                ]
+            }
+        );
+        const action = decision?.action || "";
+
+        if (action === "no-coverage") {
+            setNoCoverageDay(
+                profileName,
+                keyDay,
+                true,
+                `Turno cubierto salvo ${coverWindowLabel(gap)}.`
+            );
+            // Igual que marcarlo sin cobertura desde la casilla: el permiso que
+            // estaba esperando ya puede viajar a la PWA (ver js/leaveHold.js).
+            releaseLeaveHoldsForCoverage(profileName);
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Marco sin cobertura el tramo restante",
+                `${profileName}: las horas ${coverWindowLabel(gap)} del ${keyDay} quedan sin cubrir por decision del supervisor.`,
+                { profile: profileName, keyDay }
+            );
+            await updateDayCell(profileName, keyDay);
+            continue;
+        }
+
+        if (action !== "confirm") continue;
+
+        await openReplacementDialog(profileName, keyDay, {
+            coverWindow: gap,
+            shiftWindow
+        });
+
+        return;
+    }
 }
 
 /**
