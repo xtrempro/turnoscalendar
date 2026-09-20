@@ -51,6 +51,10 @@ import {
     unlinkWorkspaceLink,
     workspaceLinkDisplayName
 } from "./firebaseLinkedUnits.js";
+import {
+    listInterUnitAbsenceRequests,
+    respondInterUnitAbsence
+} from "./firebaseInterUnitAbsences.js";
 
 let currentUser = null;
 let currentWorkspace = getActiveWorkspace();
@@ -59,7 +63,11 @@ let options = {};
 let linkedUnitState = {
     loading: false,
     message: "",
-    links: []
+    links: [],
+    // Solicitudes para usar la ausencia de un trabajador de otra unidad como
+    // respaldo de un contrato de reemplazo. Viven junto a los enlaces porque
+    // son del mismo panel y se recargan a la vez.
+    absenceRequests: []
 };
 let supervisorInviteState = {
     loading: false,
@@ -738,6 +746,24 @@ function linkedUnitsPanelHTML() {
             link.toWorkspaceId === currentWorkspace.id
         )
     );
+    // Ausencias que otra unidad quiere usar para respaldar el contrato de un
+    // reemplazante suyo. Las entrantes son las que me toca responder: la
+    // ausencia es de MI gente.
+    const absenceIncoming = linkedUnitState.absenceRequests.filter(item =>
+        item.ownerWorkspaceId === currentWorkspace.id &&
+        item.status === "pending"
+    );
+    const absenceOutgoing = linkedUnitState.absenceRequests.filter(item =>
+        item.requesterWorkspaceId === currentWorkspace.id &&
+        item.status === "pending"
+    );
+    // Las ya autorizadas: sin esta lista, una solicitud aprobada desaparecia
+    // del panel -las otras dos filtran por "pending"- y quien la pidio no se
+    // enteraba de que le habian dicho que si.
+    const absenceApproved = linkedUnitState.absenceRequests.filter(item =>
+        item.requesterWorkspaceId === currentWorkspace.id &&
+        item.status === "approved"
+    );
     const message = linkedUnitState.message
         ? `
             <div class="firebase-linked-status">
@@ -788,6 +814,77 @@ function linkedUnitsPanelHTML() {
                                 <button class="secondary-button" type="button" data-action="reject-workspace-link" data-link-ref="${escapeHTML(link.id)}">
                                     Rechazar
                                 </button>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
+            ` : ""}
+            ${absenceIncoming.length ? `
+                <div class="firebase-linked-list">
+                    <span>Permisos de tu gente que otra unidad quiere usar</span>
+                    ${absenceIncoming.map(item => `
+                        <article class="firebase-linked-item">
+                            <div>
+                                <strong>${escapeHTML(item.requesterWorkspaceName || "Otra unidad")}</strong>
+                                <small>
+                                    Para el contrato de ${escapeHTML(item.replacementProfileName || "un reemplazante")},
+                                    con el permiso de ${escapeHTML(item.absenceProfileName || "")}
+                                </small>
+                                <small>
+                                    ${escapeHTML(item.leaveLabel || "")}:
+                                    ${escapeHTML(item.leaveStart || "")} al ${escapeHTML(item.leaveEnd || "")}
+                                </small>
+                                <small>Al autorizar, ese permiso queda ocupado tambi&eacute;n para tu unidad</small>
+                            </div>
+                            <div class="firebase-linked-actions">
+                                <button class="primary-button" type="button" data-action="approve-absence-request" data-absence-request-ref="${escapeHTML(item.id)}">
+                                    Autorizar
+                                </button>
+                                <button class="secondary-button" type="button" data-action="reject-absence-request" data-absence-request-ref="${escapeHTML(item.id)}">
+                                    Rechazar
+                                </button>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
+            ` : ""}
+            ${absenceApproved.length ? `
+                <div class="firebase-linked-list">
+                    <span>Permisos autorizados, listos para el contrato</span>
+                    ${absenceApproved.map(item => `
+                        <article class="firebase-linked-item">
+                            <div>
+                                <strong>${escapeHTML(item.ownerWorkspaceName || "Otra unidad")}</strong>
+                                <small>
+                                    ${escapeHTML(item.absenceProfileName || "")} |
+                                    ${escapeHTML(item.leaveLabel || "")}:
+                                    ${escapeHTML(item.leaveStart || "")} al ${escapeHTML(item.leaveEnd || "")}
+                                </small>
+                                <small>
+                                    Para el contrato de ${escapeHTML(item.replacementProfileName || "")}
+                                </small>
+                            </div>
+                            <div class="firebase-linked-actions">
+                                <button class="primary-button" type="button" data-action="create-contract-from-absence" data-absence-request-ref="${escapeHTML(item.id)}">
+                                    Crear contrato
+                                </button>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
+            ` : ""}
+            ${absenceOutgoing.length ? `
+                <div class="firebase-linked-list">
+                    <span>Permisos que pediste a otra unidad</span>
+                    ${absenceOutgoing.map(item => `
+                        <article class="firebase-linked-item">
+                            <div>
+                                <strong>${escapeHTML(item.ownerWorkspaceName || "Otra unidad")}</strong>
+                                <small>
+                                    ${escapeHTML(item.absenceProfileName || "")} |
+                                    ${escapeHTML(item.leaveStart || "")} al ${escapeHTML(item.leaveEnd || "")}
+                                </small>
+                                <small>Esperando autorizaci&oacute;n: el contrato se crea reci&eacute;n cuando respondan</small>
                             </div>
                         </article>
                     `).join("")}
@@ -1240,6 +1337,7 @@ async function refreshLinkedUnits() {
         !isFirebaseConfigured()
     ) {
         linkedUnitState.links = [];
+        linkedUnitState.absenceRequests = [];
         return;
     }
 
@@ -1251,6 +1349,19 @@ async function refreshLinkedUnits() {
         linkedUnitState.message =
             "No se pudieron cargar unidades enlazadas. Revisa que las reglas de Firestore esten publicadas.";
         console.warn("No se pudieron cargar unidades enlazadas.", error);
+    }
+
+    // Try APARTE: son dos lecturas distintas, y que falle la de solicitudes no
+    // tiene por que dejar en blanco la lista de enlaces (ni al reves).
+    try {
+        linkedUnitState.absenceRequests =
+            await listInterUnitAbsenceRequests();
+    } catch (error) {
+        linkedUnitState.absenceRequests = [];
+        console.warn(
+            "No se pudieron cargar las solicitudes de ausencia entre unidades.",
+            error
+        );
     }
 }
 
@@ -1563,6 +1674,77 @@ async function handleAction(action, backdrop, sourceButton = null) {
             linkedUnitState.loading = false;
             linkedUnitState.message =
                 `Solicitud enviada a ${email}. El owner la vera en Solicitudes.`;
+            await refreshLinkedUnits();
+            window.dispatchEvent(
+                new CustomEvent("proturnos:workerRequestsChanged")
+            );
+            renderSignedInModal(backdrop);
+            return;
+        }
+
+        if (action === "create-contract-from-absence") {
+            const solicitud = linkedUnitState.absenceRequests.find(item =>
+                item.id === sourceButton?.dataset.absenceRequestRef
+            );
+
+            if (!solicitud) return;
+
+            // Crear el contrato es trabajo de main.js: ahi viven el borrador de
+            // perfil y el guardado. El panel solo avisa, por la misma via de
+            // opciones que ya usan onAuthChange y onWorkspaceChange.
+            //
+            // Se cierra el modal primero para que el editor de contrato quede a
+            // la vista; si no, se abriria detras de este cuadro.
+            closeModal(backdrop, { force: true });
+            await options.onCreateContractFromAbsence?.(solicitud);
+            return;
+        }
+
+        if (action === "approve-absence-request") {
+            const requestId =
+                sourceButton?.dataset.absenceRequestRef;
+            const solicitud = linkedUnitState.absenceRequests.find(item =>
+                item.id === requestId
+            );
+            // Autorizar deja ese permiso OCUPADO tambien para esta unidad: ya
+            // no se podra usar para un contrato propio. No es un clic que se
+            // deshaga solo, asi que se confirma.
+            const confirmado = await showConfirm(
+                `${solicitud?.requesterWorkspaceName || "La otra unidad"} usara el permiso de ${solicitud?.absenceProfileName || "tu trabajador"} `
+                + `(${solicitud?.leaveStart || ""} al ${solicitud?.leaveEnd || ""}) para el contrato de ${solicitud?.replacementProfileName || "su reemplazante"}.\n\n`
+                + "Ese permiso quedara ocupado y ya no podras usarlo para un contrato de tu unidad.",
+                {
+                    title: "Autorizar uso del permiso",
+                    tone: "warning",
+                    confirmText: "Autorizar"
+                }
+            );
+
+            if (!confirmado) return;
+
+            await respondInterUnitAbsence({
+                requestId,
+                status: "approved",
+                resolvedByName: displayUserName(currentUser)
+            });
+            linkedUnitState.message =
+                "Permiso autorizado. La otra unidad ya puede crear el contrato.";
+            await refreshLinkedUnits();
+            window.dispatchEvent(
+                new CustomEvent("proturnos:workerRequestsChanged")
+            );
+            renderSignedInModal(backdrop);
+            return;
+        }
+
+        if (action === "reject-absence-request") {
+            await respondInterUnitAbsence({
+                requestId: sourceButton?.dataset.absenceRequestRef,
+                status: "rejected",
+                resolvedByName: displayUserName(currentUser)
+            });
+            linkedUnitState.message =
+                "Solicitud rechazada. El permiso sigue disponible para tu unidad.";
             await refreshLinkedUnits();
             window.dispatchEvent(
                 new CustomEvent("proturnos:workerRequestsChanged")

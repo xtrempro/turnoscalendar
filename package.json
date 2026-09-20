@@ -45,7 +45,7 @@
     "test:permisos-turnos": "node --test tests/permisos-solo-lectura-turnos.test.mjs",
     "test:medio-adm-diurno": "node --test tests/medio-adm-diurno-sin-cobertura.test.mjs",
     "test:plan-heredado": "node --test functions/test/billingAccount.test.js",
-    "test:ausencias-enlazadas": "node --test functions/test/linkedAbsenceSearch.test.js functions/test/interUnitAbsenceRequests.test.js",
+    "test:ausencias-enlazadas": "node --test functions/test/linkedAbsenceSearch.test.js functions/test/interUnitAbsenceRequests.test.js tests/opciones-ausencia-enlazada.test.mjs tests/ausencia-enlazada-cliente.test.mjs",
     "test:hhee-superficies": "node --test tests/hhee-superficies-coinciden.test.mjs",
     "test:enlace-app": "node --test tests/enlace-app-estado-invitacion.test.mjs",
     "test:respaldo-marcaje": "node --test tests/respaldo-marcaje-huerfano.test.mjs",

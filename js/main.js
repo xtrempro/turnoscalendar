@@ -84,9 +84,17 @@ import {
     withManualBalance
 } from "./balanceUtils.js";
 import {
+    REPLACEMENT_CONTRACT_LEAVE_TYPES,
+    calendarKeysToReplacementLeaveOption,
     groupContinuousReplacementLeaveKeys,
+    optionsFromLeaveKeysByType,
+    replacementLeaveOptionId,
     sortReplacementLeaveKeys
 } from "./replacementLeaveGrouping.js";
+import {
+    fetchLinkedUnitAbsences,
+    requestInterUnitAbsence
+} from "./firebaseInterUnitAbsences.js";
 import {
     buildReplacementContractCandidates,
     resolveReplacementContractSelection
@@ -1607,30 +1615,34 @@ function getRotationModalMonth(type) {
 }
 
 const REPLACEMENT_CONTRACT_LOOKBACK_MONTHS = 6;
-const REPLACEMENT_CONTRACT_LEAVE_TYPES = {
-    legal: "F. Legal",
-    comp: "F. Compensatorios",
-    license: "Licencia M\u00e9dica",
-    professional_license: "LM Profesional",
-    unpaid_leave: "Permiso sin Goce"
-};
 
-function replacementLeaveOptionId({
-    profileName,
-    type,
-    start,
-    end
-}) {
-    return [
-        profileName,
-        type,
-        start,
-        end
-    ].map(part =>
-        encodeURIComponent(String(part || ""))
-    ).join("|");
+// Ausencias de unidades ENLAZADAS que ya se buscaron, por nombre de trabajador.
+// Se llena cuando el supervisor busca desde el cuadro de contrato. Vacio -que
+// es lo normal- todo se comporta exactamente como antes.
+//
+// Vive en el modulo y no en el cuadro porque findReplacementLeaveOption se
+// llama desde tres puntos del guardado; si las opciones ajenas no se vieran
+// desde ahi, el cuadro borraria la seleccion solo y el guardado la rechazaria
+// con "Debes seleccionar un permiso disponible".
+const linkedAbsenceOptions = new Map();
+
+/** Reemplaza lo buscado para un trabajador de otra unidad. */
+function setLinkedAbsenceOptions(profileName, options) {
+    const name = String(profileName || "");
+
+    if (!name) return;
+
+    if (options?.length) {
+        linkedAbsenceOptions.set(name, options);
+    } else {
+        linkedAbsenceOptions.delete(name);
+    }
 }
 
+/** Lo buscado para ese trabajador, o nada. */
+function getLinkedAbsenceOptions(profileName) {
+    return linkedAbsenceOptions.get(String(profileName || "")) || [];
+}
 function replacementLeaveCutoffISO() {
     const today = new Date();
     const cutoff = new Date(
@@ -1640,38 +1652,6 @@ function replacementLeaveCutoffISO() {
     );
 
     return toInputDate(cutoff);
-}
-
-function calendarKeysToReplacementLeaveOption({
-    profileName,
-    type,
-    label,
-    keys
-}) {
-    const sortedKeys = sortReplacementLeaveKeys(keys);
-
-    if (!sortedKeys.length) return null;
-
-    const start = calendarKeyToInputDate(sortedKeys[0]);
-    const end = calendarKeyToInputDate(
-        sortedKeys[sortedKeys.length - 1]
-    );
-
-    if (!start || !end) return null;
-
-    const option = {
-        id: "",
-        profileName,
-        type,
-        label,
-        start,
-        end,
-        keys: sortedKeys
-    };
-
-    option.id = replacementLeaveOptionId(option);
-
-    return option;
 }
 
 function groupReplacementLeaveKeys({
@@ -1697,7 +1677,10 @@ function groupReplacementLeaveKeys({
             profileName,
             type,
             label,
-            keys: group
+            keys: group,
+            // El formato de fecha vive aqui: el modulo es puro y no conoce el
+            // calendario de la app.
+            toInputDate: calendarKeyToInputDate
         }))
         .filter(Boolean);
 }
@@ -1732,8 +1715,13 @@ function getReplacementLeaveOptionsForProfile(profileName) {
     const profile = getProfiles().find(item =>
         item.name === profileName
     );
+    // Un trabajador de otra unidad NO esta en getProfiles(): sus ausencias solo
+    // existen en lo que se busco. Por eso se resuelven antes de la salida
+    // temprana, o el cuadro no encontraria nunca la opcion elegida.
+    const linked = getLinkedAbsenceOptions(profileName)
+        .filter(option => !isReplacementLeaveOptionUsed(option));
 
-    if (!profile) return [];
+    if (!profile) return linked;
 
     const cutoff = replacementLeaveCutoffISO();
     const legal = getJSON("legal_" + profile.name, {});
@@ -1772,6 +1760,10 @@ function getReplacementLeaveOptionsForProfile(profileName) {
     return options
         .filter(option => option.end >= cutoff)
         .filter(option => !isReplacementLeaveOptionUsed(option))
+        // Las de otras unidades se suman aqui -ya filtradas por usadas- para
+        // que un mismo nombre en las dos unidades no pierda ninguna de las dos
+        // listas. El corte no se les aplica: ese filtro ya lo hizo el servidor.
+        .concat(linked)
         .sort((a, b) =>
             b.start.localeCompare(a.start) ||
             a.label.localeCompare(b.label)
@@ -2330,6 +2322,53 @@ function openRotationConfigModal(
                 return;
             }
 
+            // Ausencia de OTRA unidad: aqui no se crea ningun contrato. Se pide
+            // permiso y queda pendiente hasta que esa unidad autorice; recien
+            // entonces esta unidad puede crearlo.
+            // Ajena y SIN autorizar: se pide permiso. Una ya autorizada sigue
+            // de largo y crea el contrato como cualquier otro, que es el ultimo
+            // paso del flujo: sin esta condicion se mandaria una solicitud
+            // duplicada, el servidor la rechazaria por repetida y el contrato
+            // no llegaria a existir nunca.
+            if (selectedLeave.linkedUnit && !selectedLeave.linkedUnit.approved) {
+                const unidad = selectedLeave.linkedUnit;
+                const reemplazante =
+                    profileDraft.name || profile?.name || getCurrentProfile();
+
+                try {
+                    await requestInterUnitAbsence({
+                        ownerWorkspaceId: unidad.workspaceId,
+                        ownerWorkspaceName: unidad.workspaceName,
+                        linkId: unidad.linkId,
+                        replacementProfileName: reemplazante,
+                        absenceProfileName: selectedLeave.profileName,
+                        leaveRef: selectedLeave.id,
+                        leaveType: selectedLeave.type,
+                        leaveLabel: selectedLeave.label,
+                        leaveStart: selectedLeave.start,
+                        leaveEnd: selectedLeave.end,
+                        rotationMode: normalizeReplacementRotationMode(
+                            state.contractRotationMode,
+                            REPLACEMENT_ROTATION_MODE.INHERIT
+                        )
+                    });
+                } catch (error) {
+                    console.warn("No se pudo pedir la ausencia enlazada.", error);
+                    alert(
+                        error?.message ||
+                        "No se pudo enviar la solicitud a la otra unidad."
+                    );
+                    return;
+                }
+
+                alert(
+                    `Solicitud enviada a ${unidad.workspaceName || "la otra unidad"}. ` +
+                    "El contrato se creará cuando la autoricen."
+                );
+                close();
+                return;
+            }
+
             profileDraft.contractStart = selectedLeave.start;
             profileDraft.contractEnd = selectedLeave.end;
             profileDraft.contractReplaces =
@@ -2597,6 +2636,44 @@ function openRotationConfigModal(
                 coverISO: contractCoverISO
             })
             : [];
+        // Los de otras unidades no estan en getProfiles(), asi que no pueden
+        // entrar por buildReplacementContractCandidates: se suman aqui. Se les
+        // aplican las MISMAS dos reglas que a los locales -mismo estamento y
+        // que el permiso cubra la fecha- o la lista diria cosas distintas
+        // segun el origen.
+        if (isReplacement) {
+            const miEstamento = String(
+                profileDraft.estamento || profile?.estamento || ""
+            ).trim().toLowerCase();
+
+            [...linkedAbsenceOptions.entries()].forEach(([name, opciones]) => {
+                const utiles = opciones.filter(option =>
+                    (
+                        !contractCoverISO ||
+                        (
+                            option.start <= contractCoverISO &&
+                            option.end >= contractCoverISO
+                        )
+                    ) &&
+                    String(option.linkedUnit?.estamento || "")
+                        .trim()
+                        .toLowerCase() === miEstamento
+                );
+
+                if (!utiles.length) return;
+
+                replacementCandidates.push({
+                    profile: {
+                        name,
+                        estamento: utiles[0].linkedUnit?.estamento || "",
+                        linkedWorkspaceName:
+                            utiles[0].linkedUnit?.workspaceName || ""
+                    },
+                    leaveOptions: utiles
+                });
+            });
+        }
+
         const currentTargetIsEligible =
             replacementCandidates.some(candidate =>
                 candidate.profile.name === state.contractReplaces
@@ -2743,6 +2820,17 @@ function openRotationConfigModal(
                             ${leaveOptionsHTML}
                         </select>
                     </label>
+
+                    <div class="rotation-contract-field rotation-contract-linked">
+                        <button class="secondary-button" type="button" data-action="search-linked-absences">
+                            Buscar permisos en unidades enlazadas
+                        </button>
+                        <small>
+                            Al elegir uno de otra unidad, el contrato NO se crea
+                            todav&iacute;a: se env&iacute;a una solicitud y esa unidad
+                            tiene que autorizarla.
+                        </small>
+                    </div>
 
                     <label class="rotation-contract-field">
                         <span>Turnos durante el nuevo contrato</span>
@@ -2897,6 +2985,55 @@ function openRotationConfigModal(
         if (action === "pick-month") {
             event.stopPropagation();
             openRotationMonthPicker(actionButton);
+            return;
+        }
+
+        if (action === "search-linked-absences") {
+            // El servidor devuelve los DIAS CRUDOS y se agrupan aqui, con el
+            // mismo modulo que agrupa las ausencias propias: asi los
+            // identificadores salen identicos y el control de "ya esta
+            // ocupada" sigue calzando.
+            await withBusyState(async () => {
+                try {
+                    const resultado = await fetchLinkedUnitAbsences(
+                        replacementLeaveCutoffISO()
+                    );
+
+                    linkedAbsenceOptions.clear();
+                    resultado.units.forEach(unit => {
+                        unit.workers.forEach(worker => {
+                            const opciones = optionsFromLeaveKeysByType({
+                                profileName: worker.name,
+                                leaveKeys: worker.leaveKeys,
+                                isBusinessDay: date => isBusinessDay(
+                                    date,
+                                    getCachedHolidays(date.getFullYear())
+                                ),
+                                toInputDate: calendarKeyToInputDate
+                            }).map(option => ({
+                                ...option,
+                                // La marca de origen: sin ella, al guardar no
+                                // se sabria a que unidad pedirle permiso.
+                                linkedUnit: {
+                                    workspaceId: unit.workspaceId,
+                                    workspaceName: unit.workspaceName,
+                                    linkId: unit.linkId,
+                                    estamento: worker.estamento
+                                }
+                            }));
+
+                            setLinkedAbsenceOptions(worker.name, opciones);
+                        });
+                    });
+
+                    if (resultado.message) alert(resultado.message);
+                } catch (error) {
+                    console.warn("No se pudieron buscar ausencias enlazadas.", error);
+                    alert("No se pudieron buscar permisos en las unidades enlazadas.");
+                }
+            }, { label: "Buscando en unidades enlazadas..." });
+
+            render();
             return;
         }
 
@@ -8886,9 +9023,12 @@ function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
     if (!profile) return;
 
     const replaced = String(prefill.replaced || "").trim();
-    let prefillLeaveRef = "";
+    // Con una ausencia de otra unidad el permiso llega ELEGIDO, no se busca:
+    // no cubre `keyDay` necesariamente y, sobre todo, no esta entre los locales.
+    // Buscarlo dejaria el campo vacio y el cuadro pediria elegir uno de nuevo.
+    let prefillLeaveRef = String(prefill.leaveRef || "").trim();
 
-    if (replaced) {
+    if (replaced && !prefillLeaveRef) {
         const coverISO = calendarKeyToInputDate(keyDay);
         const leaveOption = getReplacementLeaveOptionsForProfile(replaced)
             .find(option =>
@@ -8916,6 +9056,16 @@ function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
     profileDraft.contractStart = "";
     profileDraft.contractEnd = "";
     profileDraft.contractReplaces = replaced;
+    // La rotativa acordada llega en el prellenado, no se asigna despues de
+    // abrir el cuadro: hacerlo despues dependeria de si el dibujado ya ocurrio,
+    // y eso falla de forma intermitente.
+    if (prefill.rotationMode) {
+        profileDraft.contractRotationMode =
+            normalizeReplacementRotationMode(
+                prefill.rotationMode,
+                REPLACEMENT_ROTATION_MODE.INHERIT
+            );
+    }
     profileDraft.contractReason = "";
     profileDraft.contractLeaveRef = prefillLeaveRef;
     profileDraft.contractRotationMode =
@@ -8933,6 +9083,55 @@ function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
 
 window.startReplacementContractEdit =
     startReplacementContractEdit;
+
+/**
+ * Abre el editor de contrato con una ausencia YA AUTORIZADA por otra unidad.
+ *
+ * Nada se escribe aqui: el supervisor ve el contrato que se va a crear -quien,
+ * que fechas, que rotativa- y confirma en el cuadro de siempre. Lo eligio asi
+ * el usuario, en vez de crearlo solo al detectar la aprobacion.
+ *
+ * La ausencia se registra antes de abrir porque el trabajador ausente es de
+ * OTRA unidad: sin eso, el resolvedor no la encontraria y el cuadro pediria
+ * elegir un permiso de nuevo (ver getReplacementLeaveOptionsForProfile).
+ */
+function createContractFromApprovedAbsence(solicitud = {}) {
+    const ausente = String(solicitud.absenceProfileName || "").trim();
+    const reemplazante =
+        String(solicitud.replacementProfileName || "").trim();
+    const leaveRef = String(solicitud.leaveRef || "").trim();
+
+    if (!ausente || !reemplazante || !leaveRef) return;
+
+    setLinkedAbsenceOptions(ausente, [{
+        id: leaveRef,
+        profileName: ausente,
+        type: String(solicitud.leaveType || ""),
+        label: String(solicitud.leaveLabel || ""),
+        start: String(solicitud.leaveStart || ""),
+        end: String(solicitud.leaveEnd || ""),
+        keys: [],
+        linkedUnit: {
+            workspaceId: String(solicitud.ownerWorkspaceId || ""),
+            workspaceName: String(solicitud.ownerWorkspaceName || ""),
+            linkId: String(solicitud.linkId || ""),
+            // Ya autorizada: el contrato se crea aqui y no se vuelve a pedir
+            // permiso. Sin esta marca, el guardado la trataria como una
+            // ausencia ajena nueva y mandaria OTRA solicitud.
+            approved: true
+        }
+    }]);
+
+    startReplacementContractEdit(
+        reemplazante,
+        inputDateToCalendarKey(String(solicitud.leaveStart || "")),
+        {
+            replaced: ausente,
+            leaveRef,
+            rotationMode: solicitud.rotationMode
+        }
+    );
+}
 
 // ───────── Estado de enlace de la app del trabajador ─────────
 
@@ -14637,6 +14836,11 @@ initFirebaseShell({
         if (document.body.dataset.activeView === "tenders") {
             renderTendersPanel();
         }
+    },
+    // El panel de unidades enlazadas avisa que hay una ausencia autorizada;
+    // crear el contrato es trabajo de aqui, donde vive el borrador de perfil.
+    onCreateContractFromAbsence: solicitud => {
+        createContractFromApprovedAbsence(solicitud);
     }
 });
 bindProfileForm();

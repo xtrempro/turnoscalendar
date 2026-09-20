@@ -8825,6 +8825,20 @@ body.auth-gate-active .app-shell {
     box-shadow: 0 0 0 3px rgba(var(--brand-blue-rgb), 0.12);
 }
 
+/* Buscar permisos en otras unidades: el boton y su aclaracion. */
+.rotation-contract-linked {
+    gap: 6px;
+}
+
+/* El contenedor pone font-weight 800 para las etiquetas; la nota es una
+   aclaracion, no un titulo, y en negrita pesada competia con ellas. */
+.rotation-contract-linked > small {
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.35;
+}
+
 .rotation-modal-head {
     margin-top: 4px;
 }
