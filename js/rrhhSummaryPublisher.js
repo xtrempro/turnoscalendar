@@ -33,6 +33,7 @@ import { getHonorariaMonthlySummary } from "./honoraria.js";
 import { analizarMes } from "./staffing.js";
 import { fetchHolidays } from "./holidays.js";
 import { isReplacementProfile, isReplacementContractType, isHonorariaContractType } from "./contracts.js";
+import { coveredShiftHours, coveredShiftKey } from "./coverageCounting.js";
 
 const HORAS_POR_TURNO = 12;
 const MIN_INTERVAL_MS = 5 * 60 * 1000;
@@ -90,7 +91,16 @@ function countMissingStaffingShifts(analysis) {
 // mos que ESTA unidad presta hacia afuera (esos cubren otra unidad).
 function coverageShifts(year, month0, activeId) {
     const byName = new Map(getProfiles().map((p) => [String(p.name), p]));
+    // OJO: los acumuladores por tipo de contrato son HORAS, no turnos. Un turno
+    // repartido entre varios reparte tambien sus horas: quien hizo 6 de 12
+    // aporta 6 a su tipo. Un reemplazo SIN tramo vale el turno entero, que es
+    // como se comportaron siempre los guardados antes de que existiera el
+    // reparto. `manual` y `covered` siguen siendo cuentas: se usan como
+    // proporcion para prorratear el gasto.
     const out = { contrata: 0, planta: 0, reemplazo: 0, otro: 0, otroServicio: 0, manual: 0, covered: 0 };
+    // Turnos DISTINTOS cubiertos: cinco personas tapando un mismo turno son UNO
+    // solo, aunque dejen un registro cada una (ver js/coverageCounting.js).
+    const turnos = new Set();
     (getReplacements() || []).forEach((rep) => {
         if (!rep || rep.canceled) return;
         const when = parseISODateMonth(rep.date);
@@ -98,9 +108,14 @@ function coverageShifts(year, month0, activeId) {
 
         if (rep.source === "manual_extra") { out.manual += 1; return; }
 
+        const horas = coveredShiftHours(rep, HORAS_POR_TURNO);
+
         if (rep.source === INTER_UNIT_SOURCE) {
             // Solo cuenta como cobertura recibida si ESTA unidad es el host.
-            if (String(rep.hostWorkspaceId || "") === String(activeId || "")) { out.otroServicio += 1; out.covered += 1; }
+            if (String(rep.hostWorkspaceId || "") === String(activeId || "")) {
+                out.otroServicio += horas;
+                turnos.add(coveredShiftKey(rep) || `loan|${rep.id || ""}`);
+            }
             return;
         }
 
@@ -108,12 +123,15 @@ function coverageShifts(year, month0, activeId) {
         const replaced = byName.get(String(rep.replaced || ""));
         const covEst = roleLabel(cover && cover.estamento);
         const repEst = roleLabel(replaced && replaced.estamento);
-        out.covered += 1;
-        if (covEst && repEst && covEst !== repEst) { out.otro += 1; return; }
-        if (isReplacementProfile(String(rep.worker || "")) || (cover && isReplacementContractType(cover.contractType))) out.reemplazo += 1;
-        else if (cover && String(cover.contractType || "").toLowerCase().includes("planta")) out.planta += 1;
-        else out.contrata += 1;
+        // Sin clave -un registro sin ausente- cuenta por si mismo: antes que
+        // perderlo, vale como su propio turno.
+        turnos.add(coveredShiftKey(rep) || `rep|${rep.id || ""}`);
+        if (covEst && repEst && covEst !== repEst) { out.otro += horas; return; }
+        if (isReplacementProfile(String(rep.worker || "")) || (cover && isReplacementContractType(cover.contractType))) out.reemplazo += horas;
+        else if (cover && String(cover.contractType || "").toLowerCase().includes("planta")) out.planta += horas;
+        else out.contrata += horas;
     });
+    out.covered = turnos.size;
     return out;
 }
 
@@ -240,11 +258,13 @@ async function computeRrhhSummary(year, month0, activeId) {
         gastoPorEstamento: Object.fromEntries(ESTAMENTOS.map((e) => [e, Math.round(gastoPorEstamento[e])])),
         honorariosClp: Math.round(honorariosClp),
         hheeManualClp,
-        contrata: cov.contrata * HORAS_POR_TURNO,
-        planta: cov.planta * HORAS_POR_TURNO,
-        reemplazo: cov.reemplazo * HORAS_POR_TURNO,
-        otroEstamento: cov.otro * HORAS_POR_TURNO,
-        otroServicio: cov.otroServicio * HORAS_POR_TURNO,
+        // Ya vienen en horas: coverageShifts reparte las del turno entre
+        // quienes lo cubrieron, asi que multiplicar aqui las contaria dos veces.
+        contrata: Math.round(cov.contrata),
+        planta: Math.round(cov.planta),
+        reemplazo: Math.round(cov.reemplazo),
+        otroEstamento: Math.round(cov.otro),
+        otroServicio: Math.round(cov.otroServicio),
         sinReemplazo: sinReemplazoTurnos * HORAS_POR_TURNO,
         coverageUnit: "horas",
         horasPorTurno: HORAS_POR_TURNO,

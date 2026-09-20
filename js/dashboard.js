@@ -4,6 +4,7 @@ import {
     getCompensationProfileAt,
     getProfileData,
     getProfiles,
+    getReplacements,
     getShiftAssigned,
     isProfileActive
 } from "./storage.js";
@@ -22,8 +23,9 @@ import { analizarMes } from "./staffing.js";
 import { getAbsenceType } from "./rulesEngine.js";
 import { measurePerformance } from "./performanceMonitor.js";
 import { TURNO } from "./constants.js";
-import { keyFromDate } from "./dateUtils.js";
-import { getTurnoReal } from "./turnEngine.js";
+import { keyFromDate, toISODate } from "./dateUtils.js";
+import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
+import { extraCoverWorkersByDate } from "./coverageCounting.js";
 import {
     buildTaskAssignmentContext,
     getDayTaskAssignments
@@ -431,6 +433,12 @@ export function buildDailyServiceRows(
         };
     });
 
+    // Un turno repartido entre varios deja un registro de reemplazo por
+    // persona, y aqui se cuenta por PERFIL con turno ese dia: cinco personas
+    // tapando un mismo turno marcaban cinco. Uno representa el turno y el resto
+    // no suma (ver js/coverageCounting.js).
+    const extraCoverers = extraCoverWorkersByDate(getReplacements());
+
     getProfiles()
         .filter(isProfileActive)
         .forEach((profile, index) => {
@@ -444,6 +452,21 @@ export function buildDailyServiceRows(
                 );
 
                 if (!schedule) return;
+
+                // Se salta SOLO a quien ese dia no tenia turno propio. Quien
+                // cubre un tramo ademas de su jornada sigue contando: saltarlo
+                // cambiaria una cuenta inflada por una corta, que es peor
+                // porque no se nota. `getTurnoBase` es la rotativa, y esa nunca
+                // incluye los turnos extra que deja una cobertura.
+                if (
+                    extraCoverers
+                        .get(toISODate(row.date))
+                        ?.has(profile.name) &&
+                    (Number(getTurnoBase(profile.name, row.keyDay)) || 0) <=
+                        TURNO.LIBRE
+                ) {
+                    return;
+                }
                 if (!row.values[profession.id]) {
                     row.values[profession.id] = emptyServiceValue();
                 }
@@ -1393,6 +1416,11 @@ export function buildDailyServiceDetail(date = new Date()) {
     const keyDay = keyFromDate(date);
     const byEstamento = {};
     const taskContext = buildTaskAssignmentContext();
+    // El detalle cuenta nombres distintos, asi que se inflaba igual que el
+    // grafico que lo abre. Misma regla, para que la tarjeta y su detalle no
+    // digan numeros distintos del mismo dia.
+    const extraCoverers = extraCoverWorkersByDate(getReplacements());
+    const iso = toISODate(date);
 
     getProfiles()
         .filter(isProfileActive)
@@ -1400,6 +1428,14 @@ export function buildDailyServiceDetail(date = new Date()) {
             const schedule = dashboardServiceSchedule(profile, keyDay, date);
 
             if (!schedule) return;
+
+            if (
+                extraCoverers.get(iso)?.has(profile.name) &&
+                (Number(getTurnoBase(profile.name, keyDay)) || 0) <=
+                    TURNO.LIBRE
+            ) {
+                return;
+            }
 
             const tasks = getDayTaskAssignments(
                 profile.name,

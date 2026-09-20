@@ -204,6 +204,142 @@ test("no cuenta inactivos ni trabajadores con ausencia completa", () => {
     assert.equal(data.rows[0].values[tm].day, 1);
 });
 
+/* =========================================================
+   Un turno repartido entre varios es UN turno
+
+   Repartir un turno deja un registro de reemplazo por persona. Como aqui se
+   cuenta por perfil con turno ese dia, cinco personas tapando un mismo turno
+   marcaban cinco. Lo pidio el usuario: se cuenta como 1.
+========================================================= */
+
+// Las dos siembran en formatos DISTINTOS a proposito: el calendario usa
+// "2026-8-1" (mes 0) y los reemplazos la fecha ISO "2026-09-01". Cruzarlos mal
+// es la forma silenciosa de que esto no haga nada.
+const ISO_DIA_1 = "2026-09-01";
+
+/** Ana y Dora, las dos TM, con turno de dia el 1. */
+function seedDosTM() {
+    seed();
+    // Sin la licencia, Dora tambien cuenta: es el control de la prueba.
+    setJSON("absences_Dora Rojas", {});
+}
+
+test("dos TM con turno el mismo dia cuentan dos", () => {
+    // Control: sin reemplazos de por medio, el grafico suma a las dos.
+    seedDosTM();
+
+    const data = buildDailyServiceRows(YEAR, MONTH);
+    const tm = professionKey(data, "TM Imagenologia");
+
+    assert.equal(data.rows[0].values[tm].day, 2);
+});
+
+test("si las dos cubren el MISMO turno, cuentan una", () => {
+    seedDosTM();
+    setJSON("replacements", [
+        {
+            worker: "Ana Perez",
+            replaced: "Bea Soto",
+            date: ISO_DIA_1,
+            turno: 2
+        },
+        {
+            worker: "Dora Rojas",
+            replaced: "Bea Soto",
+            date: ISO_DIA_1,
+            turno: 2
+        }
+    ]);
+
+    const data = buildDailyServiceRows(YEAR, MONTH);
+    const tm = professionKey(data, "TM Imagenologia");
+
+    assert.equal(data.rows[0].values[tm].day, 1);
+    // Y el listado del hover queda con una sola, no con las dos.
+    assert.deepEqual(
+        data.rows[0].values[tm].workers.day.map(item => item.name),
+        ["Ana Perez"]
+    );
+});
+
+test("si cubren turnos distintos, siguen contando dos", () => {
+    // El salto es por TURNO cubierto, no por "estar cubriendo algo".
+    seedDosTM();
+    setJSON("replacements", [
+        {
+            worker: "Ana Perez",
+            replaced: "Bea Soto",
+            date: ISO_DIA_1,
+            turno: 2
+        },
+        {
+            worker: "Dora Rojas",
+            replaced: "Luz Auxiliar",
+            date: ISO_DIA_1,
+            turno: 2
+        }
+    ]);
+
+    const data = buildDailyServiceRows(YEAR, MONTH);
+    const tm = professionKey(data, "TM Imagenologia");
+
+    assert.equal(data.rows[0].values[tm].day, 2);
+});
+
+test("lo anulado no saca a nadie del grafico", () => {
+    seedDosTM();
+    setJSON("replacements", [
+        {
+            worker: "Ana Perez",
+            replaced: "Bea Soto",
+            date: ISO_DIA_1,
+            turno: 2
+        },
+        {
+            worker: "Dora Rojas",
+            replaced: "Bea Soto",
+            date: ISO_DIA_1,
+            turno: 2,
+            canceled: true
+        }
+    ]);
+
+    const data = buildDailyServiceRows(YEAR, MONTH);
+    const tm = professionKey(data, "TM Imagenologia");
+
+    assert.equal(data.rows[0].values[tm].day, 2);
+});
+
+test("el detalle del dia dice lo mismo que el grafico", () => {
+    // La tarjeta y el detalle que se abre desde ella no pueden dar numeros
+    // distintos del mismo dia.
+    seedDosTM();
+    setJSON("replacements", [
+        {
+            worker: "Ana Perez",
+            replaced: "Bea Soto",
+            date: ISO_DIA_1,
+            turno: 2
+        },
+        {
+            worker: "Dora Rojas",
+            replaced: "Bea Soto",
+            date: ISO_DIA_1,
+            turno: 2
+        }
+    ]);
+
+    const detalle = buildDailyServiceDetail(new Date(YEAR, MONTH, 1));
+    const profesionales = detalle.byEstamento.Profesional?.day || [];
+
+    assert.deepEqual(
+        profesionales.map(item => item.name).filter(name =>
+            name === "Ana Perez" || name === "Dora Rojas"
+        ),
+        ["Ana Perez"]
+    );
+});
+
 test("el grafico usa mismo color por profesion y clic por dia", () => {
     seed();
 
