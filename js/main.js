@@ -875,6 +875,21 @@ function getLeaveBalances(
     };
 }
 
+function getCalendarLeaveBalances(
+    holidays = getCachedHolidays(currentDate.getFullYear())
+) {
+    const year = currentDate.getFullYear();
+
+    return getLeaveBalances(
+        year,
+        holidays,
+        {
+            month: currentDate.getMonth(),
+            profileName: getCurrentProfile()
+        }
+    );
+}
+
 const COMP_ENTITLEMENT_OPTIONS = [0, 10, 20];
 const COMPENSATORY_BLOCK_AMOUNTS = [10, 20];
 
@@ -11038,7 +11053,7 @@ function handleAvailabilityEdit() {
         return;
     }
 
-    const year = new Date().getFullYear();
+    const year = currentDate.getFullYear();
     const balances = {
         legal: normalizeLegalBalanceValue(
             document.getElementById("availabilityLegalInput")?.value
@@ -11090,7 +11105,7 @@ function saveAvailabilityBalancesFromInputs(profileName) {
         return false;
     }
 
-    const year = new Date().getFullYear();
+    const year = currentDate.getFullYear();
     const previous = getManualLeaveBalances(year, profileName);
     const balances = {
         legal: normalizeLegalBalanceValue(legalInput.value),
@@ -11142,9 +11157,9 @@ function saveAvailabilityBalancesFromInputs(profileName) {
 async function activarSelectorLegal() {
     if (!canModifyCurrentProfile()) return;
 
-    const year = new Date().getFullYear();
+    const year = currentDate.getFullYear();
     const holidays = await fetchHolidays(year);
-    const saldo = getLeaveBalances(year, holidays).legal;
+    const saldo = getCalendarLeaveBalances(holidays).legal;
 
     if (saldo <= 0) {
         alert("No quedan d\u00edas de feriado legal.");
@@ -11193,10 +11208,12 @@ async function activarSelectorLegal() {
     );
 }
 
-function activarSelectorComp() {
+async function activarSelectorComp() {
     if (!canModifyCurrentProfile()) return;
 
-    const saldo = getLeaveBalances().comp;
+    const year = currentDate.getFullYear();
+    const holidays = await fetchHolidays(year);
+    const saldo = getCalendarLeaveBalances(holidays).comp;
     const cantidad = Number(saldo);
 
     if (saldo <= 0) {
@@ -11653,7 +11670,7 @@ async function activarSelectorLicencia(type = "license") {
 function activarSelectorAdmin() {
     if (!canModifyCurrentProfile()) return;
 
-    const saldo = getLeaveBalances().admin;
+    const saldo = getCalendarLeaveBalances().admin;
 
     if (saldo <= 0) {
         alert("Ya se utilizaron los 6 permisos administrativos.");
@@ -11682,7 +11699,7 @@ function activarSelectorAdmin() {
 function activarSelectorHalfAdmin(tipo) {
     if (!canModifyCurrentProfile()) return;
 
-    if (getLeaveBalances().admin <= 0) {
+    if (getCalendarLeaveBalances().admin <= 0) {
         alert("No quedan permisos administrativos disponibles.");
         return;
     }
