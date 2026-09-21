@@ -30,7 +30,10 @@ function bloqueVerificacionCorreo() {
 }
 
 test("aceptar una invitacion exige el correo de la invitacion", () => {
-  assert.match(source, /const WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED = true/);
+  // La bandera esta APAGADA por ahora: se enciende junto con la de la PWA, en
+  // ese orden, y de forma deliberada. Lo que se fija aqui es la CONDUCTA que
+  // habra cuando se encienda, no su valor actual.
+  assert.match(source, /const WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED = (true|false);/);
 
   const bloque = bloqueVerificacionCorreo();
 

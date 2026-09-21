@@ -79,7 +79,12 @@ const REQUIRE_PRIVILEGED_MFA = false;
 // alguien podria aceptar con un correo distinto: el vinculo quedaria con el
 // correo de la invitacion mientras la cuenta es otra, y la recuperacion -que
 // busca por workerEmail- no lo encontraria nunca.
-const WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED = true;
+//
+// APAGADO por ahora, y es la SEGUNDA de las dos en encenderse: primero la PWA
+// con DIRECT_INVITE_REQUIRE_EMAIL_AUTH, se deja propagar, y recien despues
+// esta. Encenderla antes deja a los telefonos sin actualizar -que entran de
+// forma anonima, sin correo en el token- sin poder aceptar su invitacion.
+const WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED = false;
 
 admin.initializeApp();
 setGlobalOptions({
