@@ -21,6 +21,10 @@ import {
     getHonorariaContractsForProfile
 } from "./contracts.js";
 import { getPerfilActual } from "./profileQueries.js";
+import {
+    REPLACEMENT_ROTATION_MODE,
+    replacementRotationModeLabel
+} from "./replacementRotation.js";
 
 function honorariaProfileNameForStatus(data) {
     if (profileDraft.mode === PROFILE_MODE.CREATE) {
@@ -116,14 +120,20 @@ export function buildRotationStatus(data){
             }
 
             const freeContracts = contracts.filter(contract =>
-                contract.rotationMode === "free" ||
+                contract.rotationMode === REPLACEMENT_ROTATION_MODE.FREE ||
                 (
                     !contract.rotationMode &&
                     data.rotationType === "libre"
                 )
             ).length;
+            const bridgeContracts = contracts.filter(contract =>
+                contract.rotationMode ===
+                    REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+            ).length;
+            const inheritedContracts =
+                contracts.length - freeContracts - bridgeContracts;
 
-            return `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s): ${contracts.length - freeContracts} con turnos heredados y ${freeContracts} con turnos manuales.`;
+            return `Contrato Reemplazo con ${contracts.length} periodo(s) registrado(s): ${inheritedContracts} con turnos heredados, ${bridgeContracts} con diurno cubriendo rotativa y ${freeContracts} con turnos manuales.`;
         }
 
         if (!data.contractStart) {
@@ -134,9 +144,8 @@ export function buildRotationStatus(data){
             return `Inicio de contrato: ${formatDisplayDate(data.contractStart)}. Falta definir termino en el modal.`;
         }
 
-        const rotationSummary = data.contractRotationMode === "free"
-            ? "Turnos libres para carga manual."
-            : "Heredara los turnos del trabajador reemplazado.";
+        const rotationSummary =
+            `${replacementRotationModeLabel(data.contractRotationMode)}.`;
 
         return `Contrato de reemplazo: ${formatDisplayDate(data.contractStart)} al ${formatDisplayDate(data.contractEnd)}${data.contractReason ? ` | Motivo: ${data.contractReason}` : ""}. ${rotationSummary}`;
     }

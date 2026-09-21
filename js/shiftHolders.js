@@ -276,6 +276,37 @@ function profileProfession(profile) {
  * unidad los "profesionales" pueden ser enfermeria, kinesiologia y matroneria a
  * la vez, y verlos todos del mismo color no dice nada.
  */
+export function getDiurnoBridgeCandidatesForProfile(
+    targetProfileName,
+    excludeNames = []
+) {
+    const targetName = String(targetProfileName || "").trim();
+    const targetProfile = getProfiles()
+        .find(profile => profile.name === targetName);
+
+    if (!targetProfile) return [];
+
+    const excluded = new Set(
+        (Array.isArray(excludeNames) ? excludeNames : [excludeNames])
+            .map(name => String(name || "").trim())
+            .filter(Boolean)
+    );
+    const targetEstamento = profileEstamento(targetProfile);
+    const targetProfession = bucketProfession(targetProfile);
+
+    return getProfiles()
+        .filter(isProfileActive)
+        .filter(profile => !excluded.has(profile.name))
+        .filter(profile => getRotativa(profile.name).type === "diurno")
+        .filter(profile =>
+            profileEstamento(profile) === targetEstamento &&
+            bucketProfession(profile) === targetProfession
+        )
+        .sort((left, right) =>
+            String(left.name).localeCompare(String(right.name), "es")
+        );
+}
+
 export function holderColorKey(profile, splitProfessions) {
     const estamento = profileEstamento(profile);
 

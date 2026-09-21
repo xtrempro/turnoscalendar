@@ -1,6 +1,7 @@
 export const REPLACEMENT_ROTATION_MODE = Object.freeze({
     INHERIT: "inherit",
-    FREE: "free"
+    FREE: "free",
+    DIURNO_BRIDGE: "diurno_bridge"
 });
 
 export function normalizeReplacementRotationMode(
@@ -11,7 +12,8 @@ export function normalizeReplacementRotationMode(
 
     if (
         normalized === REPLACEMENT_ROTATION_MODE.INHERIT ||
-        normalized === REPLACEMENT_ROTATION_MODE.FREE
+        normalized === REPLACEMENT_ROTATION_MODE.FREE ||
+        normalized === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
     ) {
         return normalized;
     }
@@ -20,8 +22,15 @@ export function normalizeReplacementRotationMode(
 }
 
 export function replacementRotationModeLabel(value) {
-    return normalizeReplacementRotationMode(value) ===
-        REPLACEMENT_ROTATION_MODE.FREE
-        ? "Libre (turnos manuales)"
-        : "Heredar turnos del trabajador reemplazado";
+    const mode = normalizeReplacementRotationMode(value);
+
+    if (mode === REPLACEMENT_ROTATION_MODE.FREE) {
+        return "Libre (turnos manuales)";
+    }
+
+    if (mode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE) {
+        return "Reemplazante diurno y diurno cubre rotativa";
+    }
+
+    return "Heredar turnos del trabajador reemplazado";
 }

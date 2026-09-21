@@ -75,6 +75,7 @@ import {
 import {
     getAllReplacementContracts,
     getInheritedReplacementContractForCoveredShift,
+    getReplacementContractCoverageWorker,
     hasContractForDate,
     isReplacementProfile,
     replacementContractCoversCoveredShift
@@ -1832,10 +1833,13 @@ function createTimelineRenderCache(year, month, diasMes) {
                 );
 
                 if (!coveredMap.has(iso)) {
+                    const coverageWorker =
+                        getReplacementContractCoverageWorker(contract);
+
                     coveredMap.set(iso, {
                         id: `contract:${contract.id}:${iso}`,
                         date: iso,
-                        worker: contract.worker,
+                        worker: coverageWorker,
                         replaced: contract.replaces,
                         source: "replacement_contract",
                         contractId: contract.id,

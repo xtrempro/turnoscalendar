@@ -8834,6 +8834,13 @@ body.auth-gate-active .app-shell {
     box-shadow: 0 0 0 3px rgba(var(--brand-blue-rgb), 0.12);
 }
 
+.rotation-contract-field > small {
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.35;
+}
+
 /* Buscar permisos en otras unidades: el boton y su aclaracion. */
 .rotation-contract-linked {
     gap: 6px;

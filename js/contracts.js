@@ -115,6 +115,12 @@ export function normalizeContract(contract = {}) {
             contract.rotationMode,
             REPLACEMENT_ROTATION_MODE.INHERIT
         ),
+        bridgeProfile: String(
+            contract.bridgeProfile ||
+            contract.diurnoBridgeProfile ||
+            contract.diurnoCoverageProfile ||
+            ""
+        ).trim(),
         createdAt:
             contract.createdAt ||
             new Date().toISOString()
@@ -481,6 +487,13 @@ export function getReplacedProfileForDate(profileName, keyDay) {
     return getContractForDate(profileName, keyDay)?.replaces || "";
 }
 
+export function getReplacementBridgeProfileForDate(
+    profileName,
+    keyDay
+) {
+    return getContractForDate(profileName, keyDay)?.bridgeProfile || "";
+}
+
 export function getAllReplacementContracts() {
     return getProfiles()
         .filter(profile => isReplacementProfile(profile.name))
@@ -503,22 +516,30 @@ export function replacementContractCoversCoveredShift(
     keyDay
 ) {
     const iso = keyToISO(keyDay);
+    const mode = normalizeReplacementRotationMode(
+        contract?.rotationMode,
+        REPLACEMENT_ROTATION_MODE.INHERIT
+    );
+    const coverageWorker =
+        mode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+            ? contract?.bridgeProfile
+            : contract?.worker;
 
     if (
-        !contract?.worker ||
+        !coverageWorker ||
         !contract?.replaces ||
         !iso ||
         contract.start > iso ||
         contract.end < iso ||
-        normalizeReplacementRotationMode(
-            contract.rotationMode,
-            REPLACEMENT_ROTATION_MODE.INHERIT
-        ) !== REPLACEMENT_ROTATION_MODE.INHERIT
+        ![
+            REPLACEMENT_ROTATION_MODE.INHERIT,
+            REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+        ].includes(mode)
     ) {
         return false;
     }
 
-    const data = getProfileData(contract.worker);
+    const data = getProfileData(coverageWorker);
 
     if (
         Object.prototype.hasOwnProperty.call(data, keyDay) &&
@@ -528,6 +549,33 @@ export function replacementContractCoversCoveredShift(
     }
 
     return true;
+}
+
+export function getReplacementContractCoverageWorker(contract) {
+    const mode = normalizeReplacementRotationMode(
+        contract?.rotationMode,
+        REPLACEMENT_ROTATION_MODE.INHERIT
+    );
+
+    return mode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+        ? String(contract?.bridgeProfile || "").trim()
+        : String(contract?.worker || "").trim();
+}
+
+export function getDiurnoBridgeContractForProfile(profileName, keyDay) {
+    const worker = String(profileName || "").trim();
+
+    if (!worker || !keyToISO(keyDay)) return null;
+
+    return getAllReplacementContracts()
+        .find(contract =>
+            contract.bridgeProfile === worker &&
+            normalizeReplacementRotationMode(
+                contract.rotationMode,
+                REPLACEMENT_ROTATION_MODE.INHERIT
+            ) === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE &&
+            replacementContractCoversCoveredShift(contract, keyDay)
+        ) || null;
 }
 
 export function getInheritedReplacementContractForCoveredShift(

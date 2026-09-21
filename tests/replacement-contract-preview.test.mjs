@@ -45,3 +45,18 @@ test("el mini calendario muestra el turno heredado junto al contrato", () => {
         /\.profile-mini-day \.replacement-contract-preview-turn/
     );
 });
+
+test("el modal ofrece la modalidad de diurno puente con selector de trabajador", () => {
+    assert.match(
+        source,
+        /REPLACEMENT_ROTATION_MODE\.DIURNO_BRIDGE/
+    );
+    assert.match(
+        source,
+        /data-contract-bridge-profile/
+    );
+    assert.match(
+        source,
+        /getDiurnoBridgeCandidatesForProfile/
+    );
+});

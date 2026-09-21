@@ -23,6 +23,10 @@ import {
 import { compareISODate } from "./dateUtils.js";
 import { getProfiles } from "./storage.js";
 import { getHonorariaContractsForProfile } from "./contracts.js";
+import {
+    REPLACEMENT_ROTATION_MODE,
+    normalizeReplacementRotationMode
+} from "./replacementRotation.js";
 
 /**
  * Valida el borrador actual. No muestra nada; devuelve el resultado.
@@ -84,6 +88,16 @@ export function validateProfileDraft() {
 
         if (!profileDraft.contractLeaveRef) {
             missing.push("permiso que origina el reemplazo");
+        }
+
+        if (
+            normalizeReplacementRotationMode(
+                profileDraft.contractRotationMode,
+                REPLACEMENT_ROTATION_MODE.INHERIT
+            ) === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE &&
+            !String(profileDraft.contractBridgeProfile || "").trim()
+        ) {
+            missing.push("trabajador diurno que cubre la rotativa");
         }
     }
 
@@ -193,6 +207,13 @@ export function validateProfileDraft() {
     ) {
         const targetName =
             profileDraft.contractReplaces.trim();
+        const bridgeName =
+            String(profileDraft.contractBridgeProfile || "").trim();
+        const bridgeMode =
+            normalizeReplacementRotationMode(
+                profileDraft.contractRotationMode,
+                REPLACEMENT_ROTATION_MODE.INHERIT
+            ) === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE;
 
         if (targetName === profileDraft.name.trim()) {
             return {
@@ -210,6 +231,29 @@ export function validateProfileDraft() {
                 ok: false,
                 message: "El trabajador reemplazado debe existir en el listado de perfiles."
             };
+        }
+
+        if (bridgeMode && bridgeName) {
+            if (
+                bridgeName === profileDraft.name.trim() ||
+                bridgeName === targetName
+            ) {
+                return {
+                    ok: false,
+                    message: "El trabajador diurno que cubre la rotativa debe ser distinto del reemplazante y del trabajador reemplazado."
+                };
+            }
+
+            if (
+                !getProfiles().some(profile =>
+                    profile.name === bridgeName
+                )
+            ) {
+                return {
+                    ok: false,
+                    message: "El trabajador diurno que cubre la rotativa debe existir en el listado de perfiles."
+                };
+            }
         }
     }
 

@@ -3629,12 +3629,20 @@ function noAssignmentProfileRows(model) {
         ? (
             replacementContract.rotationMode ===
                 REPLACEMENT_ROTATION_MODE.FREE ||
+            replacementContract.rotationMode ===
+                REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ||
             (
                 !replacementContract.rotationMode &&
                 getRotativa(model.profile.name).type === "libre"
             )
         )
-            ? { type: "libre" }
+            ? {
+                type:
+                    replacementContract.rotationMode ===
+                        REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+                        ? "diurno"
+                        : "libre"
+            }
             : getRotativa(replacementContract.replaces)
         : getRotativa(model.profile.name);
 

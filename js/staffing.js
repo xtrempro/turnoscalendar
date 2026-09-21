@@ -41,6 +41,7 @@ import { showConfirm } from "./dialogs.js";
 import {
     formatContractDate,
     getAllReplacementContracts,
+    getDiurnoBridgeContractForProfile,
     getInheritedReplacementContractForCoveredShift,
     getReplacementRotationModeForDate,
     getReplacedProfileForDate,
@@ -450,6 +451,19 @@ function normalizeStaffingConfig(config = {}) {
 }
 
 function getStaffingProfileModality(profile, keyDay = "") {
+    const bridgeContract = keyDay
+        ? getDiurnoBridgeContractForProfile(profile.name, keyDay)
+        : null;
+
+    if (bridgeContract?.replaces) {
+        return normalizeStaffingRotativa(
+            getRotativa(bridgeContract.replaces)?.type ||
+            getRotativa(profile.name)?.type ||
+            profile.rotativaActual ||
+            profile.rotation
+        );
+    }
+
     const replacementRotationMode =
         keyDay && isReplacementProfile(profile.name)
             ? getReplacementRotationModeForDate(profile.name, keyDay)
@@ -467,6 +481,9 @@ function getStaffingProfileModality(profile, keyDay = "") {
         (
             replacementRotationMode === REPLACEMENT_ROTATION_MODE.FREE
                 ? "libre"
+                : replacementRotationMode ===
+                    REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+                    ? "diurno"
                 : getRotativa(profile.name)?.type
         ) ||
         inheritedRotativa ||

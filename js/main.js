@@ -247,6 +247,7 @@ import { renderKanbanBoard } from "./kanban.js";
 import {
     SPLIT_BY_PROFESSION,
     countAffectedFrom,
+    getDiurnoBridgeCandidatesForProfile,
     loadLeaveHolidays,
     renderShiftHoldersPanel,
     setGroupChangeApplier
@@ -1562,6 +1563,9 @@ function renderContractHistory(profile) {
             dot: "p",
             sub: [
                 `Reemplaza a ${contract.replaces || "—"}`,
+                contract.bridgeProfile
+                    ? `${contract.bridgeProfile} cubre rotativa`
+                    : "",
                 contract.reason || ""
             ].filter(Boolean).join(" · ")
         });
@@ -1795,14 +1799,25 @@ async function resolveReplacementContractCoverageConflicts({
     replaced,
     start,
     end,
-    rotationMode
+    rotationMode,
+    bridgeProfile = ""
 }) {
     const mode = normalizeReplacementRotationMode(
         rotationMode,
         REPLACEMENT_ROTATION_MODE.INHERIT
     );
+    const coverageWorker =
+        mode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+            ? String(bridgeProfile || "").trim()
+            : replacementWorker;
 
-    if (mode !== REPLACEMENT_ROTATION_MODE.INHERIT) {
+    if (
+        ![
+            REPLACEMENT_ROTATION_MODE.INHERIT,
+            REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+        ].includes(mode) ||
+        !coverageWorker
+    ) {
         return {
             cancelExisting: false,
             conflicts: []
@@ -1816,7 +1831,7 @@ async function resolveReplacementContractCoverageConflicts({
             end
         )
             .filter(replacement =>
-                replacement.worker !== replacementWorker
+                replacement.worker !== coverageWorker
             );
 
     if (!conflicts.length) {
@@ -1839,7 +1854,7 @@ async function resolveReplacementContractCoverageConflicts({
         .join(", ");
     const extraCount = Math.max(0, conflicts.length - 4);
     const cancelExisting = await showConfirm(
-        `Ya existen ${conflicts.length} turno(s) de ${replaced} cubierto(s) por otro trabajador${workerPreview ? ` (${workerPreview})` : ""} dentro del contrato seleccionado${datePreview ? `: ${datePreview}${extraCount ? ` y ${extraCount} mas` : ""}` : ""}.\n\nSi anulas esos reemplazos, ${replacementWorker} heredara tambien esos turnos. Si los conservas, ${replacementWorker} heredara solo los turnos restantes.`,
+        `Ya existen ${conflicts.length} turno(s) de ${replaced} cubierto(s) por otro trabajador${workerPreview ? ` (${workerPreview})` : ""} dentro del contrato seleccionado${datePreview ? `: ${datePreview}${extraCount ? ` y ${extraCount} mas` : ""}` : ""}.\n\nSi anulas esos reemplazos, ${coverageWorker} cubrira tambien esos turnos. Si los conservas, ${coverageWorker} cubrira solo los turnos restantes.`,
         {
             title: "Turnos ya cubiertos",
             tone: "warning",
@@ -1908,13 +1923,22 @@ async function saveReplacementContractFromDraft(
         profileDraft.contractRotationMode,
         REPLACEMENT_ROTATION_MODE.INHERIT
     );
+    const bridgeProfile =
+        rotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+            ? String(profileDraft.contractBridgeProfile || "").trim()
+            : "";
+    const coverageWorker = bridgeProfile || replacementWorker;
 
     if (
         !replacementWorker ||
         !replaced ||
         !requestedStart ||
         !requestedEnd ||
-        !requiresReplacementContract()
+        !requiresReplacementContract() ||
+        (
+            rotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE &&
+            !bridgeProfile
+        )
     ) {
         return null;
     }
@@ -1947,7 +1971,8 @@ async function saveReplacementContractFromDraft(
             replaced,
             start,
             end,
-            rotationMode
+            rotationMode,
+            bridgeProfile
         });
     const replacementContract = addReplacementContract(
         replacementWorker,
@@ -1960,12 +1985,13 @@ async function saveReplacementContractFromDraft(
             leaveType: profileDraft.contractReason,
             leaveStart: start,
             leaveEnd: end,
-            rotationMode
+            rotationMode,
+            bridgeProfile
         }
     );
 
     applyReplacementContractCoverageDecision(
-        replacementWorker,
+        coverageWorker,
         coverageDecision
     );
 
@@ -1980,10 +2006,11 @@ async function saveReplacementContractFromDraft(
         addAuditLog(
             AUDIT_CATEGORY.COLLABORATOR_UPDATED,
             "Agrego contrato de reemplazo",
-            `${replacementWorker}: reemplaza a ${replaced} desde ${formatDisplayDate(start)} hasta ${formatDisplayDate(end)}.`,
+            `${replacementWorker}: reemplaza a ${replaced} desde ${formatDisplayDate(start)} hasta ${formatDisplayDate(end)}${bridgeProfile ? `; ${bridgeProfile} cubre la rotativa.` : ""}.`,
             {
                 profile: replacementWorker,
                 replaces: replaced,
+                bridgeProfile,
                 start,
                 end,
                 contractId: replacementContract.id
@@ -1993,6 +2020,9 @@ async function saveReplacementContractFromDraft(
 
     scheduleWorkerAppDataPublish(300, replacementWorker);
     scheduleWorkerAppDataPublish(300, replaced);
+    if (bridgeProfile) {
+        scheduleWorkerAppDataPublish(300, bridgeProfile);
+    }
     [...new Set(
         (coverageDecision.conflicts || [])
             .map(replacement => replacement.worker)
@@ -2042,7 +2072,9 @@ function openRotationConfigModal(
         contractRotationMode: normalizeReplacementRotationMode(
             profileDraft.contractRotationMode,
             REPLACEMENT_ROTATION_MODE.INHERIT
-        )
+        ),
+        contractBridgeProfile:
+            profileDraft.contractBridgeProfile || ""
     };
     const backdrop = document.createElement("div");
     let monthPicker = null;
@@ -2319,6 +2351,13 @@ function openRotationConfigModal(
             }
         }
 
+        const bridgeField =
+            backdrop.querySelector("[data-contract-bridge-profile]");
+
+        if (bridgeField) {
+            state.contractBridgeProfile = bridgeField.value;
+        }
+
         if (isReplacement) {
             if (!state.contractReplaces.trim()) {
                 alert("Debes indicar a quien reemplaza.");
@@ -2335,6 +2374,55 @@ function openRotationConfigModal(
                 alert("Debes seleccionar un permiso/ausencia disponible para originar el contrato.");
                 reasonField?.focus();
                 return;
+            }
+
+            const selectedRotationMode =
+                normalizeReplacementRotationMode(
+                    state.contractRotationMode,
+                    REPLACEMENT_ROTATION_MODE.INHERIT
+                );
+
+            if (
+                selectedRotationMode ===
+                    REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+            ) {
+                const replacementWorkerName =
+                    profileDraft.name ||
+                    profile?.name ||
+                    getCurrentProfile();
+                const bridgeCandidates =
+                    getDiurnoBridgeCandidatesForProfile(
+                        state.contractReplaces,
+                        [
+                            replacementWorkerName,
+                            state.contractReplaces
+                        ]
+                    );
+                const bridgeCandidateNames =
+                    new Set(bridgeCandidates.map(item => item.name));
+                const replacedRotationType =
+                    getRotativa(state.contractReplaces).type;
+                const bridgeModeAvailable =
+                    ["3turno", "4turno"].includes(
+                        replacedRotationType
+                    ) &&
+                    bridgeCandidates.length > 0;
+
+                if (!bridgeModeAvailable) {
+                    alert("Esta opcion solo esta disponible si el trabajador reemplazado tiene rotativa de 3er o 4to turno y existe un diurno compatible disponible.");
+                    return;
+                }
+
+                if (
+                    !state.contractBridgeProfile ||
+                    !bridgeCandidateNames.has(state.contractBridgeProfile)
+                ) {
+                    alert("Selecciona que trabajador diurno cubrira la rotativa.");
+                    bridgeField?.focus();
+                    return;
+                }
+            } else {
+                state.contractBridgeProfile = "";
             }
 
             // Ausencia de OTRA unidad: aqui no se crea ningun contrato. Se pide
@@ -2397,6 +2485,8 @@ function openRotationConfigModal(
                     state.contractRotationMode,
                     REPLACEMENT_ROTATION_MODE.INHERIT
                 );
+            profileDraft.contractBridgeProfile =
+                state.contractBridgeProfile.trim();
             profileDraft.rotationFirstTurn = "larga";
 
             if (quickContractSave) {
@@ -2461,6 +2551,7 @@ function openRotationConfigModal(
             profileDraft.contractLeaveRef = "";
             profileDraft.contractRotationMode =
                 REPLACEMENT_ROTATION_MODE.INHERIT;
+            profileDraft.contractBridgeProfile = "";
         }
 
         close();
@@ -2488,6 +2579,22 @@ function openRotationConfigModal(
                     REPLACEMENT_ROTATION_MODE.FREE
             ) {
                 return TURNO.LIBRE;
+            }
+
+            if (
+                state.contractRotationMode ===
+                    REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+            ) {
+                if (!state.contractBridgeProfile) return TURNO.LIBRE;
+
+                const date = parseKey(key);
+
+                return isBusinessDay(
+                    date,
+                    getCachedHolidays(date.getFullYear())
+                )
+                    ? TURNO.DIURNO
+                    : TURNO.LIBRE;
             }
 
             return getTurnoBase(state.contractReplaces, key);
@@ -2629,12 +2736,15 @@ function openRotationConfigModal(
                     cell.classList.add("is-contract-range");
                     if (
                         state.contractRotationMode ===
-                            REPLACEMENT_ROTATION_MODE.INHERIT &&
-                        stateTurn > TURNO.LIBRE
+                            REPLACEMENT_ROTATION_MODE.INHERIT ||
+                        state.contractRotationMode ===
+                            REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
                     ) {
-                        cell.classList.add(
-                            "has-replacement-preview-turn"
-                        );
+                        if (stateTurn > TURNO.LIBRE) {
+                            cell.classList.add(
+                                "has-replacement-preview-turn"
+                            );
+                        }
                     }
                     cell.title =
                         `Nuevo Contrato: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)} | Reemplaza a: ${state.contractReplaces || "sin trabajador"}${stateTurnLabel ? ` | Turno: ${stateTurnLabel}` : ""}`;
@@ -2648,8 +2758,8 @@ function openRotationConfigModal(
                     isReplacement
                         ? isNewReplacementContractDay
                             ? `${
-                                state.contractRotationMode ===
-                                    REPLACEMENT_ROTATION_MODE.INHERIT &&
+                                state.contractRotationMode !==
+                                    REPLACEMENT_ROTATION_MODE.FREE &&
                                 stateTurnLabel
                                     ? `<span class="replacement-contract-preview-turn">${escapeHTML(stateTurnLabel)}</span>`
                                     : ""
@@ -2786,6 +2896,56 @@ function openRotationConfigModal(
         const selectedLeaveOption = replacementLeaveOptions.find(option =>
             option.id === state.contractLeaveRef
         ) || null;
+        const replacementWorkerName =
+            profileDraft.name ||
+            profile?.name ||
+            getCurrentProfile();
+        const bridgeCandidates =
+            isReplacement && state.contractReplaces
+                ? getDiurnoBridgeCandidatesForProfile(
+                    state.contractReplaces,
+                    [
+                        replacementWorkerName,
+                        state.contractReplaces
+                    ]
+                )
+                : [];
+        const bridgeCandidateNames =
+            new Set(bridgeCandidates.map(item => item.name));
+        const replacedRotationType =
+            isReplacement && state.contractReplaces
+                ? getRotativa(state.contractReplaces).type
+                : "";
+        const bridgeModeAvailable =
+            isReplacement &&
+            ["3turno", "4turno"].includes(replacedRotationType) &&
+            bridgeCandidates.length > 0;
+        const bridgeModeReason =
+            !state.contractReplaces
+                ? "Selecciona primero a quien reemplaza."
+                : !["3turno", "4turno"].includes(replacedRotationType)
+                    ? "Disponible solo si el trabajador reemplazado tiene rotativa de 3er o 4to turno."
+                    : !bridgeCandidates.length
+                        ? "No hay trabajadores diurnos compatibles disponibles."
+                        : "";
+
+        if (
+            state.contractRotationMode ===
+                REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+        ) {
+            if (!bridgeModeAvailable) {
+                state.contractRotationMode =
+                    REPLACEMENT_ROTATION_MODE.INHERIT;
+                state.contractBridgeProfile = "";
+            } else if (
+                state.contractBridgeProfile &&
+                !bridgeCandidateNames.has(state.contractBridgeProfile)
+            ) {
+                state.contractBridgeProfile = "";
+            }
+        } else if (isReplacement && state.contractBridgeProfile) {
+            state.contractBridgeProfile = "";
+        }
 
         const heading = state.monthDate.toLocaleString(
             "es-CL",
@@ -2897,8 +3057,31 @@ function openRotationConfigModal(
                             <option value="${REPLACEMENT_ROTATION_MODE.FREE}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.FREE ? "selected" : ""}>
                                 Libre, para agregar turnos manualmente
                             </option>
+                            <option value="${REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ? "selected" : ""} ${bridgeModeAvailable ? "" : "disabled"}>
+                                Reemplazante queda diurno y otro diurno cubre rotativa
+                            </option>
                         </select>
+                        ${!bridgeModeAvailable && bridgeModeReason ? `
+                            <small>${escapeHTML(bridgeModeReason)}</small>
+                        ` : ""}
                     </label>
+
+                    ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ? `
+                        <label class="rotation-contract-field">
+                            <span>Diurno que cubre la rotativa</span>
+                            <select data-contract-bridge-profile>
+                                <option value="">Seleccionar trabajador diurno</option>
+                                ${bridgeCandidates
+                                    .map(item => `
+                                        <option value="${escapeHTML(item.name)}" ${item.name === state.contractBridgeProfile ? "selected" : ""}>
+                                            ${escapeHTML(item.name)}${item.profession ? ` | ${escapeHTML(formatProfession(item.profession))}` : ""}
+                                        </option>
+                                    `)
+                                    .join("")}
+                            </select>
+                            <small>El trabajador elegido toma la rotativa de ${escapeHTML(state.contractReplaces)} durante el permiso; el reemplazante queda con pauta diurna.</small>
+                        </label>
+                    ` : ""}
                 ` : ""}
 
                 <div class="profile-mini-head rotation-modal-head">
@@ -2940,6 +3123,7 @@ function openRotationConfigModal(
                 state.contractReason = "";
                 state.contractStart = "";
                 state.contractEnd = "";
+                state.contractBridgeProfile = "";
                 render();
             });
 
@@ -2968,6 +3152,19 @@ function openRotationConfigModal(
                         event.target.value,
                         REPLACEMENT_ROTATION_MODE.INHERIT
                     );
+                if (
+                    state.contractRotationMode !==
+                        REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+                ) {
+                    state.contractBridgeProfile = "";
+                }
+                render();
+            });
+
+        backdrop
+            .querySelector("[data-contract-bridge-profile]")
+            ?.addEventListener("change", event => {
+                state.contractBridgeProfile = event.target.value;
                 render();
             });
 
@@ -5820,7 +6017,7 @@ function renderDashboardState() {
             DOM.replacementContractStatus.innerHTML = contracts.length
                 ? contracts
                     .map(contract =>
-                        `${escapeHTML(formatContractDate(contract.start))} - ${escapeHTML(formatContractDate(contract.end))}${contract.reason ? ` | ${escapeHTML(contract.reason)}` : ""} | ${escapeHTML(contract.replaces)} | ${escapeHTML(replacementRotationModeLabel(contract.rotationMode))}`
+                        `${escapeHTML(formatContractDate(contract.start))} - ${escapeHTML(formatContractDate(contract.end))}${contract.reason ? ` | ${escapeHTML(contract.reason)}` : ""} | ${escapeHTML(contract.replaces)} | ${escapeHTML(replacementRotationModeLabel(contract.rotationMode))}${contract.bridgeProfile ? ` | Diurno: ${escapeHTML(contract.bridgeProfile)}` : ""}`
                     )
                     .join("<br>")
                 : "Sin contratos registrados.";
@@ -9124,8 +9321,12 @@ function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
     }
     profileDraft.contractReason = "";
     profileDraft.contractLeaveRef = prefillLeaveRef;
-    profileDraft.contractRotationMode =
-        REPLACEMENT_ROTATION_MODE.INHERIT;
+    if (!prefill.rotationMode) {
+        profileDraft.contractRotationMode =
+            REPLACEMENT_ROTATION_MODE.INHERIT;
+    }
+    profileDraft.contractBridgeProfile =
+        String(prefill.bridgeProfile || "").trim();
     profileRotationMiniDate = parseKey(keyDay);
 
     renderDashboardState();
@@ -9370,6 +9571,8 @@ function profileDraftComparisonSnapshot(data = {}) {
         contractRotationMode:
             normalizeProfileDraftText(data.contractRotationMode) ||
             "inherit",
+        contractBridgeProfile:
+            normalizeProfileDraftText(data.contractBridgeProfile),
         honorariaStart: normalizeStoredStart(data.honorariaStart || ""),
         honorariaEnd: normalizeStoredStart(data.honorariaEnd || ""),
         honorariaHourlyRate: String(data.honorariaHourlyRate || ""),
@@ -9414,6 +9617,7 @@ function savedProfileComparisonSnapshot(profile) {
         contractReason: "",
         contractLeaveRef: "",
         contractRotationMode: "inherit",
+        contractBridgeProfile: "",
         honorariaStart: profile.honorariaStart || "",
         honorariaEnd: profile.honorariaEnd || "",
         honorariaHourlyRate: String(profile.honorariaHourlyRate || ""),
@@ -9448,6 +9652,7 @@ function emptyCreateProfileComparisonSnapshot() {
         contractReason: "",
         contractLeaveRef: "",
         contractRotationMode: "inherit",
+        contractBridgeProfile: "",
         honorariaStart: "",
         honorariaEnd: "",
         honorariaHourlyRate: "",
@@ -10757,6 +10962,9 @@ async function guardarPerfil() {
         isEditing ? profileDraft.originalName : "",
         shouldSaveReplacementContract
             ? profileDraft.contractReplaces
+            : "",
+        shouldSaveReplacementContract
+            ? profileDraft.contractBridgeProfile
             : ""
     ].filter(Boolean);
 
@@ -12738,6 +12946,7 @@ function bindProfileForm() {
             profileDraft.unionLeaveEnabled = false;
             profileDraft.contractRotationMode =
                 REPLACEMENT_ROTATION_MODE.INHERIT;
+            profileDraft.contractBridgeProfile = "";
         } else {
             profileDraft.contractStart = "";
             profileDraft.contractEnd = "";
@@ -12746,6 +12955,7 @@ function bindProfileForm() {
             profileDraft.contractLeaveRef = "";
             profileDraft.contractRotationMode =
                 REPLACEMENT_ROTATION_MODE.INHERIT;
+            profileDraft.contractBridgeProfile = "";
         }
 
         if (contractBlocksUnionLeave()) {

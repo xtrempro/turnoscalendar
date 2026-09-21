@@ -21,6 +21,8 @@ import {
     turnoExtraCubreTurno
 } from "./rulesEngine.js";
 import {
+    getDiurnoBridgeContractForProfile,
+    getReplacementBridgeProfileForDate,
     getReplacementRotationModeForDate,
     getReplacedProfileForDate,
     hasContractForDate,
@@ -298,12 +300,40 @@ function rotativaTurnoBase(nombre, key, visited = new Set()) {
 
     visited.add(nombre);
 
+    const bridgeContract = getDiurnoBridgeContractForProfile(
+        nombre,
+        key
+    );
+
+    if (bridgeContract?.replaces) {
+        return resolveTurnoBase(
+            bridgeContract.replaces,
+            key,
+            visited
+        );
+    }
+
     if (isReplacementProfile(nombre, key)) {
-        if (
-            getReplacementRotationModeForDate(nombre, key) ===
-            REPLACEMENT_ROTATION_MODE.FREE
-        ) {
+        const rotationMode =
+            getReplacementRotationModeForDate(nombre, key);
+
+        if (rotationMode === REPLACEMENT_ROTATION_MODE.FREE) {
             return TURNO.LIBRE;
+        }
+
+        if (
+            rotationMode ===
+            REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+        ) {
+            const date = parseKeyDate(key);
+
+            if (!getReplacementBridgeProfileForDate(nombre, key)) {
+                return TURNO.LIBRE;
+            }
+
+            return date && isBusinessDaySync(date, key)
+                ? TURNO.DIURNO
+                : TURNO.LIBRE;
         }
 
         const replacedProfile =
