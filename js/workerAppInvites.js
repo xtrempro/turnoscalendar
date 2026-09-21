@@ -419,8 +419,8 @@ function showInviteDialog({
 }) {
     const message = inviteMessage(profile, workspace, inviteUrl);
     const sentNote = email
-        ? `Se envio un correo de invitacion a ${escapeHTML(email)} con el enlace para instalar y enlazar la app.`
-        : "El perfil no tiene correo registrado, asi que no se envio correo automatico. Comparte el enlace por WhatsApp o copialo.";
+        ? `Se envio un correo de invitacion a ${escapeHTML(email)} con el enlace para instalar y enlazar la app. Al abrirlo confirmara ese mismo correo, y con el podra recuperar su calendario por su cuenta si cambia de telefono.`
+        : "El perfil no tiene correo registrado, asi que no se envio correo automatico. Comparte el enlace por WhatsApp o copialo: al abrirlo ingresara su propio correo, que le servira para recuperar su calendario mas adelante.";
     const whatsappUrl = phoneE164
         ? `https://wa.me/${phoneE164}?text=${encodeURIComponent(message)}`
         : "";

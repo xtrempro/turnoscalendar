@@ -70,10 +70,16 @@ const ENFORCE_APP_CHECK = true;
 // Capacidad preparada pero apagada durante el lanzamiento comercial. Activar
 // solo junto al enrolamiento del cliente y las reglas del entorno objetivo.
 const REQUIRE_PRIVILEGED_MFA = false;
-// Flujo preparado para centros que pidan doble chequeo por correo en la PWA.
-// En etapa comercial queda apagado: el correo de invitacion lleva directamente
-// al token de enlace y la PWA no debe mandar un segundo correo passwordless.
-const WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED = false;
+// Encendido junto con DIRECT_INVITE_REQUIRE_EMAIL_AUTH en la PWA: el trabajador
+// llega al enlace ya identificado, asi que aceptar EXIGE que su correo sea el de
+// la invitacion y el vinculo guarda el correo VERIFICADO en vez del escrito a
+// mano por el supervisor.
+//
+// Las dos banderas van juntas a proposito. Con esta apagada y aquella encendida,
+// alguien podria aceptar con un correo distinto: el vinculo quedaria con el
+// correo de la invitacion mientras la cuenta es otra, y la recuperacion -que
+// busca por workerEmail- no lo encontraria nunca.
+const WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED = true;
 
 admin.initializeApp();
 setGlobalOptions({
@@ -2341,7 +2347,20 @@ async function acceptWorkerAppInviteImpl({
       const authEmail = normalizeEmail(authToken.email);
       const inviteEmail = normalizeEmail(invite.email);
 
-      if (!authEmail || authEmail !== inviteEmail) {
+      if (!authEmail) {
+        throw new HttpsError(
+          "permission-denied",
+          "Inicia sesion con tu correo para aceptar la invitacion."
+        );
+      }
+
+      // Una invitacion SIN correo es la que el supervisor comparte por WhatsApp
+      // o copiando el enlace, para perfiles sin correo registrado: el propio
+      // dialogo de invitacion ofrece ese camino. Ahi no hay nada contra que
+      // comparar, y se acepta con el correo de quien entra -que es justamente
+      // el que despues le permitira recuperar su identidad-. Exigir
+      // coincidencia dejaria a esos perfiles sin poder enlazarse nunca.
+      if (inviteEmail && authEmail !== inviteEmail) {
         throw new HttpsError(
           "permission-denied",
           "Debes iniciar sesion con el correo de la invitacion."
