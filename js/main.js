@@ -373,8 +373,10 @@ import {
 } from "./uiEngine.js";
 import {
     aplicarCambiosTurno,
+    fusionarTurnos,
     getTurnoBase,
-    getTurnoProgramado
+    getTurnoProgramado,
+    turnoBloqueadoPorTurno24
 } from "./turnEngine.js";
 import {
     esTurnoCapacitacionValido,
@@ -445,7 +447,8 @@ import {
     cancelFutureReplacementsForWorker,
     getActiveCoveredReplacementsForProfileRange,
     renderReplacementLogHTML,
-    getHheeMonthRecords
+    getHheeMonthRecords,
+    saveReplacement
 } from "./replacements.js";
 import {
     refreshWorkerRequestsNavBadge,
@@ -1794,6 +1797,110 @@ function findReplacementLeaveOption(profileName, optionId) {
         .find(option => option.id === optionId) || null;
 }
 
+/**
+ * Que turnos heredaria el contrato, dia por dia, y cuales NO puede heredar.
+ *
+ * EL TRAMO TRASLAPADO TAMBIEN SE HEREDA. Donde el reemplazante ya tiene un
+ * contrato anterior no puede nacer un contrato nuevo -dos no se superponen, y
+ * el guardado los recorta con clampContractRange-, pero el trabajador YA esta
+ * contratado esos dias, asi que puede tomar tambien el turno del segundo
+ * ausente. Antes esos dias se perdian sin decir nada.
+ *
+ * Lo unico que lo impide es una regla EXPLICITA de la unidad. Hoy es una sola:
+ * que sumar el turno heredado al que ya tiene diera un Turno 24 donde la unidad
+ * no los permite. Esos dias quedan marcados y se cubren como cualquier turno
+ * pendiente.
+ *
+ * Es la unica fuente de verdad de esto: la usan el contador del cuadro, el
+ * calendario y el guardado. Tres calculos parecidos terminan separandose.
+ */
+function buildInheritedTurnPreview({
+    replacementWorker,
+    replaced,
+    startISO,
+    endISO,
+    rotationMode
+}) {
+    const vacio = { dias: [], heredados: 0, pendientes: 0 };
+    const modo = normalizeReplacementRotationMode(
+        rotationMode,
+        REPLACEMENT_ROTATION_MODE.INHERIT
+    );
+
+    if (
+        modo !== REPLACEMENT_ROTATION_MODE.INHERIT ||
+        !replaced ||
+        !startISO ||
+        !endISO
+    ) {
+        return vacio;
+    }
+
+    const desde = parseInputDate(startISO);
+    const hasta = parseInputDate(endISO);
+
+    if (!desde || !hasta || desde > hasta) return vacio;
+
+    const worker = String(replacementWorker || "").trim();
+    const contratosPropios = worker
+        ? getContractsForProfile(worker)
+        : [];
+    const dias = [];
+    const cursor = new Date(
+        desde.getFullYear(),
+        desde.getMonth(),
+        desde.getDate()
+    );
+    let heredados = 0;
+    let pendientes = 0;
+
+    while (cursor <= hasta) {
+        const key = keyFromDate(cursor);
+        const iso = toISODate(cursor);
+        const heredado = Number(getTurnoBase(replaced, key)) || TURNO.LIBRE;
+
+        if (heredado > TURNO.LIBRE) {
+            // Dentro de un contrato anterior suyo: el turno se SUMA al que ya
+            // tiene, en vez de reemplazarlo.
+            const enContratoPropio = contratosPropios.some(contrato =>
+                contrato.start <= iso && contrato.end >= iso
+            );
+            const propio = worker
+                ? Number(getTurnoBase(worker, key)) || TURNO.LIBRE
+                : TURNO.LIBRE;
+            const bloqueado = Boolean(
+                worker &&
+                enContratoPropio &&
+                propio > TURNO.LIBRE &&
+                turnoBloqueadoPorTurno24(worker, key, heredado)
+            );
+
+            dias.push({
+                key,
+                iso,
+                turno: bloqueado
+                    ? propio
+                    : (
+                        enContratoPropio && propio > TURNO.LIBRE
+                            ? fusionarTurnos(propio, heredado)
+                            : heredado
+                    ),
+                heredado,
+                propio,
+                traslape: enContratoPropio,
+                estado: bloqueado ? "pendiente" : "heredado"
+            });
+
+            if (bloqueado) pendientes += 1;
+            else heredados += 1;
+        }
+
+        cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return { dias, heredados, pendientes };
+}
+
 async function resolveReplacementContractCoverageConflicts({
     replacementWorker,
     replaced,
@@ -1989,6 +2096,45 @@ async function saveReplacementContractFromDraft(
             bridgeProfile
         }
     );
+
+    // El tramo TRASLAPADO con un contrato anterior suyo.
+    //
+    // Ahi el contrato nuevo no llega -clampContractRange lo recorto para que no
+    // se superpongan- pero el trabajador ya esta contratado esos dias y puede
+    // cubrir igual al segundo ausente. Antes esos turnos se perdian sin aviso.
+    //
+    // Se registran como REEMPLAZOS, que es lo que apaga el "!" del ausente y lo
+    // que suma el turno a las horas realizadas. Un trabajador a reemplazo no
+    // tiene asignacion de turno: sus horas son las realizadas del mes menos las
+    // habiles de los dias con contrato, asi que esto entra por el lado de las
+    // realizadas.
+    //
+    // Los dias que quedaron PENDIENTES por la regla del Turno 24 no se tocan:
+    // conservan su "!" y se cubren como cualquier turno sin cubrir.
+    if (start !== requestedStart || end !== requestedEnd) {
+        buildInheritedTurnPreview({
+            replacementWorker,
+            replaced,
+            startISO: requestedStart,
+            endISO: requestedEnd,
+            rotationMode
+        })
+            .dias
+            .filter(dia =>
+                dia.estado === "heredado" &&
+                (dia.iso < start || dia.iso > end)
+            )
+            .forEach(dia => {
+                saveReplacement({
+                    worker: replacementWorker,
+                    replaced,
+                    keyDay: dia.key,
+                    turno: dia.heredado,
+                    absenceType: profileDraft.contractReason,
+                    source: "replacement_contract_overlap"
+                });
+            });
+    }
 
     applyReplacementContractCoverageDecision(
         coverageWorker,
@@ -2639,6 +2785,39 @@ function openRotationConfigModal(
         return TURNO.LIBRE;
     };
 
+    // La herencia calculada para el rango elegido.
+    //
+    // Vive AQUI y no dentro de render() porque renderCalendar es HERMANA de
+    // render, no hija: declarada alla, el calendario no la veria y el pintado
+    // fallaria por alcance lexico, sin error visible.
+    let inheritPreview = { dias: [], heredados: 0, pendientes: 0 };
+
+    /** Explica por que un dia no se pudo heredar, junto al calendario. */
+    const mostrarMotivoPendiente = (contenedor, key) => {
+        const panel = contenedor.querySelector("[data-rc-why]");
+        const dia = inheritPreview.dias.find(item => item.key === key);
+
+        if (!panel || !dia) return;
+
+        contenedor
+            .querySelectorAll(".profile-mini-day.is-rc-target")
+            .forEach(celda => celda.classList.remove("is-rc-target"));
+        contenedor
+            .querySelector(`.profile-mini-day[data-key="${key}"]`)
+            ?.classList.add("is-rc-target");
+
+        panel.hidden = false;
+        panel.innerHTML = `
+            <span class="rc-why-t">${escapeHTML(formatDisplayDate(dia.iso))}: no se puede heredar el turno</span>
+            <span class="rc-why-d">
+                Ya tiene ${escapeHTML(turnoLabel(dia.propio))} por un contrato anterior suyo.
+                Sumarle ${escapeHTML(turnoLabel(dia.heredado))} dar&iacute;a un turno de 24 horas,
+                y esta unidad no los permite (Configuraci&oacute;n &middot; Turnos).
+                El turno queda pendiente de reemplazo.
+            </span>
+        `;
+    };
+
     const renderCalendar = () => {
         const y = state.monthDate.getFullYear();
         const m = state.monthDate.getMonth();
@@ -2751,8 +2930,25 @@ function openRotationConfigModal(
                 }
             }
 
+            // Traslape con un contrato anterior suyo: el turno heredado se
+            // suma al que ya tiene, y por eso puede chocar.
+            const diaHeredado = isReplacement
+                ? inheritPreview.dias.find(item => item.key === key)
+                : null;
+
+            if (isNewReplacementContractDay && existingContract) {
+                cell.classList.add("is-rc-lap");
+            }
+
+            if (diaHeredado?.estado === "pendiente") {
+                cell.classList.add("is-rc-pending");
+            }
+
             aplicarClaseTurno(cell, stateTurn);
             cell.innerHTML = `
+                ${diaHeredado?.estado === "pendiente"
+                    ? `<span class="rc-day-bang" data-rc-pending="${escapeHTML(key)}" role="button" tabindex="0" title="No se puede heredar este turno">!</span>`
+                    : ""}
                 <span>${d}</span>
                 <small>${
                     isReplacement
@@ -2999,21 +3195,88 @@ function openRotationConfigModal(
             state.contractEnd = "";
         }
 
-        backdrop.innerHTML = `
-            <div class="turn-change-dialog rotation-config-dialog" role="dialog" aria-modal="true">
-                <strong>${title}</strong>
-                <p>${instructions}</p>
+        // Que turnos hereda el contrato y cuales no puede: lo consumen el
+        // contador, el calendario y el pie. Una sola fuente (ver
+        // buildInheritedTurnPreview).
+        inheritPreview = isReplacement
+            ? buildInheritedTurnPreview({
+                replacementWorker:
+                    profileDraft.name || profile?.name || "",
+                replaced: state.contractReplaces,
+                startISO: state.contractStart,
+                endISO: state.contractEnd,
+                rotationMode: state.contractRotationMode
+            })
+            : { dias: [], heredados: 0, pendientes: 0 };
+        // Las barras que hacen VISIBLE el traslape. Se miden sobre la union de
+        // los dos contratos, que es el unico eje donde ambos caben.
+        const contratoPrevio = isReplacement && state.contractStart
+            ? getContractsForProfile(
+                profileDraft.name || profile?.name || ""
+            ).find(contrato =>
+                contrato.start <= state.contractEnd &&
+                contrato.end >= state.contractStart
+            ) || null
+            : null;
+        const bandas = (() => {
+            if (!state.contractStart || !state.contractEnd) return null;
 
-                ${requiresRotationFirstTurn(type) ? `
-                    <div class="rotation-start-options" aria-label="Turno inicial">
-                        ${startOptions}
-                    </div>
-                ` : ""}
+            const inicio = contratoPrevio && contratoPrevio.start < state.contractStart
+                ? contratoPrevio.start
+                : state.contractStart;
+            const fin = contratoPrevio && contratoPrevio.end > state.contractEnd
+                ? contratoPrevio.end
+                : state.contractEnd;
+            const desde = parseInputDate(inicio);
+            const hasta = parseInputDate(fin);
 
-                ${isReplacement ? `
-                    <label class="rotation-contract-field">
-                        <span>Reemplaza a</span>
-                        <select data-contract-replaces>
+            if (!desde || !hasta) return null;
+
+            const total = Math.max(
+                1,
+                Math.round((hasta - desde) / 86400000) + 1
+            );
+            const pct = iso => {
+                const fecha = parseInputDate(iso);
+
+                if (!fecha) return 0;
+
+                return Math.max(0, Math.min(100,
+                    (Math.round((fecha - desde) / 86400000) / total) * 100
+                ));
+            };
+            const tramo = (a, b) => `left:${pct(a)}%;right:${100 - pct(b) - (100 / total)}%`;
+
+            return {
+                previo: contratoPrevio
+                    ? tramo(contratoPrevio.start, contratoPrevio.end)
+                    : "",
+                nuevo: tramo(state.contractStart, state.contractEnd),
+                traslape: contratoPrevio
+                    ? tramo(
+                        contratoPrevio.start > state.contractStart
+                            ? contratoPrevio.start
+                            : state.contractStart,
+                        contratoPrevio.end < state.contractEnd
+                            ? contratoPrevio.end
+                            : state.contractEnd
+                    )
+                    : ""
+            };
+        })();
+        const diasContrato = state.contractStart && state.contractEnd
+            ? Math.round(
+                (parseInputDate(state.contractEnd) -
+                    parseInputDate(state.contractStart)) / 86400000
+            ) + 1
+            : 0;
+        const replacementFields = `
+                    <div class="rc-step">
+                        <div class="rc-step-head">
+                            <span class="rc-step-n">1</span>
+                            <span class="rc-step-t">A qui&eacute;n reemplaza</span>
+                        </div>
+                        <select class="rotation-contract-field" data-contract-replaces>
                             <option value="" ${replacementProfiles.length ? "" : "disabled"}>
                                 ${replacementProfiles.length
                                     ? "Seleccionar trabajador"
@@ -3027,63 +3290,78 @@ function openRotationConfigModal(
                                 `)
                                 .join("")}
                         </select>
-                    </label>
+                    </div>
 
-                    <label class="rotation-contract-field">
-                        <span>Motivo del Reemplazo</span>
-                        <select data-contract-leave-ref ${hasReplacementTarget && replacementLeaveOptions.length ? "" : "disabled"}>
+                    <div class="rc-step">
+                        <div class="rc-step-head">
+                            <span class="rc-step-n">2</span>
+                            <span class="rc-step-t">Permiso que lo origina</span>
+                        </div>
+                        <select class="rotation-contract-field" data-contract-leave-ref ${hasReplacementTarget && replacementLeaveOptions.length ? "" : "disabled"}>
                             <option value="">Seleccionar permiso disponible</option>
                             ${leaveOptionsHTML}
                         </select>
-                    </label>
-
-                    <div class="rotation-contract-field rotation-contract-linked">
-                        <button class="secondary-button" type="button" data-action="search-linked-absences">
-                            Buscar permisos en unidades enlazadas
-                        </button>
-                        <small>
-                            Al elegir uno de otra unidad, el contrato NO se crea
-                            todav&iacute;a: se env&iacute;a una solicitud y esa unidad
-                            tiene que autorizarla.
-                        </small>
+                        <div class="rotation-contract-field rotation-contract-linked">
+                            <button class="secondary-button" type="button" data-action="search-linked-absences">
+                                Buscar permisos en unidades enlazadas
+                            </button>
+                            <small>
+                                Al elegir uno de otra unidad, el contrato NO se crea
+                                todav&iacute;a: se env&iacute;a una solicitud y esa unidad
+                                tiene que autorizarla.
+                            </small>
+                        </div>
                     </div>
 
-                    <label class="rotation-contract-field">
-                        <span>Turnos durante el nuevo contrato</span>
-                        <select data-contract-rotation-mode>
-                            <option value="${REPLACEMENT_ROTATION_MODE.INHERIT}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.INHERIT ? "selected" : ""}>
-                                Heredar turnos del trabajador reemplazado
-                            </option>
-                            <option value="${REPLACEMENT_ROTATION_MODE.FREE}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.FREE ? "selected" : ""}>
-                                Libre, para agregar turnos manualmente
-                            </option>
-                            <option value="${REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ? "selected" : ""} ${bridgeModeAvailable ? "" : "disabled"}>
-                                Reemplazante queda diurno y otro diurno cubre rotativa
-                            </option>
-                        </select>
-                        ${!bridgeModeAvailable && bridgeModeReason ? `
-                            <small>${escapeHTML(bridgeModeReason)}</small>
+                    <div class="rc-step">
+                        <div class="rc-step-head">
+                            <span class="rc-step-n">3</span>
+                            <span class="rc-step-t">Turnos durante el contrato</span>
+                        </div>
+                        <div class="rc-modes" data-contract-rotation-mode>
+                            <label class="rc-mode ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.INHERIT ? "is-on" : ""}">
+                                <input type="radio" name="rcRotationMode" value="${REPLACEMENT_ROTATION_MODE.INHERIT}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.INHERIT ? "checked" : ""}>
+                                <span>
+                                    <span class="rc-mode-t">Heredar turnos${state.contractReplaces ? ` de ${escapeHTML(state.contractReplaces)}` : " del trabajador reemplazado"}</span>
+                                    <span class="rc-mode-d">Toma los turnos que ten&iacute;a, incluidos los del tramo que se traslapa con un contrato anterior suyo.</span>
+                                </span>
+                            </label>
+                            <label class="rc-mode ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.FREE ? "is-on" : ""}">
+                                <input type="radio" name="rcRotationMode" value="${REPLACEMENT_ROTATION_MODE.FREE}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.FREE ? "checked" : ""}>
+                                <span>
+                                    <span class="rc-mode-t">Libre, para agregar turnos a mano</span>
+                                    <span class="rc-mode-d">El contrato queda sin turnos y se van poniendo uno a uno en el calendario.</span>
+                                </span>
+                            </label>
+                            <label class="rc-mode ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ? "is-on" : ""} ${bridgeModeAvailable ? "" : "is-off"}">
+                                <input type="radio" name="rcRotationMode" value="${REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE}" ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ? "checked" : ""} ${bridgeModeAvailable ? "" : "disabled"}>
+                                <span>
+                                    <span class="rc-mode-t">Reemplazante queda diurno y otro diurno cubre la rotativa</span>
+                                    <span class="rc-mode-d">${bridgeModeAvailable
+                                        ? "El reemplazante toma pauta diurna y un diurno de la unidad hace su rotativa."
+                                        : escapeHTML(bridgeModeReason || "No disponible en esta fecha.")}</span>
+                                </span>
+                            </label>
+                        </div>
+                        ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ? `
+                            <label class="rotation-contract-field">
+                                <span>Diurno que cubre la rotativa</span>
+                                <select data-contract-bridge-profile>
+                                    <option value="">Seleccionar trabajador diurno</option>
+                                    ${bridgeCandidates
+                                        .map(item => `
+                                            <option value="${escapeHTML(item.name)}" ${item.name === state.contractBridgeProfile ? "selected" : ""}>
+                                                ${escapeHTML(item.name)}${item.profession ? ` | ${escapeHTML(formatProfession(item.profession))}` : ""}
+                                            </option>
+                                        `)
+                                        .join("")}
+                                </select>
+                                <small>El trabajador elegido toma la rotativa de ${escapeHTML(state.contractReplaces)} durante el permiso; el reemplazante queda con pauta diurna.</small>
+                            </label>
                         ` : ""}
-                    </label>
-
-                    ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE ? `
-                        <label class="rotation-contract-field">
-                            <span>Diurno que cubre la rotativa</span>
-                            <select data-contract-bridge-profile>
-                                <option value="">Seleccionar trabajador diurno</option>
-                                ${bridgeCandidates
-                                    .map(item => `
-                                        <option value="${escapeHTML(item.name)}" ${item.name === state.contractBridgeProfile ? "selected" : ""}>
-                                            ${escapeHTML(item.name)}${item.profession ? ` | ${escapeHTML(formatProfession(item.profession))}` : ""}
-                                        </option>
-                                    `)
-                                    .join("")}
-                            </select>
-                            <small>El trabajador elegido toma la rotativa de ${escapeHTML(state.contractReplaces)} durante el permiso; el reemplazante queda con pauta diurna.</small>
-                        </label>
-                    ` : ""}
-                ` : ""}
-
+                    </div>
+        `;
+        const monthNav = `
                 <div class="profile-mini-head rotation-modal-head">
                     <button type="button" data-action="prev" aria-label="Mes anterior">&lt;</button>
                     <button class="profile-mini-month-trigger" type="button" data-action="pick-month" aria-label="Elegir mes y a&#241;o" aria-haspopup="dialog" aria-expanded="false">
@@ -3091,27 +3369,145 @@ function openRotationConfigModal(
                     </button>
                     <button type="button" data-action="next" aria-label="Mes siguiente">&gt;</button>
                 </div>
+        `;
+        const helpText = isReplacement
+            ? state.contractStart && state.contractEnd
+                ? `Contrato segun permiso seleccionado: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)}${state.contractReason ? ` | ${escapeHTML(state.contractReason)}` : ""}. ${escapeHTML(replacementRotationModeLabel(state.contractRotationMode))}.`
+                : hasReplacementTarget
+                    ? "Selecciona el permiso/ausencia que origina el reemplazo."
+                    : "Selecciona a quien reemplaza para cargar sus permisos disponibles."
+            : state.rotationStart
+                ? `Fecha seleccionada: ${formatDisplayDate(state.rotationStart)}.`
+                : "Selecciona la fecha de inicio de la rotativa.";
+        const dialogActions = `
+                    <button class="primary-button" type="button" data-action="save">Guardar</button>
+                    <button class="secondary-button" type="button" data-action="cancel">Cancelar</button>
+        `;
+
+        // El cuadro sirve para DOS cosas y solo una se rediseño: el contrato de
+        // reemplazo va en dos columnas -decisiones a la izquierda, calendario a
+        // la derecha- y la configuracion de rotativa queda como estaba.
+        backdrop.innerHTML = isReplacement
+            ? `
+            <div class="turn-change-dialog rotation-config-dialog rc-dialog" role="dialog" aria-modal="true">
+                <div class="rc-head">
+                    <div>
+                        <h3>${escapeHTML(title)}</h3>
+                        <p>${instructions}</p>
+                    </div>
+                </div>
+
+                <div class="rc-summary">
+                    <span class="rc-sum-item">
+                        <span class="rc-sum-k">Reemplazante</span>
+                        <span class="rc-sum-v">${escapeHTML(profileDraft.name || profile?.name || "")}</span>
+                    </span>
+                    ${state.contractStart && state.contractEnd ? `
+                        <span class="rc-sum-sep" aria-hidden="true"></span>
+                        <span class="rc-sum-item">
+                            <span class="rc-sum-k">Periodo</span>
+                            <span class="rc-sum-v">${escapeHTML(formatDisplayDate(state.contractStart))} &rarr; ${escapeHTML(formatDisplayDate(state.contractEnd))}</span>
+                        </span>
+                        <span class="rc-sum-sep" aria-hidden="true"></span>
+                        <span class="rc-sum-item">
+                            <span class="rc-sum-k">Duraci&oacute;n</span>
+                            <span class="rc-sum-v">${diasContrato} d&iacute;as</span>
+                        </span>
+                    ` : ""}
+                    ${state.contractRotationMode === REPLACEMENT_ROTATION_MODE.INHERIT && state.contractLeaveRef ? `
+                        <span class="rc-tally-group">
+                            <span class="rc-tally rc-tally--ok">${inheritPreview.heredados} turnos heredados</span>
+                            ${inheritPreview.pendientes ? `
+                                <span class="rc-tally rc-tally--pend">
+                                    <span class="rc-bang">!</span>${inheritPreview.pendientes} pendientes
+                                </span>
+                            ` : ""}
+                        </span>
+                    ` : ""}
+                </div>
+
+                <div class="rc-body">
+                    <div class="rc-decide">
+                        ${requiresRotationFirstTurn(type) ? `
+                            <div class="rotation-start-options" aria-label="Turno inicial">
+                                ${startOptions}
+                            </div>
+                        ` : ""}
+                        ${replacementFields}
+                    </div>
+
+                    <div class="rc-preview">
+                        <div class="rc-cal-bar">
+                            ${monthNav}
+                            ${inheritPreview.pendientes ? `
+                                <button class="rc-jump" type="button" data-action="rc-jump">
+                                    <span class="rc-bang">!</span> Ir al primer pendiente
+                                </button>
+                            ` : ""}
+                        </div>
+
+                        ${bandas ? `
+                            <div class="rc-bands">
+                                ${contratoPrevio ? `
+                                    <div class="rc-band">
+                                        <span class="rc-band-k">Contrato anterior</span>
+                                        <span class="rc-band-track"><span class="rc-band-fill rc-band-fill--prev" style="${bandas.previo}"></span></span>
+                                    </div>
+                                ` : ""}
+                                <div class="rc-band">
+                                    <span class="rc-band-k">Contrato nuevo</span>
+                                    <span class="rc-band-track"><span class="rc-band-fill rc-band-fill--new" style="${bandas.nuevo}"></span></span>
+                                </div>
+                                ${contratoPrevio ? `
+                                    <div class="rc-band">
+                                        <span class="rc-band-k">Se traslapan</span>
+                                        <span class="rc-band-track"><span class="rc-band-fill rc-band-fill--lap" style="${bandas.traslape}"></span></span>
+                                    </div>
+                                ` : ""}
+                            </div>
+                        ` : ""}
+
+                        <div class="rotation-modal-calendar rc-cal">
+                            ${renderCalendar()}
+                        </div>
+
+                        <div class="rc-why" data-rc-why hidden></div>
+
+                        <div class="rc-legend">
+                            ${contratoPrevio ? `<span class="rc-lg"><span class="rc-sw rc-sw--prev"></span> Contrato anterior</span>` : ""}
+                            <span class="rc-lg"><span class="rc-sw rc-sw--new"></span> Contrato nuevo</span>
+                            ${contratoPrevio ? `<span class="rc-lg"><span class="rc-sw rc-sw--lap"></span> Tramo traslapado</span>` : ""}
+                            <span class="rc-lg"><span class="rc-bang">!</span> Queda pendiente de reemplazo</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="rc-foot">
+                    <span class="rc-foot-note">${helpText}</span>
+                    <span class="rc-foot-actions">${dialogActions}</span>
+                </div>
+            </div>
+        `
+            : `
+            <div class="turn-change-dialog rotation-config-dialog" role="dialog" aria-modal="true">
+                <strong>${title}</strong>
+                <p>${instructions}</p>
+
+                ${requiresRotationFirstTurn(type) ? `
+                    <div class="rotation-start-options" aria-label="Turno inicial">
+                        ${startOptions}
+                    </div>
+                ` : ""}
+
+                ${monthNav}
 
                 <div class="rotation-modal-calendar">
                     ${renderCalendar()}
                 </div>
 
-                <div class="profile-mini-help">
-                    ${isReplacement
-                        ? state.contractStart && state.contractEnd
-                            ? `Contrato segun permiso seleccionado: ${formatDisplayDate(state.contractStart)} al ${formatDisplayDate(state.contractEnd)}${state.contractReason ? ` | ${escapeHTML(state.contractReason)}` : ""}. ${escapeHTML(replacementRotationModeLabel(state.contractRotationMode))}.`
-                            : hasReplacementTarget
-                                ? "Selecciona el permiso/ausencia que origina el reemplazo."
-                                : "Selecciona a quien reemplaza para cargar sus permisos disponibles."
-                        : state.rotationStart
-                            ? `Fecha seleccionada: ${formatDisplayDate(state.rotationStart)}.`
-                            : "Selecciona la fecha de inicio de la rotativa."}
-                </div>
+                <div class="profile-mini-help">${helpText}</div>
 
-                <div class="turn-change-dialog__actions">
-                    <button class="primary-button" type="button" data-action="save">Guardar</button>
-                    <button class="secondary-button" type="button" data-action="cancel">Cancelar</button>
-                </div>
+                <div class="turn-change-dialog__actions">${dialogActions}</div>
             </div>
         `;
 
@@ -3197,6 +3593,30 @@ function openRotationConfigModal(
             event.target instanceof Element
                 ? event.target
                 : event.target.parentElement;
+
+        // El "!" de un dia que no se puede heredar: explica POR QUE ahi mismo.
+        // Va antes de la casilla porque el "!" vive dentro de ella y el clic
+        // llegaria igual al dia.
+        const pendingBadge = targetElement?.closest("[data-rc-pending]");
+        if (pendingBadge) {
+            event.stopPropagation();
+            mostrarMotivoPendiente(backdrop, pendingBadge.dataset.rcPending);
+            return;
+        }
+
+        if (targetElement?.closest("[data-action='rc-jump']")) {
+            const primero =
+                backdrop.querySelector("[data-rc-pending]");
+
+            if (primero) {
+                mostrarMotivoPendiente(
+                    backdrop,
+                    primero.dataset.rcPending
+                );
+            }
+            return;
+        }
+
         const dayButton =
             targetElement?.closest(".profile-mini-day");
         if (dayButton?.dataset.key && !dayButton.disabled) {

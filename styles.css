@@ -8855,6 +8855,508 @@ body.auth-gate-active .app-shell {
     line-height: 1.35;
 }
 
+/* ===================================================================
+   Contrato de reemplazo: cuadro en dos columnas
+
+   Portado del mockup aprobado. Prefijo `rc-` en TODO: los nombres del
+   mockup (.day, .step, .mode) son genericos y en una hoja de 27 mil
+   lineas chocarian con algo, silenciosamente y en otra pantalla.
+
+   La idea: las decisiones a la izquierda y el calendario a la derecha
+   como consecuencia visible. Antes era una sola columna con scroll
+   interno y el calendario quedaba cortado al fondo.
+   =================================================================== */
+
+.rc-dialog {
+    width: min(1060px, 100%);
+    padding: 0;
+    overflow: hidden;
+}
+
+.rc-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(
+        180deg,
+        rgba(var(--brand-blue-rgb), 0.07),
+        transparent
+    );
+}
+
+.rc-head h3 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 1.12rem;
+    color: var(--text-strong);
+}
+
+.rc-head p {
+    margin: 4px 0 0;
+    font-size: 0.86rem;
+    color: var(--text-soft);
+    max-width: 62ch;
+}
+
+/* Barra de resumen: lo que se va a crear, siempre a la vista. */
+.rc-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 22px;
+    padding: 14px 24px;
+    background: var(--panel-2, var(--field));
+    border-bottom: 1px solid var(--border);
+}
+
+.rc-sum-item {
+    display: grid;
+    gap: 1px;
+}
+
+.rc-sum-k {
+    font-size: 0.66rem;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.rc-sum-v {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 0.95rem;
+    color: var(--text-strong);
+    font-variant-numeric: tabular-nums;
+}
+
+.rc-sum-sep {
+    width: 1px;
+    align-self: stretch;
+    background: var(--border);
+}
+
+.rc-tally-group {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.rc-tally {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+
+.rc-tally--ok {
+    background: rgba(34, 197, 94, 0.14);
+    color: #15803d;
+}
+
+.rc-tally--pend {
+    background: rgba(239, 68, 68, 0.13);
+    color: #b91c1c;
+}
+
+body.theme-dark .rc-tally--ok { color: #6ee7a0; }
+body.theme-dark .rc-tally--pend { color: #fca5a5; }
+
+/* El "!" de siempre, en tamano de texto. */
+.rc-bang {
+    display: inline-grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    background: var(--red);
+    color: #fff;
+    font-size: 0.66rem;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.rc-body {
+    display: grid;
+    grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+}
+
+.rc-decide {
+    padding: 20px 22px 22px;
+    border-right: 1px solid var(--border);
+    display: grid;
+    gap: 18px;
+    align-content: start;
+}
+
+.rc-preview {
+    padding: 20px 22px 22px;
+    display: grid;
+    gap: 14px;
+    align-content: start;
+}
+
+.rc-step {
+    display: grid;
+    gap: 8px;
+}
+
+.rc-step-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+.rc-step-n {
+    flex: 0 0 auto;
+    width: 21px;
+    height: 21px;
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    background: rgba(var(--brand-blue-rgb), 0.14);
+    color: var(--accent);
+    font-family: var(--font-display);
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.rc-step-t {
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-soft);
+}
+
+/* Los modos dejan de ser un select ciego: cada uno dice que hace. */
+.rc-modes {
+    display: grid;
+    gap: 8px;
+}
+
+.rc-mode {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 10px;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--panel);
+    cursor: pointer;
+}
+
+.rc-mode:hover {
+    border-color: rgba(var(--brand-blue-rgb), 0.45);
+}
+
+.rc-mode input {
+    margin: 3px 0 0;
+    accent-color: var(--accent);
+}
+
+.rc-mode-t {
+    font-weight: 700;
+    color: var(--text-strong);
+    font-size: 0.9rem;
+}
+
+.rc-mode-d {
+    font-size: 0.77rem;
+    color: var(--text-soft);
+    line-height: 1.4;
+}
+
+.rc-mode.is-on {
+    border-color: var(--accent);
+    background: rgba(var(--brand-blue-rgb), 0.06);
+}
+
+/* Deshabilitado CON motivo: antes se apagaba sin decir por que. */
+.rc-mode.is-off {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.rc-mode.is-off .rc-mode-d {
+    color: var(--orange);
+    font-weight: 600;
+}
+
+.rc-cal-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.rc-cal-nav {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text-soft);
+    font: inherit;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.rc-cal-nav:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.rc-cal-month {
+    font-family: var(--font-display);
+    font-weight: 800;
+    font-size: 0.98rem;
+    color: var(--text-strong);
+}
+
+.rc-jump {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.08);
+    color: #b91c1c;
+    font: inherit;
+    font-weight: 800;
+    font-size: 0.79rem;
+    cursor: pointer;
+}
+
+body.theme-dark .rc-jump { color: #fca5a5; }
+
+/* Las tres barras hacen VISIBLE el traslape, que antes habia que deducir. */
+.rc-bands {
+    display: grid;
+    gap: 5px;
+}
+
+.rc-band {
+    display: grid;
+    grid-template-columns: 116px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+}
+
+.rc-band-k {
+    font-size: 0.7rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.rc-band-track {
+    position: relative;
+    height: 13px;
+    border-radius: 999px;
+    background: var(--field);
+    overflow: hidden;
+}
+
+.rc-band-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 999px;
+}
+
+.rc-band-fill--prev { background: rgba(34, 197, 94, 0.45); }
+.rc-band-fill--new { background: rgba(var(--brand-blue-rgb), 0.5); }
+
+.rc-band-fill--lap {
+    background: repeating-linear-gradient(
+        45deg,
+        rgba(240, 177, 0, 0.75) 0 5px,
+        rgba(240, 177, 0, 0.3) 5px 10px
+    );
+}
+
+.rc-why {
+    display: grid;
+    gap: 3px;
+    padding: 11px 13px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    background: rgba(239, 68, 68, 0.07);
+}
+
+.rc-why-t {
+    font-weight: 800;
+    font-size: 0.85rem;
+    color: var(--text-strong);
+}
+
+.rc-why-d {
+    font-size: 0.8rem;
+    color: var(--text-soft);
+}
+
+.rc-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    font-size: 0.75rem;
+    color: var(--text-soft);
+}
+
+.rc-lg {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.rc-sw {
+    width: 13px;
+    height: 13px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+}
+
+.rc-sw--prev {
+    background: rgba(34, 197, 94, 0.35);
+    border-color: rgba(34, 197, 94, 0.5);
+}
+
+.rc-sw--new {
+    background: rgba(var(--brand-blue-rgb), 0.3);
+    border-color: rgba(var(--brand-blue-rgb), 0.5);
+}
+
+.rc-sw--lap {
+    background: repeating-linear-gradient(
+        45deg,
+        rgba(240, 177, 0, 0.8) 0 4px,
+        rgba(240, 177, 0, 0.28) 4px 8px
+    );
+    border-color: rgba(240, 177, 0, 0.6);
+}
+
+.rc-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 24px;
+    border-top: 1px solid var(--border);
+    background: var(--panel-2, var(--field));
+}
+
+.rc-foot-note {
+    font-size: 0.82rem;
+    color: var(--text-soft);
+    max-width: 60ch;
+}
+
+.rc-foot-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 10px;
+}
+
+/* Marcas sobre las casillas del mini calendario del cuadro. */
+.rc-cal .profile-mini-day.is-rc-prev {
+    background: rgba(34, 197, 94, 0.09);
+    border-color: rgba(34, 197, 94, 0.3);
+}
+
+.rc-cal .profile-mini-day.is-rc-new {
+    background: rgba(var(--brand-blue-rgb), 0.07);
+    border-color: rgba(var(--brand-blue-rgb), 0.28);
+}
+
+.rc-cal .profile-mini-day.is-rc-lap {
+    box-shadow: inset 0 0 0 2px rgba(240, 177, 0, 0.55);
+}
+
+.rc-cal .profile-mini-day.is-rc-pending {
+    border-color: rgba(239, 68, 68, 0.55);
+    background: rgba(239, 68, 68, 0.08);
+}
+
+.rc-cal .profile-mini-day.is-rc-target {
+    outline: 3px solid rgba(239, 68, 68, 0.45);
+    outline-offset: 2px;
+}
+
+.rc-day-bang {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 19px;
+    height: 19px;
+    border-radius: 50%;
+    background: var(--red);
+    color: #fff;
+    border: 0;
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 800;
+    line-height: 1;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+}
+
+.rc-day-turn {
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 6px;
+    color: #fff;
+}
+
+@media (max-width: 900px) {
+    .rc-body {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .rc-decide {
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .rc-band {
+        grid-template-columns: 90px minmax(0, 1fr);
+    }
+}
+
+@media (max-width: 560px) {
+    .rc-summary {
+        gap: 10px 14px;
+    }
+
+    .rc-sum-sep {
+        display: none;
+    }
+
+    .rc-tally-group {
+        margin-left: 0;
+        width: 100%;
+    }
+
+    .rc-band-k {
+        font-size: 0.62rem;
+    }
+}
+
 .rotation-modal-head {
     margin-top: 4px;
 }

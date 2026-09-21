@@ -90,6 +90,7 @@
     "test:registro-asistencia": "node --test tests/registro-asistencia-import.test.mjs",
     "test:modal-arrastre": "node --test tests/modal-arrastre-no-cierra.test.mjs",
     "test:preguntas-ocupado": "node --test tests/preguntas-fuera-del-estado-ocupado.test.mjs",
+    "test:herencia-traslape": "node --test tests/herencia-turnos-traslape.test.mjs",
     "test:sugerencias-orden": "node --test tests/sugerencias-orden.test.mjs",
     "test:appcheck-recuperacion": "node --test tests/appcheck-recuperacion.test.mjs",
     "test:licencia-respaldo": "node --test tests/licencia-respaldo.test.mjs",
