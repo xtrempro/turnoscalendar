@@ -258,7 +258,9 @@ async function activateWorkspace(workspace, optionsOverride = {}) {
         // Detener el sync actual y LIMPIAR el estado local antes de activar
         // el nuevo entorno; si no, los datos locales del entorno anterior se
         // subirian al nuevo (corrupcion al cambiar de unidad).
-        await options.onWorkspaceChange?.(null);
+        await options.onWorkspaceChange?.(null, {
+            skipViewRefresh: true
+        });
         replaceLocalSnapshot({}, { silent: true });
         await options.onWorkspaceChange?.(currentWorkspace);
 
@@ -1529,7 +1531,9 @@ async function handleAction(action, backdrop, sourceButton = null) {
 
             currentWorkspace =
                 await createWorkspace(currentUser, input?.value);
-            await options.onWorkspaceChange?.(null);
+            await options.onWorkspaceChange?.(null, {
+                skipViewRefresh: true
+            });
             replaceLocalSnapshot({}, { silent: true });
             await refreshWorkspaces();
             await refreshLinkedUnits();

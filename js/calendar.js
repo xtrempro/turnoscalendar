@@ -2473,6 +2473,19 @@ if (typeof window !== "undefined") {
         handleCalendarPersistenceChange
     );
     window.addEventListener("proturnos:firebaseAppState", event => {
+        if (event.detail?.type === "app-state-applied") {
+            clearCalendarCache();
+            calendarMapSnapshots.clear();
+
+            if (document.body?.dataset?.activeView === "turnos") {
+                void renderCalendar({
+                    deferHeavy: true,
+                    skipCache: true
+                });
+            }
+            return;
+        }
+
         if (event.detail?.type !== "app-state-entries-applied") return;
 
         handleCalendarPersistenceChange({

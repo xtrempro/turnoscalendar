@@ -14894,7 +14894,7 @@ initFirebaseShell({
             renderKanbanBoard();
         }
     },
-    onWorkspaceChange: async workspace => {
+    onWorkspaceChange: async (workspace, changeOptions = {}) => {
         if (workspace?.id) {
             recordPerformanceEvent("firebase:workspace-change", {
                 type: "workspace",
@@ -15020,7 +15020,7 @@ initFirebaseShell({
                     );
                 }
             });
-            void measurePerformance(
+            await measurePerformance(
                 "firebase-app-state:start-sync",
                 () => startFirebaseAppStateSync(workspace, {
                     onChange: (_snapshot, detail = {}) => {
@@ -15089,6 +15089,10 @@ initFirebaseShell({
             await loadWorkspacePermissions(workspace);
             syncWorkspacePermissionUI();
             syncCalendarDirectEditToggle();
+        }
+
+        if (changeOptions.skipViewRefresh === true) {
+            return;
         }
 
         syncWorkspaceStateViews();
