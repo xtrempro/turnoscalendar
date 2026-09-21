@@ -4,7 +4,8 @@ const logger = require("firebase-functions/logger");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const {
   onDocumentCreated,
-  onDocumentUpdated
+  onDocumentUpdated,
+  onDocumentWritten
 } = require("firebase-functions/v2/firestore");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
@@ -25,6 +26,10 @@ const {
 const {
   recoverWorkerIdentityHandler
 } = require("./workerIdentityRecovery");
+const {
+  syncWorkerLinkEmailsHandler
+} = require("./workerLinkEmailSync");
+const { profilesFromState } = require("./getAccountsAndUnitsCore");
 const {
   createWorkerMedicalEquipmentReportHandler
 } = require("./medicalEquipmentReports");
@@ -2519,6 +2524,26 @@ exports.recoverWorkerIdentity = onCall(
     HttpsError,
     createCustomToken: (uid) => admin.auth().createCustomToken(uid),
     getAuthUser: (uid) => admin.auth().getUser(uid),
+    logger
+  })
+);
+
+// Mantiene el correo del VINCULO al dia con el del perfil.
+//
+// La recuperacion de identidad busca por workerEmail del vinculo, y ese campo
+// solo se escribia al aceptar una invitacion: si el supervisor corregia el
+// correo, el vinculo seguia apuntando al viejo y esa persona quedaba sin red.
+//
+// La alternativa -desenlazar y reinvitar- crea un uid NUEVO, y como el id de
+// cada hilo de chat lleva dentro los uids de ambos interlocutores, se perderian
+// las conversaciones tambien del lado del colega. Sincronizar en su sitio no
+// cuesta nada de eso.
+exports.syncWorkerLinkEmails = onDocumentWritten(
+  "workspaces/{workspaceId}/stateModules/profile/entries/{entryId}",
+  (event) => syncWorkerLinkEmailsHandler(event, {
+    db,
+    profilesFromState,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
     logger
   })
 );
