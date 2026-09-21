@@ -23,6 +23,9 @@ const {
   createWorkerClockIncidentRequestHandler
 } = require("./workerClockIncidents");
 const {
+  recoverWorkerIdentityHandler
+} = require("./workerIdentityRecovery");
+const {
   createWorkerMedicalEquipmentReportHandler
 } = require("./medicalEquipmentReports");
 const {
@@ -2476,6 +2479,25 @@ async function acceptWorkerAppInviteImpl({
 
   return result;
 }
+
+// Devuelve al trabajador su identidad ORIGINAL despues de perder el
+// almacenamiento del telefono, sin pasar por el supervisor: el correo lo
+// escribio el en la invitacion, y Google -o el enlace por correo- certifica
+// quien lo controla. Exigir ademas su aprobacion devolveria la friccion que
+// causo las desvinculaciones que esto viene a evitar.
+exports.recoverWorkerIdentity = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 60
+  },
+  (request) => recoverWorkerIdentityHandler(request, {
+    db,
+    HttpsError,
+    createCustomToken: (uid) => admin.auth().createCustomToken(uid),
+    getAuthUser: (uid) => admin.auth().getUser(uid),
+    logger
+  })
+);
 
 exports.acceptWorkerAppInvite = onCall(
   {
