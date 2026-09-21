@@ -100,6 +100,46 @@ test("devuelve un token del uid ORIGINAL, sin mover nada", async () => {
   assert.equal(resultado.profileName, "ANA");
 });
 
+test("entrar con Google cuenta como verificado", async () => {
+  // Caso real: una cuenta que nacio con contraseña y despues vinculo Google
+  // conserva email_verified en false. Mirando solo esa bandera, esa persona
+  // quedaba fuera de la recuperacion aunque Google acabara de autenticarla.
+  const resultado = await recoverWorkerIdentityHandler(
+    {
+      auth: {
+        uid: "uid-nuevo",
+        token: {
+          email: "ana@correo.cl",
+          email_verified: false,
+          firebase: { sign_in_provider: "google.com" }
+        }
+      }
+    },
+    deps({ db: fakeDb(UNIDAD) })
+  );
+
+  assert.equal(resultado.token, "token-de-uid-anonimo-original");
+});
+
+test("si no se puede firmar el token, se explica en vez de reventar", async () => {
+  // Sin el permiso iam.serviceAccounts.signBlob, el Admin SDK lanza un error
+  // que no es HttpsError y llegaba a la app como un "INTERNAL" mudo.
+  await assert.rejects(
+    recoverWorkerIdentityHandler(
+      peticion({ email: "ana@correo.cl", email_verified: true }),
+      deps({
+        db: fakeDb(UNIDAD),
+        createCustomToken: async () => {
+          const error = new Error("Permission denied");
+          error.errorInfo = { code: "auth/insufficient-permission" };
+          throw error;
+        }
+      })
+    ),
+    (error) => error instanceof FakeHttpsError && error.code === "internal"
+  );
+});
+
 test("sin correo verificado no se entrega ninguna identidad", async () => {
   await assert.rejects(
     recoverWorkerIdentityHandler(

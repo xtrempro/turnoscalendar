@@ -93,11 +93,21 @@ async function recoverWorkerIdentityHandler(request, dependencies) {
   }
 
   const email = normalizeEmail(authToken.email);
+  const proveedor = String(authToken.firebase?.sign_in_provider || "");
+
+  // El correo vale como verificado si Firebase lo marca asi, O si la sesion se
+  // acaba de abrir con Google, que lo verifica en el momento.
+  //
+  // La bandera almacenada no basta: una cuenta que nacio con contraseña y mas
+  // tarde vinculo Google puede conservar email_verified en false para siempre,
+  // y esa persona quedaba fuera de la recuperacion sin ningun motivo real.
+  const correoVerificado = authToken.email_verified === true ||
+    proveedor === "google.com";
 
   // La prueba de identidad es el correo VERIFICADO, venga de Google o del
   // enlace por correo: la funcion no pregunta COMO se verifico. Sin esa marca
   // cualquiera podria reclamar un vinculo ajeno escribiendo la direccion.
-  if (!email || authToken.email_verified !== true) {
+  if (!email || !correoVerificado) {
     throw new HttpsError(
       "permission-denied",
       "Necesitamos un correo verificado para devolverte tu app."
@@ -132,7 +142,25 @@ async function recoverWorkerIdentityHandler(request, dependencies) {
     );
   }
 
-  const customToken = await createCustomToken(elegido.uid);
+  let customToken;
+
+  try {
+    customToken = await createCustomToken(elegido.uid);
+  } catch (error) {
+    // Firmar un custom token exige que la cuenta de servicio del runtime tenga
+    // el permiso iam.serviceAccounts.signBlob sobre si misma. Cuando falta, el
+    // Admin SDK lanza un error que NO es HttpsError y al trabajador le llegaba
+    // un "INTERNAL" mudo, imposible de interpretar desde la app.
+    logger.error?.("No se pudo firmar el token de recuperacion.", {
+      uid: elegido.uid,
+      code: error?.errorInfo?.code || error?.code || "desconocido"
+    });
+
+    throw new HttpsError(
+      "internal",
+      "No pudimos completar la recuperacion por una falla del servidor. Avisale a tu supervisor."
+    );
+  }
 
   // Sin el token en el registro: es una credencial.
   logger.info("Identidad de trabajador recuperada.", {
