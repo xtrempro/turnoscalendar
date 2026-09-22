@@ -2095,6 +2095,27 @@ export async function startFirebaseAppStateSync(
 ) {
     const workspaceId = workspace?.id || "";
 
+    // Fases que se REPARTEN el total. Las sondas sueltas dejaban huecos entre
+    // ellas: el 2026-09-22 `start-sync` marcaba 53,6 s y lo medido sumaba ~9,5
+    // (7,95 de lecturas, 1,5 de mezclado, 25 ms de firmas). Los otros 44 s no
+    // estaban en ningun `await` instrumentado y tampoco eran CPU -la mayor
+    // tarea larga era de 1,7 s-. Midiendo por tramos consecutivos, la suma
+    // tiene que dar el total y el hueco no se puede esconder.
+    let faseDesde = typeof performance !== "undefined"
+        ? performance.now()
+        : Date.now();
+    const marcarFase = nombre => {
+        const ahora = typeof performance !== "undefined"
+            ? performance.now()
+            : Date.now();
+
+        recordPerformanceEvent(`firebase-app-state:fase-${nombre}`, {
+            type: "firebase",
+            duration: ahora - faseDesde
+        });
+        faseDesde = ahora;
+    };
+
     onStateChanged =
         typeof options.onChange === "function"
             ? options.onChange
@@ -2124,6 +2145,8 @@ export async function startFirebaseAppStateSync(
 
     try {
         const { db, firestoreModule } = await services();
+        marcarFase("servicios");
+
         const readableModules = stateModuleIds().filter(canReadModule);
         const moduleRefs = readableModules.map(moduleId => ({
             moduleId,
@@ -2160,6 +2183,8 @@ export async function startFirebaseAppStateSync(
             { moduleCount: moduleRefs.length },
             { asyncThreshold: 40 }
         );
+        marcarFase("documentos");
+
         const deniedModules = moduleReads.filter(item => item.error);
         const moduleDocs = moduleReads.filter(item => !item.error);
 
@@ -2185,6 +2210,8 @@ export async function startFirebaseAppStateSync(
             workspaceId,
             generation
         );
+
+        marcarFase("aplicar");
 
         if (
             workspaceId !== activeWorkspaceId ||
@@ -2273,6 +2300,8 @@ export async function startFirebaseAppStateSync(
             unsubscribeStateEntries?.();
             unsubscribeStateEntries = null;
         };
+
+        marcarFase("oyentes");
     } catch (error) {
         // NO se abre la compuerta de publicacion.
         //
