@@ -15288,6 +15288,10 @@ async function enforceWorkspaceMfa(workspace) {
     return workspaceMfaPromise;
 }
 
+// Cambiar de unidad dos veces seguidas deja una hidratacion en vuelo: cuando
+// termine, sus vistas serian las del entorno ANTERIOR.
+let workspaceChangeGeneration = 0;
+
 initFirebaseShell({
     userChip: DOM.authUserChip,
     userName: DOM.authUserName,
@@ -15315,6 +15319,18 @@ initFirebaseShell({
         }
     },
     onWorkspaceChange: async (workspace, changeOptions = {}) => {
+        const generacion = ++workspaceChangeGeneration;
+        const refrescarVistasDelEntorno = () => {
+            syncWorkspaceStateViews();
+
+            const vista = document.body.dataset.activeView;
+
+            if (vista === "tasks") renderTaskAssignmentsPanel();
+            if (vista === "kanban") renderKanbanBoard();
+            if (vista === "medicalEquipment") renderMedicalEquipmentPanel();
+            if (vista === "tenders") renderTendersPanel();
+        };
+
         if (workspace?.id) {
             recordPerformanceEvent("firebase:workspace-change", {
                 type: "workspace",
@@ -15440,7 +15456,7 @@ initFirebaseShell({
                     );
                 }
             });
-            await measurePerformance(
+            const estadoHidratado = measurePerformance(
                 "firebase-app-state:start-sync",
                 () => startFirebaseAppStateSync(workspace, {
                     onChange: (_snapshot, detail = {}) => {
@@ -15490,6 +15506,25 @@ initFirebaseShell({
                     }
                 }
             });
+
+            // La hidratacion NO se espera aqui. Medido el 2026-09-22 en prod:
+            // `firebase-app-state:start-sync` tardo 128 SEGUNDOS -trae los 17
+            // documentos de modulo y los aplica-, y como `activateWorkspace`
+            // (js/firebaseShell.js) espera a `onWorkspaceChange`, el modal de
+            // seleccion de unidad no se cerraba hasta entonces: la app parecia
+            // no arrancar.
+            //
+            // Se conserva lo que buscaba el `await`: refrescar las vistas CON
+            // el estado ya hidratado, no con el del entorno anterior. Solo que
+            // ahora se agenda en vez de bloquear.
+            void estadoHidratado.then(() => {
+                // Otra unidad se activo mientras esto venia en camino: sus
+                // vistas ya no son las de este entorno.
+                if (generacion !== workspaceChangeGeneration) return;
+                if (changeOptions.skipViewRefresh === true) return;
+
+                refrescarVistasDelEntorno();
+            });
             startAutoCoverageScheduler();
         } else {
             stopFirebaseReplacementRequestSync();
@@ -15515,19 +15550,12 @@ initFirebaseShell({
             return;
         }
 
-        syncWorkspaceStateViews();
-        if (document.body.dataset.activeView === "tasks") {
-            renderTaskAssignmentsPanel();
-        }
-        if (document.body.dataset.activeView === "kanban") {
-            renderKanbanBoard();
-        }
-        if (document.body.dataset.activeView === "medicalEquipment") {
-            renderMedicalEquipmentPanel();
-        }
-        if (document.body.dataset.activeView === "tenders") {
-            renderTendersPanel();
-        }
+        // Con entorno el refresco ya quedo agendado para cuando hidrate:
+        // hacerlo tambien aqui pintaria con el estado del entorno ANTERIOR, que
+        // es justo el defecto que el `await` venia a corregir.
+        if (workspace?.id) return;
+
+        refrescarVistasDelEntorno();
     },
     // El panel de unidades enlazadas avisa que hay una ausencia autorizada;
     // crear el contrato es trabajo de aqui, donde vive el borrador de perfil.

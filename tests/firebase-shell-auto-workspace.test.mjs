@@ -36,20 +36,44 @@ test("cambiar de unidad no repinta con datos del entorno anterior", () => {
         firebaseShell,
         /await options\.onWorkspaceChange\?\.\(null,\s*\{\s*skipViewRefresh: true\s*\}\);\s*\n\s*replaceLocalSnapshot\(\{\}, \{ silent: true \}\);\s*\n\s*await options\.onWorkspaceChange\?\.\(currentWorkspace\)/
     );
+    // Con entorno, el refresco va agendado para cuando hidrate; hacerlo tambien
+    // en la cola pintaria con el estado del entorno ANTERIOR, que es el defecto
+    // que este test vigila.
     assert.match(
         main,
-        /if \(changeOptions\.skipViewRefresh === true\) \{\s*\n\s*return;\s*\n\s*\}\s*\n\s*syncWorkspaceStateViews\(\);/
+        /if \(changeOptions\.skipViewRefresh === true\) \{\s*\n\s*return;\s*\n\s*\}[\s\S]{0,400}if \(workspace\?\.id\) return;\s*\n\s*refrescarVistasDelEntorno\(\);/
     );
 });
 
 test("la vista se refresca despues de hidratar la unidad nueva", () => {
+    // La intencion no cambia -refrescar CON el estado hidratado, no con el
+    // viejo-; cambia el mecanismo. Se agenda en vez de esperar.
+    //
+    // Esperarlo costaba la carga entera: medido el 2026-09-22 en prod,
+    // `start-sync` tardo 128 SEGUNDOS, y como activateWorkspace espera a
+    // onWorkspaceChange, el modal de seleccion de unidad no se cerraba hasta
+    // entonces.
     assert.match(
         main,
-        /await measurePerformance\(\s*"firebase-app-state:start-sync"/
+        /const estadoHidratado = measurePerformance\(\s*\n\s*"firebase-app-state:start-sync"/
     );
     assert.doesNotMatch(
         main,
-        /void measurePerformance\(\s*"firebase-app-state:start-sync"/
+        /await measurePerformance\(\s*\n\s*"firebase-app-state:start-sync"/
+    );
+    assert.match(
+        main,
+        /void estadoHidratado\.then\(\(\) => \{[\s\S]{0,400}refrescarVistasDelEntorno\(\);/
+    );
+});
+
+test("una hidratacion en vuelo no repinta con la unidad que se dejo", () => {
+    // Cambiar de unidad dos veces seguidas deja la primera hidratacion en
+    // camino: al llegar, sus vistas ya no son las de la unidad activa.
+    assert.match(main, /const generacion = \+\+workspaceChangeGeneration;/);
+    assert.match(
+        main,
+        /if \(generacion !== workspaceChangeGeneration\) return;/
     );
 });
 
