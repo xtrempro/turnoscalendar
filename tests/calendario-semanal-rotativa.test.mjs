@@ -321,8 +321,12 @@ test("una carencia real solo se muestra en su propio estamento", () => {
 test("el inicio pide la dotacion entera, como siempre", () => {
     // getRotaGapShifts ya contaba sobre el turno completo: es de ahi que la
     // celda se habia desviado.
+    //
+    // El barrido de un dia se extrajo a `rotaGapRowsForDate` para que la version
+    // que cede el hilo y la de una tirada compartan el mismo calculo. La llamada
+    // que se vigila aqui vive ahora ahi, sin cambiar.
     assert.match(
-        seguido("getRotaGapShifts"),
+        seguido("rotaGapRowsForDate"),
         /absenceCache, "Todos", "Todas"/
     );
 });

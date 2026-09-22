@@ -2874,6 +2874,77 @@ function weeklyRotaGapsForCell(group, people) {
  *
  * Solo Larga y Noche: el diurno no pertenece a ningun grupo del 4to turno.
  */
+// El barrido de la brecha recorre `days` x 2 turnos x TODOS los perfiles, con
+// sus ausencias. Medido el 2026-09-22 en la unidad de ~68 trabajadores, con la
+// ventana de 30 dias de Inicio: ~10 s de hilo BLOQUEADO por barrido, y como
+// Inicio se repinta con cada cambio de estado, siete pintados seguidos sumaban
+// setenta segundos. Chrome llegaba a ofrecer cerrar la pagina.
+//
+// Se guarda por ventana y por dia de hoy, y se vacia junto al analisis del mes:
+// lo que invalida a uno invalida al otro.
+const ROTA_GAP_CACHE = new Map();
+
+function rotaGapCacheKey(days, today) {
+    return [
+        days,
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate()
+    ].join("|");
+}
+
+function rotaGapDate(today, offset) {
+    return new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate() + offset
+    );
+}
+
+/** Lo ya calculado, o null. Para pintar sin bloquear ni esperar. */
+export function getCachedRotaGapShifts({
+    days = 7,
+    today = currentDate
+} = {}) {
+    return ROTA_GAP_CACHE.get(rotaGapCacheKey(days, today)) || null;
+}
+
+/**
+ * Calcula el barrido CEDIENDO EL HILO entre dia y dia, y lo guarda.
+ *
+ * Devuelve null si los datos cambiaron mientras calculaba: el resultado a
+ * medias mezclaria dos fotos, y quien pinte detras lo reintenta.
+ */
+export async function ensureRotaGapShifts({
+    days = 7,
+    today = currentDate
+} = {}) {
+    const cacheKey = rotaGapCacheKey(days, today);
+    const cached = ROTA_GAP_CACHE.get(cacheKey);
+
+    if (cached) return cached;
+
+    const version = analizarMesCacheVersion;
+    const absenceCache = new Map();
+    const rows = [];
+    const result = await runCooperativeRange(
+        0,
+        days - 1,
+        offset => {
+            rows.push(
+                ...rotaGapRowsForDate(rotaGapDate(today, offset), absenceCache)
+            );
+        },
+        { shouldContinue: () => version === analizarMesCacheVersion }
+    );
+
+    if (!result.completed) return null;
+
+    ROTA_GAP_CACHE.set(cacheKey, rows);
+
+    return rows;
+}
+
 export function getRotaGapShifts({
     days = 7,
     today = currentDate,
@@ -2882,12 +2953,20 @@ export function getRotaGapShifts({
     const rows = [];
 
     for (let offset = 0; offset < days; offset += 1) {
-        const date = new Date(
-            today.getFullYear(),
-            today.getMonth(),
-            today.getDate() + offset
+        rows.push(
+            ...rotaGapRowsForDate(rotaGapDate(today, offset), absenceCache)
         );
+    }
 
+    return rows;
+}
+
+// Un dia del barrido. Vive aparte para que la version que cede el hilo y la
+// de una tirada compartan EXACTAMENTE el mismo calculo.
+function rotaGapRowsForDate(date, absenceCache) {
+    const rows = [];
+
+    {
         WEEKLY_SHIFTS
             .filter(shift => shift.key !== "diurno")
             .forEach(shift => {
@@ -4118,6 +4197,7 @@ function clearAnalizarMesCache(event = null) {
     }
 
     ANALIZAR_MES_CACHE.clear();
+    ROTA_GAP_CACHE.clear();
     analizarMesCacheVersion++;
     staffingWeeklyPreloadRequest++;
     clearTimeout(staffingWeeklyPreloadTimer);

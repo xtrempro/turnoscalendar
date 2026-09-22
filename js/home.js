@@ -55,7 +55,8 @@ import { updateDayCell, updateVisibleCalendarDays } from "./calendar.js";
 import { updateTimelineCells } from "./timeline.js";
 import {
     birthDateParts,
-    getRotaGapShifts,
+    ensureRotaGapShifts,
+    getCachedRotaGapShifts,
     showStaffingWeekFor
 } from "./staffing.js";
 // El mismo cuadro que abre un cupo del tablero de Titulares: elegir un diurno
@@ -2981,8 +2982,21 @@ function getBrechaRows() {
     //
     // Lo que evita que el recuadro se vuelva ilegible es BRECHA_MAX_ROWS: se
     // ven las primeras y el resto se resume en una linea.
-    return getRotaGapShifts({ days: BRECHA_WINDOW_DAYS })
-        .flatMap(row => Array.from({ length: row.missing }, () => row));
+    // `today` EXPLICITO. Por omision getRotaGapShifts usa `currentDate`, que es
+    // el mes que se esta MIRANDO en el calendario y se muta al cambiar de mes
+    // (calendar.js: `currentDate.setFullYear(year, month, 1)`). Por eso la
+    // tarjeta llego a mostrar noviembre o diciembre: no eran los proximos 30
+    // dias, eran 30 dias desde el dia 1 del mes que el supervisor tenia abierto.
+    const rows = getCachedRotaGapShifts({
+        days: BRECHA_WINDOW_DAYS,
+        today: new Date()
+    });
+
+    // null = todavia no esta calculado. Lo pide brechaWidget y la tarjeta se
+    // llena sola; aqui NO se calcula, que es lo que bloqueaba diez segundos.
+    if (!rows) return null;
+
+    return rows.flatMap(row => Array.from({ length: row.missing }, () => row));
 }
 
 function brechaRow(row) {
@@ -3043,6 +3057,9 @@ function brechaCargoRow(cargo) {
 
 function brechaBody() {
     const rows = getBrechaRows();
+
+    if (!rows) return null;
+
     const cargos = new Map();
 
     rows.forEach(row => {
@@ -3088,8 +3105,59 @@ function brechaBody() {
     return { total: rows.length, summary, list, cargosList };
 }
 
+// El barrido de la brecha costaba ~10 s de hilo BLOQUEADO en CADA pintado de
+// Inicio (medido el 2026-09-22 en la unidad de ~68 trabajadores). Y como Inicio
+// se repinta con cada cambio de estado, al abrir la app se encadenaban siete:
+// setenta segundos, con Chrome ofreciendo cerrar la pagina.
+//
+// Ahora la tarjeta sale al instante con un aviso, el barrido se hace cediendo el
+// hilo y, cuando termina, se repinta Inicio UNA vez. Ese segundo pintado
+// encuentra el resultado guardado y cuesta lo que cualquier otra tarjeta.
+let brechaEnCurso = false;
+
+async function calcularBrechaEnSegundoPlano() {
+    if (brechaEnCurso) return;
+
+    brechaEnCurso = true;
+
+    try {
+        const rows = await ensureRotaGapShifts({
+            days: BRECHA_WINDOW_DAYS,
+            today: new Date()
+        });
+
+        // null = los datos cambiaron mientras calculaba. No se repinta: el
+        // pintado que venga detras lo vuelve a pedir.
+        if (!rows) return;
+        if (document.body?.dataset?.activeView !== "home") return;
+        if (!document.getElementById("homePanel")) return;
+
+        // Sin bucle: este pintado encuentra la cache llena, asi que brechaWidget
+        // ya no vuelve a pedir el calculo.
+        renderHomePanel();
+    } finally {
+        brechaEnCurso = false;
+    }
+}
+
 function brechaWidget() {
-    const { total, summary, list, cargosList } = brechaBody();
+    const body = brechaBody();
+
+    if (!body) {
+        void calcularBrechaEnSegundoPlano();
+
+        return `
+        <div class="hm-card hm-col-4">
+            ${panelHead(
+                IC.users,
+                "Brecha RRHH",
+                `<span class="hm-count">…</span>`
+            )}
+            <div class="hm-empty">Calculando la brecha de los próximos ${BRECHA_WINDOW_DAYS} días…</div>
+        </div>`;
+    }
+
+    const { total, summary, list, cargosList } = body;
 
     return `
         <div class="hm-card hm-col-4">

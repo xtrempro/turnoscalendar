@@ -22,7 +22,10 @@ const staffing = await read("staffing.js");
 /** Extrae una funcion por llaves equilibradas, saltando los parametros. */
 function grab(source, name) {
     const start = source.search(
-        new RegExp(`^(?:async )?(?:export )?function ${name}\\(`, "m")
+        // `export` va ANTES de `async`: al orden contrario no lo acepta el
+        // lenguaje, y tal como estaba esto no encontraba una
+        // `export async function`.
+        new RegExp(`^(?:export )?(?:async )?function ${name}\\(`, "m")
     );
 
     assert.notEqual(start, -1, `no se encontro: ${name}`);
@@ -207,9 +210,95 @@ test("una celda sin grupo no tiene carencia de rotativa", () => {
    ====================================================================== */
 
 test("solo se miran Larga y Noche", () => {
+    // El barrido de un dia vive en `rotaGapRowsForDate` desde que la version
+    // cooperativa y la de una tirada comparten calculo. El filtro no cambio.
     assert.match(
-        grab(staffing, "getRotaGapShifts"),
+        grab(staffing, "rotaGapRowsForDate"),
         /\.filter\(shift => shift\.key !== "diurno"\)/
+    );
+});
+
+/* ======================================================================
+   Los proximos 30 dias son los de HOY
+
+   Reportado por el usuario el 2026-09-22: la tarjeta mostraba turnos de
+   noviembre, y el dia anterior fechas de diciembre.
+   ====================================================================== */
+
+test("la brecha se mide desde hoy, no desde el mes que se esta mirando", () => {
+    // `getRotaGapShifts` usa por omision `currentDate`, que NO es hoy: es el mes
+    // abierto en el calendario, y se MUTA al cambiar de mes
+    // (calendar.js: `currentDate.setFullYear(year, month, 1)`). Sin pasar
+    // `today`, abrir noviembre en Turnos hacia que Inicio barriera desde el 1 de
+    // noviembre. Por eso aparecian fechas de meses siguientes.
+    assert.match(grab(home, "getBrechaRows"), /today: new Date\(\)/);
+});
+
+test("y quien calcula en segundo plano usa la misma fecha", () => {
+    // Si una mitad mirara `currentDate` y la otra hoy, la clave de la cache y lo
+    // que se pinta serian de dias distintos: la tarjeta no se llenaria nunca.
+    assert.match(
+        grab(home, "calcularBrechaEnSegundoPlano"),
+        /today: new Date\(\)/
+    );
+});
+
+/* ======================================================================
+   No bloquear el hilo
+   ====================================================================== */
+
+test("pintar la tarjeta NO dispara el barrido", () => {
+    // Medido el 2026-09-22: el barrido costaba ~10 s de hilo bloqueado, y como
+    // Inicio se repinta con cada cambio de estado se encadenaban siete.
+    const cuerpo = grab(home, "getBrechaRows");
+
+    assert.match(cuerpo, /getCachedRotaGapShifts\(/);
+    assert.doesNotMatch(cuerpo, /getRotaGapShifts\(\{/);
+    assert.match(cuerpo, /if \(!rows\) return null;/);
+});
+
+test("sin datos todavia, la tarjeta sale con un aviso", () => {
+    const cuerpo = grab(home, "brechaWidget");
+
+    assert.match(cuerpo, /if \(!body\) \{/);
+    assert.match(cuerpo, /calcularBrechaEnSegundoPlano\(\)/);
+});
+
+test("el barrido cede el hilo entre dia y dia", () => {
+    assert.match(
+        grab(staffing, "ensureRotaGapShifts"),
+        /await runCooperativeRange\(/
+    );
+});
+
+test("un barrido abandonado no se guarda ni repinta", () => {
+    // Mezclaria dos fotos distintas de los datos.
+    assert.match(
+        grab(staffing, "ensureRotaGapShifts"),
+        /if \(!result\.completed\) return null;/
+    );
+    assert.match(
+        grab(home, "calcularBrechaEnSegundoPlano"),
+        /if \(!rows\) return;/
+    );
+});
+
+test("el repintado no se puede volver un bucle", () => {
+    const cuerpo = grab(home, "calcularBrechaEnSegundoPlano");
+
+    // El segundo pintado encuentra la cache llena, asi que brechaWidget ya no
+    // vuelve a pedir el calculo; y dos pintados a la vez no pueden lanzar dos
+    // barridos.
+    assert.match(cuerpo, /if \(brechaEnCurso\) return;/);
+    assert.match(cuerpo, /brechaEnCurso = true;/);
+    assert.match(cuerpo, /finally \{/);
+});
+
+test("la cache de la brecha se vacia con la del mes", () => {
+    // Lo que invalida el analisis del mes invalida esto: son los mismos datos.
+    assert.match(
+        grab(staffing, "clearAnalizarMesCache"),
+        /ROTA_GAP_CACHE\.clear\(\);/
     );
 });
 
