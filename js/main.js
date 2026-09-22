@@ -2712,6 +2712,44 @@ function openRotationConfigModal(
     // desde esa fecha muestran la rotativa NUEVA (como quedaria al aplicarla);
     // los anteriores conservan el estado actual. Es solo visual: si no se acepta
     // el modal, no se escribe nada y se mantiene la rotativa anterior.
+    /**
+     * El rotulo de un dia del calendario del cuadro.
+     *
+     * Cuatro estados, que es lo que el supervisor necesita ver de un vistazo:
+     * que dias cubre el contrato anterior, cuales hereda el nuevo, cuales
+     * quedan SIN CUBRIR -esos llevan el "!"- y cuales son contrato nuevo sin
+     * turno que heredar. Antes los tres ultimos decian lo mismo.
+     */
+    const diaCalendarioHTML = ({
+        isNewReplacementContractDay,
+        existingContract,
+        stateTurnLabel,
+        estado,
+        libre
+    }) => {
+        const chip = stateTurnLabel
+            ? `<span class="replacement-contract-preview-turn">${escapeHTML(stateTurnLabel)}</span>`
+            : "";
+
+        if (isNewReplacementContractDay) {
+            const rotulo = estado === "pendiente"
+                ? '<span class="contract-day-label contract-day-label--pending">Sin cubrir</span>'
+                : estado === "heredado"
+                    ? '<span class="contract-day-label contract-day-label--inherited">Heredado</span>'
+                    : '<span class="contract-day-label contract-day-label--new">Contrato nuevo</span>';
+
+            return `${libre ? "" : chip}${rotulo}`;
+        }
+
+        if (existingContract) {
+            // El contrato anterior tambien muestra su turno: es lo que hace
+            // entender por que un dia del traslape no se puede heredar.
+            return `${chip}<span class="contract-day-label contract-day-label--current">Contrato vigente</span>`;
+        }
+
+        return "";
+    };
+
     const getModalPreviewTurn = (key, iso) => {
         if (isReplacement) {
             const inNewContractRange =
@@ -2747,6 +2785,21 @@ function openRotationConfigModal(
                     ? TURNO.DIURNO
                     : TURNO.LIBRE;
             }
+
+            // La previsualizacion manda sobre el turno del reemplazado.
+            //
+            // En un dia PENDIENTE el reemplazante conserva su turno propio: el
+            // heredado es justo el que no se puede aplicar (sumarlos daria un
+            // Turno 24 donde no se permiten). Devolver aqui el del reemplazado
+            // pintaria en el calendario un turno que nadie va a hacer.
+            //
+            // Y en un dia heredado con traslape, `turno` ya trae la suma de los
+            // dos, que es lo que de verdad se trabaja.
+            const previo = inheritPreview?.dias?.find(
+                item => item.key === key
+            );
+
+            if (previo) return previo.turno;
 
             return getTurnoBase(state.contractReplaces, key);
         }
@@ -2957,17 +3010,14 @@ function openRotationConfigModal(
                 <span>${d}</span>
                 <small>${
                     isReplacement
-                        ? isNewReplacementContractDay
-                            ? `${
-                                state.contractRotationMode !==
-                                    REPLACEMENT_ROTATION_MODE.FREE &&
-                                stateTurnLabel
-                                    ? `<span class="replacement-contract-preview-turn">${escapeHTML(stateTurnLabel)}</span>`
-                                    : ""
-                            }<span class="contract-day-label contract-day-label--new">Nuevo Contrato</span>`
-                            : existingContract
-                                ? '<span class="contract-day-label contract-day-label--current">Contrato vigente</span>'
-                            : ""
+                        ? diaCalendarioHTML({
+                            isNewReplacementContractDay,
+                            existingContract,
+                            stateTurnLabel,
+                            estado: diaHeredado?.estado || "",
+                            libre: state.contractRotationMode ===
+                                REPLACEMENT_ROTATION_MODE.FREE
+                        })
                         : turnoLabel(stateTurn)
                 }</small>
             `;

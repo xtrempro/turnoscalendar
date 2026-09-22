@@ -4810,6 +4810,19 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     background: #16a34a;
 }
 
+/* El dia del contrato nuevo que SI hereda turno, frente al que no tiene nada
+   que heredar (--new). Se distinguen porque el supervisor necesita ver de un
+   vistazo cuanto del contrato queda cubierto. */
+.profile-mini-day .contract-day-label--inherited {
+    background: #0ea5e9;
+}
+
+/* Y el que no se pudo heredar: es el que lleva el "!" y hay que cubrir aparte.
+   Mismo rojo que el resto de lo que pide atencion. */
+.profile-mini-day .contract-day-label--pending {
+    background: var(--red, #ef4444);
+}
+
 .profile-mini-day.is-contract-range {
     box-shadow:
         inset 0 0 0 2px rgba(37, 99, 235, 0.62),
