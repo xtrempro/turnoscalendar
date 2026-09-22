@@ -8884,6 +8884,27 @@ body.auth-gate-active .app-shell {
     width: min(1060px, 100%);
     padding: 0;
     overflow: hidden;
+
+    /* El cuadro NO puede crecer mas que la pantalla. El pie lleva "Guardar
+       contrato": si queda por debajo del pliegue, y encima el cuadro tiene
+       `overflow: hidden`, no hay ninguna forma de guardar. Se desplaza el
+       cuerpo; cabecera y pie se quedan siempre a la vista. */
+    max-height: min(92vh, 940px);
+    display: flex;
+    flex-direction: column;
+}
+
+.rc-head,
+.rc-foot {
+    flex: none;
+}
+
+/* El `[hidden]` del navegador PIERDE contra una clase que fije `display`, y
+   aqui varias lo fijan (`rc-why`, `rc-jump`, `rc-bands`, `rc-legend`). Sin
+   esto, el recuadro de explicacion vacio se veia como una franja roja al pie
+   del calendario aunque no hubiera ningun dia pendiente. */
+.rc-dialog [hidden] {
+    display: none !important;
 }
 
 .rc-head {
@@ -9000,6 +9021,11 @@ body.theme-dark .rc-tally--pend { color: #fca5a5; }
 .rc-body {
     display: grid;
     grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+
+    /* Lo que se desplaza es esto. `min-height: 0` hace falta o el hijo de un
+       flex no encoge por debajo de su contenido y el pie vuelve a irse fuera. */
+    min-height: 0;
+    overflow: auto;
 }
 
 .rc-decide {
