@@ -1,4 +1,5 @@
 import { normalizeText } from "./stringUtils.js";
+import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
 import {
     getProfiles,
     getCurrentProfile,
@@ -5697,12 +5698,10 @@ if (typeof window !== "undefined") {
     ) => {
         const keys = detail?.keys || [];
 
-        if (
-            keys.length &&
-            keys.every(key =>
-                String(key || "").startsWith("proturnos_ui_cache_")
-            )
-        ) {
+        // De la bitacora no sale ningun perfil afectado, asi que caia al
+        // clearTimelineCache() de abajo y a un repintado sin cache: 6,1 s
+        // medidos, el mayor consumidor de CPU de la app.
+        if (onlyViewIrrelevantStateKeys(keys)) {
             return;
         }
 

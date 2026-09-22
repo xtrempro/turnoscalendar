@@ -1,4 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
+import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
 import { showConfirm } from "./dialogs.js";
 import {
     LEAVE_ATTACHMENT_ACCEPT,
@@ -2383,12 +2384,7 @@ function handleCalendarPersistenceChange(event) {
         !Array.isArray(changedStorageKeys)
     ) return;
 
-    if (
-        changedStorageKeys.length &&
-        changedStorageKeys.every(storageKey =>
-            String(storageKey || "").startsWith("proturnos_ui_cache_")
-        )
-    ) {
+    if (onlyViewIrrelevantStateKeys(changedStorageKeys)) {
         return;
     }
 

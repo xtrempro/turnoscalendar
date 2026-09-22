@@ -1,4 +1,5 @@
 import { isoFromKey, parseKeyParts as parseKey } from "./dateUtils.js";
+import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
@@ -4109,12 +4110,10 @@ function holidaysSignature(holidays) {
 function clearAnalizarMesCache(event = null) {
     const keys = event?.detail?.keys || [];
 
-    if (
-        keys.length &&
-        keys.every(key =>
-            String(key || "").startsWith("proturnos_ui_cache_")
-        )
-    ) {
+    // La bitacora entraba por aqui y vaciaba el analisis del mes entero,
+    // subiendo la version -lo que ademas ABORTA un analizarMesCooperative en
+    // curso, el del publicador RRHH de 2do plano.
+    if (onlyViewIrrelevantStateKeys(keys)) {
         return false;
     }
 
