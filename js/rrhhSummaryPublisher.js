@@ -30,7 +30,7 @@ import {
 } from "./storage.js";
 import { calcularHorasMesPerfil } from "./hoursEngine.js";
 import { getHonorariaMonthlySummary } from "./honoraria.js";
-import { analizarMes } from "./staffing.js";
+import { analizarMesCooperative } from "./staffing.js";
 import { fetchHolidays } from "./holidays.js";
 import { isReplacementProfile, isReplacementContractType, isHonorariaContractType } from "./contracts.js";
 import { coveredShiftHours, coveredShiftKey } from "./coverageCounting.js";
@@ -247,7 +247,19 @@ async function computeRrhhSummary(year, month0, activeId) {
     hheeGastoClp += received.totalClp;
     ESTAMENTOS.forEach((e) => { gastoPorEstamento[e] += received.byEstamento[e]; });
 
-    const sinReemplazoTurnos = countMissingStaffingShifts(analizarMes(year, month0, holidays));
+    // La variante COOPERATIVA, que cede el hilo entre dia y dia. La bloqueante
+    // recorre el mes entero de una: medido el 2026-09-21 en la unidad de ~68
+    // trabajadores, 2,9 s de hilo principal secuestrado por llamada, y esto
+    // corre en 2do plano cada vez que el temporizador despierta.
+    //
+    // Devuelve null si los datos cambiaron mientras calculaba. Publicar con un
+    // analisis a medias daria una cifra falsa de turnos sin cubrir, asi que se
+    // abandona la vuelta entera y se reintenta cuando la edicion se calme.
+    const staffingMes = await analizarMesCooperative(year, month0, holidays);
+
+    if (!staffingMes) return null;
+
+    const sinReemplazoTurnos = countMissingStaffingShifts(staffingMes);
     const cov = coverageShifts(year, month0, activeId);
     const hheeManualClp = (cov.manual + cov.covered) > 0
         ? Math.round(hheeGastoClp * cov.manual / (cov.manual + cov.covered)) : 0;
@@ -321,7 +333,12 @@ async function attributeLoanCost(sourceWorkspaceId, loanId, hheeCostClp, month) 
 export async function publishRrhhSummary(year, month0) {
     const workspace = getActiveWorkspace();
     if (!workspace || !workspace.id) return null;
-    const { summary, loanOut } = await computeRrhhSummary(year, month0, workspace.id);
+    const computed = await computeRrhhSummary(year, month0, workspace.id);
+
+    // null = el analisis del mes se abandono a medias; no hay resumen que publicar.
+    if (!computed) return null;
+
+    const { summary, loanOut } = computed;
     await writeSummary(workspace.id, summary);
     // Atribuir el costo de cada préstamo prestado hacia afuera al host.
     for (const loan of loanOut.perLoan) {
@@ -352,10 +369,21 @@ async function maybePublish() {
     try {
         await idleYield();
         const now = new Date();
-        await publishRrhhSummary(now.getFullYear(), now.getMonth());
-        lastRun = Date.now(); dirty = false;
+        const published = await publishRrhhSummary(now.getFullYear(), now.getMonth());
+
+        // Solo se da por limpio si de verdad se publico: si el analisis se
+        // abandono a medias, sigue sucio para la proxima vuelta.
+        if (published) dirty = false;
     } catch (e) { console.warn("Publicación RRHH en 2° plano falló; se reintentará.", e); }
-    finally { running = false; }
+    finally {
+        // El freno de MIN_INTERVAL_MS avanza TAMBIEN cuando falla. Antes solo
+        // avanzaba con exito, y una escritura rechazada -el stream saturado, por
+        // ejemplo- dejaba el reintento suelto: `dirty` seguia en true y el
+        // temporizador de 60 s recalculaba el mes COMPLETO cada minuto. Asi el
+        // fallo se reintenta al ritmo del freno, no al del temporizador.
+        lastRun = Date.now();
+        running = false;
+    }
 }
 export function startRrhhSummaryBackgroundPublisher() {
     if (started) return;

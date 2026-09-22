@@ -4324,7 +4324,9 @@ export function analizarMes(year, month, holidays = {}){
     );
 }
 
-async function analizarMesCooperative(
+// La usa tambien el publicador RRHH de 2do plano: una tarea de fondo no
+// puede bloquear el hilo, y la version de arriba recorre los 30 dias de una.
+export async function analizarMesCooperative(
     year,
     month,
     holidays = {},
