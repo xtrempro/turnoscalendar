@@ -381,7 +381,7 @@ import {
     fusionarTurnos,
     getTurnoBase,
     getTurnoProgramado,
-    turnoBloqueadoPorTurno24
+    turnoBloqueadoPorReglas24
 } from "./turnEngine.js";
 import {
     esTurnoCapacitacionValido,
@@ -1891,7 +1891,7 @@ function buildInheritedTurnPreview({
             // le concierne. Sin nada al lado, la propia funcion devuelve false.
             const bloqueado = Boolean(
                 worker &&
-                turnoBloqueadoPorTurno24(worker, key, candidato)
+                turnoBloqueadoPorReglas24(worker, key, candidato)
             );
 
             dias.push({

@@ -752,6 +752,27 @@ function turnoBloqueadoPorTurno24Invertido(nombre, key, turno) {
     );
 }
 
+/**
+ * ¿La unidad prohibe este turno ese dia por las reglas del 24?
+ *
+ * Son DOS reglas distintas y hay que consultar las dos:
+ *
+ *   - `turnoBloqueadoPorTurno24`: el 24 de un dia, y lo que no puede ir pegado
+ *     a un 24 el dia antes o el siguiente.
+ *   - `turnoBloqueadoPorTurno24Invertido`: Noche y, a la manana siguiente, algo
+ *     que empieza de dia. Cruza DOS dias, y es la que se activa o desactiva con
+ *     "Permitir turnos de 24 horas invertidos".
+ *
+ * Existe porque exportar solo la primera dejo pasar un defecto el 2026-09-22: el
+ * cuadro de contrato de reemplazo heredaba turnos que la unidad tenia
+ * prohibidos, porque consultaba una regla y no la otra. Quien pregunte desde
+ * fuera pregunta por las dos o por ninguna.
+ */
+export function turnoBloqueadoPorReglas24(nombre, key, turno) {
+    return turnoBloqueadoPorTurno24(nombre, key, turno) ||
+        turnoBloqueadoPorTurno24Invertido(nombre, key, turno);
+}
+
 // `allowLibre` agrega el dia VACIO al final del ciclo, para que el ultimo click
 // vuelva al turno inicial (Larga -> 24h -> vacio -> Larga). Solo lo usa la
 // edicion directa de un trabajador a honorarios, donde la jornada se pacta dia a
@@ -875,8 +896,7 @@ export function siguienteTurnoValido(
             disallowLibre &&
             Number(turno) === TURNO.LIBRE
         ) ||
-        turnoBloqueadoPorTurno24(nombre, key, turno) ||
-        turnoBloqueadoPorTurno24Invertido(nombre, key, turno);
+        turnoBloqueadoPorReglas24(nombre, key, turno);
 
     while (
         candidate !== inicial &&

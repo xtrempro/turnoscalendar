@@ -80,7 +80,7 @@ function construir(mundo) {
     const fabrica = new Function(
         "getTurnoBase",
         "getContractsForProfile",
-        "turnoBloqueadoPorTurno24",
+        "turnoBloqueadoPorReglas24",
         "fusionarTurnos",
         "parseInputDate",
         "keyFromDate",
@@ -239,7 +239,7 @@ test("un dia bloqueado conserva el turno PROPIO, no el heredado", () => {
     assert.equal(dia9.propio, TURNO.NOCHE);
 });
 
-test("la regla del 24 vale TAMBIEN fuera del traslape", () => {
+test("las reglas del 24 valen TAMBIEN fuera del traslape", () => {
     // Esta prueba decia lo contrario -"solo aplica DENTRO del traslape"- y
     // codificaba el defecto como si fuera lo correcto.
     //
