@@ -197,6 +197,23 @@ test("el modulo diferido tampoco lee sus fragmentos durante el arranque", () => 
     );
 });
 
+test("el reemplazo inicial conserva el cache del modulo diferido", () => {
+    const aplicaInicial = cuerpoDe("applyInitialModules");
+    const conserva = aplicaInicial.indexOf("const deferredLocalSnapshot");
+    const agrega = aplicaInicial.indexOf(
+        "Object.assign(mergedSnapshot, deferredLocalSnapshot)"
+    );
+    const reemplaza = aplicaInicial.indexOf("replaceLocalSnapshot(mergedSnapshot");
+
+    assert.notEqual(conserva, -1, "no se captura el cache de LOG");
+    assert.ok(agrega > conserva, "el cache no se agrega al snapshot inicial");
+    assert.ok(reemplaza > agrega, "el cache se agrega despues de borrarlo");
+    assert.match(
+        aplicaInicial,
+        /deferredPendingModules\.has\(stateModuleForKey\(key\)\)/
+    );
+});
+
 test("dos solicitudes simultaneas comparten una sola hidratacion", () => {
     const hidrata = src.slice(src.indexOf("hydrateDeferred = async moduleId"));
 

@@ -1911,6 +1911,16 @@ async function applyInitialModules(
     entriesPromise
 ) {
     const mergedSnapshot = {};
+    // El shell limpia todo antes de cambiar de entorno. Si llegamos hasta aca,
+    // lo que queda en localStorage pertenece al entorno que se esta
+    // reconciliando y puede seguir visible mientras llegan los modulos
+    // diferidos. Sin esto, el reemplazo inicial borraba LOG durante mas de un
+    // minuto aunque su copia local fuera valida.
+    const deferredLocalSnapshot = Object.fromEntries(
+        Object.entries(exportLocalSnapshot()).filter(([key]) =>
+            deferredPendingModules.has(stateModuleForKey(key))
+        )
+    );
     const manifests = moduleDocs.filter(({ moduleId, docSnap }) =>
         docSnap.exists() && !deferredPendingModules.has(moduleId)
     );
@@ -1984,6 +1994,10 @@ async function applyInitialModules(
         { entryCount: localDirtyStateEntries.size },
         { threshold: 20 }
     );
+
+    // Se agrega al final para que el reemplazo integral no elimine el cache del
+    // diferido. La hidratacion autoritativa lo reemplaza por modulo al terminar.
+    Object.assign(mergedSnapshot, deferredLocalSnapshot);
 
     if (
         workspaceId !== activeWorkspaceId ||
