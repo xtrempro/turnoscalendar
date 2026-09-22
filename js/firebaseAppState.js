@@ -20,7 +20,6 @@ import {
     stateModulePermission
 } from "./firebaseStateModules.js";
 import {
-    applyPartialStateEntry,
     decodePartialStateItemKey,
     groupPartialStateEntries,
     mergePartialStateEntries,
@@ -1630,22 +1629,21 @@ function applyRemoteStateEntries(entries = []) {
 
             if (!applicableEntries.length) return;
 
+            const storageKeys = new Set(
+                applicableEntries.map(entry => entry.storageKey)
+            );
+            const snapshot = {};
+            storageKeys.forEach(key => {
+                snapshot[key] = getRaw(key, null);
+            });
+            mergePartialStateEntries(snapshot, applicableEntries);
             const patch = {};
-
-            applicableEntries.forEach(entry => {
-                const storageKey = entry.storageKey;
-                const snapshot = {
-                    [storageKey]: Object.prototype.hasOwnProperty.call(patch, storageKey)
-                        ? patch[storageKey]
-                        : getRaw(storageKey, null)
-                };
-
-                applyPartialStateEntry(snapshot, entry);
-                patch[storageKey] = Object.prototype.hasOwnProperty.call(
+            storageKeys.forEach(key => {
+                patch[key] = Object.prototype.hasOwnProperty.call(
                     snapshot,
-                    storageKey
+                    key
                 )
-                    ? snapshot[storageKey]
+                    ? snapshot[key]
                     : null;
             });
 
@@ -2171,6 +2169,21 @@ export async function startFirebaseAppStateSync(
                 moduleId
             )
         }));
+        const ownerManifestPromise = isWorkspaceOwner()
+            ? measurePerformance(
+                "firebase-app-state:module-manifests-query",
+                () => firestoreModule.getDocsFromServer(
+                    firestoreModule.collection(
+                        db,
+                        "workspaces",
+                        workspaceId,
+                        "stateModules"
+                    )
+                ),
+                { moduleCount: moduleRefs.length },
+                { asyncThreshold: 40 }
+            )
+            : null;
         // Un modulo que se deniega NO puede tumbar la sincronizacion entera.
         //
         // Con Promise.all, un solo `permission-denied` rechazaba el lote, saltaba
@@ -2181,32 +2194,48 @@ export async function startFirebaseAppStateSync(
         // cambios de NINGUN modulo (y para que un borrado local se publicara sin
         // que el estado remoto lo corrigiera).
         //
-        // Ahora cada modulo responde por si mismo: los que se pueden leer se
-        // aplican, y el que falla se anota y se sigue.
+        // Los propietarios leen los manifiestos existentes con una consulta.
+        // Los demas conservan lecturas individuales y errores por modulo.
         const moduleReads = await measurePerformance(
             "firebase-app-state:module-docs",
-            () => Promise.all(
-                moduleRefs.map(async ({ moduleId, ref }) => {
+            async () => {
+                if (ownerManifestPromise) {
                     try {
-                        // Uno por uno, con su nombre. `fase-documentos` marco
-                        // 43.516 ms el 2026-09-22 y hay que saber si es UN
-                        // documento lento o los diecisiete esperando a lo mismo:
-                        // llevan a arreglos opuestos. Con las entradas, que
-                        // terminaban todas con 26 ms de diferencia, fue lo
-                        // segundo.
-                        const docSnap = await measurePerformance(
-                            "firebase-app-state:module-doc",
-                            () => firestoreModule.getDoc(ref),
-                            { moduleId },
-                            { asyncThreshold: 40 }
+                        const manifests = await ownerManifestPromise;
+                        const byId = new Map(
+                            manifests.docs.map(docSnap => [docSnap.id, docSnap])
                         );
-
-                        return { moduleId, docSnap, existe: docSnap.exists() };
+                        return moduleRefs.map(({ moduleId }) => {
+                            const docSnap = byId.get(moduleId);
+                            return {
+                                moduleId,
+                                docSnap: docSnap || { exists: () => false },
+                                existe: Boolean(docSnap)
+                            };
+                        });
                     } catch (error) {
-                        return { moduleId, error };
+                        // Reglas antiguas pueden no permitir listar la coleccion.
+                        if (error?.code !== "permission-denied") throw error;
                     }
-                })
-            ),
+                }
+
+                return Promise.all(
+                    moduleRefs.map(async ({ moduleId, ref }) => {
+                        try {
+                            const docSnap = await measurePerformance(
+                                "firebase-app-state:module-doc",
+                                () => firestoreModule.getDoc(ref),
+                                { moduleId },
+                                { asyncThreshold: 40 }
+                            );
+
+                            return { moduleId, docSnap, existe: docSnap.exists() };
+                        } catch (error) {
+                            return { moduleId, error };
+                        }
+                    })
+                );
+            },
             { moduleCount: moduleRefs.length },
             { asyncThreshold: 40 }
         );

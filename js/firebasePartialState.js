@@ -358,33 +358,65 @@ export function planListStateEntries({
  * orden de los demas no se toca. Reconstruirla desde los items habria barajado
  * listas donde el orden importa.
  */
-function applyListStateEntry(snapshot, storageKey, entry) {
+function applyListStateEntries(snapshot, storageKey, entries, start, end) {
     const list = parseArray(snapshot[storageKey]);
-    const itemKey = String(entry.itemKey || "");
-    const index = list.findIndex(item => listItemId(item) === itemKey);
+    let serialized = false;
 
-    if (entry.deleted) {
-        if (index >= 0) list.splice(index, 1);
-    } else {
-        let parsed = null;
+    for (let position = start; position < end; position++) {
+        const entry = entries[position];
+        const itemKey = String(entry.itemKey || "");
+        const index = list.findIndex(item => listItemId(item) === itemKey);
 
-        try {
-            parsed = JSON.parse(String(entry.value ?? "null"));
-        } catch {
-            return snapshot;
+        if (entry.deleted) {
+            if (index >= 0) list.splice(index, 1);
+        } else {
+            let parsed = null;
+
+            try {
+                parsed = JSON.parse(String(entry.value ?? "null"));
+            } catch {
+                continue;
+            }
+
+            if (!parsed || typeof parsed !== "object") continue;
+
+            if (index >= 0) {
+                list[index] = parsed;
+            } else {
+                list.push(parsed);
+            }
         }
 
-        if (!parsed || typeof parsed !== "object") return snapshot;
+        serialized = true;
+    }
 
-        if (index >= 0) {
-            list[index] = parsed;
+    if (serialized) snapshot[storageKey] = JSON.stringify(list);
+    return snapshot;
+}
+
+function applyListStateEntry(snapshot, storageKey, entry) {
+    return applyListStateEntries(snapshot, storageKey, [entry], 0, 1);
+}
+
+function applyMapStateEntries(snapshot, storageKey, entries, start, end) {
+    const map = parseObject(snapshot[storageKey]);
+
+    for (let position = start; position < end; position++) {
+        const entry = entries[position];
+        const itemKey = String(entry.itemKey || "");
+
+        if (entry.deleted) {
+            delete map[itemKey];
         } else {
-            list.push(parsed);
+            try {
+                map[itemKey] = JSON.parse(String(entry.value ?? "null"));
+            } catch {
+                map[itemKey] = entry.value;
+            }
         }
     }
 
-    snapshot[storageKey] = JSON.stringify(list);
-
+    snapshot[storageKey] = JSON.stringify(map);
     return snapshot;
 }
 
@@ -467,25 +499,41 @@ export function applyPartialStateEntry(snapshot = {}, entry = {}) {
         return applyListStateEntry(snapshot, storageKey, entry);
     }
 
-    const map = parseObject(snapshot[storageKey]);
-
-    if (entry.deleted) {
-        delete map[itemKey];
-    } else {
-        try {
-            map[itemKey] = JSON.parse(String(entry.value ?? "null"));
-        } catch {
-            map[itemKey] = entry.value;
-        }
-    }
-
-    snapshot[storageKey] = JSON.stringify(map);
-    return snapshot;
+    return applyMapStateEntries(snapshot, storageKey, [entry], 0, 1);
 }
 
 export function mergePartialStateEntries(snapshot = {}, entries = []) {
-    return entries.reduce(
-        (result, entry) => applyPartialStateEntry(result, entry),
-        snapshot
-    );
+    for (let index = 0; index < entries.length;) {
+        const entry = entries[index];
+        const storageKey = String(entry.storageKey || "");
+        const isList = Boolean(storageKey && entry.itemKey) && (
+            entry.container === PARTIAL_LIST_CONTAINER ||
+            Array.isArray(parseStored(snapshot[storageKey]))
+        );
+
+        if (!storageKey || !entry.itemKey) {
+            applyPartialStateEntry(snapshot, entry);
+            index++;
+            continue;
+        }
+
+        let end = index + 1;
+        while (
+            end < entries.length &&
+            entries[end].storageKey === storageKey &&
+            entries[end].itemKey &&
+            (isList || entries[end].container !== PARTIAL_LIST_CONTAINER)
+        ) {
+            end++;
+        }
+
+        if (isList) {
+            applyListStateEntries(snapshot, storageKey, entries, index, end);
+        } else {
+            applyMapStateEntries(snapshot, storageKey, entries, index, end);
+        }
+        index = end;
+    }
+
+    return snapshot;
 }

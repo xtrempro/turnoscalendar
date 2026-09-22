@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import assert from "node:assert/strict";
 import test from "node:test";
 import {
     assertFails,
@@ -660,6 +661,26 @@ test("reglas modulares de Firestore y Storage", async t => {
                     manifest("profile", "profile")
                 )
             );
+        }
+    );
+
+    await t.test(
+        "el propietario puede listar manifiestos, un editor parcial no",
+        async () => {
+            const manifests = collection(
+                owner.firestore(),
+                "workspaces",
+                WORKSPACE_ID,
+                "stateModules"
+            );
+            const snapshot = await assertSucceeds(getDocs(manifests));
+            assert.ok(snapshot.docs.some(docSnap => docSnap.id === "turnos"));
+            await assertFails(getDocs(collection(
+                turnosEditor.firestore(),
+                "workspaces",
+                WORKSPACE_ID,
+                "stateModules"
+            )));
         }
     );
 
