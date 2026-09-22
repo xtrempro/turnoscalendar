@@ -253,6 +253,38 @@ test("y los avisos en rafaga se juntan en un solo repintado", () => {
     );
 });
 
+test("un repintado bloqueado se REINTENTA, no se tira", () => {
+    // Si se descartara, una tarjeta que espera su dato -la brecha- se quedaria
+    // en "Calculando..." hasta el proximo aviso, que puede no llegar nunca.
+    const agenda = home.slice(
+        home.indexOf("export function scheduleHomePanelRender(")
+    );
+    const dentro = agenda.slice(0, agenda.indexOf("\n}\n"));
+
+    assert.match(
+        dentro,
+        /if \(!homeCanRepaint\(\)\) \{\s*\n\s*scheduleHomePanelRender\(\);\s*\n\s*return;/
+    );
+});
+
+test("el calculo de la brecha NO repinta por su cuenta", () => {
+    // Reportado en test el 2026-09-22: se abria el modal de Dotacion y se
+    // cerraba sola al segundo, dos veces, hasta que la hidratacion se asentaba.
+    // Era este: al terminar el barrido llamaba a `renderHomePanel` directo, sin
+    // la guarda, y rehacer el panel se lleva por delante el modal abierto.
+    const fondo = home.slice(
+        home.indexOf("async function calcularBrechaEnSegundoPlano(")
+    );
+    const cuerpo = fondo.slice(0, fondo.indexOf("\n}\n"));
+
+    assert.notEqual(cuerpo.length, 0, "no se encontro el calculo de la brecha");
+    assert.match(cuerpo, /scheduleHomePanelRender\(\);/);
+    assert.doesNotMatch(
+        cuerpo,
+        /(?<!schedule)(?<!function )\brenderHomePanel\(\);/
+    );
+});
+
 /* =========================================================
    El arrastre
 ========================================================= */

@@ -3132,9 +3132,16 @@ async function calcularBrechaEnSegundoPlano() {
         if (document.body?.dataset?.activeView !== "home") return;
         if (!document.getElementById("homePanel")) return;
 
+        // Por el camino con guarda, NO directo.
+        //
+        // Repintar Inicio rehace el panel entero, y eso incluye los modales: el
+        // que estuviera abierto desaparece. Reportado en test el 2026-09-22 -se
+        // abria Dotacion y se cerraba sola al segundo, hasta que la hidratacion
+        // se asentaba y el barrido dejaba de repetirse-.
+        //
         // Sin bucle: este pintado encuentra la cache llena, asi que brechaWidget
         // ya no vuelve a pedir el calculo.
-        renderHomePanel();
+        scheduleHomePanelRender();
     } finally {
         brechaEnCurso = false;
     }
@@ -4943,8 +4950,18 @@ export function scheduleHomePanelRender() {
     homeRenderTimer = window.setTimeout(() => {
         homeRenderTimer = 0;
 
+        // Si ya no se mira Inicio no hay nada que pintar, y al volver se pinta
+        // entero: aqui se suelta sin reintentar.
         if (document.body?.dataset?.activeView !== "home") return;
-        if (!homeCanRepaint()) return;
+
+        // Arrastrando o con un modal abierto no se repinta, pero el aviso NO se
+        // tira: se reintenta hasta que se pueda. Descartarlo dejaria a una
+        // tarjeta que espera su dato -la brecha, sin ir mas lejos- en
+        // "Calculando..." hasta el proximo aviso, que puede no llegar nunca.
+        if (!homeCanRepaint()) {
+            scheduleHomePanelRender();
+            return;
+        }
 
         renderHomePanel();
     }, HOME_RENDER_COALESCE_MS);
