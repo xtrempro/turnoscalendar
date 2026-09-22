@@ -1,7 +1,25 @@
 const PERF_ENABLED_KEY = "proturnos_perf_monitor";
 const PERF_EVENTS_KEY = "proturnos_perf_events";
 const PERF_CONSOLE_KEY = "proturnos_perf_console";
-const PERF_MAX_EVENTS = 240;
+const PERF_MAX_EVENTS = 900;
+// Los eventos del ARRANQUE son los mas valiosos y eran los primeros en
+// perderse: la cola descartaba por antiguedad, y una carga genera mas de 140
+// tareas largas ella sola. El 2026-09-22 eso costo dos rondas de diagnostico
+// persiguiendo un "hueco de 44 segundos" en la hidratacion que no existia: las
+// fases `servicios` y `documentos` SI se habian medido, y las desalojo la cola
+// antes de que nadie las leyera. Ahora el principio se reserva.
+const PERF_KEEP_FIRST = 120;
+
+/** Conserva el arranque y lo reciente; lo que se tira es el medio. */
+function trimEvents(list) {
+    if (!Array.isArray(list) || list.length <= PERF_MAX_EVENTS) {
+        return Array.isArray(list) ? list : [];
+    }
+
+    return list
+        .slice(0, PERF_KEEP_FIRST)
+        .concat(list.slice(-(PERF_MAX_EVENTS - PERF_KEEP_FIRST)));
+}
 const LONG_TASK_THRESHOLD_MS = 50;
 const SPAN_THRESHOLD_MS = 50;
 const ASYNC_SPAN_THRESHOLD_MS = 180;
@@ -122,7 +140,7 @@ function loadStoredEvents() {
         const parsed = JSON.parse(raw);
 
         return Array.isArray(parsed)
-            ? parsed.slice(-PERF_MAX_EVENTS)
+            ? trimEvents(parsed)
             : [];
     } catch {
         return [];
@@ -137,7 +155,7 @@ function persistEvents(force = false) {
     lastPersistAt = timestamp;
     safeStorageSet(
         PERF_EVENTS_KEY,
-        JSON.stringify(events.slice(-PERF_MAX_EVENTS))
+        JSON.stringify(trimEvents(events))
     );
 }
 
@@ -158,9 +176,7 @@ function pushEvent(entry) {
 
     events.push(normalized);
 
-    if (events.length > PERF_MAX_EVENTS) {
-        events = events.slice(-PERF_MAX_EVENTS);
-    }
+    events = trimEvents(events);
 
     persistEvents(normalized.duration >= 250);
 
