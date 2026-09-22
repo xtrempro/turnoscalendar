@@ -217,9 +217,39 @@ test("el inicio se pinta con el orden guardado", () => {
 });
 
 test("un cambio desde otro equipo no reordena en medio de un arrastre", () => {
+    // La guarda se mudo a `homeCanRepaint`, que ahora la comparten TODOS los
+    // repintados -no solo el reordenado-, porque el problema es el mismo:
+    // rehacer el panel en la cara de quien esta arrastrando o tiene un modal
+    // abierto. El oyente la consulta antes de agendar nada.
     assert.match(
         home,
-        /window\.addEventListener\(HOME_LAYOUT_EVENT, \(\) => \{[\s\S]{0,300}if \(isHomeCardDragActive\(\)\) return;/
+        /window\.addEventListener\(HOME_LAYOUT_EVENT, \(\) => \{\s*\n\s*if \(!homeCanRepaint\(\)\) return;/
+    );
+    assert.match(
+        home,
+        /function homeCanRepaint\(\)[\s\S]{0,700}if \(isHomeCardDragActive\(\)\) return false;/
+    );
+    assert.match(
+        home,
+        /function homeCanRepaint\(\)[\s\S]{0,700}hm-modal-backdrop:not\(\[hidden\]\)/
+    );
+});
+
+test("y los avisos en rafaga se juntan en un solo repintado", () => {
+    // Medido el 2026-09-22 en la unidad grande: DIECISEIS repintados en un
+    // arranque, ~5,8 s. Cada uno rehace las cifras, las alertas, las catorce
+    // tarjetas y los diez modales.
+    assert.match(home, /export function scheduleHomePanelRender\(\)/);
+    assert.match(home, /if \(homeRenderTimer\) return;/);
+
+    // Y el repintado tardio comprueba OTRA VEZ que siga tocando: en 180 ms el
+    // usuario pudo cambiar de vista o empezar a arrastrar.
+    const agenda = home.slice(home.indexOf("export function scheduleHomePanelRender("));
+    const dentro = agenda.slice(0, agenda.indexOf("\n}"));
+
+    assert.ok(
+        (dentro.match(/activeView !== "home"/g) || []).length >= 2,
+        "solo se comprueba la vista al agendar, no al pintar"
     );
 });
 

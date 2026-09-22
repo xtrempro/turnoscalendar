@@ -4904,17 +4904,57 @@ export function renderHomePanel() {
     }
 }
 
-if (typeof window !== "undefined") {
-    // Otro equipo del mismo administrador cambio el orden de las tarjetas. No
-    // se reordena en la cara de quien esta arrastrando o tiene un modal
-    // abierto: en ese caso se aplica en el proximo pintado.
-    window.addEventListener(HOME_LAYOUT_EVENT, () => {
-        const panel = document.getElementById("homePanel");
+// Repintar Inicio cuesta rehacer TODO: las cifras, las alertas, las catorce
+// tarjetas y los diez modales. Durante la hidratacion llegan rafagas de avisos
+// -solicitudes, cobertura automatica, el orden de las tarjetas- y cada uno
+// pedia su propio repintado completo. Medido el 2026-09-22 en la unidad grande:
+// DIECISEIS repintados en un arranque, unos 5,8 s.
+//
+// Aqui se juntan: la primera rafaga agenda uno y las demas se suben a ese.
+const HOME_RENDER_COALESCE_MS = 180;
+let homeRenderTimer = 0;
 
-        if (!panel?.querySelector('[data-hm="grid"]')) return;
-        if (isHomeCardDragActive()) return;
-        if (panel.querySelector(".hm-modal-backdrop:not([hidden])")) return;
+function homeCanRepaint() {
+    const panel = document.getElementById("homePanel");
+
+    if (!panel?.querySelector('[data-hm="grid"]')) return false;
+
+    // No se repinta en la cara de quien esta arrastrando o tiene un modal
+    // abierto: se aplica en el proximo pintado. Era la guarda del reordenado y
+    // ahora vale para todos, que el problema es el mismo.
+    if (isHomeCardDragActive()) return false;
+    if (panel.querySelector(".hm-modal-backdrop:not([hidden])")) return false;
+
+    return true;
+}
+
+/**
+ * Repinta Inicio juntando las rafagas.
+ *
+ * Para avisos que llegan solos -sincronizacion, otra sesion-. Lo que el usuario
+ * acaba de hacer con sus manos sigue llamando a `renderHomePanel` directo: ahi
+ * esperar 180 ms se notaria.
+ */
+export function scheduleHomePanelRender() {
+    if (typeof window === "undefined") return;
+    if (document.body?.dataset?.activeView !== "home") return;
+    if (homeRenderTimer) return;
+
+    homeRenderTimer = window.setTimeout(() => {
+        homeRenderTimer = 0;
+
+        if (document.body?.dataset?.activeView !== "home") return;
+        if (!homeCanRepaint()) return;
 
         renderHomePanel();
+    }, HOME_RENDER_COALESCE_MS);
+}
+
+if (typeof window !== "undefined") {
+    // Otro equipo del mismo administrador cambio el orden de las tarjetas.
+    window.addEventListener(HOME_LAYOUT_EVENT, () => {
+        if (!homeCanRepaint()) return;
+
+        scheduleHomePanelRender();
     });
 }

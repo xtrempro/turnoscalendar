@@ -254,7 +254,11 @@ import {
 } from "./shiftHolders.js";
 import { renderAgendaPanel } from "./agenda.js";
 import { renderDashboardPanel } from "./dashboard.js";
-import { renderHomePanel, refreshHomeTasks } from "./home.js";
+import {
+    refreshHomeTasks,
+    renderHomePanel,
+    scheduleHomePanelRender
+} from "./home.js";
 import { scheduleSegmentsForRotativa } from "./workerSchedule.js";
 import {
     openWorkerScheduleDialog,
@@ -14720,9 +14724,7 @@ window.addEventListener("proturnos:workerRequestsChanged", () => {
         renderWorkerRequestsPanel();
     } else {
         refreshWorkerRequestsNavBadge();
-        if (document.body.dataset.activeView === "home") {
-            renderHomePanel();
-        }
+        scheduleHomePanelRender();
     }
 
     void updateVisibleCalendarDays({ updateSummary: true });
@@ -14824,9 +14826,7 @@ window.addEventListener("proturnos:autoCoverageAlert", event => {
 // Una etapa que avanza o una campaña que se cierra cambia el recuadro de
 // alerta y el estado del boton de la tarjeta de cobertura.
 window.addEventListener("proturnos:autoCoverageChanged", () => {
-    if (document.body.dataset.activeView === "home") {
-        renderHomePanel();
-    }
+    scheduleHomePanelRender();
 });
 
 window.addEventListener("proturnos:memosChanged", () => {
@@ -15539,9 +15539,7 @@ initFirebaseShell({
             // cambios y se corre el barrido de cierre, que no calcula nada.
             void startFirebaseAutoCoverageSync(workspace, {
                 onChange: () => {
-                    if (document.body.dataset.activeView === "home") {
-                        renderHomePanel();
-                    }
+                    scheduleHomePanelRender();
                 }
             });
 
