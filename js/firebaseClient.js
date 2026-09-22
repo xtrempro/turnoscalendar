@@ -4,6 +4,7 @@ import {
     FIREBASE_ENABLED,
     FIREBASE_SDK_BASE_URL
 } from "./firebaseConfig.js";
+import { measurePerformance } from "./performanceMonitor.js";
 
 let servicesPromise = null;
 let initializedServices = null;
@@ -278,14 +279,22 @@ export async function getFirebaseServices() {
     }
 
     if (!servicesPromise) {
-        servicesPromise = Promise.all([
-            loadFirebaseModule("firebase-app"),
-            loadFirebaseModule("firebase-app-check"),
-            loadFirebaseModule("firebase-auth"),
-            loadFirebaseModule("firebase-firestore"),
-            loadFirebaseModule("firebase-storage"),
-            loadFirebaseModule("firebase-functions")
-        ]).then(async ([
+        // Sondas de diagnostico. El 2026-09-22 `firebase-app-state:start-sync`
+        // marco 53 s y solo ~14 estaban medidos (las entradas y su mezclado):
+        // los otros ~38 salen de aqui, y hasta ahora eran un agujero negro.
+        servicesPromise = measurePerformance(
+            "firebase:load-modules",
+            () => Promise.all([
+                loadFirebaseModule("firebase-app"),
+                loadFirebaseModule("firebase-app-check"),
+                loadFirebaseModule("firebase-auth"),
+                loadFirebaseModule("firebase-firestore"),
+                loadFirebaseModule("firebase-storage"),
+                loadFirebaseModule("firebase-functions")
+            ]),
+            {},
+            { asyncThreshold: 40 }
+        ).then(async ([
             appModule,
             appCheckModule,
             authModule,
@@ -313,8 +322,18 @@ export async function getFirebaseServices() {
                     isTokenAutoRefreshEnabled: true
                 });
 
+                // Firestore adjunta este token a CADA peticion: mientras no
+                // llegue, las consultas esperan. Es lo que explicaria que los
+                // 17 modulos terminaran de leer en el MISMO milisegundo
+                // (12.358-12.368 ms) en vez de cada uno a su ritmo. Si falla, el
+                // monitor lo anota como `async-span-error`.
                 appCheckReadyPromise =
-                    appCheckModule.getToken(appCheck, false)
+                    measurePerformance(
+                        "firebase:appcheck-token",
+                        () => appCheckModule.getToken(appCheck, false),
+                        {},
+                        { asyncThreshold: 40 }
+                    )
                         .catch((error) => {
                             console.warn(
                                 "Firebase App Check no pudo obtener el token inicial.",

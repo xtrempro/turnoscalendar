@@ -939,7 +939,15 @@ function hashString(value) {
 
 async function services() {
     if (!servicesCache) {
-        servicesCache = await getFirebaseServices();
+        // El total de tener Firebase listo. Se reparte entre
+        // `firebase:load-modules` y `firebase:appcheck-token`; lo que no cuadre
+        // con esas dos es la inicializacion en si.
+        servicesCache = await measurePerformance(
+            "firebase-app-state:services",
+            () => getFirebaseServices(),
+            {},
+            { asyncThreshold: 40 }
+        );
     }
 
     return servicesCache;
@@ -2138,14 +2146,19 @@ export async function startFirebaseAppStateSync(
         //
         // Ahora cada modulo responde por si mismo: los que se pueden leer se
         // aplican, y el que falla se anota y se sigue.
-        const moduleReads = await Promise.all(
-            moduleRefs.map(async ({ moduleId, ref }) => {
-                try {
-                    return { moduleId, docSnap: await firestoreModule.getDoc(ref) };
-                } catch (error) {
-                    return { moduleId, error };
-                }
-            })
+        const moduleReads = await measurePerformance(
+            "firebase-app-state:module-docs",
+            () => Promise.all(
+                moduleRefs.map(async ({ moduleId, ref }) => {
+                    try {
+                        return { moduleId, docSnap: await firestoreModule.getDoc(ref) };
+                    } catch (error) {
+                        return { moduleId, error };
+                    }
+                })
+            ),
+            { moduleCount: moduleRefs.length },
+            { asyncThreshold: 40 }
         );
         const deniedModules = moduleReads.filter(item => item.error);
         const moduleDocs = moduleReads.filter(item => !item.error);
