@@ -1834,10 +1834,52 @@ async function applyRemoteModule(
     scheduleSettledNotify(mergedSnapshot);
 }
 
+/**
+ * Lanza la lectura de las entradas de todos los modulos legibles.
+ *
+ * Va EN PARALELO con la de los documentos de modulo porque no depende de ella:
+ * las entradas se piden por `moduleId`, no por lo que traigan esos documentos.
+ * Medido el 2026-09-22 en prod: encoladas costaban 43,7 + 7,95 = 51,6 s.
+ *
+ * Cada modulo responde por si mismo: con un `Promise.all` pelado, un solo
+ * `permission-denied` rechaza el lote y se pierde la hidratacion entera. Es el
+ * incidente del 2026-09-09, y este camino no tenia el arreglo.
+ */
+function readAllModuleEntries(workspaceId, readableModules) {
+    return Promise.all(
+        readableModules.map(async moduleId => {
+            try {
+                const entries = await measurePerformance(
+                    "firebase-app-state:hydrate-entries",
+                    () => readRemoteModuleEntries(workspaceId, moduleId),
+                    { moduleId },
+                    { asyncThreshold: 40 }
+                );
+
+                return { moduleId, entries };
+            } catch (error) {
+                dispatchStatus({
+                    type: "app-state-error",
+                    moduleId,
+                    message: error?.message ||
+                        "No se pudieron leer las entradas del modulo"
+                });
+                console.warn(
+                    `No se pudieron leer las entradas de ${moduleId}.`,
+                    error
+                );
+
+                return { moduleId, entries: [] };
+            }
+        })
+    );
+}
+
 async function applyInitialModules(
     moduleDocs,
     workspaceId,
-    generation
+    generation,
+    entriesPromise
 ) {
     const mergedSnapshot = {};
     const manifests = moduleDocs.filter(({ docSnap }) =>
@@ -1873,46 +1915,11 @@ async function applyInitialModules(
         );
     }
 
-    const readableModules = stateModuleIds().filter(canReadModule);
     const initialEntries = [];
 
-    // Las lecturas van EN PARALELO. Estaban en un `for` con `await`, o sea una
-    // detras de otra: medido el 2026-09-22 en prod, las 17 sumaban ~32 s
-    // (profile 12,5 s; qualifications 5,1; requests 3,9; clockmarks 3,9...),
-    // mientras que mezclarlas -lo unico que es CPU- costaba 1,8 s ENTRE TODAS.
-    // Era tiempo de red encolado sin motivo.
-    //
-    // Cada modulo responde por si mismo, por la misma razon que los manifiestos
-    // de arriba: con un `Promise.all` pelado, un solo `permission-denied`
-    // rechaza el lote y se pierde la hidratacion entera. Aqui ese arreglo no
-    // estaba: este bucle lanzaba, y el error subia hasta tumbarlo todo.
-    const lecturas = await Promise.all(
-        readableModules.map(async moduleId => {
-            try {
-                const entries = await measurePerformance(
-                    "firebase-app-state:hydrate-entries",
-                    () => readRemoteModuleEntries(workspaceId, moduleId),
-                    { moduleId },
-                    { asyncThreshold: 40 }
-                );
-
-                return { moduleId, entries };
-            } catch (error) {
-                dispatchStatus({
-                    type: "app-state-error",
-                    moduleId,
-                    message: error?.message ||
-                        "No se pudieron leer las entradas del modulo"
-                });
-                console.warn(
-                    `No se pudieron leer las entradas de ${moduleId}.`,
-                    error
-                );
-
-                return { moduleId, entries: [] };
-            }
-        })
-    );
+    // Ya pedidas: la lectura arranco en paralelo con la de los documentos de
+    // modulo (ver readAllModuleEntries, en startFirebaseAppStateSync).
+    const lecturas = await entriesPromise;
 
     // El mezclado sigue siendo EN ORDEN de modulo: se lee a la vez, pero la foto
     // se arma en la misma secuencia que antes. `Promise.all` conserva el orden
@@ -2148,6 +2155,13 @@ export async function startFirebaseAppStateSync(
         marcarFase("servicios");
 
         const readableModules = stateModuleIds().filter(canReadModule);
+        // Se PIDE ya, sin esperarla: corre junto a la lectura de los documentos
+        // de modulo en vez de detras. Nunca rechaza -cada modulo atrapa lo
+        // suyo-, asi que dejarla en vuelo si algo falla despues es seguro.
+        const entriesPromise = readAllModuleEntries(
+            workspaceId,
+            readableModules
+        );
         const moduleRefs = readableModules.map(moduleId => ({
             moduleId,
             ref: moduleDocRef(
@@ -2230,7 +2244,8 @@ export async function startFirebaseAppStateSync(
         await applyInitialModules(
             moduleDocs,
             workspaceId,
-            generation
+            generation,
+            entriesPromise
         );
 
         marcarFase("aplicar");

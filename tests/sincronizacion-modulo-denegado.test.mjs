@@ -67,8 +67,13 @@ test("si NINGUN modulo se pudo leer, el error sigue propagandose", () => {
    lanzando: un `permission-denied` ahi subia y tumbaba la hidratacion entera.
    ====================================================================== */
 
-const hidratacion = (() => {
-    const inicio = src.indexOf("async function applyInitialModules(");
+function cuerpoDe(nombre) {
+    const inicio = src.search(
+        new RegExp(`^(?:export )?(?:async )?function ${nombre}\\(`, "m")
+    );
+
+    assert.notEqual(inicio, -1, `no se encontro: ${nombre}`);
+
     const abre = src.indexOf("{", src.indexOf(")", inicio));
     let depth = 0;
     let fin = abre;
@@ -83,31 +88,47 @@ const hidratacion = (() => {
     }
 
     return src.slice(inicio, fin + 1);
-})();
+}
+
+const hidratacion = cuerpoDe("applyInitialModules");
+// La lectura se extrajo aqui para poder LANZARLA antes y que corra junto a la
+// de los documentos de modulo, en vez de detras.
+const lectura = cuerpoDe("readAllModuleEntries");
 
 test("las entradas de los modulos se leen EN PARALELO", () => {
     // Estaban en un `for` con `await`, una detras de otra. Medido el 2026-09-22
     // en prod: las 17 sumaban ~32 s de red encolada sin motivo, mientras que
     // mezclarlas -lo unico que es CPU- costaba 1,8 s entre todas.
     assert.match(
-        hidratacion,
-        /const lecturas = await Promise\.all\(\s*\n\s*readableModules\.map\(async moduleId => \{/
+        lectura,
+        /return Promise\.all\(\s*\n\s*readableModules\.map\(async moduleId => \{/
     );
-    assert.doesNotMatch(
-        hidratacion,
-        /for \(const moduleId of readableModules\)/
+    assert.doesNotMatch(src, /for \(const moduleId of readableModules\)/);
+});
+
+test("y no se esperan ANTES de pedir los documentos de modulo", () => {
+    // Encoladas costaban 43,7 + 7,95 = 51,6 s. Las entradas no dependen de esos
+    // documentos: se piden por moduleId.
+    assert.match(
+        src,
+        /const entriesPromise = readAllModuleEntries\(/
     );
+
+    const pide = src.indexOf("const entriesPromise = readAllModuleEntries(");
+    const docs = src.indexOf("firebase-app-state:module-docs", pide);
+
+    assert.ok(pide !== -1 && docs > pide, "se piden DESPUES de los documentos");
 });
 
 test("y una que falla no se lleva por delante a las demas", () => {
-    assert.match(hidratacion, /\} catch \(error\) \{/);
-    assert.match(hidratacion, /return \{ moduleId, entries: \[\] \};/);
+    assert.match(lectura, /\} catch \(error\) \{/);
+    assert.match(lectura, /return \{ moduleId, entries: \[\] \};/);
 });
 
 test("el modulo que no se pudo leer se avisa, no se traga", () => {
     // Quedarse sin un modulo es un problema que hay que poder ver.
     assert.match(
-        hidratacion,
+        lectura,
         /dispatchStatus\(\{\s*\n\s*type: "app-state-error",\s*\n\s*moduleId,/
     );
 });
@@ -120,10 +141,11 @@ test("se lee a la vez, pero la foto se arma EN ORDEN", () => {
         /for \(const \{ moduleId, entries \} of lecturas\) \{/
     );
 
-    const lee = hidratacion.indexOf("const lecturas = await Promise.all(");
+    const lee = hidratacion.indexOf("const lecturas = await entriesPromise;");
     const mezcla = hidratacion.indexOf("of lecturas) {", lee);
 
-    assert.ok(lee !== -1 && mezcla > lee);
+    assert.notEqual(lee, -1, "ya no se esperan las entradas pedidas");
+    assert.ok(mezcla > lee, "se mezcla antes de tener las entradas");
 });
 
 test("los listeners se montan solo sobre los modulos legibles", () => {
