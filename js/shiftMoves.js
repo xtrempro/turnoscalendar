@@ -133,7 +133,8 @@ export function getShiftMoves() {
     const existingIds = new Set(
         stored.map(move => move.id)
     );
-    const migrated = getJSON("auditLog", [])
+    const auditLogs = getJSON("auditLog", []);
+    const migrated = auditLogs
         .filter(log =>
             String(log?.action || "") === "Movio turno base"
         )
@@ -160,7 +161,15 @@ export function getShiftMoves() {
         saveShiftMoves(compacted.moves);
     }
 
-    setRaw(MIGRATION_KEY, "1");
+    // La bitacora ya NO viaja en el arranque (0,85 MB de puro registro, ver
+    // DEFERRED_STATE_MODULES en js/firebaseAppState.js), asi que puede no haber
+    // llegado todavia. Marcar la migracion como hecha con la bitacora vacia la
+    // daria por cumplida PARA SIEMPRE -la bandera no se vuelve a mirar- y esos
+    // "Movio turno base" no se migrarian nunca.
+    //
+    // Con una bitacora de verdad vacia esto solo cuesta filtrar un arreglo
+    // vacio en cada llamada, que es gratis.
+    if (auditLogs.length) setRaw(MIGRATION_KEY, "1");
 
     return compacted.moves;
 }

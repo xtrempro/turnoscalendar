@@ -952,7 +952,35 @@ async function services() {
     return servicesCache;
 }
 
+// Modulos que NO se traen en el arranque.
+//
+// Medido el 2026-09-22 en la unidad grande: el estado inicial son 6,15 MB, y el
+// usuario ve el tablero enseguida pero el raton se queda congelado hasta el
+// segundo 20-25 mientras el SDK mastica esa descarga. `log` son 0,85 MB -767 KB
+// en un solo documento- de puro registro: ninguna vista deriva de el salvo la
+// Bitacora, que se repinta por refresh.js y no tiene oyentes propios (eso ya se
+// comprobo al sacarlo de las invalidaciones de cache, ver
+// js/stateChangeRelevance.js).
+const DEFERRED_STATE_MODULES = new Set(["log"]);
+
+// Los que estan pendientes de hidratar. Mientras uno este aqui NO se publica en
+// el: es la barrera que pidio la revision. Sin ella se podria escribir encima de
+// datos que todavia no han llegado, que es la forma del incidente del 09-15.
+let deferredPendingModules = new Set();
+let hydrateDeferred = null;
+
+/** Trae un modulo diferido: sus entradas, su oyente, y levanta su barrera. */
+export function hydrateDeferredStateModule(moduleId) {
+    return hydrateDeferred
+        ? hydrateDeferred(String(moduleId || ""))
+        : Promise.resolve();
+}
+
 function canWriteModule(moduleId) {
+    // Sin lo que hay en la nube no se publica encima: las entradas locales
+    // quedan en `pendingStateEntries` y salen cuando el modulo este hidratado.
+    if (deferredPendingModules.has(moduleId)) return false;
+
     const permission = stateModulePermission(moduleId);
 
     if (permission === "owner") {
@@ -2156,9 +2184,13 @@ export async function startFirebaseAppStateSync(
         // Se PIDE ya, sin esperarla: corre junto a la lectura de los documentos
         // de modulo en vez de detras. Nunca rechaza -cada modulo atrapa lo
         // suyo-, asi que dejarla en vuelo si algo falla despues es seguro.
+        deferredPendingModules = new Set(
+            readableModules.filter(id => DEFERRED_STATE_MODULES.has(id))
+        );
+
         const entriesPromise = readAllModuleEntries(
             workspaceId,
-            readableModules
+            readableModules.filter(id => !deferredPendingModules.has(id))
         );
         const moduleRefs = readableModules.map(moduleId => ({
             moduleId,
@@ -2321,7 +2353,7 @@ export async function startFirebaseAppStateSync(
                 }
             )
         );
-        const entryUnsubscribers = refsLegibles.map(({ moduleId }) =>
+        const escucharEntradas = moduleId =>
             firestoreModule.onSnapshot(
                 moduleEntriesCollection(
                     db,
@@ -2354,8 +2386,47 @@ export async function startFirebaseAppStateSync(
                         );
                     }
                 }
-            )
-        );
+            );
+
+        const entryUnsubscribers = refsLegibles
+            .filter(({ moduleId }) => !deferredPendingModules.has(moduleId))
+            .map(({ moduleId }) => escucharEntradas(moduleId));
+
+        // El diferido se trae cuando haga falta: al abrir su vista, o en cuanto
+        // el navegador este ocioso. Hasta entonces su barrera sigue puesta.
+        hydrateDeferred = async moduleId => {
+            if (!deferredPendingModules.has(moduleId)) return;
+            if (
+                workspaceId !== activeWorkspaceId ||
+                generation !== syncGeneration
+            ) return;
+            if (!refsLegibles.some(item => item.moduleId === moduleId)) return;
+
+            const [lectura] = await measurePerformance(
+                "firebase-app-state:hydrate-deferred",
+                () => readAllModuleEntries(workspaceId, [moduleId]),
+                { moduleId },
+                { asyncThreshold: 40 }
+            );
+
+            if (
+                workspaceId !== activeWorkspaceId ||
+                generation !== syncGeneration
+            ) return;
+
+            queueRemoteStateEntries(
+                selectUnappliedStateEntries(
+                    lectura.entries,
+                    moduleAppliedSignatures(moduleId)
+                )
+            );
+            scheduleRemoteStateApply(0);
+            entryUnsubscribers.push(escucharEntradas(moduleId));
+
+            // La barrera se levanta SOLO aqui: ya esta en cola lo que habia en
+            // la nube, asi que publicar encima ya no puede perder nada.
+            deferredPendingModules.delete(moduleId);
+        };
 
         unsubscribeStateEntries = () => {
             entryUnsubscribers.forEach(unsubscribe => unsubscribe());
@@ -2401,6 +2472,8 @@ export async function startFirebaseAppStateSync(
 }
 
 export function stopFirebaseAppStateSync() {
+    deferredPendingModules = new Set();
+    hydrateDeferred = null;
     clearInitialStateRetry();
     servingFromCacheByModule.clear();
     servingFromCache = null;

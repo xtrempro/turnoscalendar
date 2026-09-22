@@ -152,7 +152,46 @@ test("los listeners se montan solo sobre los modulos legibles", () => {
     // Suscribirse a un modulo denegado solo produce errores en bucle.
     assert.match(arranque, /const refsLegibles = moduleRefs\.filter\(/);
     assert.match(arranque, /const unsubscribers = refsLegibles\.map\(/);
-    assert.match(arranque, /const entryUnsubscribers = refsLegibles\.map\(/);
+    // Los de entradas ademas dejan fuera los DIFERIDOS: `log` no se trae en el
+    // arranque, y suscribirse le pediria a Firestore justo lo que se decidio no
+    // descargar todavia.
+    assert.match(
+        arranque,
+        /const entryUnsubscribers = refsLegibles\s*\n\s*\.filter\(\(\{ moduleId \}\) => !deferredPendingModules\.has\(moduleId\)\)\s*\n\s*\.map\(/
+    );
+});
+
+test("un modulo diferido NO se publica hasta tenerlo", () => {
+    // Es la barrera. Sin ella se podria escribir encima de lo que aun no ha
+    // llegado, que es la forma del incidente del 2026-09-15.
+    const puedeEscribir = src.slice(
+        src.indexOf("function canWriteModule(")
+    );
+
+    assert.match(
+        puedeEscribir.slice(0, 400),
+        /if \(deferredPendingModules\.has\(moduleId\)\) return false;/
+    );
+});
+
+test("y la barrera se levanta solo cuando lo que habia ya esta en cola", () => {
+    // Levantarla antes de encolar dejaria una ventana en la que se publica con
+    // la copia local a medias.
+    const hidrata = src.slice(src.indexOf("hydrateDeferred = async moduleId"));
+    const encola = hidrata.indexOf("queueRemoteStateEntries(");
+    const levanta = hidrata.indexOf("deferredPendingModules.delete(moduleId)");
+
+    assert.notEqual(encola, -1, "ya no se encola lo que habia en la nube");
+    assert.notEqual(levanta, -1, "la barrera no se levanta nunca");
+    assert.ok(levanta > encola, "la barrera se levanta ANTES de encolar");
+});
+
+test("al parar la sincronizacion se olvida lo diferido", () => {
+    // Si no, cambiar de unidad dejaria la barrera de la anterior puesta.
+    const para = src.slice(src.indexOf("export function stopFirebaseAppStateSync("));
+
+    assert.match(para.slice(0, 300), /deferredPendingModules = new Set\(\);/);
+    assert.match(para.slice(0, 300), /hydrateDeferred = null;/);
 });
 
 test("medicalEquipment esta en las reglas y en la lista del cliente", () => {

@@ -298,6 +298,7 @@ import {
 import { getActiveWorkspace } from "./workspaces.js";
 import {
     flushPendingFirebaseAppStateEntries,
+    hydrateDeferredStateModule,
     startFirebaseAppStateSync,
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
@@ -6836,15 +6837,36 @@ async function setActiveShortcut(targetId, options = {}) {
         }
 
         if (nextView === "profile") {
+            // El historial de permisos del perfil sale de la bitacora.
             renderDashboardState();
+            void hydrateDeferredStateModule("log").then(() => {
+                if (document.body.dataset.activeView === "profile") {
+                    renderDashboardState();
+                }
+            });
         }
 
         if (nextView === "log") {
+            // La bitacora no viaja en el arranque (0,85 MB de puro registro).
+            // Se pinta ya con lo que haya y se repinta cuando llegue: esperar
+            // dejaria la vista en blanco.
             renderAuditLogPanel();
+            void hydrateDeferredStateModule("log").then(() => {
+                if (document.body.dataset.activeView === "log") {
+                    renderAuditLogPanel();
+                }
+            });
         }
 
         if (nextView === "requests") {
+            // Tambien lee la bitacora (los registros de permisos), que no viaja
+            // en el arranque.
             renderWorkerRequestsPanel();
+            void hydrateDeferredStateModule("log").then(() => {
+                if (document.body.dataset.activeView === "requests") {
+                    renderWorkerRequestsPanel();
+                }
+            });
         }
 
         if (nextView === "memos") {
@@ -15533,6 +15555,16 @@ initFirebaseShell({
             // Se conserva lo que buscaba el `await`: refrescar las vistas CON
             // el estado ya hidratado, no con el del entorno anterior. Solo que
             // ahora se agenda en vez de bloquear.
+            void estadoHidratado.then(() => {
+                // La bitacora se queda fuera del arranque, pero su barrera de
+                // publicacion no puede durar toda la sesion: en cuanto hay hueco
+                // se trae, sin competir con lo que el usuario esta esperando.
+                runWorkspaceRefreshWhenIdle(
+                    () => void hydrateDeferredStateModule("log"),
+                    4000
+                );
+            });
+
             void estadoHidratado.then(() => {
                 // Otra unidad se activo mientras esto venia en camino: sus
                 // vistas ya no son las de este entorno.
