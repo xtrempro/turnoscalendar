@@ -8,6 +8,7 @@
 // CSS global del app (que ya usa .panel, .list, .count, .stat, etc.).
 
 import { escapeHTML } from "./htmlUtils.js";
+import { measurePerformance } from "./performanceMonitor.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import {
     canEditAnyMenu,
@@ -3455,8 +3456,20 @@ const HOME_CARDS = {
 // Cada tarjeta lleva su id en la raiz (lo que se arrastra y lo que dice que
 // tarjeta se solto) y la manija de cuatro puntos. Una tarjeta que hoy no se
 // muestra devuelve "".
+// Sondas de diagnostico. Inicio no tenia NINGUNA, y por eso el 2026-09-22 una
+// navegacion de Tareas a Inicio que costo 5046 ms no se pudo atribuir a nada:
+// `navigation:set-active-shortcut` mide el tramo entero y por dentro era ciego.
+// El umbral baja a 20 ms porque aqui interesa el reparto entre tarjetas, no solo
+// lo que pasa de 50.
+function medirHome(label, fn, detail) {
+    return measurePerformance(label, fn, detail, { threshold: 20 });
+}
+
 function homeCardHTML(id) {
-    return withDragHandle(HOME_CARDS[id]?.() || "", id);
+    return withDragHandle(
+        medirHome("home:card", () => HOME_CARDS[id]?.() || "", { card: id }),
+        id
+    );
 }
 
 function wireHomeCardOrder(panel) {
@@ -3478,6 +3491,27 @@ function wireHomeCardOrder(panel) {
 function homeHTML() {
     const supervisor = esc(getSupervisorName());
     const unit = esc(getUnitName());
+    const stats = medirHome("home:stats", statsSection);
+    const alertas = medirHome("home:coverage-alerts", coverageAlertsHTML);
+    const tarjetas = medirHome("home:grid", () =>
+        getHomeLayout().map(column =>
+            `<div class="hm-stack">${column.map(homeCardHTML).join("")}</div>`
+        ).join("")
+    );
+    // Los diez modales se arman en CADA pintado de Inicio, no al abrirlos.
+    const modales = medirHome("home:modals", () => [
+        tasksModal(),
+        taskEditModal(),
+        dotacionModal(),
+        absenceModal(),
+        weeklyScheduleModal(),
+        taskCalendarModal(),
+        dayTasksModal(),
+        absenceCalendarModal(),
+        dayAbsencesModal(),
+        coverageRecipientsModal()
+    ].join(""));
+
     return `
         <div class="hm-root">
             <section class="hm-hero">
@@ -3494,10 +3528,10 @@ function homeHTML() {
             </section>
 
             <section class="hm-stats">
-                ${statsSection()}
+                ${stats}
             </section>
 
-            <section class="hm-alertband" data-hm="cobalert-band">${coverageAlertsHTML()}</section>
+            <section class="hm-alertband" data-hm="cobalert-band">${alertas}</section>
 
             <!--
                 Tres PILAS, no tres filas. Cada tarjeta se apoya directamente en
@@ -3523,21 +3557,11 @@ function homeHTML() {
                 tarjetas vuelven a repartirse solas en la grilla de 12.
             -->
             <section class="hm-grid" data-hm="grid">
-                ${getHomeLayout().map(column => `
-                    <div class="hm-stack">${column.map(homeCardHTML).join("")}</div>`).join("")}
+                ${tarjetas}
             </section>
 
         </div>
-        ${tasksModal()}
-        ${taskEditModal()}
-        ${dotacionModal()}
-        ${absenceModal()}
-        ${weeklyScheduleModal()}
-        ${taskCalendarModal()}
-        ${dayTasksModal()}
-        ${absenceCalendarModal()}
-        ${dayAbsencesModal()}
-        ${coverageRecipientsModal()}`;
+        ${modales}`;
 }
 
 // ---- Interactividad ----
@@ -4789,8 +4813,8 @@ export function renderHomePanel() {
     const panel = document.getElementById("homePanel");
     if (!panel) return;
 
-    panel.innerHTML = homeHTML();
-    wire(panel);
+    panel.innerHTML = medirHome("home:html", homeHTML);
+    medirHome("home:wire", () => wire(panel));
 
     // La tarjeta del dia tambien filtra por "Diario Hábil": sin los feriados
     // cargados, una tarea habil apareceria en un feriado hasta el repintado.

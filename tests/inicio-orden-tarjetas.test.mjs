@@ -202,8 +202,13 @@ test("lo que llega del servidor reemplaza la copia local y avisa una vez", () =>
 });
 
 test("el inicio se pinta con el orden guardado", () => {
-    assert.match(home, /\$\{getHomeLayout\(\)\.map\(column => `/);
-    assert.match(home, /return withDragHandle\(HOME_CARDS\[id\]\?\.\(\) \|\| "", id\);/);
+    // Se comprueba la FORMA, no el sitio: al instrumentar Inicio estas dos
+    // expresiones se movieron (la grilla a una constante, la tarjeta dentro de
+    // una sonda) y el test fallaba sin que cambiara nada de lo que vigila.
+    assert.match(home, /getHomeLayout\(\)\.map\(column =>/);
+    assert.match(home, /column\.map\(homeCardHTML\)\.join\(""\)/);
+    assert.match(home, /withDragHandle\(/);
+    assert.match(home, /HOME_CARDS\[id\]\?\.\(\) \|\| ""/);
     // Cada id del orden tiene su tarjeta.
     HOME_CARD_IDS.forEach(id => {
         assert.match(home, new RegExp(`\\n    ${id}: \\w+Widget,?\\n`), id);
