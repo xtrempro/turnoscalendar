@@ -216,9 +216,26 @@ const styles = (await readFile(
 
 test("al arrancar con copia de mas de un dia se bloquea y manda el servidor", () => {
     assert.match(appState, /staleStart = localCopyIsStale\(workspaceId\);\s*if \(staleStart\) lockAppState\("stale"\);/);
+    // Lo que importa es que lo local pendiente se DESCARTE antes de mezclar, no
+    // que las dos lineas esten pegadas: al instrumentar la hidratacion el
+    // mezclado quedo dentro de una sonda y la adyacencia se rompio sin que
+    // cambiara el orden.
     assert.match(
         appState,
-        /if \(staleStart\) \{\s*pendingStateEntries\.clear\(\);\s*localDirtyStateEntries\.clear\(\);\s*\}\s*mergeLocalDirtyStateEntries\(mergedSnapshot\);/
+        /if \(staleStart\) \{\s*pendingStateEntries\.clear\(\);\s*localDirtyStateEntries\.clear\(\);\s*\}/
+    );
+
+    const descarta = appState.indexOf("localDirtyStateEntries.clear();");
+    const mezcla = appState.indexOf(
+        "mergeLocalDirtyStateEntries(mergedSnapshot)",
+        descarta
+    );
+
+    assert.notEqual(descarta, -1);
+    assert.notEqual(mezcla, -1, "ya no se mezcla lo local pendiente");
+    assert.ok(
+        descarta < mezcla,
+        "se mezcla lo local ANTES de descartarlo: la copia vieja se encimaria"
     );
     assert.match(
         appState,

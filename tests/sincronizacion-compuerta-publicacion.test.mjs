@@ -54,9 +54,20 @@ test("el fallo del arranque NO abre la compuerta de publicacion", () => {
 });
 
 test("la compuerta se abre solo cuando el estado inicial SI se aplico", () => {
-    assert.match(
-        src,
-        /rememberAppliedStateEntries\(initialEntries\);[\s\S]{0,220}waitingInitialState = false;/
+    // Se comprueba el ORDEN, no la distancia. Antes se exigia que las dos
+    // lineas estuvieran a menos de 220 caracteres: al envolver el registro de
+    // firmas en una sonda se separaron y el test fallo, sin que cambiara el
+    // orden -que es lo unico que importa aqui-.
+    const recuerda = src.indexOf("rememberAppliedStateEntries(initialEntries)");
+
+    assert.notEqual(recuerda, -1, "ya no se registran las firmas iniciales");
+
+    const abre = src.indexOf("waitingInitialState = false;", recuerda);
+
+    assert.notEqual(abre, -1, "la compuerta no se abre despues de aplicar");
+    assert.ok(
+        recuerda < abre,
+        "la compuerta se abre ANTES de registrar lo aplicado"
     );
 });
 

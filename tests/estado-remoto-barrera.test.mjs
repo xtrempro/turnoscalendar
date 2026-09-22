@@ -111,11 +111,30 @@ test("el estado se guarda al llegar; lo que se retiene es el aviso", () => {
 test("la carga inicial no pasa por la barrera: ya viene completa", () => {
     // applyInitialModules junta los 13 modulos en una sola foto y la aplica de
     // una vez, asi que ahi no hay nada que juntar.
-    const bloque = appState.slice(
-        appState.indexOf("async function applyInitialModules(")
-    );
+    // Acotado al CUERPO de la funcion. Antes eran los primeros 3000 caracteres
+    // desde su nombre, y al instrumentar la hidratacion por modulo la llamada
+    // quedo mas lejos: el test fallaba sin que cambiara nada de lo que vigila.
+    const inicio = appState.indexOf("async function applyInitialModules(");
 
-    assert.match(bloque.slice(0, 3000), /onStateChanged\(mergedSnapshot\)/);
+    assert.notEqual(inicio, -1);
+
+    const abre = appState.indexOf("{", appState.indexOf(")", inicio));
+    let depth = 0;
+    let fin = abre;
+
+    for (; fin < appState.length; fin += 1) {
+        if (appState[fin] === "{") depth += 1;
+        else if (appState[fin] === "}") {
+            depth -= 1;
+
+            if (!depth) break;
+        }
+    }
+
+    assert.match(
+        appState.slice(inicio, fin + 1),
+        /onStateChanged\(mergedSnapshot\)/
+    );
 });
 
 test("los cambios sueltos siguen llegando al instante", () => {

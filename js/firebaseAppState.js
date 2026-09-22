@@ -1836,13 +1836,26 @@ async function applyInitialModules(
         docSnap.exists()
     );
 
+    // Sondas de diagnostico. La hidratacion entera se medía con UNA sonda
+    // (`firebase-app-state:start-sync`), que el 2026-09-22 marco 128 SEGUNDOS en
+    // prod sin decir de que: son 17 modulos, cada uno con su manifiesto (mas sus
+    // trozos) y su coleccion de entradas. Con el reparto por MODULO se sabe cual
+    // pesa; el `log` movia 3.300 entradas en otra medicion.
     for (const { moduleId, docSnap } of manifests) {
         const manifest = docSnap.data() || {};
         const { stateString, snapshot } =
-            await readRemoteModuleSnapshot(
-                workspaceId,
-                moduleId,
-                manifest.chunkCount || 0
+            await measurePerformance(
+                "firebase-app-state:hydrate-manifest",
+                () => readRemoteModuleSnapshot(
+                    workspaceId,
+                    moduleId,
+                    manifest.chunkCount || 0
+                ),
+                {
+                    moduleId,
+                    chunkCount: manifest.chunkCount || 0
+                },
+                { asyncThreshold: 40 }
             );
 
         Object.assign(mergedSnapshot, snapshot);
@@ -1856,13 +1869,27 @@ async function applyInitialModules(
     const initialEntries = [];
 
     for (const moduleId of readableModules) {
-        const entries = await readRemoteModuleEntries(
-            workspaceId,
-            moduleId
+        const entries = await measurePerformance(
+            "firebase-app-state:hydrate-entries",
+            () => readRemoteModuleEntries(workspaceId, moduleId),
+            { moduleId },
+            { asyncThreshold: 40 }
         );
 
         initialEntries.push(...entries);
-        mergePartialStateEntries(mergedSnapshot, entries);
+
+        // El mezclado va aparte de la lectura: uno es red y el otro es CPU, y
+        // mezclarlos en una sola cifra fue justo lo que despisto con
+        // `start-sync`.
+        measurePerformance(
+            "firebase-app-state:hydrate-merge",
+            () => mergePartialStateEntries(mergedSnapshot, entries),
+            {
+                moduleId,
+                entryCount: entries.length
+            },
+            { threshold: 20 }
+        );
     }
 
     // Copia de mas de un dia: manda el servidor, sin encimarle nada local. La
@@ -1873,7 +1900,12 @@ async function applyInitialModules(
         localDirtyStateEntries.clear();
     }
 
-    mergeLocalDirtyStateEntries(mergedSnapshot);
+    measurePerformance(
+        "firebase-app-state:hydrate-merge-local",
+        () => mergeLocalDirtyStateEntries(mergedSnapshot),
+        { entryCount: localDirtyStateEntries.size },
+        { threshold: 20 }
+    );
 
     if (
         workspaceId !== activeWorkspaceId ||
@@ -1897,7 +1929,14 @@ async function applyInitialModules(
         applyingRemoteState = false;
     }
 
-    rememberAppliedStateEntries(initialEntries);
+    // Una firma por entrada, y cada firma serializa el valor entero
+    // (stableValueString ordena claves y recorre en profundidad).
+    measurePerformance(
+        "firebase-app-state:hydrate-remember",
+        () => rememberAppliedStateEntries(initialEntries),
+        { entryCount: initialEntries.length },
+        { threshold: 20 }
+    );
 
     // Se leyo bien: se abre la compuerta y se olvida la espera acumulada.
     clearInitialStateRetry();
