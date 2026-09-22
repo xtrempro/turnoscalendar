@@ -174,16 +174,64 @@ test("un modulo diferido NO se publica hasta tenerlo", () => {
     );
 });
 
-test("y la barrera se levanta solo cuando lo que habia ya esta en cola", () => {
-    // Levantarla antes de encolar dejaria una ventana en la que se publica con
-    // la copia local a medias.
+test("la barrera se levanta solo despues de aplicar el modulo completo", () => {
+    // Abrirla antes de terminar el reemplazo dejaria una ventana en la que se
+    // publica con la copia local incompleta.
     const hidrata = src.slice(src.indexOf("hydrateDeferred = async moduleId"));
-    const encola = hidrata.indexOf("queueRemoteStateEntries(");
+    const aplica = hidrata.indexOf("applyRemoteModule(");
+    const termina = hidrata.indexOf(").then(() => {");
     const levanta = hidrata.indexOf("deferredPendingModules.delete(moduleId)");
 
-    assert.notEqual(encola, -1, "ya no se encola lo que habia en la nube");
+    assert.notEqual(aplica, -1, "ya no se aplica el modulo remoto completo");
+    assert.notEqual(termina, -1, "no se espera que termine la aplicacion");
     assert.notEqual(levanta, -1, "la barrera no se levanta nunca");
-    assert.ok(levanta > encola, "la barrera se levanta ANTES de encolar");
+    assert.ok(levanta > termina, "la barrera se levanta ANTES de aplicar");
+});
+
+test("el modulo diferido tampoco lee sus fragmentos durante el arranque", () => {
+    const aplicaInicial = cuerpoDe("applyInitialModules");
+
+    assert.match(
+        aplicaInicial,
+        /docSnap\.exists\(\) && !deferredPendingModules\.has\(moduleId\)/
+    );
+});
+
+test("dos solicitudes simultaneas comparten una sola hidratacion", () => {
+    const hidrata = src.slice(src.indexOf("hydrateDeferred = async moduleId"));
+
+    assert.match(
+        hidrata,
+        /if \(deferredHydrations\.has\(moduleId\)\) \{\s*return deferredHydrations\.get\(moduleId\);/
+    );
+    assert.match(hidrata, /deferredHydrations\.set\(moduleId, hydration\);/);
+});
+
+test("la bitacora puede hidratar entradas aunque aun no tenga manifiesto", () => {
+    const hidrata = src.slice(src.indexOf("hydrateDeferred = async moduleId"));
+
+    assert.doesNotMatch(
+        hidrata.slice(0, hidrata.indexOf("const hydration =")),
+        /moduleDoc\?\.docSnap\?\.exists\(\)/
+    );
+    assert.match(
+        hidrata,
+        /moduleDoc\.docSnap\.exists\(\)\s*\? moduleDoc\.docSnap\.data\(\) \|\| \{\}\s*:\s*\{\}/
+    );
+});
+
+test("si falla la hidratacion la barrera permanece cerrada", () => {
+    const hidrata = src.slice(src.indexOf("hydrateDeferred = async moduleId"));
+    const abre = hidrata.indexOf("deferredPendingModules.delete(moduleId)");
+    const captura = hidrata.indexOf("}).catch(error => {");
+    const relanza = hidrata.indexOf("throw error;", captura);
+
+    assert.ok(abre !== -1 && captura > abre, "el error puede abrir la barrera");
+    assert.ok(relanza > captura, "el error de hidratacion se esta tragando");
+    assert.doesNotMatch(
+        hidrata.slice(captura, relanza),
+        /deferredPendingModules\.delete/
+    );
 });
 
 test("al parar la sincronizacion se olvida lo diferido", () => {
@@ -191,6 +239,7 @@ test("al parar la sincronizacion se olvida lo diferido", () => {
     const para = src.slice(src.indexOf("export function stopFirebaseAppStateSync("));
 
     assert.match(para.slice(0, 300), /deferredPendingModules = new Set\(\);/);
+    assert.match(para.slice(0, 300), /deferredHydrations = new Map\(\);/);
     assert.match(para.slice(0, 300), /hydrateDeferred = null;/);
 });
 

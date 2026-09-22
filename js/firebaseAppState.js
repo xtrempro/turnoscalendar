@@ -968,8 +968,9 @@ const DEFERRED_STATE_MODULES = new Set(["log"]);
 // datos que todavia no han llegado, que es la forma del incidente del 09-15.
 let deferredPendingModules = new Set();
 let hydrateDeferred = null;
+let deferredHydrations = new Map();
 
-/** Trae un modulo diferido: sus entradas, su oyente, y levanta su barrera. */
+/** Trae y aplica un modulo diferido antes de levantar su barrera. */
 export function hydrateDeferredStateModule(moduleId) {
     return hydrateDeferred
         ? hydrateDeferred(String(moduleId || ""))
@@ -1778,7 +1779,8 @@ async function applyRemoteModule(
     moduleId,
     manifest,
     workspaceId,
-    generation
+    generation,
+    { force = false } = {}
 ) {
     if (
         workspaceId !== activeWorkspaceId ||
@@ -1791,6 +1793,7 @@ async function applyRemoteModule(
     const localHash = hashString(currentModuleStateString(moduleId));
 
     if (
+        !force &&
         remoteHash &&
         (
             remoteHash === lastAppliedHashes.get(moduleId) ||
@@ -1908,8 +1911,8 @@ async function applyInitialModules(
     entriesPromise
 ) {
     const mergedSnapshot = {};
-    const manifests = moduleDocs.filter(({ docSnap }) =>
-        docSnap.exists()
+    const manifests = moduleDocs.filter(({ moduleId, docSnap }) =>
+        docSnap.exists() && !deferredPendingModules.has(moduleId)
     );
 
     // Sondas de diagnostico. La hidratacion entera se medía con UNA sonda
@@ -2396,36 +2399,66 @@ export async function startFirebaseAppStateSync(
         // el navegador este ocioso. Hasta entonces su barrera sigue puesta.
         hydrateDeferred = async moduleId => {
             if (!deferredPendingModules.has(moduleId)) return;
+            if (deferredHydrations.has(moduleId)) {
+                return deferredHydrations.get(moduleId);
+            }
             if (
                 workspaceId !== activeWorkspaceId ||
                 generation !== syncGeneration
             ) return;
-            if (!refsLegibles.some(item => item.moduleId === moduleId)) return;
+            const moduleDoc = moduleDocs.find(item => item.moduleId === moduleId);
+            if (!moduleDoc) return;
 
-            const [lectura] = await measurePerformance(
+            const hydration = measurePerformance(
                 "firebase-app-state:hydrate-deferred",
-                () => readAllModuleEntries(workspaceId, [moduleId]),
+                () => applyRemoteModule(
+                    moduleId,
+                    moduleDoc.docSnap.exists()
+                        ? moduleDoc.docSnap.data() || {}
+                        : {},
+                    workspaceId,
+                    generation,
+                    { force: true }
+                ),
                 { moduleId },
                 { asyncThreshold: 40 }
-            );
+            ).then(() => {
+                if (
+                    workspaceId !== activeWorkspaceId ||
+                    generation !== syncGeneration
+                ) return;
 
-            if (
-                workspaceId !== activeWorkspaceId ||
-                generation !== syncGeneration
-            ) return;
+                entryUnsubscribers.push(escucharEntradas(moduleId));
 
-            queueRemoteStateEntries(
-                selectUnappliedStateEntries(
-                    lectura.entries,
-                    moduleAppliedSignatures(moduleId)
-                )
-            );
-            scheduleRemoteStateApply(0);
-            entryUnsubscribers.push(escucharEntradas(moduleId));
+                // Se abre solo despues de reemplazar el modulo completo y
+                // registrar sus entradas. Si la lectura falla, este bloque no
+                // corre y ninguna copia parcial puede publicarse.
+                deferredPendingModules.delete(moduleId);
+            }).catch(error => {
+                if (
+                    workspaceId === activeWorkspaceId &&
+                    generation === syncGeneration
+                ) {
+                    dispatchStatus({
+                        type: "app-state-error",
+                        moduleId,
+                        message: error?.message ||
+                            "No se pudo hidratar el modulo diferido"
+                    });
+                    console.warn(
+                        `No se pudo hidratar el modulo diferido ${moduleId}.`,
+                        error
+                    );
+                }
+                throw error;
+            }).finally(() => {
+                if (deferredHydrations.get(moduleId) === hydration) {
+                    deferredHydrations.delete(moduleId);
+                }
+            });
 
-            // La barrera se levanta SOLO aqui: ya esta en cola lo que habia en
-            // la nube, asi que publicar encima ya no puede perder nada.
-            deferredPendingModules.delete(moduleId);
+            deferredHydrations.set(moduleId, hydration);
+            return hydration;
         };
 
         unsubscribeStateEntries = () => {
@@ -2473,6 +2506,7 @@ export async function startFirebaseAppStateSync(
 
 export function stopFirebaseAppStateSync() {
     deferredPendingModules = new Set();
+    deferredHydrations = new Map();
     hydrateDeferred = null;
     clearInitialStateRetry();
     servingFromCacheByModule.clear();

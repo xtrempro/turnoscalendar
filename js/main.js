@@ -6843,7 +6843,7 @@ async function setActiveShortcut(targetId, options = {}) {
                 if (document.body.dataset.activeView === "profile") {
                     renderDashboardState();
                 }
-            });
+            }).catch(() => {});
         }
 
         if (nextView === "log") {
@@ -6855,7 +6855,7 @@ async function setActiveShortcut(targetId, options = {}) {
                 if (document.body.dataset.activeView === "log") {
                     renderAuditLogPanel();
                 }
-            });
+            }).catch(() => {});
         }
 
         if (nextView === "requests") {
@@ -6866,7 +6866,7 @@ async function setActiveShortcut(targetId, options = {}) {
                 if (document.body.dataset.activeView === "requests") {
                     renderWorkerRequestsPanel();
                 }
-            });
+            }).catch(() => {});
         }
 
         if (nextView === "memos") {
@@ -15560,7 +15560,7 @@ initFirebaseShell({
                 // publicacion no puede durar toda la sesion: en cuanto hay hueco
                 // se trae, sin competir con lo que el usuario esta esperando.
                 runWorkspaceRefreshWhenIdle(
-                    () => void hydrateDeferredStateModule("log"),
+                    () => void hydrateDeferredStateModule("log").catch(() => {}),
                     4000
                 );
             });
