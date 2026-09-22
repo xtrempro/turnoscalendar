@@ -1873,23 +1873,31 @@ function buildInheritedTurnPreview({
             const propio = worker
                 ? Number(getTurnoBase(worker, key)) || TURNO.LIBRE
                 : TURNO.LIBRE;
+            // Lo que de verdad quedaria ese dia: dentro de un contrato suyo,
+            // la SUMA de su turno y el heredado; si no, el heredado tal cual.
+            const candidato = enContratoPropio && propio > TURNO.LIBRE
+                ? fusionarTurnos(propio, heredado)
+                : heredado;
+
+            // La regla del 24 mira el dia ANTERIOR y el SIGUIENTE, no solo
+            // este. Antes solo se consultaba cuando el reemplazante ya tenia
+            // turno propio HOY (`propio > TURNO.LIBRE`), y eso apagaba en
+            // silencio justo el caso cruzado: con Noche el dia 5 y libre el 6,
+            // heredar una Larga el 6 es un 24 INVERTIDO, y se heredaba igual
+            // aunque la unidad lo tuviera prohibido. Reportado el 2026-09-22.
+            //
+            // Tampoco se exige ya estar dentro de un contrato propio: si el
+            // reemplazante tiene turnos alrededor por cualquier via, la regla
+            // le concierne. Sin nada al lado, la propia funcion devuelve false.
             const bloqueado = Boolean(
                 worker &&
-                enContratoPropio &&
-                propio > TURNO.LIBRE &&
-                turnoBloqueadoPorTurno24(worker, key, heredado)
+                turnoBloqueadoPorTurno24(worker, key, candidato)
             );
 
             dias.push({
                 key,
                 iso,
-                turno: bloqueado
-                    ? propio
-                    : (
-                        enContratoPropio && propio > TURNO.LIBRE
-                            ? fusionarTurnos(propio, heredado)
-                            : heredado
-                    ),
+                turno: bloqueado ? propio : candidato,
                 heredado,
                 propio,
                 traslape: enContratoPropio,

@@ -76,7 +76,7 @@ function cuerpo(nombre) {
  *   regla del 24, cada uno como doble.
  */
 function construir(mundo) {
-    const llamadas = { fusiones: [] };
+    const llamadas = { fusiones: [], bloqueos: [] };
     const fabrica = new Function(
         "getTurnoBase",
         "getContractsForProfile",
@@ -98,7 +98,15 @@ function construir(mundo) {
         function () {
             return mundo.contratos || [];
         },
-        function (nombre, key) {
+        // Con la FIRMA REAL: (nombre, key, turno).
+        //
+        // Que a este doble le faltara el tercer argumento fue justo lo que dejo
+        // pasar el defecto del 24 invertido: el codigo podia consultar la regla
+        // mal -o no consultarla- y el doble respondia igual. Ahora se anota con
+        // que se la llamo, para poder exigirlo.
+        function (nombre, key, turno) {
+            llamadas.bloqueos.push({ nombre, key, turno });
+
             return (mundo.bloquea24 || []).includes(key);
         },
         function (a, b) {
@@ -231,9 +239,12 @@ test("un dia bloqueado conserva el turno PROPIO, no el heredado", () => {
     assert.equal(dia9.propio, TURNO.NOCHE);
 });
 
-test("la regla del 24 solo aplica DENTRO del traslape", () => {
-    // Fuera del contrato anterior no hay turno propio con el que chocar: el
-    // dia 17 esta fuera del rango 01-15.
+test("la regla del 24 vale TAMBIEN fuera del traslape", () => {
+    // Esta prueba decia lo contrario -"solo aplica DENTRO del traslape"- y
+    // codificaba el defecto como si fuera lo correcto.
+    //
+    // El reemplazante puede tener turnos alrededor por cualquier via, no solo
+    // por el contrato que se traslapa. Si la regla le concierne, le concierne.
     var salida = correr({
         contratos: [{ start: "2027-02-01", end: "2027-02-15" }],
         propios: { "2027-1-17": TURNO.NOCHE },
@@ -241,8 +252,71 @@ test("la regla del 24 solo aplica DENTRO del traslape", () => {
     }).resultado;
     var dia17 = salida.dias.find(function (dia) { return dia.key === "2027-1-17"; });
 
-    assert.equal(dia17.estado, "heredado");
-    assert.equal(salida.pendientes, 0);
+    assert.equal(dia17.estado, "pendiente");
+    assert.equal(salida.pendientes, 1);
+});
+
+/* =========================================================
+   El 24 INVERTIDO, que cruza dos dias
+
+   Reportado el 2026-09-22 probando en test: con Noche el dia 5 por su contrato
+   anterior y LIBRE el 6, heredar una Larga el 6 encadena 24 horas invertidas.
+   La unidad lo tenia prohibido y se heredaba igual.
+
+   La causa era la guarda `propio > TURNO.LIBRE`: solo se consultaba la regla si
+   el reemplazante tenia turno propio ESE MISMO DIA, y en el caso cruzado no lo
+   tiene. La funcion real mira el dia anterior y el siguiente; nunca la dejaban.
+========================================================= */
+
+test("bloquea aunque el reemplazante este LIBRE ese dia", () => {
+    var salida = correr({
+        contratos: [{ start: "2027-02-01", end: "2027-02-15" }],
+        propios: {},                    // libre el dia 13
+        bloquea24: ["2027-1-13"]        // pero el 12 tenia Noche
+    }).resultado;
+    var dia13 = salida.dias.find(function (dia) { return dia.key === "2027-1-13"; });
+
+    assert.equal(dia13.estado, "pendiente");
+    assert.equal(dia13.propio, TURNO.LIBRE);
+    assert.equal(dia13.turno, TURNO.LIBRE, "no puede quedarse el heredado");
+});
+
+test("la regla se consulta en TODOS los dias con turno que heredar", () => {
+    // Si vuelve a ponerse una guarda que la salte cuando el dia esta libre, el
+    // caso cruzado se apaga otra vez y en silencio.
+    var salida = correr({
+        contratos: [{ start: "2027-02-01", end: "2027-02-15" }],
+        propios: {}
+    });
+    var consultados = salida.llamadas.bloqueos.map(function (b) {
+        return b.key;
+    });
+
+    salida.resultado.dias.forEach(function (dia) {
+        assert.ok(
+            consultados.indexOf(dia.key) !== -1,
+            "no se consulto la regla del 24 el dia " + dia.key
+        );
+    });
+});
+
+test("y se le pasa el turno que DE VERDAD quedaria, no solo el heredado", () => {
+    // Dentro del traslape lo que se trabaja es la suma. Consultar la regla con
+    // el heredado a secas la haria decidir sobre un turno que no existe.
+    var salida = correr({
+        contratos: [{ start: "2027-02-01", end: "2027-02-15" }],
+        propios: { "2027-1-13": TURNO.DIURNO }
+    });
+    var consulta = salida.llamadas.bloqueos.find(function (b) {
+        return b.key === "2027-1-13";
+    });
+
+    assert.ok(consulta, "no se consulto la regla ese dia");
+    assert.equal(
+        consulta.turno,
+        TURNO.DIURNO + TURNO.LARGA,
+        "se consulto con el heredado en vez de con la suma"
+    );
 });
 
 /* =========================================================
