@@ -15,6 +15,37 @@ const readTasks = () => readFile(
     "utf8"
 );
 
+/**
+ * El cuerpo de una funcion del fuente.
+ *
+ * Antes esto se comprobaba con una ventana de N caracteres desde el nombre de
+ * la funcion. Eso ata el test al LARGO del codigo: al agregarle a
+ * publishSharedScheduleNow la deteccion de cambios, el setDoc quedo mas lejos y
+ * el test fallo sin que cambiara nada de lo que vigila. Y en la asercion
+ * negativa era peor: si la ventana crece hasta la funcion siguiente, el test
+ * falla por un `merge: true` que no es el suyo.
+ */
+function cuerpoDe(fuente, nombre) {
+    const start = fuente.indexOf("async function " + nombre + "(");
+
+    assert.notEqual(start, -1, "no se encontro: " + nombre);
+
+    const open = fuente.indexOf("{", fuente.indexOf(")", start));
+    let depth = 0;
+    let end = open;
+
+    for (; end < fuente.length; end += 1) {
+        if (fuente[end] === "{") depth += 1;
+        else if (fuente[end] === "}") {
+            depth -= 1;
+
+            if (!depth) break;
+        }
+    }
+
+    return fuente.slice(start, end + 1);
+}
+
 test("la grilla de tareas se suma a lo que se publica", async () => {
     const sync = await readSync();
 
@@ -107,14 +138,12 @@ test("el documento compartido se reemplaza, no se fusiona", async () => {
     // semanas viejas del mapa se quedaban pegadas para siempre, y tras quitar
     // el Excel seguian apareciendo en el telefono las programaciones anteriores
     // en imagen. Reemplazar el documento es lo unico que las saca.
-    assert.match(
-        sync,
-        /async function publishSharedScheduleNow[\s\S]{0,900}"published",\s*\n\s*"schedule"\s*\n\s*\),\s*\n\s*\{[\s\S]{0,400}\}\s*\n\s*\);/
-    );
-    assert.doesNotMatch(
-        sync,
-        /async function publishSharedScheduleNow[\s\S]{0,1200}\{ merge: true \}/
-    );
+    const cuerpo = cuerpoDe(sync, "publishSharedScheduleNow");
+
+    // Que el cuerpo traiga el setDoc es ademas la garantia de que el corte no
+    // salio vacio: sin esto, el doesNotMatch de abajo pasaria en falso.
+    assert.match(cuerpo, /"published",\s*\n\s*"schedule"/);
+    assert.doesNotMatch(cuerpo, /merge:\s*true/);
 });
 
 test("la programacion se republica al arrancar y en cada publicacion", async () => {

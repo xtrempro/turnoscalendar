@@ -2914,6 +2914,12 @@ async function publishHotNow() {
 // pegadas para siempre: por eso, tras quitar el Excel, en el telefono seguian
 // apareciendo las programaciones anteriores en imagen. Reemplazar el documento
 // es lo unico que las saca. Nadie mas escribe en el, asi que es seguro.
+// Firma de lo ultimo publicado. Va CON su workspace: al cambiar de unidad la
+// firma de la anterior no dice nada de esta. Vacia al arrancar, asi que la
+// primera publicacion de cada sesion se hace igual -es la que corrige en el
+// telefono un documento con el formato anterior, y hay que conservarla.
+let lastPublishedSchedule = { workspaceId: "", signature: "" };
+
 async function publishSharedScheduleNow() {
     if (!activeWorkspace?.id) return;
 
@@ -2923,6 +2929,33 @@ async function publishSharedScheduleNow() {
         new Date(),
         weeklyScheduleAttachments
     );
+    const contenido = {
+        weeklyScheduleAttachment: currentWeekPayload || null,
+        weeklyScheduleAttachments
+    };
+    // Sin `updatedAtISO` ni `updatedAt`, que cambian en cada armado aunque no
+    // cambie nada mas: con ellas dentro el documento se veria distinto SIEMPRE.
+    // Mismo criterio que la comprobacion de los docs de enlazados, mas abajo.
+    const signature = JSON.stringify(contenido);
+
+    // publishHotNow llama aqui en CADA publicacion, no solo cuando la
+    // programacion cambia. El pipeline de escritura de Firestore admite DIEZ
+    // lotes sin confirmar (MAX_PENDING_WRITES en @firebase/firestore), asi que
+    // un documento reescrito de balde -y este lleva las TRES rejillas semanales
+    // enteras- ocupa una ranura que hace falta, y cuando se agotan el SDK se va
+    // a backoff maximo: medido el 2026-09-22, un commit de UN documento tardaba
+    // 45 s y salia `resource-exhausted`.
+    if (
+        lastPublishedSchedule.workspaceId === workspaceId &&
+        lastPublishedSchedule.signature === signature
+    ) {
+        recordPerformanceEvent("worker-app:publish-schedule-sin-cambios", {
+            type: "worker-app",
+            workspaceId,
+            weekCount: Object.keys(weeklyScheduleAttachments).length
+        });
+        return;
+    }
 
     try {
         const { db, firestoreModule } = await getFirebaseServices();
@@ -2938,12 +2971,15 @@ async function publishSharedScheduleNow() {
                 "schedule"
             ),
             {
-                weeklyScheduleAttachment: currentWeekPayload || null,
-                weeklyScheduleAttachments,
+                ...contenido,
                 updatedAtISO: new Date().toISOString(),
                 updatedAt: firestoreModule.serverTimestamp()
             }
         );
+
+        // Solo DESPUES de que la escritura confirme. Si falla, la firma se queda
+        // como estaba y la proxima publicacion lo reintenta.
+        lastPublishedSchedule = { workspaceId, signature };
 
         recordPerformanceEvent("worker-app:publish-schedule", {
             type: "worker-app",
