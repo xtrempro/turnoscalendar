@@ -1868,14 +1868,48 @@ async function applyInitialModules(
     const readableModules = stateModuleIds().filter(canReadModule);
     const initialEntries = [];
 
-    for (const moduleId of readableModules) {
-        const entries = await measurePerformance(
-            "firebase-app-state:hydrate-entries",
-            () => readRemoteModuleEntries(workspaceId, moduleId),
-            { moduleId },
-            { asyncThreshold: 40 }
-        );
+    // Las lecturas van EN PARALELO. Estaban en un `for` con `await`, o sea una
+    // detras de otra: medido el 2026-09-22 en prod, las 17 sumaban ~32 s
+    // (profile 12,5 s; qualifications 5,1; requests 3,9; clockmarks 3,9...),
+    // mientras que mezclarlas -lo unico que es CPU- costaba 1,8 s ENTRE TODAS.
+    // Era tiempo de red encolado sin motivo.
+    //
+    // Cada modulo responde por si mismo, por la misma razon que los manifiestos
+    // de arriba: con un `Promise.all` pelado, un solo `permission-denied`
+    // rechaza el lote y se pierde la hidratacion entera. Aqui ese arreglo no
+    // estaba: este bucle lanzaba, y el error subia hasta tumbarlo todo.
+    const lecturas = await Promise.all(
+        readableModules.map(async moduleId => {
+            try {
+                const entries = await measurePerformance(
+                    "firebase-app-state:hydrate-entries",
+                    () => readRemoteModuleEntries(workspaceId, moduleId),
+                    { moduleId },
+                    { asyncThreshold: 40 }
+                );
 
+                return { moduleId, entries };
+            } catch (error) {
+                dispatchStatus({
+                    type: "app-state-error",
+                    moduleId,
+                    message: error?.message ||
+                        "No se pudieron leer las entradas del modulo"
+                });
+                console.warn(
+                    `No se pudieron leer las entradas de ${moduleId}.`,
+                    error
+                );
+
+                return { moduleId, entries: [] };
+            }
+        })
+    );
+
+    // El mezclado sigue siendo EN ORDEN de modulo: se lee a la vez, pero la foto
+    // se arma en la misma secuencia que antes. `Promise.all` conserva el orden
+    // del arreglo, asi que esto no depende de cual termine primero.
+    for (const { moduleId, entries } of lecturas) {
         initialEntries.push(...entries);
 
         // El mezclado va aparte de la lectura: uno es red y el otro es CPU, y

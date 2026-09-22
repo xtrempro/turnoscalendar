@@ -49,6 +49,72 @@ test("si NINGUN modulo se pudo leer, el error sigue propagandose", () => {
     );
 });
 
+/* ======================================================================
+   Las ENTRADAS de cada modulo: el mismo arreglo, que aqui faltaba
+
+   El del 09-09 se aplico al bucle de manifiestos. El de las entradas seguia
+   lanzando: un `permission-denied` ahi subia y tumbaba la hidratacion entera.
+   ====================================================================== */
+
+const hidratacion = (() => {
+    const inicio = src.indexOf("async function applyInitialModules(");
+    const abre = src.indexOf("{", src.indexOf(")", inicio));
+    let depth = 0;
+    let fin = abre;
+
+    for (; fin < src.length; fin += 1) {
+        if (src[fin] === "{") depth += 1;
+        else if (src[fin] === "}") {
+            depth -= 1;
+
+            if (!depth) break;
+        }
+    }
+
+    return src.slice(inicio, fin + 1);
+})();
+
+test("las entradas de los modulos se leen EN PARALELO", () => {
+    // Estaban en un `for` con `await`, una detras de otra. Medido el 2026-09-22
+    // en prod: las 17 sumaban ~32 s de red encolada sin motivo, mientras que
+    // mezclarlas -lo unico que es CPU- costaba 1,8 s entre todas.
+    assert.match(
+        hidratacion,
+        /const lecturas = await Promise\.all\(\s*\n\s*readableModules\.map\(async moduleId => \{/
+    );
+    assert.doesNotMatch(
+        hidratacion,
+        /for \(const moduleId of readableModules\)/
+    );
+});
+
+test("y una que falla no se lleva por delante a las demas", () => {
+    assert.match(hidratacion, /\} catch \(error\) \{/);
+    assert.match(hidratacion, /return \{ moduleId, entries: \[\] \};/);
+});
+
+test("el modulo que no se pudo leer se avisa, no se traga", () => {
+    // Quedarse sin un modulo es un problema que hay que poder ver.
+    assert.match(
+        hidratacion,
+        /dispatchStatus\(\{\s*\n\s*type: "app-state-error",\s*\n\s*moduleId,/
+    );
+});
+
+test("se lee a la vez, pero la foto se arma EN ORDEN", () => {
+    // `Promise.all` conserva el orden del arreglo, asi que el mezclado no
+    // depende de cual lectura termine primero.
+    assert.match(
+        hidratacion,
+        /for \(const \{ moduleId, entries \} of lecturas\) \{/
+    );
+
+    const lee = hidratacion.indexOf("const lecturas = await Promise.all(");
+    const mezcla = hidratacion.indexOf("of lecturas) {", lee);
+
+    assert.ok(lee !== -1 && mezcla > lee);
+});
+
 test("los listeners se montan solo sobre los modulos legibles", () => {
     // Suscribirse a un modulo denegado solo produce errores en bucle.
     assert.match(arranque, /const refsLegibles = moduleRefs\.filter\(/);
