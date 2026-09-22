@@ -45,6 +45,49 @@ test("cambiar de unidad no repinta con datos del entorno anterior", () => {
     );
 });
 
+test("la hidratacion arranca ANTES que los demas oyentes", () => {
+    // Firestore multiplexa todo sobre una sola sesion WebChannel y un `getDoc`
+    // es un objetivo mas en ese canal. Medido el 2026-09-22 en prod: cada
+    // lectura tardaba 14 ms y aun asi las 17 resolvian juntas a los 43,5 s,
+    // detras de una descarga de 529 kB. Arrancaban ocho grupos de oyentes antes
+    // que el estado, que es lo unico que hace util la app.
+    const hidrata = main.indexOf("const estadoHidratado = measurePerformance(");
+
+    assert.notEqual(hidrata, -1, "ya no se guarda la promesa de hidratacion");
+
+    [
+        "startWorkerAppDataSync",
+        "startInterUnitLoanSync",
+        "startWorkerAvailabilitySync",
+        "startSupervisorMessages",
+        "startFirebaseWorkerRequestSync",
+        "startFirebaseReplacementRequestSync",
+        "startHomeTasksSync",
+        "startFirebaseAutoCoverageSync"
+    ].forEach(oyente => {
+        const donde = main.indexOf(oyente + "(workspace");
+
+        assert.notEqual(donde, -1, `ya no se inicia ${oyente}`);
+        assert.ok(
+            donde > hidrata,
+            `${oyente} arranca ANTES que la hidratacion y le ocupa el canal`
+        );
+    });
+});
+
+test("pero DESPUES de los permisos y del MFA", () => {
+    // `canReadModule` depende de los permisos: adelantar la hidratacion a ellos
+    // haria que se leyeran menos modulos de los que tocan, y en silencio.
+    const permisos = main.indexOf("await startWorkspacePermissionListener(");
+    const mfa = main.indexOf("await enforceWorkspaceMfa(workspace);");
+    const hidrata = main.indexOf("const estadoHidratado = measurePerformance(");
+
+    assert.notEqual(permisos, -1);
+    assert.notEqual(mfa, -1);
+    assert.ok(permisos < hidrata, "la hidratacion se adelanto a los permisos");
+    assert.ok(mfa < hidrata, "la hidratacion se adelanto al MFA");
+});
+
 test("la vista se refresca despues de hidratar la unidad nueva", () => {
     // La intencion no cambia -refrescar CON el estado hidratado, no con el
     // viejo-; cambia el mecanismo. Se agenda en vez de esperar.

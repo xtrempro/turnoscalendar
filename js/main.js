@@ -15372,6 +15372,54 @@ initFirebaseShell({
                 throw error;
             }
 
+            // La hidratacion del estado arranca PRIMERO, en cuanto hay permisos
+            // y MFA, y por delante de los demas oyentes.
+            //
+            // Firestore multiplexa TODO sobre una sola sesion WebChannel, y un
+            // `getDoc` no es una peticion aparte: es un objetivo mas en ese canal.
+            // Medido el 2026-09-22 en prod: las lecturas individuales tardaban
+            // 14 ms y aun asi las 17 resolvian juntas a los 43,5 s, detras de una
+            // descarga de 529 kB que ocupaba el canal 50 s. Arrancaban ocho grupos
+            // de oyentes antes que esto, y el estado -lo unico que hace util la
+            // app- esperaba turno detras de todos.
+            //
+            // NO baja el trabajo total: cambia quien gana la carrera por el canal.
+            // Permisos y MFA no se adelantan a proposito: `canReadModule` depende
+            // de los permisos, y sin ellos se leerian menos modulos de los que
+            // tocan, en silencio.
+            const estadoHidratado = measurePerformance(
+                "firebase-app-state:start-sync",
+                () => startFirebaseAppStateSync(workspace, {
+                    onChange: (_snapshot, detail = {}) => {
+                        measurePerformance(
+                            "firebase-app-state:on-change-ui",
+                            () => {
+                                if (detail.partial === true) {
+                                    if (detail.keys?.includes("profiles")) {
+                                        renderProfiles({ dashboard: false });
+                                    }
+                                    renderBotones();
+                                } else {
+                                    scheduleWorkspaceUiRefresh({
+                                        syncState: true
+                                    });
+                                }
+                            },
+                            {
+                                partial: detail.partial === true,
+                                keyCount: Array.isArray(detail.keys)
+                                    ? detail.keys.length
+                                    : 0
+                            }
+                        );
+                    }
+                }),
+                {
+                    workspaceId: workspace.id,
+                    workspaceName: workspace.name || ""
+                }
+            );
+
             void measurePerformance(
                 "worker-app:start-sync",
                 () => startWorkerAppDataSync(workspace),
@@ -15456,38 +15504,6 @@ initFirebaseShell({
                     );
                 }
             });
-            const estadoHidratado = measurePerformance(
-                "firebase-app-state:start-sync",
-                () => startFirebaseAppStateSync(workspace, {
-                    onChange: (_snapshot, detail = {}) => {
-                        measurePerformance(
-                            "firebase-app-state:on-change-ui",
-                            () => {
-                                if (detail.partial === true) {
-                                    if (detail.keys?.includes("profiles")) {
-                                        renderProfiles({ dashboard: false });
-                                    }
-                                    renderBotones();
-                                } else {
-                                    scheduleWorkspaceUiRefresh({
-                                        syncState: true
-                                    });
-                                }
-                            },
-                            {
-                                partial: detail.partial === true,
-                                keyCount: Array.isArray(detail.keys)
-                                    ? detail.keys.length
-                                    : 0
-                            }
-                        );
-                    }
-                }),
-                {
-                    workspaceId: workspace.id,
-                    workspaceName: workspace.name || ""
-                }
-            );
             // Publica en segundo plano el resumen RRHH del mes para el Dashboard.
             startRrhhSummaryBackgroundPublisher();
 
