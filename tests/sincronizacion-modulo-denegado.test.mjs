@@ -23,7 +23,18 @@ const arranque = src.slice(
 test("cada modulo se lee por separado, no en un lote que se rechaza entero", () => {
     // El Promise.all sigue estando (se leen en paralelo), pero cada lectura
     // atrapa su propio error en vez de rechazar el lote.
-    assert.match(arranque, /try \{\s*return \{ moduleId, docSnap: await firestoreModule\.getDoc\(ref\) \};\s*\} catch \(error\) \{\s*return \{ moduleId, error \};/);
+    //
+    // Se comprueba el ORDEN de las piezas, no que esten en la misma linea: al
+    // envolver el getDoc en una sonda por modulo, la adyacencia se rompio sin
+    // que cambiara nada de lo que esto vigila.
+    const lee = arranque.indexOf("firestoreModule.getDoc(ref)");
+    const atrapa = arranque.indexOf("} catch (error) {", lee);
+    const devuelve = arranque.indexOf("return { moduleId, error };", atrapa);
+
+    assert.notEqual(lee, -1, "ya no se lee el documento del modulo");
+    assert.notEqual(atrapa, -1, "la lectura dejo de atrapar su propio error");
+    assert.notEqual(devuelve, -1, "el modulo que falla ya no se anota");
+    assert.match(arranque, /try \{/);
 });
 
 test("los modulos legibles se aplican aunque otro falle", () => {

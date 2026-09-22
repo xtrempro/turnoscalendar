@@ -2174,7 +2174,20 @@ export async function startFirebaseAppStateSync(
             () => Promise.all(
                 moduleRefs.map(async ({ moduleId, ref }) => {
                     try {
-                        return { moduleId, docSnap: await firestoreModule.getDoc(ref) };
+                        // Uno por uno, con su nombre. `fase-documentos` marco
+                        // 43.516 ms el 2026-09-22 y hay que saber si es UN
+                        // documento lento o los diecisiete esperando a lo mismo:
+                        // llevan a arreglos opuestos. Con las entradas, que
+                        // terminaban todas con 26 ms de diferencia, fue lo
+                        // segundo.
+                        const docSnap = await measurePerformance(
+                            "firebase-app-state:module-doc",
+                            () => firestoreModule.getDoc(ref),
+                            { moduleId },
+                            { asyncThreshold: 40 }
+                        );
+
+                        return { moduleId, docSnap, existe: docSnap.exists() };
                     } catch (error) {
                         return { moduleId, error };
                     }
@@ -2184,6 +2197,15 @@ export async function startFirebaseAppStateSync(
             { asyncThreshold: 40 }
         );
         marcarFase("documentos");
+
+        // Cuantos de los 17 EXISTEN. Si son cero, esos 43 s se gastan trayendo
+        // documentos vacios: el estado real vive en las colecciones `entries`.
+        recordPerformanceEvent("firebase-app-state:module-docs-existen", {
+            type: "firebase",
+            duration: 0,
+            pedidos: moduleReads.length,
+            existen: moduleReads.filter(item => item.existe).length
+        });
 
         const deniedModules = moduleReads.filter(item => item.error);
         const moduleDocs = moduleReads.filter(item => !item.error);
