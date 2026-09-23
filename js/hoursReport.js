@@ -4278,19 +4278,18 @@ export async function buildWorkerHheeMonthSummary(
             backing: String(row.respaldo || "")
         }))
         .filter(item => item.d + item.n > 0.001);
-    const reportMaps = getReportMaps(profile.name);
-    const calendarDays = Array.from({ length: days }, (_, index) => {
-        const keyDay = key(year, month, index + 1);
-        const absence = dayAbsenceDetail(keyDay, reportMaps);
-        const programmedState = baseWithSwapsForReport(profile.name, keyDay);
-        const programmedShift = turnoLabel(programmedState);
-
-        return {
-            iso: isoFromKey(keyDay),
-            baseShift: absence?.label || programmedShift,
-            programmedShift
-        };
-    });
+    const calendarDays = buildDayRows(
+        profile,
+        year,
+        month,
+        days,
+        holidays,
+        "all"
+    ).map(row => ({
+        iso: row.iso,
+        baseShift: row.turnoBase || "",
+        workedShift: row.turnoRealizado || ""
+    }));
     // Una sola fuente para el total del mes: el motor de horas. Antes, en los
     // perfiles "extra-only" se recalculaba sumando el detalle de turnos, que no
     // arrastra los descuentos por marcaje que no caben en el dia; la tarjeta de

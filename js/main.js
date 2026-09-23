@@ -7917,6 +7917,9 @@ async function printCoverageAuthorizationReport(date) {
     try {
         const rows = await Promise.all(candidates.map(async profile => {
             const summary = await buildWorkerHheeMonthSummary(profile, monthDate);
+            const calendarByIso = new Map(
+                (summary?.calendarDays || []).map(day => [day.iso, day])
+            );
             const recordsByIso = new Map();
             replacements
                 .filter(record => record.worker === profile.name)
@@ -7925,12 +7928,8 @@ async function printCoverageAuthorizationReport(date) {
                     records.push(record);
                     recordsByIso.set(record.date, records);
                 });
-            const extraByIso = new Map(
-                (summary?.extraShifts || []).map(extra => [extra.iso, extra])
-            );
-            const days = (summary?.calendarDays || []).map(calendar => {
-                const extra = extraByIso.get(calendar.iso) || {};
-                const records = recordsByIso.get(calendar.iso) || [];
+            const days = (summary?.extraShifts || []).map(extra => {
+                const records = recordsByIso.get(extra.iso) || [];
                 const replacedNames = [...new Set(records
                     .map(record => record.replaced)
                     .filter(Boolean))];
@@ -7945,18 +7944,18 @@ async function printCoverageAuthorizationReport(date) {
                 const schedules = [...new Set(records
                     .map(coverageSchedule)
                     .filter(Boolean))];
+                const calendar = calendarByIso.get(extra.iso) || {};
 
                 return {
-                    iso: calendar.iso,
+                    iso: extra.iso,
                     baseShift: calendar.baseShift || "",
-                    programmedShift: calendar.programmedShift || "",
-                    workedShift: extra.turno || calendar.programmedShift || "",
+                    workedShift: extra.turno || calendar.workedShift || "",
                     schedule: schedules.join(" / "),
-                    dayHours: extra.d || 0,
-                    festiveHours: extra.n || 0,
+                    dayHours: extra.d,
+                    festiveHours: extra.n,
                     replacedName: replacedNames.join(" / "),
                     replacedRut: replacedRuts.join(" / "),
-                    reason: records.length ? "" : extra.backing || "",
+                    reason: records.length ? "" : extra.backing,
                     motive: motives.join(" / ") || extra.backing || ""
                 };
             });
