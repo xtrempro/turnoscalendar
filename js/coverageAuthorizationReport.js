@@ -35,7 +35,8 @@ function rotationChecks(rotationType, shiftAssigned) {
         assigned: shiftAssigned ? "X" : "",
         unassigned: shiftAssigned ? "" : "X",
         third: type === "3turno" ? "X" : "",
-        fourth: type === "4turno" ? "X" : ""
+        fourth: type === "4turno" ? "X" : "",
+        daytime: type === "diurno" ? "X" : ""
     };
 }
 
@@ -92,16 +93,16 @@ function pageHTML(row, monthDate) {
         </div>
         <table class="coverage-annex__checks"><tbody>
             <tr><th rowspan="2">Marca con una (X)</th><td>Sistema Turno c/asig.</td><td>${checks.assigned}</td><td>Tercer Turno</td><td>${checks.third}</td><td>Cuarto Turno</td><td>${checks.fourth}</td></tr>
-            <tr><td>Sistema Turno s/asig.</td><td>${checks.unassigned}</td><td colspan="4"></td></tr>
+            <tr><td>Sistema Turno s/asig.</td><td>${checks.unassigned}</td><td>Diurno</td><td>${checks.daytime}</td><td colspan="2"></td></tr>
         </tbody></table>
         <table class="coverage-annex__days">
             <colgroup>
-                <col style="width:3%"><col style="width:8%"><col style="width:11%">
-                <col style="width:8%"><col style="width:6%"><col style="width:23%">
-                <col style="width:8%"><col style="width:33%">
+                <col style="width:3%"><col style="width:8%"><col style="width:9%">
+                <col style="width:5%"><col style="width:5%"><col style="width:23%">
+                <col style="width:12%"><col style="width:35%">
             </colgroup>
             <thead><tr><th rowspan="2">DIA</th><th rowspan="2">ROTATIVA</th><th rowspan="2">HORARIO</th><th colspan="2">HORAS</th><th colspan="3">DATOS DEL FUNCIONARIO REEMPLAZO</th></tr>
-            <tr><th>DIURNAS</th><th>FESTIVAS</th><th>NOMBRE</th><th>RUT</th><th>MOTIVO DEL REEMPLAZO</th></tr></thead>
+            <tr><th>DIUR.</th><th>FEST.</th><th>NOMBRE</th><th>RUT</th><th>MOTIVO DEL REEMPLAZO</th></tr></thead>
             <tbody>${body.join("")}<tr class="coverage-annex__total"><td></td><td>TOTAL</td><td></td><td>${formatHours(totalDay)}</td><td>${formatHours(totalFestive)}</td><td colspan="3"></td></tr></tbody>
         </table>
         <footer><span>FIRMA FUNCIONARIO</span><span>FIRMA JEFE DE SERVICIO</span><span>FIRMA SUBDIRECCION</span></footer>

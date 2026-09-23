@@ -47,6 +47,20 @@ test("Anexo 2 conserva el formato institucional y completa 31 dias", () => {
     assert.match(html, /<td>31<\/td>/);
     assert.match(html, /<td>12<\/td>/);
     assert.match(html, /@page \{ size: legal portrait/);
+    assert.match(html, /<th>DIUR\.<\/th><th>FEST\.<\/th>/);
+});
+
+test("Anexo 2 marca Diurno solo para la rotativa diurna", () => {
+    const html = buildCoverageAuthorizationReportHTML([{
+        name: "Ana Diurna",
+        rotationType: "diurno",
+        shiftAssigned: false,
+        days: [{ iso: "2027-04-01", dayHours: 1 }]
+    }], new Date(2027, 3, 1));
+
+    assert.match(html, /<td>Diurno<\/td><td>X<\/td>/);
+    assert.doesNotMatch(html, /<td>Tercer Turno<\/td><td>X<\/td>/);
+    assert.doesNotMatch(html, /<td>Cuarto Turno<\/td><td>X<\/td>/);
 });
 
 test("Anexo 2 escapa datos provenientes de perfiles", () => {
