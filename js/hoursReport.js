@@ -4278,6 +4278,18 @@ export async function buildWorkerHheeMonthSummary(
             backing: String(row.respaldo || "")
         }))
         .filter(item => item.d + item.n > 0.001);
+    const calendarDays = buildDayRows(
+        profile,
+        year,
+        month,
+        days,
+        holidays,
+        "all"
+    ).map(row => ({
+        iso: row.iso,
+        baseShift: row.turnoBase || "",
+        workedShift: row.turnoRealizado || ""
+    }));
     // Una sola fuente para el total del mes: el motor de horas. Antes, en los
     // perfiles "extra-only" se recalculaba sumando el detalle de turnos, que no
     // arrastra los descuentos por marcaje que no caben en el dia; la tarjeta de
@@ -4294,6 +4306,7 @@ export async function buildWorkerHheeMonthSummary(
         effectiveContractType,
         contractKind: contractKindForType(effectiveContractType),
         extraShifts,
+        calendarDays,
         // Que representa extraShifts, para que la PWA titule la seccion sin
         // tener que reconstruir esta regla: "all" = todos los turnos del mes.
         detailScope: showsAllShifts ? "all" : "extra",

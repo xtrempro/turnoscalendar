@@ -358,6 +358,10 @@ import {
     tensShiftTypeLabel
 } from "./tensReport.js";
 import {
+    buildCoverageAuthorizationReportHTML,
+    hasCoverageAuthorizationOvertime
+} from "./coverageAuthorizationReport.js";
+import {
     initHoursCharts,
     renderHoursCharts
 } from "./hoursCharts.js";
@@ -432,6 +436,7 @@ import {
     saveManualLeaveBalances,
     getCarry,
     getSwaps,
+    getReplacements,
     saveSwaps,
     isProfileActive,
     initializeGradeHistory,
@@ -7886,6 +7891,107 @@ async function printTensConsolidatedReport(date) {
     }
 }
 
+function coverageSchedule(record) {
+    const from = record?.coverFrom || record?.shiftFrom || "";
+    const until = record?.coverUntil || record?.shiftUntil || "";
+    return from && until ? `${from} A ${until}` : "";
+}
+
+async function printCoverageAuthorizationReport(date) {
+    if (!ensureCanDownloadReports()) return;
+
+    const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
+    const effectiveDate = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    const profiles = getProfiles();
+    const profileByName = new Map(profiles.map(profile => [profile.name, profile]));
+    const replacements = getReplacements().filter(record =>
+        !record?.canceled &&
+        String(record?.date || "").startsWith(
+            `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}-`
+        )
+    );
+    const candidates = profiles.filter(profile => !isHonorariaContractType(
+        getContractTypeAt(profile.name, effectiveDate) || profile.contractType
+    ));
+
+    try {
+        const rows = await Promise.all(candidates.map(async profile => {
+            const summary = await buildWorkerHheeMonthSummary(profile, monthDate);
+            const calendarByIso = new Map(
+                (summary?.calendarDays || []).map(day => [day.iso, day])
+            );
+            const recordsByIso = new Map();
+            replacements
+                .filter(record => record.worker === profile.name)
+                .forEach(record => {
+                    const records = recordsByIso.get(record.date) || [];
+                    records.push(record);
+                    recordsByIso.set(record.date, records);
+                });
+            const days = (summary?.extraShifts || []).map(extra => {
+                const records = recordsByIso.get(extra.iso) || [];
+                const replacedNames = [...new Set(records
+                    .map(record => record.replaced)
+                    .filter(Boolean))];
+                const replacedRuts = [...new Set(replacedNames
+                    .map(name => profileByName.get(name)?.rut || "")
+                    .filter(Boolean))];
+                const motives = [...new Set(records
+                    .map(record => record.replaced
+                        ? record.absenceType || "Ausencia"
+                        : record.reason || record.absenceType || "")
+                    .filter(Boolean))];
+                const schedules = [...new Set(records
+                    .map(coverageSchedule)
+                    .filter(Boolean))];
+                const calendar = calendarByIso.get(extra.iso) || {};
+
+                return {
+                    iso: extra.iso,
+                    baseShift: calendar.baseShift || "",
+                    workedShift: extra.turno || calendar.workedShift || "",
+                    schedule: schedules.join(" / "),
+                    dayHours: extra.d,
+                    festiveHours: extra.n,
+                    replacedName: replacedNames.join(" / "),
+                    replacedRut: replacedRuts.join(" / "),
+                    reason: records.length ? "" : extra.backing,
+                    motive: motives.join(" / ") || extra.backing || ""
+                };
+            });
+            const effectiveProfile =
+                getCompensationProfileAt(profile.name, effectiveDate) || profile;
+
+            return {
+                name: profile.name,
+                rut: profile.rut || "",
+                contractType: effectiveProfile.contractType || profile.contractType || "",
+                unit: getActiveWorkspace()?.name || "",
+                estamento: effectiveProfile.estamento || profile.estamento || "",
+                rotationType: getRotativa(profile.name)?.type || "",
+                shiftAssigned: getShiftAssigned(profile.name, effectiveDate),
+                days
+            };
+        }));
+        const printableRows = rows
+            .filter(hasCoverageAuthorizationOvertime)
+            .sort((a, b) => a.name.localeCompare(b.name, "es"));
+
+        if (!printableRows.length) {
+            alert("No hay trabajadores no honorarios con horas extraordinarias en el mes seleccionado.");
+            return;
+        }
+
+        printReportPreviewHTML(
+            buildCoverageAuthorizationReportHTML(printableRows, monthDate),
+            `Anexo 2 cobertura de turnos ${formatReportPlanillaTitle(monthDate)}`
+        );
+    } catch (error) {
+        console.error(error);
+        alert("No fue posible generar el Anexo 2 de cobertura de turnos.");
+    }
+}
+
 // Inyecta la lupa (buscar/cambiar trabajador) y negrita al final del nombre en
 // la tabla "Datos del trabajador" del preview. La lupa se oculta al imprimir.
 function decorateReportWorkerName() {
@@ -8012,6 +8118,11 @@ async function renderReportsDetail() {
     if (DOM.printTensReportBtn) {
         DOM.printTensReportBtn.onclick = () =>
             printTensConsolidatedReport(reportDate);
+    }
+
+    if (DOM.printCoverageAuthorizationBtn) {
+        DOM.printCoverageAuthorizationBtn.onclick = () =>
+            printCoverageAuthorizationReport(reportDate);
     }
 
     bindAttendanceImport();

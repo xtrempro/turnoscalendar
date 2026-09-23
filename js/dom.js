@@ -105,6 +105,7 @@ export const DOM = {
     downloadNoAssignmentReportBtn: document.getElementById("downloadNoAssignmentReportBtn"),
     printReportPdfBtn: document.getElementById("printReportPdfBtn"),
     printTensReportBtn: document.getElementById("printTensReportBtn"),
+    printCoverageAuthorizationBtn: document.getElementById("printCoverageAuthorizationBtn"),
     attendanceImportInput: document.getElementById("attendanceImportInput"),
     attendanceImportStatus: document.getElementById("attendanceImportStatus"),
     reportsUnavailableHint: document.getElementById("reportsUnavailableHint"),
