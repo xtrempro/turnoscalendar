@@ -960,7 +960,13 @@ export function getProtectedDirectEditTurn(
     // siguiente click. Con un reemplazo asignado se mantiene la proteccion: ese
     // turno no se borra desde el calendario, se anula desde su propio cuadro.
     const allowLibre = options.allowLibre === true ||
-        (!replacementTurn && isHonorariaProfile(nombre, key));
+        (
+            !replacementTurn &&
+            (
+                isHonorariaProfile(nombre, key) ||
+                isReplacementProfile(nombre, key)
+            )
+        );
     const nextVisibleTurn = siguienteTurnoValido(
         nombre,
         key,

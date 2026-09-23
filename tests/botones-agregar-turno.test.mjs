@@ -324,7 +324,7 @@ test("quitar el extra devuelve la casilla a su turno base", () => {
     // Y pasa por la misma cola de guardado que todo lo demas.
     assert.match(
         calendar,
-        /offerManualExtraRemoval\([\s\S]{0,1400}commitCalendarTurnChange\(\{/
+        /function removeManualExtraTurn\([\s\S]{0,600}commitCalendarTurnChange\(\{/
     );
     assert.match(calendar, /historyLabel: `Turno extra quitado en \$\{keyDay\}`/);
 });

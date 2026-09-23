@@ -452,17 +452,24 @@ export function isReplacementProfile(profileName, keyDay = "") {
 }
 
 export function getContractForDate(profileName, keyDay) {
-    if (!isReplacementProfile(profileName, keyDay)) return null;
+    return getReplacementContractsForDate(profileName, keyDay)[0] || null;
+}
+
+// Puede haber mas de un contrato vigente el mismo dia. El primero sigue
+// definiendo la proyeccion historica del turno, pero la interfaz necesita todos
+// para explicar a quienes cubre el reemplazante en esa casilla.
+export function getReplacementContractsForDate(profileName, keyDay) {
+    if (!isReplacementProfile(profileName, keyDay)) return [];
 
     const iso = keyToISO(keyDay);
 
-    if (!iso) return null;
+    if (!iso) return [];
 
     return getContractsForProfile(profileName)
-        .find(contract =>
+        .filter(contract =>
             contract.start <= iso &&
             contract.end >= iso
-        ) || null;
+        );
 }
 
 export function getReplacementRotationModeForDate(

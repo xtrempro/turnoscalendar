@@ -155,6 +155,7 @@ import {
 import {
     getHonorariaContractForDate,
     getInheritedReplacementContractForCoveredShift,
+    getReplacementContractsForDate,
     hasContractForDate,
     isReplacementProfile
 } from "./contracts.js";
@@ -9905,12 +9906,15 @@ async function clickDia(
     const currentState = Number.isFinite(previewState)
         ? previewState
         : getActualState(profileName, keyDay);
-    const effectiveBaseTurn = aplicarCambiosTurno(
+    const projectedBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
         baseTurno,
         { includeReplacements: false }
     );
+    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
+        ? TURNO.LIBRE
+        : projectedBaseTurn;
     const directEditTurn = getProtectedDirectEditTurn(
         profileName,
         keyDay,
@@ -10051,12 +10055,15 @@ export function canAddTurnToDay(profileName, keyDay, turnoElegido, context = {})
     }
 
     const baseTurno = getTurnoBase(profileName, keyDay);
-    const effectiveBaseTurn = aplicarCambiosTurno(
+    const projectedBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
         baseTurno,
         { includeReplacements: false }
     );
+    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
+        ? TURNO.LIBRE
+        : projectedBaseTurn;
 
     return getAddTurnResult(
         profileName,
@@ -10078,12 +10085,18 @@ export function canAddTurnToDay(profileName, keyDay, turnoElegido, context = {})
  */
 function manualExtraForDay(profileName, keyDay) {
     const baseTurno = getTurnoBase(profileName, keyDay);
-    const effectiveBaseTurn = aplicarCambiosTurno(
+    const projectedBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
         baseTurno,
         { includeReplacements: false }
     );
+    // El contrato proyecta la jornada, pero no la vuelve una rotativa base
+    // protegida. Guardar 0 en el dia permite retirar ese turno sin tocar el
+    // contrato ni el resto de su periodo.
+    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
+        ? TURNO.LIBRE
+        : projectedBaseTurn;
     const actual = getActualState(profileName, keyDay);
 
     return {
@@ -10105,16 +10118,25 @@ async function offerManualExtraRemoval(profileName, keyDay, options = {}) {
     if (!extra) return false;
 
     const etiqueta = turno => TURNO_LABEL[Number(turno) || 0] || "Libre";
+    const replacementDay = isReplacementProfile(profileName, keyDay);
     const confirmado = await showConfirm(
-        `Este dia tiene un turno agregado a mano.\n\n` +
-        `Turno base: ${etiqueta(effectiveBaseTurn)}\n` +
-        `Con el extra: ${etiqueta(actual)}\n` +
-        `Se quitara: ${etiqueta(extra)}\n\n` +
-        `La casilla vuelve a su estado original.`,
+        replacementDay
+            ? `Este es un turno de reemplazo.\n\n` +
+              `Se quitara: ${etiqueta(actual)}\n\n` +
+              `Solo esta fecha quedara vacia; el contrato y los demas turnos se mantienen.`
+            : `Este dia tiene un turno agregado a mano.\n\n` +
+              `Turno base: ${etiqueta(effectiveBaseTurn)}\n` +
+              `Con el extra: ${etiqueta(actual)}\n` +
+              `Se quitara: ${etiqueta(extra)}\n\n` +
+              `La casilla vuelve a su estado original.`,
         {
-            title: "Quitar turno extra",
+            title: replacementDay
+                ? "Quitar turno de reemplazo"
+                : "Quitar turno extra",
             tone: "danger",
-            confirmText: "Quitar turno extra",
+            confirmText: replacementDay
+                ? "Quitar turno"
+                : "Quitar turno extra",
             cancelText: "Volver",
             destructive: true
         }
@@ -10185,12 +10207,15 @@ export function addTurnToDay(profileName, keyDay, turnoElegido, options = {}) {
     const isHab = options.isHab !== false;
     const baseTurno = getTurnoBase(profileName, keyDay);
     const currentState = getActualState(profileName, keyDay);
-    const effectiveBaseTurn = aplicarCambiosTurno(
+    const projectedBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
         baseTurno,
         { includeReplacements: false }
     );
+    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
+        ? TURNO.LIBRE
+        : projectedBaseTurn;
     const result = getAddTurnResult(
         profileName,
         keyDay,
@@ -10240,12 +10265,15 @@ export function addPreassignedTurnToDay(
     if (!profileName || !turnoElegido) return false;
 
     const isHab = options.isHab !== false;
-    const effectiveBaseTurn = aplicarCambiosTurno(
+    const projectedBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
         getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
     );
+    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
+        ? TURNO.LIBRE
+        : projectedBaseTurn;
     const result = getAddTurnResult(
         profileName,
         keyDay,
@@ -10768,6 +10796,10 @@ async function renderCalendarImpl(options = {}) {
                 activeProfile,
                 keyDay
             );
+        const replacementContractsForDay =
+            getReplacementContractsForDate(activeProfile, keyDay);
+        const isReplacementWorkDay =
+            isReplacementProfile(activeProfile, keyDay) && state > 0;
         const workerReplacement =
             replacementIndex.byWorkerDate.get(isoDay) || null;
         const replacementContractError =
@@ -10892,6 +10924,16 @@ async function renderCalendarImpl(options = {}) {
                     : `Motivo HHEE: ${workerReplacement.reason || workerReplacement.absenceType || "sin detalle"}.`
             )
             : "";
+        const replacementContractTargets = Array.from(new Set(
+            replacementContractsForDay
+                .map(contract => String(contract.replaces || "").trim())
+                .filter(Boolean)
+        ));
+        const replacementContractTitle = isReplacementWorkDay
+            ? replacementContractTargets.length
+                ? `Reemplazo de ${replacementContractTargets.join(", ")}.`
+                : "Turno de reemplazo sin titular asociado para esta fecha."
+            : "";
         const turnChangeTitle = Array.from(new Set(
             turnChangeMarkers
                 .map(marker => turnChangeHoverTitle(marker, activeProfile))
@@ -10927,6 +10969,7 @@ async function renderCalendarImpl(options = {}) {
         const calendarBadges =
             Array.from(new Set([
                 ...(badge ? [badge] : []),
+                ...(isReplacementWorkDay ? ["Reemplazo"] : []),
                 ...(contingencyKind
                     ? [CONTINGENCY_BADGE[contingencyKind]]
                     : []),
@@ -11008,7 +11051,11 @@ async function renderCalendarImpl(options = {}) {
                     // turno extra y una incidencia de marcaje sobre ese mismo
                     // turno. Antes el motivo tapaba la advertencia, asi que el
                     // marcaje modificado quedaba invisible en el hover.
-                    return [replacementTitle, warning]
+                    return [
+                        replacementContractTitle,
+                        replacementTitle,
+                        warning
+                    ]
                         .filter(Boolean)
                         .join("\n");
                 })();
@@ -11148,7 +11195,7 @@ async function renderCalendarImpl(options = {}) {
             div.classList.add("contract-error-day");
         }
 
-        if (workerReplacement) {
+        if (workerReplacement || isReplacementWorkDay) {
             div.classList.add("replacement-day");
         }
 

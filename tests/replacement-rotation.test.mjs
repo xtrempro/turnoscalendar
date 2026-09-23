@@ -7,6 +7,7 @@ import {
 } from "../js/replacementRotation.js";
 import {
     getDiurnoBridgeContractForProfile,
+    getReplacementContractsForDate,
     getReplacementBridgeProfileForDate,
     getReplacementRotationModeForDate,
     replacementContractCoversCoveredShift
@@ -20,9 +21,11 @@ import {
 } from "../js/profileDraft.js";
 import { validateProfileDraft } from "../js/profileValidation.js";
 import {
+    getProtectedDirectEditTurn,
     getTurnoBase,
     getTurnoProgramado
 } from "../js/turnEngine.js";
+import { saveProfileDayTurn } from "../js/storage.js";
 
 class MemoryStorage {
     constructor() {
@@ -200,6 +203,77 @@ test("un contrato antiguo sin modalidad hereda turnos aunque el reemplazante sea
     assert.equal(
         getTurnoProgramado("Reemplazante", key),
         TURNO.LARGA
+    );
+});
+
+test("un reemplazante puede retirar el turno heredado del primer contrato", () => {
+    const key = "2027-3-12";
+
+    setJSON("profiles", [
+        { name: "Titular", contractType: "Planta", active: true },
+        { name: "Reemplazante", contractType: "Reemplazo", active: true }
+    ]);
+    setJSON("baseData_Titular", { [key]: TURNO.LARGA });
+    setJSON("replacementContracts_Reemplazante", [{
+        id: "primero",
+        start: "2027-04-01",
+        end: "2027-04-30",
+        replaces: "Titular",
+        rotationMode: REPLACEMENT_ROTATION_MODE.INHERIT
+    }]);
+
+    assert.equal(getTurnoProgramado("Reemplazante", key), TURNO.LARGA);
+    let current = TURNO.LARGA;
+    const cycle = [];
+
+    for (let click = 0; click < 8; click++) {
+        current = getProtectedDirectEditTurn(
+            "Reemplazante",
+            key,
+            current,
+            true,
+            { effectiveBaseTurn: TURNO.LIBRE }
+        ).nextVisibleTurn;
+        cycle.push(current);
+
+        if (current === TURNO.LIBRE) break;
+    }
+
+    assert.equal(
+        cycle.includes(TURNO.LIBRE),
+        true
+    );
+
+    saveProfileDayTurn(key, TURNO.LIBRE, "Reemplazante");
+    assert.equal(getTurnoProgramado("Reemplazante", key), TURNO.LIBRE);
+    assert.equal(getTurnoBase("Reemplazante", key), TURNO.LARGA);
+});
+
+test("devuelve todos los contratos superpuestos para explicar la casilla", () => {
+    const key = "2027-3-25";
+
+    setJSON("profiles", [
+        { name: "Alan", contractType: "Reemplazo", active: true }
+    ]);
+    setJSON("replacementContracts_Alan", [
+        {
+            id: "c1",
+            start: "2027-04-01",
+            end: "2027-04-30",
+            replaces: "Cristian"
+        },
+        {
+            id: "c2",
+            start: "2027-04-20",
+            end: "2027-05-10",
+            replaces: "Paula"
+        }
+    ]);
+
+    assert.deepEqual(
+        getReplacementContractsForDate("Alan", key)
+            .map(contract => contract.replaces),
+        ["Cristian", "Paula"]
     );
 });
 

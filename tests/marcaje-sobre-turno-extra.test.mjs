@@ -25,7 +25,7 @@ test("el hover muestra el motivo del turno extra Y la incidencia", () => {
     assert.doesNotMatch(calendar, /return replacementTitle \|\| warning;/);
     assert.match(
         calendar,
-        /return \[replacementTitle, warning\]\s*\n\s*\.filter\(Boolean\)\s*\n\s*\.join\("\\n"\);/
+        /return \[\s*replacementContractTitle,\s*replacementTitle,\s*warning\s*\]\s*\n\s*\.filter\(Boolean\)\s*\n\s*\.join\("\\n"\);/
     );
 });
 

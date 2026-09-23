@@ -63,6 +63,7 @@ const { turnoBloqueadoPorTurno24 } =
     await import("../js/turnEngine.js");
 const {
     buildReplacementCandidates,
+    replacementCreatesInvertedTwentyFour,
     preassignmentBlocksReplacementCandidate
 } = await import("../js/replacementCandidates.js");
 
@@ -165,6 +166,99 @@ test("la Noche antes de un 24 sigue prohibida con el ajuste puesto", () => {
     assert.equal(
         turnoBloqueadoPorTurno24("Juan", DIA_24, TURNO.NOCHE),
         true
+    );
+});
+
+test("Larga, 24, Noche, Libre no es un 24 invertido", () => {
+    const diaAnterior = "2027-0-18";
+    const diaCobertura = "2027-0-19";
+    const diaSiguiente = "2027-0-20";
+
+    saveBaseProfileData({
+        [diaAnterior]: TURNO.LARGA,
+        [diaCobertura]: TURNO.NOCHE,
+        [diaSiguiente]: TURNO.NOCHE
+    }, "Juan");
+    saveProfileData({
+        [diaAnterior]: TURNO.LARGA,
+        [diaCobertura]: TURNO.NOCHE,
+        [diaSiguiente]: TURNO.NOCHE
+    }, "Juan");
+    saveTurnChangeConfig({
+        ...DEFAULT_TURN_CHANGE_CONFIG,
+        allowTwentyFourHourShifts: true,
+        allowInvertedTwentyFourHourShifts: false
+    });
+
+    assert.equal(
+        replacementCreatesInvertedTwentyFour(
+            "Juan",
+            diaCobertura,
+            TURNO.NOCHE,
+            TURNO.LARGA,
+            getTurnChangeConfig()
+        ),
+        false
+    );
+    assert.equal(
+        preassignmentBlocksReplacementCandidate(
+            "Juan",
+            diaCobertura,
+            TURNO.LARGA,
+            getTurnChangeConfig()
+        ),
+        false
+    );
+});
+
+test("Alan sigue entre las sugerencias al formar Larga, 24, Noche, Libre", async () => {
+    const diaAnterior = "2027-0-18";
+    const diaCobertura = "2027-0-19";
+    const diaSiguiente = "2027-0-20";
+
+    saveProfiles([
+        {
+            name: "Paula",
+            estamento: "Enfermeria",
+            profession: "Enfermeria",
+            contractType: "Planta",
+            active: true
+        },
+        {
+            name: "Alan",
+            estamento: "Enfermeria",
+            profession: "Enfermeria",
+            contractType: "Reemplazo",
+            active: true
+        }
+    ]);
+    saveBaseProfileData({ [diaCobertura]: TURNO.LARGA }, "Paula");
+    saveProfileData({ [diaCobertura]: TURNO.LARGA }, "Paula");
+    saveBaseProfileData({
+        [diaAnterior]: TURNO.LARGA,
+        [diaCobertura]: TURNO.NOCHE,
+        [diaSiguiente]: TURNO.NOCHE
+    }, "Alan");
+    saveProfileData({
+        [diaAnterior]: TURNO.LARGA,
+        [diaCobertura]: TURNO.NOCHE,
+        [diaSiguiente]: TURNO.NOCHE
+    }, "Alan");
+    saveTurnChangeConfig({
+        ...DEFAULT_TURN_CHANGE_CONFIG,
+        allowTwentyFourHourShifts: true,
+        allowInvertedTwentyFourHourShifts: false
+    });
+
+    const { candidates } = await buildReplacementCandidates(
+        "Paula",
+        diaCobertura,
+        { neededTurn: TURNO.LARGA, holidays: {} }
+    );
+
+    assert.deepEqual(
+        candidates.map(candidate => candidate.profile.name),
+        ["Alan"]
     );
 });
 
