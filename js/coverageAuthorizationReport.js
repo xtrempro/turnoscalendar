@@ -95,7 +95,11 @@ function pageHTML(row, monthDate) {
             <tr><td>Sistema Turno s/asig.</td><td>${checks.unassigned}</td><td colspan="4"></td></tr>
         </tbody></table>
         <table class="coverage-annex__days">
-            <colgroup><col class="day"><col class="rotation"><col class="schedule"><col class="hours"><col class="hours"><col class="worker"><col class="rut"><col class="motive"></colgroup>
+            <colgroup>
+                <col style="width:3%"><col style="width:10%"><col style="width:9%">
+                <col style="width:6%"><col style="width:6%"><col style="width:24%">
+                <col style="width:9%"><col style="width:33%">
+            </colgroup>
             <thead><tr><th rowspan="2">DIA</th><th rowspan="2">ROTATIVA</th><th rowspan="2">HORARIO</th><th colspan="2">HORAS</th><th colspan="3">DATOS DEL FUNCIONARIO REEMPLAZO</th></tr>
             <tr><th>DIURNAS</th><th>FESTIVAS</th><th>NOMBRE</th><th>RUT</th><th>MOTIVO DEL REEMPLAZO</th></tr></thead>
             <tbody>${body.join("")}<tr class="coverage-annex__total"><td></td><td>TOTAL</td><td></td><td>${formatHours(totalDay)}</td><td>${formatHours(totalFestive)}</td><td colspan="3"></td></tr></tbody>
@@ -125,8 +129,6 @@ export function buildCoverageAuthorizationReportHTML(rows, monthDate) {
         .coverage-annex table { width:100%; border-collapse:collapse; table-layout:fixed; }
         .coverage-annex th,.coverage-annex td { border:1px solid #000; padding:.45mm .6mm; text-align:center; vertical-align:middle; overflow-wrap:anywhere; }
         .coverage-annex__checks { margin-bottom:1.5mm; }
-        .coverage-annex__days col.day { width:5%; }.coverage-annex__days col.rotation { width:11%; }.coverage-annex__days col.schedule { width:10%; }
-        .coverage-annex__days col.hours { width:7%; }.coverage-annex__days col.worker { width:22%; }.coverage-annex__days col.rut { width:12%; }.coverage-annex__days col.motive { width:26%; }
         .coverage-annex__days tbody tr { height:5.6mm; }.coverage-annex__total { font-weight:700; }
         .coverage-annex footer { display:grid; grid-template-columns:repeat(3,1fr); gap:8mm; margin-top:12mm; text-align:center; }
         .coverage-annex footer span { border-top:1px solid #000; padding-top:1.5mm; }
