@@ -2356,7 +2356,10 @@ function buildNoAssignmentDayRows(
         const workState = absence?.full
             ? TURNO.LIBRE
             : absence?.workState || actual;
-        const baseHours = numberHours(date, workState, holidays);
+        // Sin asignacion esta tabla muestra jornadas concretas trabajadas. Un
+        // Diurno (tambien dentro de D+N) vale 9 h de lunes a jueves y 8 el
+        // viernes; 8,8 se reserva para la base contractual mensual.
+        const baseHours = extraNumberHours(date, workState, holidays);
         // Ajuste por incidencias de marcaje de reloj: se suma lo trabajado fuera
         // del turno (ingreso anticipado, salida tardia) y se descuenta lo
         // programado no trabajado (atraso, salida anticipada). Sin marca el

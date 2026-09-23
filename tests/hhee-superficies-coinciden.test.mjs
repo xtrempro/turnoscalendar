@@ -55,7 +55,10 @@ globalThis.alert = () => {};
 globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
 
 const { calcularHorasMesPerfil } = await import("../js/hoursEngine.js");
-const { buildWorkerHheeMonthSummary } = await import("../js/hoursReport.js");
+const {
+    buildNoAssignmentReportPreviewHTML,
+    buildWorkerHheeMonthSummary
+} = await import("../js/hoursReport.js");
 const { getHheeMonthRecords } = await import("../js/replacements.js");
 const { TURNO } = await import("../js/constants.js");
 
@@ -251,6 +254,24 @@ test("el detalle D+N valoriza el diurno por el dia real, no a 8,8", async () => 
 
     assert.equal(detail.d, 11, "9 h del Diurno + 2 h diurnas de la Noche");
     assert.equal(detail.n, 10);
+});
+
+test("el reporte sin asignacion tampoco muestra 10,8 para un D+N martes", async () => {
+    const day = 25;
+    seed({
+        [`shift_${NAME}`]: false,
+        [`baseData_${NAME}`]: { [dayKey(day)]: TURNO.NOCHE },
+        [`data_${NAME}`]: { [dayKey(day)]: TURNO.DIURNO_NOCHE }
+    });
+
+    const html = await buildNoAssignmentReportPreviewHTML(
+        PROFILE,
+        new Date(YEAR, MONTH, 1)
+    );
+    const row = html.match(/25-08-2026[\s\S]*?<\/tr>/)?.[0] || "";
+
+    assert.match(row, />11<\/td>/);
+    assert.doesNotMatch(row, />10,8<\/td>/);
 });
 
 test("un dia con permiso aprobado no genera descuento aunque haya marcaje", async () => {
