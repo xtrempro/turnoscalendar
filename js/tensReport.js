@@ -11,6 +11,11 @@ export function isTensReportProfile(profile) {
     return estamento === "tecnico" || estamento === "tens";
 }
 
+export function isTensConsolidatedCandidate(profile, contractType) {
+    return isTensReportProfile(profile) &&
+        normalized(contractType) !== "honorarios";
+}
+
 export function tensShiftTypeLabel(rotationType, shiftAssigned) {
     const type = normalized(rotationType);
 

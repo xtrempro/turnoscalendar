@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     buildTensConsolidatedReportHTML,
+    isTensConsolidatedCandidate,
     isTensReportProfile,
     tensShiftTypeLabel
 } from "../js/tensReport.js";
@@ -23,6 +24,17 @@ test("incluye a todo el estamento Tecnico sin depender de la profesion", () => {
         estamento: "Profesional",
         profession: "Técnico en Enfermería"
     }), false);
+});
+
+test("excluye del consolidado a los tecnicos a honorarios", () => {
+    const profile = {
+        estamento: "Técnico",
+        profession: "Técnico en Enfermería"
+    };
+
+    assert.equal(isTensConsolidatedCandidate(profile, "Honorarios"), false);
+    assert.equal(isTensConsolidatedCandidate(profile, "Contrata"), true);
+    assert.equal(isTensConsolidatedCandidate(profile, "Planta"), true);
 });
 
 test("describe el tipo de turno y su asignacion", () => {

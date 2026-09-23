@@ -353,6 +353,7 @@ import {
 } from "./hoursReport.js";
 import {
     buildTensConsolidatedReportHTML,
+    isTensConsolidatedCandidate,
     isTensReportProfile,
     tensShiftTypeLabel
 } from "./tensReport.js";
@@ -7815,7 +7816,15 @@ async function printTensConsolidatedReport(date) {
         monthDate.getMonth() + 1,
         0
     );
-    const tensProfiles = getProfiles().filter(isTensReportProfile);
+    const tensProfiles = getProfiles()
+        .filter(isTensReportProfile)
+        .filter(profile =>
+            isTensConsolidatedCandidate(
+                profile,
+                getContractTypeAt(profile.name, effectiveDate) ||
+                    profile.contractType
+            )
+        );
 
     if (!tensProfiles.length) {
         alert("No hay trabajadores del estamento Técnico para generar el reporte.");
