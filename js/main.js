@@ -7818,7 +7818,7 @@ async function printTensConsolidatedReport(date) {
     const tensProfiles = getProfiles().filter(isTensReportProfile);
 
     if (!tensProfiles.length) {
-        alert("No hay perfiles TENS para generar el reporte.");
+        alert("No hay trabajadores del estamento Técnico para generar el reporte.");
         return;
     }
 
@@ -7863,7 +7863,7 @@ async function printTensConsolidatedReport(date) {
             );
 
         if (!rows.length) {
-            alert("No hay horas extraordinarias TENS para el mes seleccionado.");
+            alert("No hay horas extraordinarias del estamento Técnico para el mes seleccionado.");
             return;
         }
 

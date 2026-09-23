@@ -7,11 +7,8 @@ function normalized(value) {
 
 export function isTensReportProfile(profile) {
     const estamento = normalized(profile?.estamento);
-    const profession = normalized(profile?.profession);
 
-    return estamento === "tens" ||
-        profession === "tens" ||
-        profession.includes("tecnico en enfermeria");
+    return estamento === "tecnico" || estamento === "tens";
 }
 
 export function tensShiftTypeLabel(rotationType, shiftAssigned) {

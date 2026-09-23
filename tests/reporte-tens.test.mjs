@@ -6,7 +6,7 @@ import {
     tensShiftTypeLabel
 } from "../js/tensReport.js";
 
-test("identifica TENS sin incluir tecnicos de otras profesiones", () => {
+test("incluye a todo el estamento Tecnico sin depender de la profesion", () => {
     assert.equal(isTensReportProfile({
         estamento: "Técnico",
         profession: "Técnico en Enfermería"
@@ -18,6 +18,10 @@ test("identifica TENS sin incluir tecnicos de otras profesiones", () => {
     assert.equal(isTensReportProfile({
         estamento: "Técnico",
         profession: "Técnico en Imagenología"
+    }), true);
+    assert.equal(isTensReportProfile({
+        estamento: "Profesional",
+        profession: "Técnico en Enfermería"
     }), false);
 });
 
