@@ -14,6 +14,7 @@ import {
 } from "./turnEngine.js";
 
 import {
+    calcExtraHours,
     isBusinessDay
 } from "./calculations.js";
 
@@ -672,29 +673,12 @@ function addAggregateWorkedHours(
     }
 
     if (turno === TURNO.DIURNO) {
-        if (isBusinessDay(date, holidays)) {
-            totals.d += HORA_BASE_DIARIA;
-        }
+        addHours(totals, calcExtraHours(date, turno, holidays));
         return;
     }
 
     if (turno === TURNO.DIURNO_NOCHE) {
-        if (isBusinessDay(date, holidays)) {
-            totals.d += HORA_BASE_DIARIA;
-        }
-
-        addHours(
-            totals,
-            classifyIntervals(
-                [{
-                    start: dateAt(date, 20),
-                    end: nextDateAt(date, 8)
-                }],
-                holidays,
-                rangeStart,
-                rangeEnd
-            )
-        );
+        addHours(totals, calcExtraHours(date, turno, holidays));
         return;
     }
 

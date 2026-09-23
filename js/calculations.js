@@ -131,10 +131,25 @@ export function calcHours(date,state,h){
  * una llamaba a calcHours y mostraba 8,8.
  */
 export function calcExtraHours(date, state, h = {}) {
-    if (Number(state) === 4) {
+    const turno = Number(state);
+
+    if (turno === 4) {
         return {
             d: diurnoExtraDayHours(date, day => isBusinessDay(day, h)),
             n: 0
+        };
+    }
+
+    if (turno === 5) {
+        const diurno = diurnoExtraDayHours(
+            date,
+            day => isBusinessDay(day, h)
+        );
+        const noche = calcNight(date, h);
+
+        return {
+            d: diurno + noche.d,
+            n: noche.n
         };
     }
 

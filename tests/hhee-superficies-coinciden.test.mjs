@@ -233,6 +233,26 @@ test("un Diurno+Noche extra si mide su parte nocturna", async () => {
     assert.equal(result.motor.n > 0, true, "la parte nocturna real no se pierde");
 });
 
+test("el detalle D+N valoriza el diurno por el dia real, no a 8,8", async () => {
+    const day = 25; // Martes 25-08-2026.
+    seed({
+        [`shift_${NAME}`]: false,
+        [`baseData_${NAME}`]: { [dayKey(day)]: TURNO.NOCHE },
+        [`data_${NAME}`]: { [dayKey(day)]: TURNO.DIURNO_NOCHE }
+    });
+
+    const summary = await buildWorkerHheeMonthSummary(
+        PROFILE,
+        new Date(YEAR, MONTH, 1)
+    );
+    const detail = summary.extraShifts.find(item =>
+        item.iso === "2026-08-25"
+    );
+
+    assert.equal(detail.d, 11, "9 h del Diurno + 2 h diurnas de la Noche");
+    assert.equal(detail.n, 10);
+});
+
 test("un dia con permiso aprobado no genera descuento aunque haya marcaje", async () => {
     // Las horas no trabajadas ya estan justificadas por el feriado legal.
     assertAgree(

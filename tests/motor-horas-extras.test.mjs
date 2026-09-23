@@ -18,6 +18,7 @@ const {
     diurnoExtraDayHoursWithHolidays,
     roundMonthlyBusinessHours
 } = await import("../js/overtimeRules.js");
+const { calcExtraHours } = await import("../js/calculations.js");
 
 async function read(path) {
     const source = await readFile(new URL(path, import.meta.url), "utf8");
@@ -57,6 +58,14 @@ test("de lunes a jueves un diurno extra vale 9 horas", () => {
 
 test("el viernes vale 8 horas", () => {
     assert.equal(diurnoExtraDayHours(VIERNES, habil), 8);
+});
+
+test("D+N usa 9 horas diurnas de lunes a jueves y 8 el viernes", () => {
+    const lunes = calcExtraHours(LUNES, 5, {});
+    const viernes = calcExtraHours(VIERNES, 5, {});
+
+    assert.equal(lunes.d - calcExtraHours(LUNES, 2, {}).d, 9);
+    assert.equal(viernes.d - calcExtraHours(VIERNES, 2, {}).d, 8);
 });
 
 test("la semana suma 44 horas, que es de donde salia el promedio", () => {

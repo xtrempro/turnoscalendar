@@ -2609,7 +2609,9 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
         // OJO: rowHours/formatHour devuelven STRINGS con coma decimal ("10,8").
         // La hora extra hay que SUMARLA en numerico (numberHours) y formatear
         // recien al final; sumar los strings concatenaba ("10" + 0 -> "100").
-        const actualHoursNum = numberHours(date, actual, holidays);
+        const actualHoursNum = kind === "extra-only"
+            ? numberHours(date, actual, holidays)
+            : extraNumberHours(date, actual, holidays);
         const scheduleExtraHoursNum = extraNumberHours(date, extraState, holidays);
         // Extension horaria por MODIFICACION DE MARCAJE: la hora extra NETA del
         // marcaje (excedente trabajado menos deficit; la parte recuperada no
