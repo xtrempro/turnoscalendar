@@ -62,7 +62,7 @@ function pageHTML(row, monthDate) {
         body.push(`<tr>
             <td>${day}</td>
             <td>${escapeHTML(detail.baseShift || "")}</td>
-            <td>${escapeHTML(detail.schedule || (dayHours + festiveHours > 0 ? shiftSchedule(detail.workedShift) : ""))}</td>
+            <td>${escapeHTML(detail.schedule || shiftSchedule(detail.programmedShift || detail.workedShift))}</td>
             <td>${formatHours(dayHours)}</td>
             <td>${formatHours(festiveHours)}</td>
             <td>${escapeHTML(detail.replacedName || detail.reason || "")}</td>

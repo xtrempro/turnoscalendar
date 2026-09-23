@@ -63,6 +63,34 @@ test("Anexo 2 marca Diurno solo para la rotativa diurna", () => {
     assert.doesNotMatch(html, /<td>Cuarto Turno<\/td><td>X<\/td>/);
 });
 
+test("Anexo 2 muestra rotativa, ausencia y horario programado todos los dias", () => {
+    const html = buildCoverageAuthorizationReportHTML([{
+        name: "Ana Rotativa",
+        days: [
+            {
+                iso: "2027-04-01",
+                baseShift: "24h",
+                programmedShift: "24h",
+                dayHours: 1
+            },
+            {
+                iso: "2027-04-02",
+                baseShift: "F. Legal",
+                programmedShift: "Noche"
+            },
+            {
+                iso: "2027-04-03",
+                baseShift: "Libre",
+                programmedShift: "Libre"
+            }
+        ]
+    }], new Date(2027, 3, 1));
+
+    assert.match(html, /<td>24h<\/td>\s*<td>08 A 08<\/td>/);
+    assert.match(html, /<td>F\. Legal<\/td>\s*<td>20 A 08<\/td>/);
+    assert.match(html, /<td>Libre<\/td>\s*<td><\/td>/);
+});
+
 test("Anexo 2 escapa datos provenientes de perfiles", () => {
     const html = buildCoverageAuthorizationReportHTML([{
         name: "<script>alert(1)</script>",
