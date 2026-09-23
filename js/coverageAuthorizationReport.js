@@ -96,9 +96,9 @@ function pageHTML(row, monthDate) {
         </tbody></table>
         <table class="coverage-annex__days">
             <colgroup>
-                <col style="width:3%"><col style="width:10%"><col style="width:9%">
-                <col style="width:6%"><col style="width:6%"><col style="width:24%">
-                <col style="width:9%"><col style="width:33%">
+                <col style="width:3%"><col style="width:8%"><col style="width:11%">
+                <col style="width:8%"><col style="width:6%"><col style="width:23%">
+                <col style="width:8%"><col style="width:33%">
             </colgroup>
             <thead><tr><th rowspan="2">DIA</th><th rowspan="2">ROTATIVA</th><th rowspan="2">HORARIO</th><th colspan="2">HORAS</th><th colspan="3">DATOS DEL FUNCIONARIO REEMPLAZO</th></tr>
             <tr><th>DIURNAS</th><th>FESTIVAS</th><th>NOMBRE</th><th>RUT</th><th>MOTIVO DEL REEMPLAZO</th></tr></thead>
@@ -129,6 +129,8 @@ export function buildCoverageAuthorizationReportHTML(rows, monthDate) {
         .coverage-annex table { width:100%; border-collapse:collapse; table-layout:fixed; }
         .coverage-annex th,.coverage-annex td { border:1px solid #000; padding:.45mm .6mm; text-align:center; vertical-align:middle; overflow-wrap:anywhere; }
         .coverage-annex__checks { margin-bottom:1.5mm; }
+        .coverage-annex__days thead tr:first-child th:nth-child(-n+3),
+        .coverage-annex__days thead tr:nth-child(2) th:not(:last-child) { white-space:nowrap; overflow-wrap:normal; }
         .coverage-annex__days tbody tr { height:5.6mm; }.coverage-annex__total { font-weight:700; }
         .coverage-annex footer { display:grid; grid-template-columns:repeat(3,1fr); gap:8mm; margin-top:12mm; text-align:center; }
         .coverage-annex footer span { border-top:1px solid #000; padding-top:1.5mm; }
