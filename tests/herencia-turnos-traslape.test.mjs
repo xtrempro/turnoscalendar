@@ -80,7 +80,7 @@ function construir(mundo) {
     const fabrica = new Function(
         "getTurnoBase",
         "getContractsForProfile",
-        "turnoBloqueadoPorReglas24",
+        "motivoBloqueoReglas24",
         "fusionarTurnos",
         "parseInputDate",
         "keyFromDate",
@@ -107,7 +107,8 @@ function construir(mundo) {
         function (nombre, key, turno) {
             llamadas.bloqueos.push({ nombre, key, turno });
 
-            return (mundo.bloquea24 || []).includes(key);
+            return (mundo.motivos24 || {})[key] ||
+                ((mundo.bloquea24 || []).includes(key) ? "24" : "");
         },
         function (a, b) {
             llamadas.fusiones.push([a, b]);
@@ -142,7 +143,8 @@ function correr(extra) {
             Alan: extra.propios || {}
         },
         contratos: extra.contratos || [],
-        bloquea24: extra.bloquea24 || []
+        bloquea24: extra.bloquea24 || [],
+        motivos24: extra.motivos24 || {}
     };
     var armado = construir(mundo);
 
@@ -237,6 +239,19 @@ test("un dia bloqueado conserva el turno PROPIO, no el heredado", () => {
 
     assert.equal(dia9.turno, TURNO.NOCHE);
     assert.equal(dia9.propio, TURNO.NOCHE);
+    assert.equal(dia9.motivoBloqueo, "24");
+});
+
+test("conserva el motivo exacto del 24 invertido para explicarlo", () => {
+    var salida = correr({
+        contratos: [{ start: "2027-02-01", end: "2027-02-15" }],
+        propios: {},
+        motivos24: { "2027-1-13": "invertido-antes" }
+    }).resultado;
+    var dia13 = salida.dias.find(function (dia) { return dia.key === "2027-1-13"; });
+
+    assert.equal(dia13.estado, "pendiente");
+    assert.equal(dia13.motivoBloqueo, "invertido-antes");
 });
 
 test("las reglas del 24 valen TAMBIEN fuera del traslape", () => {

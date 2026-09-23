@@ -34,14 +34,45 @@ test("la puerta unica esta exportada", () => {
 });
 
 test("y consulta las DOS reglas", () => {
-    const start = motor.indexOf("export function turnoBloqueadoPorReglas24(");
+    // Pasa por `motivoBloqueoReglas24`, que ademas dice CUAL de las dos fue.
+    // Quien lo explica necesita nombrar la regla correcta: nombrar la
+    // equivocada hace dudar de un ajuste que estaba bien puesto, y eso paso.
+    const start = motor.indexOf("export function motivoBloqueoReglas24(");
+
+    assert.notEqual(start, -1, "no existe el motivo");
+
     const cuerpo = motor.slice(start, motor.indexOf("\n}", start));
 
-    assert.match(cuerpo, /turnoBloqueadoPorTurno24\(nombre, key, turno\)/);
+    assert.match(cuerpo, /motivoTurno24\(nombre, key, turno\)/);
+    assert.match(cuerpo, /motivoTurno24Invertido\(nombre, key, turno\)/);
     assert.match(
-        cuerpo,
-        /turnoBloqueadoPorTurno24Invertido\(nombre, key, turno\)/
+        motor,
+        /export function turnoBloqueadoPorReglas24[\s\S]{0,180}motivoBloqueoReglas24\(nombre, key, turno\) !== ""/
     );
+});
+
+test("el motivo distingue POR QUE LADO choca el invertido", () => {
+    // Sin el lado, el aviso no puede decir contra que turno choca, y el
+    // supervisor no tiene con que decidir.
+    const start = motor.indexOf("function motivoTurno24Invertido(");
+    const cuerpo = motor.slice(start, motor.indexOf("\n}", start));
+
+    assert.match(cuerpo, /return "invertido-antes";/);
+    assert.match(cuerpo, /return "invertido-despues";/);
+});
+
+test("el motivo distingue 24 normal, diurno post 24 y adyacencias", () => {
+    const start = motor.indexOf("function motivoTurno24(");
+    const end = motor.indexOf(
+        "export function turnoBloqueadoPorTurno24(",
+        start
+    );
+    const cuerpo = motor.slice(start, end);
+
+    assert.match(cuerpo, /return "24";/);
+    assert.match(cuerpo, /"diurno-post-24"/);
+    assert.match(cuerpo, /"adyacente-24-antes"/);
+    assert.match(cuerpo, /"adyacente-24-despues"/);
 });
 
 test("la mitad invertida NO se exporta", () => {

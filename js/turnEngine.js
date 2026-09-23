@@ -650,10 +650,10 @@ function estadoTurno(nombre, key) {
     );
 }
 
-export function turnoBloqueadoPorTurno24(nombre, key, turno) {
+function motivoTurno24(nombre, key, turno) {
     const candidate = Number(turno) || TURNO.LIBRE;
 
-    if (!nombre || !candidate) return false;
+    if (!nombre || !candidate) return "";
 
     const config = getTurnChangeConfig();
 
@@ -661,7 +661,7 @@ export function turnoBloqueadoPorTurno24(nombre, key, turno) {
         !config.allowTwentyFourHourShifts &&
         candidate === TURNO.TURNO24
     ) {
-        return true;
+        return "24";
     }
 
     const anterior = estadoTurno(nombre, offsetKey(key, -1));
@@ -684,7 +684,9 @@ export function turnoBloqueadoPorTurno24(nombre, key, turno) {
             ].includes(siguiente) &&
             !(diurnoPost24Permitido && siguiente === TURNO.DIURNO)
         ) {
-            return true;
+            return siguiente === TURNO.DIURNO
+                ? "diurno-post-24"
+                : "adyacente-24-despues";
         }
 
         if (
@@ -694,7 +696,7 @@ export function turnoBloqueadoPorTurno24(nombre, key, turno) {
                 TURNO.DIURNO_NOCHE
             ].includes(anterior)
         ) {
-            return true;
+            return "adyacente-24-antes";
         }
     }
 
@@ -706,7 +708,7 @@ export function turnoBloqueadoPorTurno24(nombre, key, turno) {
             candidate === TURNO.DIURNO_NOCHE
         )
     ) {
-        return true;
+        return "adyacente-24-despues";
     }
 
     if (
@@ -719,13 +721,27 @@ export function turnoBloqueadoPorTurno24(nombre, key, turno) {
         ) &&
         !(diurnoPost24Permitido && candidate === TURNO.DIURNO)
     ) {
-        return true;
+        return candidate === TURNO.DIURNO
+            ? "diurno-post-24"
+            : "adyacente-24-antes";
     }
 
-    return false;
+    return "";
 }
 
-function turnoBloqueadoPorTurno24Invertido(nombre, key, turno) {
+export function turnoBloqueadoPorTurno24(nombre, key, turno) {
+    return motivoTurno24(nombre, key, turno) !== "";
+}
+
+/**
+ * Por que lado choca el 24 invertido: "" si no choca.
+ *
+ * Devuelve el LADO porque quien lo explica necesita decirlo. Un aviso que dice
+ * "no se puede" sin decir contra que turno choca no deja al supervisor decidir
+ * nada -y si ademas nombra la regla equivocada, le hace dudar de un ajuste que
+ * tenia bien puesto (paso el 2026-09-22)-.
+ */
+function motivoTurno24Invertido(nombre, key, turno) {
     const candidate = Number(turno) || TURNO.LIBRE;
     const config = getTurnChangeConfig();
 
@@ -734,22 +750,28 @@ function turnoBloqueadoPorTurno24Invertido(nombre, key, turno) {
         !candidate ||
         config.allowInvertedTwentyFourHourShifts
     ) {
-        return false;
+        return "";
     }
 
-    const anterior = estadoTurno(nombre, offsetKey(key, -1));
-    const siguiente = estadoTurno(nombre, offsetKey(key, 1));
+    if (
+        includesDaytimeStart(candidate) &&
+        includesNoche(estadoTurno(nombre, offsetKey(key, -1)))
+    ) {
+        return "invertido-antes";
+    }
 
-    return (
-        (
-            includesDaytimeStart(candidate) &&
-            includesNoche(anterior)
-        ) ||
-        (
-            includesNoche(candidate) &&
-            includesDaytimeStart(siguiente)
-        )
-    );
+    if (
+        includesNoche(candidate) &&
+        includesDaytimeStart(estadoTurno(nombre, offsetKey(key, 1)))
+    ) {
+        return "invertido-despues";
+    }
+
+    return "";
+}
+
+function turnoBloqueadoPorTurno24Invertido(nombre, key, turno) {
+    return motivoTurno24Invertido(nombre, key, turno) !== "";
 }
 
 /**
@@ -768,9 +790,15 @@ function turnoBloqueadoPorTurno24Invertido(nombre, key, turno) {
  * prohibidos, porque consultaba una regla y no la otra. Quien pregunte desde
  * fuera pregunta por las dos o por ninguna.
  */
+export function motivoBloqueoReglas24(nombre, key, turno) {
+    const motivo24 = motivoTurno24(nombre, key, turno);
+    if (motivo24) return motivo24;
+
+    return motivoTurno24Invertido(nombre, key, turno);
+}
+
 export function turnoBloqueadoPorReglas24(nombre, key, turno) {
-    return turnoBloqueadoPorTurno24(nombre, key, turno) ||
-        turnoBloqueadoPorTurno24Invertido(nombre, key, turno);
+    return motivoBloqueoReglas24(nombre, key, turno) !== "";
 }
 
 // `allowLibre` agrega el dia VACIO al final del ciclo, para que el ultimo click

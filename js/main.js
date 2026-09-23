@@ -381,7 +381,7 @@ import {
     fusionarTurnos,
     getTurnoBase,
     getTurnoProgramado,
-    turnoBloqueadoPorReglas24
+    motivoBloqueoReglas24
 } from "./turnEngine.js";
 import {
     esTurnoCapacitacionValido,
@@ -1889,10 +1889,10 @@ function buildInheritedTurnPreview({
             // Tampoco se exige ya estar dentro de un contrato propio: si el
             // reemplazante tiene turnos alrededor por cualquier via, la regla
             // le concierne. Sin nada al lado, la propia funcion devuelve false.
-            const bloqueado = Boolean(
-                worker &&
-                turnoBloqueadoPorReglas24(worker, key, candidato)
-            );
+            const motivoBloqueo = worker
+                ? motivoBloqueoReglas24(worker, key, candidato)
+                : "";
+            const bloqueado = Boolean(motivoBloqueo);
 
             dias.push({
                 key,
@@ -1901,6 +1901,7 @@ function buildInheritedTurnPreview({
                 heredado,
                 propio,
                 traslape: enContratoPropio,
+                motivoBloqueo,
                 estado: bloqueado ? "pendiente" : "heredado"
             });
 
@@ -2873,12 +2874,43 @@ function openRotationConfigModal(
             ?.classList.add("is-rc-target");
 
         panel.hidden = false;
+        const explicaciones = {
+            "24": `
+                Sumar ${escapeHTML(turnoLabel(dia.heredado))} a su turno actual
+                formar&iacute;a un turno de 24 horas, y esta unidad no los permite
+                (Configuraci&oacute;n &middot; Turnos).
+            `,
+            "diurno-post-24": `
+                Heredar ${escapeHTML(turnoLabel(dia.heredado))} dejar&iacute;a un turno
+                diurno inmediatamente despu&eacute;s de uno de 24 horas. Esa combinaci&oacute;n
+                no est&aacute; permitida en Configuraci&oacute;n &middot; Turnos.
+            `,
+            "invertido-antes": `
+                El d&iacute;a anterior termina con Noche y heredar
+                ${escapeHTML(turnoLabel(dia.heredado))} har&iacute;a comenzar otro turno
+                por la ma&ntilde;ana, formando un turno de 24 horas invertido. Esta
+                unidad no permite esa combinaci&oacute;n.
+            `,
+            "invertido-despues": `
+                Heredar ${escapeHTML(turnoLabel(dia.heredado))} incluye Noche y el
+                d&iacute;a siguiente comienza con turno diurno, formando un turno de
+                24 horas invertido. Esta unidad no permite esa combinaci&oacute;n.
+            `,
+            "adyacente-24-antes": `
+                El turno quedar&iacute;a pegado a uno de 24 horas del d&iacute;a anterior y
+                formar&iacute;a una jornada continua no permitida.
+            `,
+            "adyacente-24-despues": `
+                El turno quedar&iacute;a pegado a uno de 24 horas del d&iacute;a siguiente y
+                formar&iacute;a una jornada continua no permitida.
+            `
+        };
+        const explicacion = explicaciones[dia.motivoBloqueo] ||
+            "La combinaci&oacute;n resultante no est&aacute; permitida por las reglas de turnos.";
         panel.innerHTML = `
             <span class="rc-why-t">${escapeHTML(formatDisplayDate(dia.iso))}: no se puede heredar el turno</span>
             <span class="rc-why-d">
-                Ya tiene ${escapeHTML(turnoLabel(dia.propio))} por un contrato anterior suyo.
-                Sumarle ${escapeHTML(turnoLabel(dia.heredado))} dar&iacute;a un turno de 24 horas,
-                y esta unidad no los permite (Configuraci&oacute;n &middot; Turnos).
+                ${explicacion}
                 El turno queda pendiente de reemplazo.
             </span>
         `;
