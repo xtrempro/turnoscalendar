@@ -21,6 +21,7 @@ import {
     turnoExtraCubreTurno
 } from "./rulesEngine.js";
 import {
+    getContractForDate,
     getDiurnoBridgeContractForProfile,
     getReplacementBridgeProfileForDate,
     getReplacementRotationModeForDate,
@@ -314,6 +315,12 @@ function rotativaTurnoBase(nombre, key, visited = new Set()) {
     }
 
     if (isReplacementProfile(nombre, key)) {
+        const replacementContract = getContractForDate(nombre, key);
+
+        if (replacementContract?.excludedDates?.includes(isoFromKey(key))) {
+            return TURNO.LIBRE;
+        }
+
         const rotationMode =
             getReplacementRotationModeForDate(nombre, key);
 

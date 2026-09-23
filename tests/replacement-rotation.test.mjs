@@ -206,6 +206,56 @@ test("un contrato antiguo sin modalidad hereda turnos aunque el reemplazante sea
     );
 });
 
+test("una fecha retirada no se hereda y vuelve a quedar sin cobertura", () => {
+    const keyHeredado = "2026-6-1";
+    const keyExcluido = "2026-6-2";
+
+    setJSON("profiles", [
+        { name: "Titular", contractType: "Planta", active: true },
+        { name: "Reemplazante", contractType: "Reemplazo", active: true }
+    ]);
+    setJSON("baseData_Titular", {
+        [keyHeredado]: TURNO.LARGA,
+        [keyExcluido]: TURNO.NOCHE
+    });
+    setJSON("replacementContracts_Reemplazante", [{
+        id: "contrato-con-exclusion",
+        start: "2026-07-01",
+        end: "2026-07-02",
+        replaces: "Titular",
+        rotationMode: REPLACEMENT_ROTATION_MODE.INHERIT,
+        excludedDates: [
+            "2026-07-02",
+            "2026-07-02",
+            "fecha-invalida"
+        ]
+    }]);
+
+    const contract = getReplacementContractsForDate(
+        "Reemplazante",
+        keyExcluido
+    )[0];
+
+    assert.deepEqual(contract.excludedDates, ["2026-07-02"]);
+    assert.equal(getTurnoBase("Reemplazante", keyHeredado), TURNO.LARGA);
+    assert.equal(getTurnoBase("Reemplazante", keyExcluido), TURNO.LIBRE);
+    assert.equal(getTurnoProgramado("Reemplazante", keyExcluido), TURNO.LIBRE);
+    assert.equal(
+        replacementContractCoversCoveredShift(
+            { ...contract, worker: "Reemplazante" },
+            keyExcluido
+        ),
+        false
+    );
+    assert.equal(
+        replacementContractCoversCoveredShift(
+            { ...contract, worker: "Reemplazante" },
+            keyHeredado
+        ),
+        true
+    );
+});
+
 test("un reemplazante puede retirar el turno heredado del primer contrato", () => {
     const key = "2027-3-12";
 

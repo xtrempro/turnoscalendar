@@ -121,6 +121,13 @@ export function normalizeContract(contract = {}) {
             contract.diurnoCoverageProfile ||
             ""
         ).trim(),
+        excludedDates: Array.from(new Set(
+            (Array.isArray(contract.excludedDates)
+                ? contract.excludedDates
+                : [])
+                .map(value => String(value || "").slice(0, 10))
+                .filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value))
+        )).sort(),
         createdAt:
             contract.createdAt ||
             new Date().toISOString()
@@ -455,6 +462,16 @@ export function getContractForDate(profileName, keyDay) {
     return getReplacementContractsForDate(profileName, keyDay)[0] || null;
 }
 
+export function replacementContractExcludesDate(contract, keyDay) {
+    const iso = keyToISO(keyDay);
+
+    return Boolean(
+        iso &&
+        Array.isArray(contract?.excludedDates) &&
+        contract.excludedDates.includes(iso)
+    );
+}
+
 // Puede haber mas de un contrato vigente el mismo dia. El primero sigue
 // definiendo la proyeccion historica del turno, pero la interfaz necesita todos
 // para explicar a quienes cubre el reemplazante en esa casilla.
@@ -536,6 +553,7 @@ export function replacementContractCoversCoveredShift(
         !coverageWorker ||
         !contract?.replaces ||
         !iso ||
+        replacementContractExcludesDate(contract, keyDay) ||
         contract.start > iso ||
         contract.end < iso ||
         ![

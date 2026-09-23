@@ -3743,6 +3743,7 @@ body[data-active-view="log"] .secondary-grid {
 
 .report-preview-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: stretch;
     justify-content: flex-end;
     gap: 8px;
@@ -9331,6 +9332,15 @@ body.theme-dark .rc-jump { color: #fca5a5; }
 .rc-cal .profile-mini-day.is-rc-target {
     outline: 3px solid rgba(239, 68, 68, 0.45);
     outline-offset: 2px;
+}
+
+.rc-cal .profile-mini-day.is-rc-inherited,
+.rc-cal .profile-mini-day.is-rc-excluded {
+    cursor: pointer;
+}
+
+.rc-cal .profile-mini-day.is-rc-inherited:hover {
+    filter: brightness(1.05);
 }
 
 .rc-day-bang {

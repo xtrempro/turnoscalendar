@@ -341,6 +341,7 @@ import {
     buildDiurnoReportPreviewHTML,
     buildNoAssignmentReportPreviewHTML,
     buildReplacementReportPreviewHTML,
+    buildWorkerHheeMonthSummary,
     exportAssignedShiftReport,
     exportDiurnoShiftReport,
     exportHoursReport,
@@ -350,6 +351,11 @@ import {
     isDiurnoReportProfile,
     isReplacementReportProfile
 } from "./hoursReport.js";
+import {
+    buildTensConsolidatedReportHTML,
+    isTensReportProfile,
+    tensShiftTypeLabel
+} from "./tensReport.js";
 import {
     initHoursCharts,
     renderHoursCharts
@@ -432,6 +438,7 @@ import {
     getGradeHistory,
     getContractHistory,
     getContractTypeAt,
+    getCompensationProfileAt,
     addContractHistoryEntry,
     estamentoAllowsCustomProfession,
     getProfessionOptionsForEstamento,
@@ -1824,7 +1831,8 @@ function buildInheritedTurnPreview({
     replaced,
     startISO,
     endISO,
-    rotationMode
+    rotationMode,
+    excludedDates = []
 }) {
     const vacio = { dias: [], heredados: 0, pendientes: 0 };
     const modo = normalizeReplacementRotationMode(
@@ -1858,6 +1866,9 @@ function buildInheritedTurnPreview({
     );
     let heredados = 0;
     let pendientes = 0;
+    const excluded = new Set(
+        (excludedDates || []).map(value => String(value || ""))
+    );
 
     while (cursor <= hasta) {
         const key = keyFromDate(cursor);
@@ -1889,9 +1900,11 @@ function buildInheritedTurnPreview({
             // Tampoco se exige ya estar dentro de un contrato propio: si el
             // reemplazante tiene turnos alrededor por cualquier via, la regla
             // le concierne. Sin nada al lado, la propia funcion devuelve false.
-            const motivoBloqueo = worker
-                ? motivoBloqueoReglas24(worker, key, candidato)
-                : "";
+            const motivoBloqueo = excluded.has(iso)
+                ? "excluded"
+                : worker
+                    ? motivoBloqueoReglas24(worker, key, candidato)
+                    : "";
             const bloqueado = Boolean(motivoBloqueo);
 
             dias.push({
@@ -1921,7 +1934,8 @@ async function resolveReplacementContractCoverageConflicts({
     start,
     end,
     rotationMode,
-    bridgeProfile = ""
+    bridgeProfile = "",
+    excludedDates = []
 }) {
     const mode = normalizeReplacementRotationMode(
         rotationMode,
@@ -1952,7 +1966,8 @@ async function resolveReplacementContractCoverageConflicts({
             end
         )
             .filter(replacement =>
-                replacement.worker !== coverageWorker
+                replacement.worker !== coverageWorker &&
+                !excludedDates.includes(String(replacement.date || "").slice(0, 10))
             );
 
     if (!conflicts.length) {
@@ -2093,7 +2108,8 @@ async function saveReplacementContractFromDraft(
             start,
             end,
             rotationMode,
-            bridgeProfile
+            bridgeProfile,
+            excludedDates: profileDraft.contractExcludedDates || []
         });
     const replacementContract = addReplacementContract(
         replacementWorker,
@@ -2107,7 +2123,9 @@ async function saveReplacementContractFromDraft(
             leaveStart: start,
             leaveEnd: end,
             rotationMode,
-            bridgeProfile
+            bridgeProfile,
+            excludedDates: (profileDraft.contractExcludedDates || [])
+                .filter(iso => iso >= start && iso <= end)
         }
     );
 
@@ -2131,7 +2149,8 @@ async function saveReplacementContractFromDraft(
             replaced,
             startISO: requestedStart,
             endISO: requestedEnd,
-            rotationMode
+            rotationMode,
+            excludedDates: profileDraft.contractExcludedDates || []
         })
             .dias
             .filter(dia =>
@@ -2234,7 +2253,10 @@ function openRotationConfigModal(
             REPLACEMENT_ROTATION_MODE.INHERIT
         ),
         contractBridgeProfile:
-            profileDraft.contractBridgeProfile || ""
+            profileDraft.contractBridgeProfile || "",
+        contractExcludedDates: Array.isArray(profileDraft.contractExcludedDates)
+            ? [...profileDraft.contractExcludedDates]
+            : []
     };
     const backdrop = document.createElement("div");
     let monthPicker = null;
@@ -2647,6 +2669,8 @@ function openRotationConfigModal(
                 );
             profileDraft.contractBridgeProfile =
                 state.contractBridgeProfile.trim();
+            profileDraft.contractExcludedDates =
+                [...state.contractExcludedDates];
             profileDraft.rotationFirstTurn = "larga";
 
             if (quickContractSave) {
@@ -2712,6 +2736,7 @@ function openRotationConfigModal(
             profileDraft.contractRotationMode =
                 REPLACEMENT_ROTATION_MODE.INHERIT;
             profileDraft.contractBridgeProfile = "";
+            profileDraft.contractExcludedDates = [];
         }
 
         close();
@@ -2903,6 +2928,9 @@ function openRotationConfigModal(
             "adyacente-24-despues": `
                 El turno quedar&iacute;a pegado a uno de 24 horas del d&iacute;a siguiente y
                 formar&iacute;a una jornada continua no permitida.
+            `,
+            "excluded": `
+                Este turno fue retirado manualmente de la herencia del contrato.
             `
         };
         const explicacion = explicaciones[dia.motivoBloqueo] ||
@@ -3041,6 +3069,12 @@ function openRotationConfigModal(
             if (diaHeredado?.estado === "pendiente") {
                 cell.classList.add("is-rc-pending");
             }
+            if (diaHeredado?.estado === "heredado") {
+                cell.classList.add("is-rc-inherited");
+            }
+            if (diaHeredado?.motivoBloqueo === "excluded") {
+                cell.classList.add("is-rc-excluded");
+            }
 
             aplicarClaseTurno(cell, stateTurn);
             cell.innerHTML = `
@@ -3146,6 +3180,7 @@ function openRotationConfigModal(
 
             if (targetChanged) {
                 applyReplacementLeaveOptionToState(null);
+                state.contractExcludedDates = [];
             }
 
             state.contractReplaces =
@@ -3300,7 +3335,8 @@ function openRotationConfigModal(
                 replaced: state.contractReplaces,
                 startISO: state.contractStart,
                 endISO: state.contractEnd,
-                rotationMode: state.contractRotationMode
+                rotationMode: state.contractRotationMode,
+                excludedDates: state.contractExcludedDates
             })
             : { dias: [], heredados: 0, pendientes: 0 };
         // Las barras que hacen VISIBLE el traslape. Se miden sobre la union de
@@ -3398,13 +3434,8 @@ function openRotationConfigModal(
                         </select>
                         <div class="rotation-contract-field rotation-contract-linked">
                             <button class="secondary-button" type="button" data-action="search-linked-absences">
-                                Buscar permisos en unidades enlazadas
+                                Buscar ausencias en unidades enlazadas
                             </button>
-                            <small>
-                                Al elegir uno de otra unidad, el contrato NO se crea
-                                todav&iacute;a: se env&iacute;a una solicitud y esa unidad
-                                tiene que autorizarla.
-                            </small>
                         </div>
                     </div>
 
@@ -3615,6 +3646,7 @@ function openRotationConfigModal(
                 state.contractStart = "";
                 state.contractEnd = "";
                 state.contractBridgeProfile = "";
+                state.contractExcludedDates = [];
                 render();
             });
 
@@ -3649,6 +3681,12 @@ function openRotationConfigModal(
                 ) {
                     state.contractBridgeProfile = "";
                 }
+                if (
+                    state.contractRotationMode !==
+                        REPLACEMENT_ROTATION_MODE.INHERIT
+                ) {
+                    state.contractExcludedDates = [];
+                }
                 render();
             });
 
@@ -3668,12 +3706,14 @@ function openRotationConfigModal(
                 );
 
                 if (leaveOption) {
+                    state.contractExcludedDates = [];
                     applyReplacementLeaveOptionToState(leaveOption);
                     render();
                     return;
                 }
 
                 applyReplacementLeaveOptionToState(null);
+                state.contractExcludedDates = [];
                 render();
             });
     };
@@ -3716,6 +3756,54 @@ function openRotationConfigModal(
             targetElement?.closest(".profile-mini-day");
         if (dayButton?.dataset.key && !dayButton.disabled) {
             if (isReplacement) {
+                const inheritedDay = inheritPreview.dias.find(item =>
+                    item.key === dayButton.dataset.key
+                );
+
+                if (
+                    state.contractRotationMode ===
+                        REPLACEMENT_ROTATION_MODE.INHERIT &&
+                    inheritedDay?.estado === "heredado"
+                ) {
+                    const confirmed = await showConfirm(
+                        `Se quitara el turno ${turnoLabel(inheritedDay.heredado)} heredado del ${formatDisplayDate(inheritedDay.iso)}.\n\nEse turno quedara sin cubrir y pendiente de reemplazo.`,
+                        {
+                            title: "Quitar turno heredado",
+                            tone: "warning",
+                            confirmText: "Quitar turno",
+                            cancelText: "Conservar turno"
+                        }
+                    );
+
+                    if (confirmed) {
+                        state.contractExcludedDates = Array.from(new Set([
+                            ...state.contractExcludedDates,
+                            inheritedDay.iso
+                        ])).sort();
+                        render();
+                    }
+                    return;
+                }
+
+                if (inheritedDay?.motivoBloqueo === "excluded") {
+                    const confirmed = await showConfirm(
+                        `El turno ${turnoLabel(inheritedDay.heredado)} del ${formatDisplayDate(inheritedDay.iso)} esta pendiente.\n\nDeseas volver a heredarlo?`,
+                        {
+                            title: "Restaurar turno heredado",
+                            confirmText: "Volver a heredar",
+                            cancelText: "Mantener pendiente"
+                        }
+                    );
+
+                    if (confirmed) {
+                        state.contractExcludedDates =
+                            state.contractExcludedDates.filter(iso =>
+                                iso !== inheritedDay.iso
+                            );
+                        render();
+                    }
+                    return;
+                }
                 return;
             }
 
@@ -7718,6 +7806,77 @@ async function printSpecificReportPdf(profile, date) {
     }
 }
 
+async function printTensConsolidatedReport(date) {
+    if (!ensureCanDownloadReports()) return;
+
+    const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
+    const effectiveDate = new Date(
+        monthDate.getFullYear(),
+        monthDate.getMonth() + 1,
+        0
+    );
+    const tensProfiles = getProfiles().filter(isTensReportProfile);
+
+    if (!tensProfiles.length) {
+        alert("No hay perfiles TENS para generar el reporte.");
+        return;
+    }
+
+    try {
+        const summaries = await Promise.all(
+            tensProfiles.map(async profile => ({
+                profile,
+                summary: await buildWorkerHheeMonthSummary(profile, monthDate)
+            }))
+        );
+        const rows = summaries
+            .map(({ profile, summary }) => {
+                const effectiveProfile =
+                    getCompensationProfileAt(profile.name, effectiveDate) ||
+                    profile;
+                const dayHours = Math.max(
+                    0,
+                    Number(summary?.hheeDiurnas) || 0
+                );
+                const festiveHours = Math.max(
+                    0,
+                    Number(summary?.hheeNocturnas) || 0
+                );
+                const rotationType = getRotativa(profile.name)?.type || "";
+
+                return {
+                    name: profile.name,
+                    grade: effectiveProfile.grade || profile.grade || "",
+                    dayHours,
+                    festiveHours,
+                    returnTransfer: Boolean(summary?.returnTransfer),
+                    shiftType: tensShiftTypeLabel(
+                        rotationType,
+                        getShiftAssigned(profile.name, effectiveDate)
+                    )
+                };
+            })
+            .filter(row => row.dayHours + row.festiveHours > 0)
+            .sort((a, b) =>
+                a.shiftType.localeCompare(b.shiftType, "es") ||
+                a.name.localeCompare(b.name, "es")
+            );
+
+        if (!rows.length) {
+            alert("No hay horas extraordinarias TENS para el mes seleccionado.");
+            return;
+        }
+
+        printReportPreviewHTML(
+            buildTensConsolidatedReportHTML(rows, monthDate),
+            `Anexo 1 TENS ${formatReportPlanillaTitle(monthDate)}`
+        );
+    } catch (error) {
+        console.error(error);
+        alert("No fue posible generar el reporte consolidado TENS.");
+    }
+}
+
 // Inyecta la lupa (buscar/cambiar trabajador) y negrita al final del nombre en
 // la tabla "Datos del trabajador" del preview. La lupa se oculta al imprimir.
 function decorateReportWorkerName() {
@@ -7839,6 +7998,11 @@ async function renderReportsDetail() {
     if (DOM.printReportPdfBtn) {
         DOM.printReportPdfBtn.onclick = () =>
             printSpecificReportPdf(profile, reportDate);
+    }
+
+    if (DOM.printTensReportBtn) {
+        DOM.printTensReportBtn.onclick = () =>
+            printTensConsolidatedReport(reportDate);
     }
 
     bindAttendanceImport();

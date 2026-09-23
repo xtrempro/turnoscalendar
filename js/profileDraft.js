@@ -76,6 +76,7 @@ function clearedDraftValues() {
         contractLeaveRef: "",
         contractRotationMode: "inherit",
         contractBridgeProfile: "",
+        contractExcludedDates: [],
         honorariaStart: "",
         honorariaEnd: "",
         honorariaHourlyRate: "",
@@ -322,6 +323,7 @@ export function loadDraftFromProfile(profile){
     profileDraft.contractLeaveRef = "";
     profileDraft.contractRotationMode = "inherit";
     profileDraft.contractBridgeProfile = "";
+    profileDraft.contractExcludedDates = [];
     // Los campos de Honorarios son el formulario de un contrato NUEVO (los
     // existentes se muestran en la lista de contratos), asi que se cargan vacios.
     profileDraft.honorariaStart = "";

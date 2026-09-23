@@ -154,7 +154,8 @@ function correr(extra) {
             replaced: "Ana",
             startISO: extra.startISO || "2027-02-09",
             endISO: extra.endISO || "2027-02-18",
-            rotationMode: extra.modo || REPLACEMENT_ROTATION_MODE.INHERIT
+            rotationMode: extra.modo || REPLACEMENT_ROTATION_MODE.INHERIT,
+            excludedDates: extra.excludedDates || []
         }),
         llamadas: armado.llamadas
     };
@@ -176,6 +177,34 @@ test("los dias libres del reemplazado no cuentan como turno", () => {
     var salida = correr().resultado;
 
     assert.equal(salida.dias.length, 5);
+});
+
+test("permite retirar solo un turno heredado y deja los demas intactos", () => {
+    var salida = correr({
+        excludedDates: ["2027-02-13"]
+    }).resultado;
+    var dia13 = salida.dias.find(function (dia) {
+        return dia.iso === "2027-02-13";
+    });
+
+    assert.equal(dia13.estado, "pendiente");
+    assert.equal(dia13.motivoBloqueo, "excluded");
+    assert.equal(dia13.turno, TURNO.LIBRE);
+    assert.equal(salida.heredados, 4);
+    assert.equal(salida.pendientes, 1);
+});
+
+test("retirar un heredado no consulta ni confunde las reglas del 24", () => {
+    var salida = correr({
+        excludedDates: ["2027-02-13"]
+    });
+
+    assert.equal(
+        salida.llamadas.bloqueos.some(function (llamada) {
+            return llamada.key === "2027-1-13";
+        }),
+        false
+    );
 });
 
 /* =========================================================
