@@ -212,6 +212,26 @@ test("el marcaje incompleto llega por su dia", () => {
     );
 });
 
+test("el respaldo del trabajador llega al memorandum sin completarlo", () => {
+    localStorage.clear();
+    const memo = createClockMemoTask({
+        profile: PROFILE,
+        dateKey: "2026-8-14",
+        incident: true,
+        sourceDocuments: [{
+            id: "respaldo_1",
+            name: "respaldo.jpg",
+            type: "image/jpeg",
+            storagePath: "workspaces/ws/attachments/clockmarks/u/r/respaldo.jpg"
+        }]
+    });
+
+    assert.equal(memo.status, "pending");
+    assert.equal(memo.documents.length, 0);
+    assert.equal(memo.sourceDocuments.length, 1);
+    assert.equal(getMemos()[0].sourceDocuments[0].name, "respaldo.jpg");
+});
+
 /* =========================================================
    Los dias exactos llegan desde donde se aplica el permiso
 ========================================================= */

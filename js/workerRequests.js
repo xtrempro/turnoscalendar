@@ -60,6 +60,7 @@ import {
     saveClockMarks
 } from "./clockMarks.js";
 import { createClockMemoTask } from "./memos.js";
+import { openCachedAttachment } from "./attachmentCache.js";
 import {
     canSwapProfiles,
     getSwapDateBlockReason,
@@ -723,6 +724,11 @@ function normalizeClockRequestDocuments(request = {}) {
             if (uploadedByUid) normalized.uploadedByUid = uploadedByUid;
             if (doc.storagePath) normalized.storagePath = String(doc.storagePath);
             if (doc.dataUrl) normalized.dataUrl = String(doc.dataUrl);
+            if (doc.downloadURL || doc.downloadUrl) {
+                normalized.downloadURL = String(
+                    doc.downloadURL || doc.downloadUrl
+                );
+            }
 
             return normalized;
         })
@@ -837,7 +843,9 @@ async function applyClockRequest(request, profile, date) {
     marks[keyDay] = mark;
     saveClockMarks(profile, marks);
     Object.entries(mark.segments).forEach(([segmentId, segment]) => {
-        if (!segment.missingEntry && !segment.missingExit) return;
+        const incident = request.type === "clock_incident";
+
+        if (!incident && !segment.missingEntry && !segment.missingExit) return;
 
         createClockMemoTask({
             profile,
@@ -845,7 +853,9 @@ async function applyClockRequest(request, profile, date) {
             segmentId,
             segmentLabel: clockSegmentLabel(segments, segmentId),
             missingEntry: Boolean(segment.missingEntry),
-            missingExit: Boolean(segment.missingExit)
+            missingExit: Boolean(segment.missingExit),
+            incident,
+            sourceDocuments: normalizeClockRequestDocuments(request)
         });
     });
 
@@ -1407,6 +1417,12 @@ function requestCardHTML(request) {
     const acceptLabel = isSupervisorInviteRequest(request)
         ? "Aprobar"
         : "Aceptar";
+    const documents = (
+        request.type === "missing_clock" ||
+        request.type === "clock_incident"
+    )
+        ? normalizeClockRequestDocuments(request)
+        : [];
 
     return `
         <article class="worker-request-card worker-request-card--${escapeHTML(request.status)}">
@@ -1423,6 +1439,19 @@ function requestCardHTML(request) {
                     ${request.rejectReason
                         ? `<small class="worker-request-reject-note">Motivo rechazo: ${escapeHTML(request.rejectReason)}</small>`
                         : ""}
+                    ${documents.length ? `
+                        <div class="worker-request-documents">
+                            ${documents.map(document => `
+                                <div class="worker-request-document">
+                                    <span>${escapeHTML(document.name)}</span>
+                                    <span class="worker-request-document__actions">
+                                        <button class="secondary-button secondary-button--small" type="button" data-worker-request-document="view" data-request-id="${escapeHTML(request.id)}" data-document-id="${escapeHTML(document.id)}">Ver</button>
+                                        <button class="secondary-button secondary-button--small" type="button" data-worker-request-document="download" data-request-id="${escapeHTML(request.id)}" data-document-id="${escapeHTML(document.id)}">Descargar</button>
+                                    </span>
+                                </div>
+                            `).join("")}
+                        </div>
+                    ` : ""}
                 </div>
 
                 <div class="worker-request-card__meta">
@@ -1863,6 +1892,13 @@ async function acceptRequest(request) {
         }
     );
 
+    if (
+        request.type === "missing_clock" ||
+        request.type === "clock_incident"
+    ) {
+        window.dispatchEvent(new CustomEvent("proturnos:openMemos"));
+    }
+
     return true;
 }
 
@@ -2228,6 +2264,27 @@ export async function renderWorkerRequestsPanel() {
             window.dispatchEvent(
                 new CustomEvent("proturnos:workerRequestsChanged")
             );
+        };
+    });
+
+    panel.querySelectorAll("[data-worker-request-document]").forEach(button => {
+        button.onclick = async () => {
+            const request = requests.find(item =>
+                item.id === button.dataset.requestId
+            );
+            const document = normalizeClockRequestDocuments(request).find(item =>
+                item.id === button.dataset.documentId
+            );
+
+            if (!document) return;
+
+            try {
+                await openCachedAttachment(document, {
+                    newTab: button.dataset.workerRequestDocument === "view"
+                });
+            } catch (error) {
+                alert(error?.message || "No se pudo abrir el archivo adjunto.");
+            }
         };
     });
 }

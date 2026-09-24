@@ -179,6 +179,15 @@ service firebase.storage {
         );
     }
 
+    function canViewClockIncidentAttachment(workspaceId, moduleId) {
+      return moduleId == "clockmarks" &&
+        (
+          canViewModule(workspaceId, "clockmarks") ||
+          canViewModule(workspaceId, "requests") ||
+          canViewModule(workspaceId, "memos")
+        );
+    }
+
     function allowedFile() {
       // Solo imagenes raster (NO svg, que puede contener scripts), PDF, Office y
       // texto plano. Limite de 10 MB por archivo para reducir abuso y mantener los adjuntos
@@ -336,6 +345,7 @@ service firebase.storage {
             canViewInformationAttachment(workspaceId)
           ) ||
           canViewModule(workspaceId, moduleId) ||
+          canViewClockIncidentAttachment(workspaceId, moduleId) ||
           (moduleId == "qualifications" && canViewQualificationsAttachment(workspaceId)) ||
           resource.metadata.uploadedByUid == request.auth.uid
         ) ||

@@ -106,6 +106,9 @@ function normalizeMemo(memo = {}) {
     const documents = Array.isArray(memo.documents)
         ? memo.documents.map(normalizeDocument).filter(Boolean)
         : [];
+    const sourceDocuments = Array.isArray(memo.sourceDocuments)
+        ? memo.sourceDocuments.map(normalizeDocument).filter(Boolean)
+        : [];
     // El estado no se marca a mano: lo decide el adjunto. Pendiente mientras no
     // haya documento, realizado con el primero. Se sigue escribiendo status
     // porque es lo que leen los memorandum viejos y el resto del app.
@@ -138,7 +141,8 @@ function normalizeMemo(memo = {}) {
         completedAt: documents.length
             ? memo.completedAt || documents[0].attachedAt || createdAt
             : "",
-        documents
+        documents,
+        sourceDocuments
     };
 }
 
@@ -405,9 +409,11 @@ export function createClockMemoTask({
     segmentId = "turno",
     segmentLabel = "",
     missingEntry = false,
-    missingExit = false
+    missingExit = false,
+    incident = false,
+    sourceDocuments = []
 } = {}) {
-    if (!profile || !dateKey || (!missingEntry && !missingExit)) {
+    if (!profile || !dateKey || (!incident && !missingEntry && !missingExit)) {
         return null;
     }
 
@@ -415,14 +421,15 @@ export function createClockMemoTask({
         missingEntry ? "entrada" : "",
         missingExit ? "salida" : ""
     ].filter(Boolean);
-    const typeLabel = missingClockTypeLabel(
-        missingEntry,
-        missingExit
-    );
+    const typeLabel = incident && !missingEntry && !missingExit
+        ? "Incidencia de marcaje"
+        : missingClockTypeLabel(missingEntry, missingExit);
     const detail = [
         `Nombre: ${profile}`,
         `Fecha: ${formatKey(dateKey)}`,
-        `Falta de marcaje: ${missingParts.join(" y ")}`,
+        missingParts.length
+            ? `Falta de marcaje: ${missingParts.join(" y ")}`
+            : "Correccion de marcaje informada por el trabajador",
         segmentLabel ? `Turno: ${segmentLabel}` : ""
     ].filter(Boolean).join(" | ");
 
@@ -436,7 +443,8 @@ export function createClockMemoTask({
         profile,
         typeLabel,
         detail,
-        dateKey
+        dateKey,
+        sourceDocuments
     });
 }
 
@@ -1622,6 +1630,7 @@ function viewerHTML(memo, ctx) {
     }
 
     const documents = memoDocuments(memo);
+    const sourceDocuments = memo.sourceDocuments || [];
     const doc = documents[ui.docIndex] || documents[0];
     const license = leaveTypeNeedsDocument(memo.leaveType);
     const state = MEMO_STATES[memoStatus(memo)];
@@ -1678,6 +1687,22 @@ function viewerHTML(memo, ctx) {
             </div>
             <span class="mem-pill mem-pill--${state.tone}">${esc(state.label)}</span>
         </div>
+        ${sourceDocuments.length ? `
+            <div class="mem-match">
+                <span class="mem-match__ic">${ic("clip")}</span>
+                <span class="mem-match__txt">
+                    <strong>Antecedentes enviados por el trabajador</strong>
+                    <span>${esc(plural(sourceDocuments.length, "archivo", "archivos"))}. Estos respaldos no completan el memorándum.</span>
+                    ${sourceDocuments.map(source => `
+                        <span>
+                            ${esc(source.name)}
+                            <button class="mem-link" type="button" data-mem-source-doc="${attr(source.id)}" data-mem-source-action="view">Ver</button>
+                            <button class="mem-link" type="button" data-mem-source-doc="${attr(source.id)}" data-mem-source-action="download">Descargar</button>
+                        </span>
+                    `).join("")}
+                </span>
+            </div>
+        ` : ""}
         ${body}
         <div class="mem-viewer-meta">
             ${timelineHTML(memo)}
@@ -1955,7 +1980,7 @@ let documentBound = false;
 
 async function onPanelClick(event) {
     const target = event.target.closest(
-        "[data-mem-estado],[data-mem-vista],[data-mem-grupo],[data-mem-ver],[data-mem-zoom],[data-mem-doc],[data-mem-act],[data-mem-memo]"
+        "[data-mem-estado],[data-mem-vista],[data-mem-grupo],[data-mem-ver],[data-mem-zoom],[data-mem-doc],[data-mem-act],[data-mem-memo],[data-mem-source-doc]"
     );
 
     if (!target) return;
@@ -1963,6 +1988,24 @@ async function onPanelClick(event) {
     const data = target.dataset;
     const ctx = buildContext();
     const memoById = id => ctx.memos.find(memo => memo.id === id) || null;
+
+    if (data.memSourceDoc) {
+        const memo = memoById(ui.openId);
+        const document = (memo?.sourceDocuments || []).find(item =>
+            item.id === data.memSourceDoc
+        );
+
+        if (!document) return;
+
+        try {
+            await openCachedAttachment(document, {
+                newTab: data.memSourceAction === "view"
+            });
+        } catch (error) {
+            toast(error?.message || "No se pudo abrir el antecedente.");
+        }
+        return;
+    }
 
     if (data.memVer) {
         openMemo(data.memVer);

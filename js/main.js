@@ -15210,6 +15210,17 @@ window.addEventListener("proturnos:memosChanged", () => {
         updateMemosNavBadge();
     }
 });
+
+window.addEventListener("proturnos:openMemos", async () => {
+    if (!await setActiveShortcut("memosPanel")) return;
+
+    requestAnimationFrame(() => {
+        document.getElementById("memosPanel")?.scrollIntoView({
+            behavior: "smooth",
+            block: "start"
+        });
+    });
+});
 function cancelLinkedInterUnitLoans(canceledReplacements = []) {
     canceledReplacements.forEach(replacement => {
         if (!replacement?.interUnitLoanId) return;
