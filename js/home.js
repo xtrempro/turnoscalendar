@@ -1984,6 +1984,10 @@ function incidenciasWidget() {
             <div class="hm-listcol hm-inc-list" data-hm="inc-list">
                 <div class="hm-empty">Revisando el mes...</div>
             </div>
+            <div class="hm-inc-import">
+                <button class="hm-cob-btn hm-cob-btn--ver" type="button"
+                    data-hm="inc-import">ADJUNTAR REGISTRO</button>
+            </div>
         </div>`;
 }
 
@@ -3381,6 +3385,16 @@ function dotPickerHTML(view, selectedIso) {
 
 function dotacionModal() {
     return `
+        <div class="hm-modal-backdrop" data-hm="inc-modal" hidden>
+            <div class="hm-modal hm-modal--dotacion" role="dialog" aria-modal="true" aria-label="Detalle de incidencias">
+                <div class="hm-modal-head">
+                    <span class="hm-modal-ico">${svg(IC.clipboard)}</span>
+                    <h3 data-hm="inc-title">Incidencias</h3>
+                    <button class="hm-modal-close" type="button" data-hm="close" aria-label="Cerrar">&times;</button>
+                </div>
+                <div class="hm-modal-body" data-hm="inc-body"></div>
+            </div>
+        </div>
         <div class="hm-modal-backdrop" data-hm="dotacion-modal" hidden>
             <div class="hm-modal hm-modal--dotacion" role="dialog" aria-modal="true"
                 aria-label="Trabajadores en servicio" tabindex="-1">
@@ -3506,6 +3520,7 @@ const HOME_CARDS = {
     ausencias: ausenciasWidget,
     cambios: cambiosWidget,
     solicitudes: solicitudesWidget,
+    incidencias: incidenciasWidget,
     cumpleanos: cumpleanosWidget,
     resumen: resumenWidget,
     minical: miniCalendarWidget,
@@ -3825,10 +3840,11 @@ function wire(panel) {
     const stats = panel.querySelector(".hm-stats");
     const dotModal = panel.querySelector('[data-hm="dotacion-modal"]');
     iniciarNotas(panel);
+    void cargarIncidencias(panel);
 
     // --- Incidencias de marcaje: navegacion por mes y detalle por tipo ---
-    const incCard = null;
-    const incModal = null;
+    const incCard = panel.querySelector('[data-hm="inc-list"]')?.closest(".hm-card");
+    const incModal = panel.querySelector('[data-hm="inc-modal"]');
 
     incCard?.addEventListener("click", event => {
         const paso = event.target.closest('[data-hm="inc-prev"], [data-hm="inc-next"]');
@@ -3842,6 +3858,15 @@ function wire(panel) {
                 1
             );
             void cargarIncidencias(panel);
+            return;
+        }
+
+        // Cargar el .xls del reloj sin ir a Reportes. Se aprieta el MISMO
+        // input que hay alla: una sola forma de cargar el archivo, con su
+        // misma lectura, su mismo aviso y su misma proteccion contra repetir
+        // marcas que ya estaban.
+        if (event.target.closest('[data-hm="inc-import"]')) {
+            document.getElementById("attendanceImportInput")?.click();
             return;
         }
 

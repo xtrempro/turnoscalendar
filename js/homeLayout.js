@@ -21,7 +21,7 @@ import { getJSON, setJSON } from "./persistence.js";
 // agrega aca, en la columna donde debe aparecer para quien nunca movio nada.
 export const HOME_LAYOUT_DEFAULT = Object.freeze([
     Object.freeze(["tareas", "ausencias", "cambios"]),
-    Object.freeze(["solicitudes", "cumpleanos"]),
+    Object.freeze(["solicitudes", "incidencias", "cumpleanos"]),
     Object.freeze(["resumen", "minical", "cobertura", "brecha"])
 ]);
 

@@ -674,9 +674,16 @@ test("el reporte se abre en el mes de la incidencia", () => {
     assert.match(salto.slice(0, abre), /selectProfileByName\(profileName/);
 });
 
-test("Inicio ya no ofrece importar el registro del reloj", () => {
-    assert.doesNotMatch(home, /data-hm="inc-import"/);
-    assert.doesNotMatch(home, /ADJUNTAR REGISTRO<\/button>/);
+test("desde la tarjeta se adjunta el registro del reloj", () => {
+    // Es el MISMO input que el de Reportes: una sola forma de leer el .xls,
+    // con su misma proteccion contra repetir marcas que ya estaban.
+    assert.match(home, /data-hm="inc-import"/);
+    assert.match(home, /ADJUNTAR REGISTRO<\/button>/);
+    assert.match(
+        home,
+        /document\.getElementById\("attendanceImportInput"\)\?\.click\(\);/
+    );
+    assert.match(principal, /const input = DOM\.attendanceImportInput;/);
 });
 
 test("adjuntar desde el inicio tambien avisa como resulto", () => {

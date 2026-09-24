@@ -2,6 +2,7 @@ export const FIREBASE_STATE_MODULES = Object.freeze({
     profile: { permission: "profile" },
     qualifications: { permission: "qualifications" },
     turnos: { permission: "turnos" },
+    clockmarks: { permission: "clockmarks" },
     requests: { permission: "requests" },
     memos: { permission: "memos" },
     informations: { permission: "informations" },
@@ -64,11 +65,14 @@ const EXACT_KEY_MODULES = new Map([
     ["weekly_task_schedule_attachment", "tasks"],
     ["weekly_task_schedule_attachments", "tasks"],
     ["gradeHourConfig", "hours"],
+    ["attendanceMarks", "clockmarks"],
     // Cuando se subio la ultima planilla: viaja con las marcas porque decide
     // hasta que hora se juzga lo que falta, y el motor del servidor lo lee.
+    ["attendanceMarksImportedAt", "clockmarks"],
     // El horario propio de cada trabajador viaja con las marcas: sin esto
     // quedaria solo en el navegador de quien lo configuro, y otro supervisor
     // veria atrasos que no existen.
+    ["workerSchedules", "clockmarks"],
     ["reportSignatureConfig", "reports"],
     ["adminDisplayNames", "reports"],
     ["auditLog", "log"]
@@ -99,6 +103,7 @@ const PREFIX_KEY_MODULES = [
     // los permisos porque el motor del servidor lo lee para decidir que esconder.
     ["leaveHold_", "turnos"],
     ["leaveBalances_", "turnos"],
+    ["clockMarks_", "clockmarks"],
     ["carry_", "hours"],
     ["hourReturns_", "hours"],
     ["hheeReturnTransfers_", "hours"]

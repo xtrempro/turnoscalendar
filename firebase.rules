@@ -41,6 +41,7 @@ service cloud.firestore {
         ("agenda" in permissions && permissions.agenda.edit == true) ||
         ("profile" in permissions && permissions.profile.edit == true) ||
         ("qualifications" in permissions && permissions.qualifications.edit == true) ||
+        ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
         ("requests" in permissions && permissions.requests.edit == true) ||
         ("memos" in permissions && permissions.memos.edit == true) ||
         ("informations" in permissions && permissions.informations.edit == true) ||
@@ -67,6 +68,7 @@ service cloud.firestore {
         hasLegacyMenuGrant(permissions, "kanban") &&
         hasLegacyMenuGrant(permissions, "agenda") &&
         hasLegacyMenuGrant(permissions, "profile") &&
+        hasLegacyMenuGrant(permissions, "clockmarks") &&
         hasLegacyMenuGrant(permissions, "requests") &&
         hasLegacyMenuGrant(permissions, "memos") &&
         hasLegacyMenuGrant(permissions, "swap") &&
@@ -302,6 +304,7 @@ service cloud.firestore {
         (moduleId == "profile" && canViewMenu(workspaceId, "profile")) ||
         (moduleId == "qualifications" && canViewMenu(workspaceId, "qualifications")) ||
         (moduleId == "turnos" && canViewMenu(workspaceId, "turnos")) ||
+        (moduleId == "clockmarks" && canViewMenu(workspaceId, "clockmarks")) ||
         (moduleId == "requests" && canViewMenu(workspaceId, "requests")) ||
         (moduleId == "memos" && canViewMenu(workspaceId, "memos")) ||
         (moduleId == "informations" && canViewInformationsMenu(workspaceId)) ||
@@ -325,6 +328,7 @@ service cloud.firestore {
         (moduleId == "profile" && canEditMenu(workspaceId, "profile")) ||
         (moduleId == "qualifications" && canEditMenu(workspaceId, "qualifications")) ||
         (moduleId == "turnos" && canEditMenu(workspaceId, "turnos")) ||
+        (moduleId == "clockmarks" && canEditMenu(workspaceId, "clockmarks")) ||
         (moduleId == "requests" && canEditMenu(workspaceId, "requests")) ||
         (moduleId == "memos" && canEditMenu(workspaceId, "memos")) ||
         (moduleId == "informations" && canEditInformationsMenu(workspaceId)) ||

@@ -154,6 +154,7 @@ const MENU_PERMISSION_KEYS = [
   "agenda",
   "profile",
   "qualifications",
+  "clockmarks",
   "requests",
   "memos",
   "swap",

@@ -578,27 +578,6 @@ import {
 initPerformanceMonitor();
 installAppDialogs();
 
-const RETIRED_CLOCKMARK_KEYS = new Set([
-    "attendanceMarks",
-    "attendanceMarksImportedAt",
-    "workerSchedules"
-]);
-
-function purgeRetiredClockmarkState() {
-    for (let index = localStorage.length - 1; index >= 0; index--) {
-        const key = localStorage.key(index);
-
-        if (
-            RETIRED_CLOCKMARK_KEYS.has(key) ||
-            String(key || "").startsWith("clockMarks_")
-        ) {
-            localStorage.removeItem(key);
-        }
-    }
-}
-
-purgeRetiredClockmarkState();
-
 let selectionMode = null;
 let pendingRotationChange = null;
 let pendingShiftMove = null;
@@ -7111,6 +7090,11 @@ async function setActiveShortcut(targetId, options = {}) {
             renderDashboardPanel();
         }
 
+        if (nextView === "clockmarks") {
+            syncClockMarksMonthFromCurrent();
+            renderClockMarksPanel();
+        }
+
         if (nextView === "swap") {
             renderSwapPanel();
         }
@@ -8140,6 +8124,8 @@ async function renderReportsDetail() {
         DOM.printCoverageAuthorizationBtn.onclick = () =>
             printCoverageAuthorizationReport(reportDate);
     }
+
+    bindAttendanceImport();
 
     if (DOM.report4TurnoNoAssignmentPreview) {
         DOM.report4TurnoNoAssignmentPreview.innerHTML =
@@ -14137,7 +14123,8 @@ function initializeInactiveProfileToggles() {
         "showInactiveProfiles",
         "hheeShowInactiveProfiles",
         "reportsShowInactiveProfiles",
-        "swapShowInactiveProfiles"
+        "swapShowInactiveProfiles",
+        "clockMarksShowInactiveProfiles"
     ].forEach(id => {
         const input = document.getElementById(id);
 
@@ -15739,7 +15726,6 @@ initFirebaseShell({
         }
     },
     onWorkspaceChange: async (workspace, changeOptions = {}) => {
-        purgeRetiredClockmarkState();
         const generacion = ++workspaceChangeGeneration;
         const refrescarVistasDelEntorno = () => {
             syncWorkspaceStateViews();

@@ -20,7 +20,7 @@ test("clasifica las claves persistidas por modulo de seguridad", () => {
         shiftAssignmentHistory_worker_1: "profile",
         data_worker_1: "turnos",
         absences_worker_1: "turnos",
-        clockMarks_worker_1: "system",
+        clockMarks_worker_1: "clockmarks",
         workerRequests: "requests",
         memos: "memos",
         informations: "informations",
