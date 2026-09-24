@@ -17,7 +17,17 @@ test("hidrata las entradas remotas en paginas acotadas y ordenadas", () => {
 test("cede el hilo principal entre paginas sin omitir la ultima", () => {
     assert.match(
         source,
-        /if \(snap\.docs\.length < REMOTE_ENTRY_READ_BATCH_SIZE\) break;[\s\S]*setTimeout\(resolve, 0\)/
+        /if \(snap\.docs\.length < REMOTE_ENTRY_READ_BATCH_SIZE\) break;[\s\S]*await yieldToMainThread\(\)/
     );
     assert.match(source, /firebase-app-state:hydrate-entry-page/);
+});
+
+test("cede el hilo durante la decodificacion de cada pagina", () => {
+    assert.match(source, /for \(const docSnap of snap\.docs\)/);
+    assert.match(
+        source,
+        /pageEntryCount \+= documentEntries\.length;\s*await yieldToMainThread\(\)/
+    );
+    assert.match(source, /duration: pageFinishedAt - pageStartedAt/);
+    assert.match(source, /accumulatedEntryCount: entries\.length/);
 });

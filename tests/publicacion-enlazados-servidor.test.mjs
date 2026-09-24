@@ -82,6 +82,27 @@ test("el orden de las propiedades no inventa cambios", () => {
     assert.equal(linkedDocChanged(DOC, alReves), false);
 });
 
+test("el orden dentro de objetos anidados en arreglos tampoco inventa cambios", () => {
+    const guardado = {
+        ...DOC,
+        days: {
+            "2026-09-08": {
+                marks: [{ time: "08:00", type: "entrada" }]
+            }
+        }
+    };
+    const calculado = {
+        ...DOC,
+        days: {
+            "2026-09-08": {
+                marks: [{ type: "entrada", time: "08:00" }]
+            }
+        }
+    };
+
+    assert.equal(linkedDocChanged(guardado, calculado), false);
+});
+
 test("updatedAt (el sello del servidor) tampoco entra en la comparacion", () => {
     assert.ok(VOLATILE_LINKED_DOC_FIELDS.includes("updatedAt"));
     assert.equal(
@@ -115,6 +136,14 @@ test("el arranque del cliente comprueba, no reescribe", () => {
     assert.match(cliente, /linkedDocChanged\(stored\.get\(/);
     // Solo se escribe lo pendiente.
     assert.match(cliente, /await commitWorkerDocBatches\(pending, workspace\.id\)/);
+    assert.match(cliente, /worker-app:linked-doc-differences/);
+    assert.match(cliente, /differingFields/);
+    assert.match(cliente, /async function buildLinkedWorkerDocsForWorkspace/);
+    assert.match(cliente, /async function computeProfileScheduleCooperative/);
+    assert.match(cliente, /await waitWorkerAppIdle\(180\)/);
+    assert.match(cliente, /await computeProfileScheduleCooperative/);
+    assert.match(cliente, /await waitWorkerAppIdle\(300\)/);
+    assert.match(cliente, /await buildLinkedWorkerDocsForWorkspace\(workspace\)/);
 });
 
 test("si la comprobacion falla, la red tiende a reponer", () => {

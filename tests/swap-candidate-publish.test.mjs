@@ -54,6 +54,9 @@ test("los docs de los enlazados se envian por lotes, no de a uno", () => {
   const commit = grab("commitWorkerDocBatches");
   assert.match(commit, /firestoreModule\.writeBatch\(db\)/);
   assert.match(commit, /offset \+= WORKER_DOC_BATCH_SIZE/);
+  // Son documentos derivados y de propiedad completa del publicador. Deben
+  // reemplazarse para retirar campos viejos que, con merge, quedaban eternos.
+  assert.doesNotMatch(commit, /\{ merge: true \}/);
   // Se cede el hilo entre lotes, nunca por documento.
   assert.match(commit, /waitWorkerAppIdle\(/);
 });

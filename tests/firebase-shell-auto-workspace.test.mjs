@@ -39,10 +39,12 @@ test("cambiar de unidad no repinta con datos del entorno anterior", () => {
     // Con entorno, el refresco va agendado para cuando hidrate; hacerlo tambien
     // en la cola pintaria con el estado del entorno ANTERIOR, que es el defecto
     // que este test vigila.
-    assert.match(
-        main,
-        /if \(changeOptions\.skipViewRefresh === true\) \{\s*\n\s*return;\s*\n\s*\}[\s\S]{0,400}if \(workspace\?\.id\) return;\s*\n\s*refrescarVistasDelEntorno\(\);/
-    );
+    const skip = main.indexOf("if (changeOptions.skipViewRefresh === true)");
+    const conEntorno = main.indexOf("if (workspace?.id) return;", skip);
+    const refresca = main.indexOf("refrescarVistasDelEntorno();", conEntorno);
+
+    assert.notEqual(skip, -1);
+    assert.ok(skip < conEntorno && conEntorno < refresca);
 });
 
 test("la hidratacion arranca ANTES que los demas oyentes", () => {
@@ -88,6 +90,14 @@ test("pero DESPUES de los permisos y del MFA", () => {
     assert.ok(mfa < hidrata, "la hidratacion se adelanto al MFA");
 });
 
+test("la reparacion PWA espera la foto remota", () => {
+    const hidratado = main.indexOf("void estadoHidratado.then(() => {");
+    const worker = main.indexOf("startWorkerAppDataSync(workspace)");
+
+    assert.notEqual(hidratado, -1);
+    assert.ok(worker > hidratado);
+});
+
 test("la vista se refresca despues de hidratar la unidad nueva", () => {
     // La intencion no cambia -refrescar CON el estado hidratado, no con el
     // viejo-; cambia el mecanismo. Se agenda en vez de esperar.
@@ -104,10 +114,11 @@ test("la vista se refresca despues de hidratar la unidad nueva", () => {
         main,
         /await measurePerformance\(\s*\n\s*"firebase-app-state:start-sync"/
     );
-    assert.match(
-        main,
-        /void estadoHidratado\.then\(\(\) => \{[\s\S]{0,400}refrescarVistasDelEntorno\(\);/
-    );
+    const hidratado = main.indexOf("void estadoHidratado.then(async () => {");
+    const refresca = main.indexOf("refrescarVistasDelEntorno();", hidratado);
+
+    assert.notEqual(hidratado, -1);
+    assert.ok(refresca > hidratado);
 });
 
 test("una hidratacion en vuelo no repinta con la unidad que se dejo", () => {

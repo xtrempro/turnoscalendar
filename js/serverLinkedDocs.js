@@ -295,6 +295,14 @@ export function linkedDocChanged(stored, next) {
 export function withoutVolatileFields(payload) {
     if (!payload || typeof payload !== "object") return payload;
 
+    // Firestore no conserva el orden de propiedades tampoco dentro de mapas
+    // que viven en arreglos (por ejemplo, marcajes o tareas de un dia). Si el
+    // arreglo se devolvia intacto, dos objetos semanticamente iguales podian
+    // serializarse distinto y forzar una reparacion en cada arranque.
+    if (Array.isArray(payload)) {
+        return payload.map(item => withoutVolatileFields(item));
+    }
+
     // Se ordenan las claves para que dos documentos iguales con distinto orden
     // de propiedades no se vean distintos (Firestore no conserva el orden).
     const copy = {};
@@ -305,7 +313,7 @@ export function withoutVolatileFields(payload) {
         .forEach(key => {
             const value = payload[key];
 
-            copy[key] = value && typeof value === "object" && !Array.isArray(value)
+            copy[key] = value && typeof value === "object"
                 ? withoutVolatileFields(value)
                 : value;
         });

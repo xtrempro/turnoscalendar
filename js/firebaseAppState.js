@@ -36,6 +36,7 @@ import {
     measurePerformance,
     recordPerformanceEvent
 } from "./performanceMonitor.js";
+import { yieldToMainThread } from "./mainThreadScheduler.js";
 
 const CLIENT_ID_KEY = "proturnos_firebase_client_id";
 const ENTRY_BATCH_SIZE = 1;
@@ -1663,26 +1664,42 @@ async function readRemoteModuleEntries(
             firestoreModule.query(collectionRef, ...constraints)
         );
 
-        snap.docs.forEach(docSnap => {
-            entries.push(
-                ...stateEntriesFromDoc(docSnap)
-                    .filter(entry => entry.storageKey)
-            );
-        });
+        const pageStartedAt = typeof performance !== "undefined"
+            ? performance.now()
+            : Date.now();
+        let pageEntryCount = 0;
+
+        // Las primeras paginas de todos los modulos pueden resolverse juntas.
+        // Cada documento expande cientos de `items`; ceder entre documentos
+        // evita convertir toda la pagina en una sola tarea larga del navegador.
+        for (const docSnap of snap.docs) {
+            const documentEntries = stateEntriesFromDoc(docSnap)
+                .filter(entry => entry.storageKey);
+
+            entries.push(...documentEntries);
+            pageEntryCount += documentEntries.length;
+            await yieldToMainThread();
+        }
         pageCount++;
+
+        const pageFinishedAt = typeof performance !== "undefined"
+            ? performance.now()
+            : Date.now();
 
         recordPerformanceEvent("firebase-app-state:hydrate-entry-page", {
             type: "firebase",
+            duration: pageFinishedAt - pageStartedAt,
             moduleId,
             page: pageCount,
             documentCount: snap.docs.length,
-            entryCount: entries.length
+            entryCount: pageEntryCount,
+            accumulatedEntryCount: entries.length
         });
 
         if (snap.docs.length < REMOTE_ENTRY_READ_BATCH_SIZE) break;
 
         cursor = snap.docs[snap.docs.length - 1];
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await yieldToMainThread();
     }
 
     if (entries.length) entryModulesPresent.add(moduleId);
@@ -2257,7 +2274,13 @@ export async function startFirebaseAppStateSync(
                 moduleId
             )
         }));
-        const ownerManifestPromise = isWorkspaceOwner()
+        // Marca explicita y autoritativa del documento raiz. Solo las unidades
+        // verificadas como migradas pueden omitir los manifiestos heredados;
+        // sin ella se conserva exactamente el camino compatible anterior.
+        const entriesAreAuthoritative =
+            String(workspace?.stateStorage || "") === "entries-v1";
+        const ownerManifestPromise =
+            !entriesAreAuthoritative && isWorkspaceOwner()
             ? measurePerformance(
                 "firebase-app-state:module-manifests-query",
                 () => firestoreModule.getDocsFromServer(
@@ -2284,7 +2307,13 @@ export async function startFirebaseAppStateSync(
         //
         // Los propietarios leen los manifiestos existentes con una consulta.
         // Los demas conservan lecturas individuales y errores por modulo.
-        const moduleReads = await measurePerformance(
+        const moduleReads = entriesAreAuthoritative
+            ? moduleRefs.map(({ moduleId }) => ({
+                moduleId,
+                docSnap: { exists: () => false },
+                existe: false
+            }))
+            : await measurePerformance(
             "firebase-app-state:module-docs",
             async () => {
                 if (ownerManifestPromise) {

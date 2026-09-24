@@ -15848,14 +15848,6 @@ initFirebaseShell({
                 }
             );
 
-            void measurePerformance(
-                "worker-app:start-sync",
-                () => startWorkerAppDataSync(workspace),
-                {
-                    workspaceId: workspace.id,
-                    workspaceName: workspace.name || ""
-                }
-            );
             startInterUnitLoanSync(workspace);
             let workerAvailabilityInitialized = false;
             let workerAvailabilitySnapshot = new Map();
@@ -15960,6 +15952,18 @@ initFirebaseShell({
             // el estado ya hidratado, no con el del entorno anterior. Solo que
             // ahora se agenda en vez de bloquear.
             void estadoHidratado.then(() => {
+                // La reparacion PWA compara documentos derivados con perfiles,
+                // turnos y configuracion local. Si arranca antes de hidratar,
+                // compara contra la foto vieja y reescribe documentos sanos.
+                void measurePerformance(
+                    "worker-app:start-sync",
+                    () => startWorkerAppDataSync(workspace),
+                    {
+                        workspaceId: workspace.id,
+                        workspaceName: workspace.name || ""
+                    }
+                );
+
                 // La bitacora se queda fuera del arranque, pero su barrera de
                 // publicacion no puede durar toda la sesion: en cuanto hay hueco
                 // se trae, sin competir con lo que el usuario esta esperando.

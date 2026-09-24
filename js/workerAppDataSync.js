@@ -14,11 +14,12 @@ import {
 // es el MISMO que empaqueta la Cloud Function. Antes habia una copia aqui y
 // otra en serverEngine.js, y cada campo nuevo habia que cablearlo dos veces.
 import {
-    buildLinkedWorkerDocuments,
     buildWorkerMessageDirectoryPayload,
     buildSwapCandidatePayload,
+    selectPrimaryLinkedProfiles,
     workerLinkRecency,
-    linkedDocChanged
+    linkedDocChanged,
+    withoutVolatileFields
 } from "./serverLinkedDocs.js";
 import { TURNO } from "./constants.js";
 import {
@@ -730,16 +731,12 @@ function computeMonthDays(profile, month, ctx) {
     return result;
 }
 
-// El navegador supervisor solo calcula el mes actual y el siguiente. Los meses
-// historicos se materializan bajo demanda en la Cloud Function.
-function computeProfileSchedule(profile) {
-    const today = new Date();
-    const { start, end } = hotScheduleRange(today);
-    const months = listMonthsInRange(start, end);
+function createProfileScheduleContext(profile) {
     const maps = profileLeaveMaps(profile.name);
     const profileData = getJSON("data_" + profile.name, {});
     const colorResolver = buildHexColorResolver(getTurnoColorConfig());
-    const ctx = {
+
+    return {
         maps,
         profileData,
         colorResolver,
@@ -747,11 +744,49 @@ function computeProfileSchedule(profile) {
         // Lo caro se calcula una vez por trabajador, no por dia.
         readMarks: createAttendanceMarksReader(profile)
     };
+}
+
+// El navegador supervisor solo calcula el mes actual y el siguiente. Los meses
+// historicos se materializan bajo demanda en la Cloud Function.
+function computeProfileSchedule(profile) {
+    const today = new Date();
+    const { start, end } = hotScheduleRange(today);
+    const months = listMonthsInRange(start, end);
+    const ctx = createProfileScheduleContext(profile);
 
     const computedDays = {};
     months.forEach(month => {
         Object.assign(computedDays, computeMonthDays(profile, month, ctx));
     });
+
+    return addTaskAssignmentsToSchedule(profile, {
+        start: toISODate(start),
+        end: toISODate(end),
+        days: computedDays,
+        partial: true
+    });
+}
+
+// Misma proyeccion que `computeProfileSchedule`, pero reservada para la
+// comprobacion masiva del arranque. Separar los dos meses evita que un solo
+// trabajador ocupe el hilo principal durante 500-700 ms seguidos.
+async function computeProfileScheduleCooperative(profile) {
+    const today = new Date();
+    const { start, end } = hotScheduleRange(today);
+    const months = listMonthsInRange(start, end);
+    const ctx = createProfileScheduleContext(profile);
+    const computedDays = {};
+
+    for (let index = 0; index < months.length; index++) {
+        Object.assign(
+            computedDays,
+            computeMonthDays(profile, months[index], ctx)
+        );
+
+        if (index + 1 < months.length) {
+            await waitWorkerAppIdle(180);
+        }
+    }
 
     return addTaskAssignmentsToSchedule(profile, {
         start: toISODate(start),
@@ -2415,8 +2450,7 @@ async function commitWorkerDocBatches(documents = [], workspaceId) {
                 {
                     ...payload,
                     updatedAt: firestoreModule.serverTimestamp()
-                },
-                { merge: true }
+                }
             );
         });
 
@@ -3152,17 +3186,70 @@ async function verifyLinkedWorkerDocs() {
 }
 
 /** Los mismos documentos que arma el servidor, calculados aqui para comparar. */
-function buildLinkedWorkerDocsForWorkspace(workspace) {
-    return buildLinkedWorkerDocuments(
-        workspace,
-        getWorkerAppLinkList(),
-        profile => computeProfileSchedule(profile)
-    ).documents;
+async function buildLinkedWorkerDocsForWorkspace(workspace) {
+    const profiles = getProfiles();
+    const linkedProfiles = getWorkerAppLinkList()
+        .filter(link => link?.uid)
+        .map(link => ({ link, profile: findProfileForLink(link, profiles) }))
+        .filter(item => item.profile);
+    const { primary } = selectPrimaryLinkedProfiles(
+        linkedProfiles,
+        workerLinkRecency
+    );
+    const nowISO = new Date().toISOString();
+    const documents = [];
+
+    for (let index = 0; index < primary.length; index++) {
+        const item = primary[index];
+
+        try {
+            documents.push({
+                collection: "workerMessageDirectory",
+                uid: item.link.uid,
+                payload: buildWorkerMessageDirectoryPayload(
+                    item.link,
+                    item.profile,
+                    workspace,
+                    nowISO
+                )
+            });
+            const schedule = await computeProfileScheduleCooperative(
+                item.profile
+            );
+
+            documents.push({
+                collection: "workerSwapCandidates",
+                uid: item.link.uid,
+                payload: buildSwapCandidatePayload(
+                    item.link,
+                    item.profile,
+                    workspace,
+                    primary,
+                    nowISO,
+                    schedule
+                )
+            });
+        } catch (error) {
+            console.warn(
+                "No se pudo preparar la verificacion de un trabajador.",
+                error
+            );
+        }
+
+        // `computeProfileSchedule` recorre dos meses completos. Con decenas de
+        // enlazados, hacerlos en una misma tarea congela el navegador aunque al
+        // final no haya ningun documento que reparar.
+        if (index + 1 < primary.length) {
+            await waitWorkerAppIdle(300);
+        }
+    }
+
+    return documents;
 }
 
 /** Documentos que el servidor no publico, o publico distinto. */
 async function pendingLinkedWorkerDocs(workspace) {
-    const documents = buildLinkedWorkerDocsForWorkspace(workspace);
+    const documents = await buildLinkedWorkerDocsForWorkspace(workspace);
 
     if (!documents.length) return [];
 
@@ -3180,9 +3267,89 @@ async function pendingLinkedWorkerDocs(workspace) {
         });
     }));
 
-    return documents.filter(({ collection, uid, payload }) =>
+    const pending = documents.filter(({ collection, uid, payload }) =>
         linkedDocChanged(stored.get(`${collection}/${uid}`), payload)
     );
+
+    if (pending.length) {
+        const collectionCounts = {};
+        const differingFields = new Set();
+        const differingPaths = new Set();
+
+        const collectDifferences = (current, next, path = "") => {
+            if (JSON.stringify(current) === JSON.stringify(next)) return;
+
+            const currentObject = current && typeof current === "object";
+            const nextObject = next && typeof next === "object";
+            const currentArray = Array.isArray(current);
+            const nextArray = Array.isArray(next);
+
+            if (
+                !currentObject ||
+                !nextObject ||
+                currentArray !== nextArray ||
+                differingPaths.size >= 20
+            ) {
+                differingPaths.add(path || "(raiz)");
+                return;
+            }
+
+            const keys = currentArray && nextArray
+                ? Array.from(
+                    { length: Math.max(current.length, next.length) },
+                    (_, index) => index
+                )
+                : [...new Set([
+                    ...Object.keys(current),
+                    ...Object.keys(next)
+                ])].sort();
+
+            keys.forEach(key => {
+                if (differingPaths.size >= 20) return;
+                collectDifferences(
+                    current[key],
+                    next[key],
+                    path ? `${path}.${key}` : String(key)
+                );
+            });
+        };
+
+        pending.forEach(({ collection, uid, payload }) => {
+            collectionCounts[collection] =
+                (collectionCounts[collection] || 0) + 1;
+
+            const current = withoutVolatileFields(
+                stored.get(`${collection}/${uid}`) || {}
+            );
+            const next = withoutVolatileFields(payload || {});
+
+            new Set([
+                ...Object.keys(current || {}),
+                ...Object.keys(next || {})
+            ]).forEach(key => {
+                if (JSON.stringify(current?.[key]) !== JSON.stringify(next?.[key])) {
+                    differingFields.add(`${collection}.${key}`);
+                    collectDifferences(
+                        current?.[key],
+                        next?.[key],
+                        `${collection}.${key}`
+                    );
+                }
+            });
+        });
+
+        recordPerformanceEvent("worker-app:linked-doc-differences", {
+            type: "worker-app",
+            pendingCount: pending.length,
+            collectionCounts: Object.entries(collectionCounts)
+                .map(([name, count]) => `${name}:${count}`)
+                .join(","),
+            differingFields: [...differingFields].sort().join(","),
+            differingPaths: [...differingPaths].sort().join(",")
+        });
+    }
+
+    return pending;
 }
 
 async function publishLinkedWorkerDocsNow(targetNames = null) {

@@ -1186,7 +1186,8 @@ async function refreshWorkspaces() {
                 ...workspace,
                 deletionStatus: info?.deletionStatus || "",
                 deletionScheduledMs: info?.deletionScheduledMs || null,
-                ownerUid: info?.ownerUid || workspace.ownerUid || ""
+                ownerUid: info?.ownerUid || workspace.ownerUid || "",
+                stateStorage: info?.stateStorage || ""
             };
         })
     );

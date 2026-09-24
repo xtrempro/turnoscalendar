@@ -189,6 +189,7 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
 
         return {
             ownerUid: data.ownerUid || "",
+            stateStorage: String(data.stateStorage || ""),
             deletionStatus: data.deletionStatus || "",
             deletionScheduledMs: scheduledMs,
             deletionRequestedByUid: data.deletionRequestedByUid || ""
