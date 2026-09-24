@@ -242,17 +242,6 @@
                     <span>Calificaciones</span>
                 </button>
 
-                <button class="nav-tile" type="button" data-target="clockMarksPanel">
-                    <svg class="nav-icon tone-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="8"></circle>
-                        <path d="M12 7v5l3 2"></path>
-                        <path d="M5 4 3 6"></path>
-                        <path d="M19 4l2 2"></path>
-                        <path d="M8 20h8"></path>
-                    </svg>
-                    <span>Marcajes</span>
-                </button>
-
                 <button class="nav-tile" type="button" data-target="workerRequestsPanel">
                     <svg class="nav-icon tone-violet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"></path>
@@ -824,7 +813,7 @@
                                 <span>AUSENCIA</span>
                             </button>
 
-                            <button id="clockMarkBtn" class="legend-action" type="button">
+                            <button id="clockMarkBtn" class="legend-action hidden" type="button" hidden aria-hidden="true" tabindex="-1">
                                 <span class="legend-dot tone-blue">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                                         <circle cx="12" cy="12" r="8"></circle>
@@ -1002,24 +991,6 @@
 
             <section id="reportsPanel" class="reports-view">
                 <section class="panel reports-detail-panel">
-                    <!-- Carga del informe del reloj control: llena las columnas
-                         Entrada y Salida del detalle de turnos. -->
-                    <div class="attendance-import">
-                        <div class="attendance-import__copy">
-                            <strong>Registros del reloj control</strong>
-                            <span>
-                                Adjunta el informe de asistencia (Excel) y las marcas
-                                de entrada y salida se agregan al detalle de turnos.
-                                Volver a subir un archivo ya cargado no duplica nada.
-                            </span>
-                        </div>
-                        <label class="attendance-import__button">
-                            <input id="attendanceImportInput" type="file" accept=".xls,.xlsx">
-                            <span>Adjuntar registro</span>
-                        </label>
-                    </div>
-                    <p id="attendanceImportStatus" class="attendance-import__status hidden"></p>
-
                     <div id="reportsSelectedInfo" class="hidden"></div>
 
                     <article id="report4TurnoNoAssignmentCard" class="report-download-card hidden">
@@ -1078,35 +1049,6 @@
                 <section id="tendersPanel" class="panel tenders-panel"></section>
 
                 <section id="qualificationsPanel" class="panel qualifications-panel"></section>
-
-                <section id="clockMarksPanel" class="clockmarks-view">
-                    <section class="panel clockmarks-panel">
-                        <div class="clockmarks-topbar">
-                            <div class="clockmarks-monthbar">
-                                <button id="clockMarksPrevMonth" class="swap-month-button" type="button" aria-label="Mes anterior marcajes">
-                                    &lt;
-                                </button>
-
-                                <strong id="clockMarksMonthLabel">Mes Marcajes</strong>
-
-                                <button id="clockMarksNextMonth" class="swap-month-button" type="button" aria-label="Mes siguiente marcajes">
-                                    &gt;
-                                </button>
-                            </div>
-                            <label class="clockmarks-all-toggle">
-                                <span>
-                                    <strong>Ver todos</strong>
-                                    <small id="clockMarksSubtitle">Registros del mes de todos los colaboradores</small>
-                                </span>
-                                <input id="clockMarksAllWorkersToggle" type="checkbox">
-                            </label>
-                        </div>
-
-                        <div id="clockMarksSelected" class="clockmarks-selected"></div>
-
-                        <div id="clockMarksList" class="clockmarks-list"></div>
-                    </section>
-                </section>
 
                 <section id="auditLogPanel" class="panel audit-log-panel"></section>
             </section>
@@ -1207,54 +1149,6 @@
 
         <div id="reportsProfiles" class="profile-list"></div>
         <p id="reportsEmptyProfiles" class="muted hidden"></p>
-    </div>
-</div>
-
-<div id="clockMarksSearchModal" class="profile-search-modal" hidden>
-    <div class="profile-search-dialog" role="dialog" aria-modal="true" aria-label="Buscar trabajador">
-        <div class="profile-search-dialog__head">
-            <strong>Buscar trabajador</strong>
-            <button class="profile-search-dialog__close" type="button" data-action="close-clockmarks-search" aria-label="Cerrar">&times;</button>
-        </div>
-
-        <div class="profile-search-dialog__controls">
-            <label class="field-shell field-shell--icon">
-                <span class="field-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="7"></circle>
-                        <path d="M21 21l-4.35-4.35"></path>
-                    </svg>
-                </span>
-                <input id="clockMarksProfileSearch" type="text" placeholder="Buscar por nombre, RUT, correo...">
-            </label>
-
-            <label class="field-shell field-shell--icon">
-                <span class="field-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="4" y1="6" x2="20" y2="6"></line>
-                        <line x1="7" y1="12" x2="17" y2="12"></line>
-                        <line x1="10" y1="18" x2="14" y2="18"></line>
-                    </svg>
-                </span>
-                <select id="clockMarksFilterRole">
-                    <option>Todos</option>
-                    <option>Profesional</option>
-                    <option>T&#233;cnico</option>
-                    <option>Administrativo</option>
-                    <option>Auxiliar</option>
-                </select>
-            </label>
-
-            <label class="inline-toggle sidebar-toggle">
-                <span>Mostrar desactivados</span>
-                <span class="toggle-check">
-                    <input id="clockMarksShowInactiveProfiles" type="checkbox">
-                </span>
-            </label>
-        </div>
-
-        <div id="clockMarksProfiles" class="profile-list"></div>
-        <p id="clockMarksEmptyProfiles" class="muted hidden"></p>
     </div>
 </div>
 

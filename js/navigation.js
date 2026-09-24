@@ -59,10 +59,6 @@ export function getViewForTarget(targetId) {
         return "dashboard";
     }
 
-    if (targetId === "clockMarksPanel") {
-        return "clockmarks";
-    }
-
     if (targetId === "auditLogPanel") {
         return "log";
     }

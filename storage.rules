@@ -49,7 +49,6 @@ service firebase.storage {
         ("agenda" in permissions && permissions.agenda.edit == true) ||
         ("profile" in permissions && permissions.profile.edit == true) ||
         ("qualifications" in permissions && permissions.qualifications.edit == true) ||
-        ("clockmarks" in permissions && permissions.clockmarks.edit == true) ||
         ("requests" in permissions && permissions.requests.edit == true) ||
         ("memos" in permissions && permissions.memos.edit == true) ||
         ("informations" in permissions && permissions.informations.edit == true) ||
@@ -76,7 +75,6 @@ service firebase.storage {
         hasLegacyMenuGrant(permissions, "kanban") &&
         hasLegacyMenuGrant(permissions, "agenda") &&
         hasLegacyMenuGrant(permissions, "profile") &&
-        hasLegacyMenuGrant(permissions, "clockmarks") &&
         hasLegacyMenuGrant(permissions, "requests") &&
         hasLegacyMenuGrant(permissions, "memos") &&
         hasLegacyMenuGrant(permissions, "swap") &&
@@ -182,7 +180,6 @@ service firebase.storage {
     function canViewClockIncidentAttachment(workspaceId, moduleId) {
       return moduleId == "clockmarks" &&
         (
-          canViewModule(workspaceId, "clockmarks") ||
           canViewModule(workspaceId, "requests") ||
           canViewModule(workspaceId, "memos")
         );

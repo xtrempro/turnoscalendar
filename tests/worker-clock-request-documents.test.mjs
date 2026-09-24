@@ -19,11 +19,11 @@ const storageRules = await readFile(
   "utf8"
 );
 
-test("las solicitudes de marcaje conservan adjuntos al aplicarse al reloj", () => {
+test("las solicitudes de marcaje conservan adjuntos sin recrear el modulo retirado", () => {
   assert.match(source, /function normalizeClockRequestDocuments\(request = \{\}\)/);
-  assert.match(source, /if \(Array\.isArray\(segment\.documents\)\)/);
-  assert.match(source, /attachRequestDocumentsToClockMark\(mark, request\)/);
-  assert.match(source, /segment\.documents = \[\.\.\.currentDocuments, \.\.\.documents\]/);
+  assert.match(source, /sourceDocuments: normalizeClockRequestDocuments\(request\)/);
+  assert.doesNotMatch(source, /saveClockMarks\(/);
+  assert.doesNotMatch(source, /attachRequestDocumentsToClockMark/);
 });
 
 test("la tarjeta del supervisor muestra que la incidencia trae adjuntos", () => {

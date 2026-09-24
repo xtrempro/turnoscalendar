@@ -35,7 +35,6 @@ import {
     showSupervisorInvitePermissionsDialog,
     supervisorInviteActor
 } from "./supervisorInvitesUI.js";
-import { fetchHolidays } from "./holidays.js";
 import {
     getCurrentProfile,
     getManualLeaveBalances,
@@ -53,12 +52,6 @@ import {
     aplicarLegal,
     aplicarLicencia
 } from "./leaveEngine.js";
-import { getTurnoReal } from "./turnEngine.js";
-import {
-    getClockMarks,
-    getScheduledSegmentsForState,
-    saveClockMarks
-} from "./clockMarks.js";
 import { createClockMemoTask } from "./memos.js";
 import { openCachedAttachment } from "./attachmentCache.js";
 import {
@@ -671,24 +664,6 @@ async function applyLeaveRequest(request, profile, date) {
     return { ok: true };
 }
 
-function normalizeClockSegment(segment = {}) {
-    const normalized = {};
-
-    if (segment.missingEntry) normalized.missingEntry = true;
-    if (segment.missingExit) normalized.missingExit = true;
-    if (segment.entryTime) normalized.entryTime = String(segment.entryTime);
-    if (segment.exitTime) normalized.exitTime = String(segment.exitTime);
-    if (Array.isArray(segment.documents)) {
-        const documents = normalizeClockRequestDocuments({
-            documents: segment.documents
-        });
-
-        if (documents.length) normalized.documents = documents;
-    }
-
-    return normalized;
-}
-
 function normalizeClockRequestDocuments(request = {}) {
     const source = Array.isArray(request.documents)
         ? request.documents
@@ -735,128 +710,32 @@ function normalizeClockRequestDocuments(request = {}) {
         .filter(doc => doc.name && (doc.storagePath || doc.dataUrl));
 }
 
-function attachRequestDocumentsToClockMark(mark, request) {
-    const documents = normalizeClockRequestDocuments(request);
-    const segmentId = Object.keys(mark.segments)[0];
-
-    if (!documents.length || !segmentId) return;
-
-    const segment = mark.segments[segmentId];
-    const currentDocuments = Array.isArray(segment.documents)
-        ? segment.documents
-        : [];
-
-    segment.documents = [...currentDocuments, ...documents];
-}
-
-function clockSegmentLabel(segments, segmentId) {
-    const segment = segments.find(item => item.id === segmentId);
-
-    if (!segment) return "Turno";
-    if (segment.label) return `Turno ${segment.label}`;
-
-    return "Turno";
-}
-
 async function applyClockRequest(request, profile, date) {
     const keyDay = keyFromDate(date);
-    const state =
-        Number(request.state || request.turno || request.shiftState) ||
-        getTurnoReal(profile, keyDay);
-    const holidays = await fetchHolidays(date.getFullYear());
-    const segments =
-        getScheduledSegmentsForState(date, state, holidays);
+    const side = String(request.side || request.missingSide || "")
+        .toLowerCase();
+    const missingEntry = Boolean(
+        request.missingEntry ||
+        side.includes("entrada") ||
+        side.includes("entry") ||
+        (request.type === "missing_clock" && !request.missingExit && !side)
+    );
+    const missingExit = Boolean(
+        request.missingExit ||
+        side.includes("salida") ||
+        side.includes("exit") ||
+        (request.type === "missing_clock" && !request.missingEntry && !side)
+    );
 
-    if (!segments.length) {
-        return {
-            ok: false,
-            message: "No hay un turno valido para registrar marcaje en esa fecha."
-        };
-    }
-
-    const marks = getClockMarks(profile);
-    const mark = {
-        segments: {},
-        updatedAt: new Date().toISOString(),
-        workerRequestId: request.id,
-        source: "worker_request"
-    };
-    const incomingSegments =
-        request.clockMark?.segments ||
-        request.mark?.segments ||
-        request.segments ||
-        null;
-
-    if (incomingSegments && typeof incomingSegments === "object") {
-        Object.entries(incomingSegments).forEach(([segmentId, segment]) => {
-            const normalized = normalizeClockSegment(segment);
-
-            if (Object.keys(normalized).length) {
-                mark.segments[segmentId] = normalized;
-            }
-        });
-    } else if (request.type === "missing_clock") {
-        const side = String(request.side || request.missingSide || "")
-            .toLowerCase();
-        const missingEntry =
-            request.missingEntry ||
-            side.includes("entrada") ||
-            side.includes("entry") ||
-            (!request.missingExit && !side);
-        const missingExit =
-            request.missingExit ||
-            side.includes("salida") ||
-            side.includes("exit") ||
-            (!request.missingEntry && !side);
-
-        segments.forEach(segment => {
-            mark.segments[segment.id] = {
-                ...(missingEntry ? { missingEntry: true } : {}),
-                ...(missingExit ? { missingExit: true } : {})
-            };
-        });
-    } else {
-        const targetSegment =
-            segments.find(segment => segment.id === request.segmentId) ||
-            segments[0];
-        const normalized = normalizeClockSegment({
-            entryTime: request.entryTime,
-            exitTime: request.exitTime,
-            missingEntry: request.missingEntry,
-            missingExit: request.missingExit
-        });
-
-        if (Object.keys(normalized).length) {
-            mark.segments[targetSegment.id] = normalized;
-        }
-    }
-
-    if (!Object.keys(mark.segments).length) {
-        return {
-            ok: false,
-            message: "La solicitud de marcaje no trae datos suficientes para aplicarla."
-        };
-    }
-
-    attachRequestDocumentsToClockMark(mark, request);
-
-    marks[keyDay] = mark;
-    saveClockMarks(profile, marks);
-    Object.entries(mark.segments).forEach(([segmentId, segment]) => {
-        const incident = request.type === "clock_incident";
-
-        if (!incident && !segment.missingEntry && !segment.missingExit) return;
-
-        createClockMemoTask({
-            profile,
-            dateKey: keyDay,
-            segmentId,
-            segmentLabel: clockSegmentLabel(segments, segmentId),
-            missingEntry: Boolean(segment.missingEntry),
-            missingExit: Boolean(segment.missingExit),
-            incident,
-            sourceDocuments: normalizeClockRequestDocuments(request)
-        });
+    createClockMemoTask({
+        profile,
+        dateKey: keyDay,
+        segmentId: request.segmentId || "incident",
+        segmentLabel: request.shiftLabel || "Turno",
+        missingEntry,
+        missingExit,
+        incident: request.type === "clock_incident",
+        sourceDocuments: normalizeClockRequestDocuments(request)
     });
 
     return { ok: true };

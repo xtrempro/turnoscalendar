@@ -96,13 +96,6 @@ export function refreshAll(){
         updateMemosNavBadge();
     }
 
-    if (
-        activeView === "clockmarks" &&
-        typeof window.renderClockMarksPanel === "function"
-    ) {
-        window.renderClockMarksPanel();
-    }
-
     // El reporte tambien depende de datos que cambian estando en pantalla: las
     // marcas del reloj que se acaban de cargar y la hora de ingreso que fija el
     // supervisor. Sin esto habia que cambiar de mes y volver para verlas.

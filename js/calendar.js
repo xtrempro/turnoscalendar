@@ -3359,10 +3359,7 @@ function openAttendanceIncidentDialog(
  * retrasar la apertura del cuadro.
  */
 function attendanceMarksSlotHTML() {
-    return `
-        <div class="attendance-marks" data-attendance-marks hidden>
-            <div class="attendance-marks-loading">Buscando las marcas...</div>
-        </div>`;
+    return "";
 }
 
 // Como se lee cada marca en el detalle. La etiqueta es la que apreto el
@@ -8481,7 +8478,6 @@ function openClockMarkDetailDialog({ profile, keyDay, date, state, holidays = {}
             ${extraShiftHTML}
             ${attendanceMarksSlotHTML()}
             <div class="turn-change-dialog__actions">
-                <button class="primary-button" type="button" data-action="edit">Modificar marcaje</button>
                 ${extraShift
                     ? `<button class="secondary-button" type="button" data-action="extra-shift">Ver turno extra</button>`
                     : ""}
@@ -8505,12 +8501,6 @@ function openClockMarkDetailDialog({ profile, keyDay, date, state, holidays = {}
     backdrop
         .querySelector("[data-action='close']")
         ?.addEventListener("click", close);
-    backdrop
-        .querySelector("[data-action='edit']")
-        ?.addEventListener("click", () => {
-            close();
-            window.openClockMarkEditorForDate?.(date);
-        });
     // Con una incidencia de marcaje el click de la casilla abre este modal, asi
     // que el detalle del turno extra -y su anulacion- quedaba sin camino.
     backdrop
@@ -8532,7 +8522,6 @@ function openClockMarkDetailDialog({ profile, keyDay, date, state, holidays = {}
 
     document.addEventListener("keydown", onKeydown);
     document.body.appendChild(backdrop);
-    backdrop.querySelector("[data-action='edit']")?.focus();
     void fillAttendanceMarks(backdrop, profile, keyDay);
 }
 

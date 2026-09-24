@@ -77,7 +77,7 @@ test("sin orden guardado, el de fabrica", () => {
         normalizeHomeLayout(null),
         [
             ["tareas", "ausencias", "cambios"],
-            ["solicitudes", "incidencias", "cumpleanos"],
+            ["solicitudes", "cumpleanos"],
             ["resumen", "minical", "cobertura", "brecha"]
         ]
     );
@@ -94,7 +94,7 @@ test("soltada al final de una columna", () => {
     const next = moveHomeCard(null, "tareas", 1, null);
 
     assert.deepEqual(next[0], ["ausencias", "cambios"]);
-    assert.deepEqual(next[1], ["solicitudes", "incidencias", "cumpleanos", "tareas"]);
+    assert.deepEqual(next[1], ["solicitudes", "cumpleanos", "tareas"]);
 });
 
 test("dentro de su misma columna", () => {
@@ -131,7 +131,7 @@ test("un guardado viejo o dañado no pierde tarjetas", () => {
     });
 
     assert.deepEqual(layout[0], ["cobertura", "tareas", "ausencias", "cambios"]);
-    assert.deepEqual(layout[1], ["solicitudes", "incidencias", "cumpleanos"]);
+    assert.deepEqual(layout[1], ["solicitudes", "cumpleanos"]);
     // Las que faltaban vuelven a su columna de fabrica, al final.
     assert.deepEqual(layout[2], ["resumen", "minical", "brecha"]);
     // Cada tarjeta, exactamente una vez.

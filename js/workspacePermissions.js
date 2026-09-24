@@ -31,7 +31,6 @@ export const MENU_PERMISSION_DEFS = [
     { key: "agenda", label: "Contactos", target: "agendaPanel" },
     { key: "profile", label: "Perfiles", target: "profileSection" },
     { key: "qualifications", label: "Calificaciones", target: "qualificationsPanel" },
-    { key: "clockmarks", label: "Marcajes", target: "clockMarksPanel" },
     { key: "requests", label: "Solicitudes", target: "workerRequestsPanel" },
     { key: "memos", label: "Memorándum", target: "memosPanel" },
     { key: "swap", label: "Cambios de Turno", target: "turnChangesView" },

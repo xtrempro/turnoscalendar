@@ -23,7 +23,6 @@ const STATE_MODULES = [
     "profile",
     "turnos",
     "swap",
-    "clockmarks",
     "hours",
     "weekly",
     "tasks",
