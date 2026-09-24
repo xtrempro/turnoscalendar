@@ -69,6 +69,11 @@ const REMOTE_APPLY_MAX_WAIT_MS = 6000;
 // Hueco entre lotes al drenar una rafaga: se cede el hilo entre tandas de 4
 // entradas, pero la cola avanza en segundos, no en minutos.
 const REMOTE_APPLY_BATCH_GAP_MS = 200;
+// Firestore puede materializar cientos de documentos y miles de `items` dentro
+// de una sola tarea del navegador. En la unidad grande eso bloqueo el hilo
+// principal 24,8 s. Leer paginas acotadas conserva el mismo estado, pero deja
+// que el navegador pinte y atienda eventos entre tandas.
+const REMOTE_ENTRY_READ_BATCH_SIZE = 24;
 const LOCAL_ENTRY_PROTECTION_MS = 30 * 60 * 1000;
 const WORKER_CALENDAR_URGENT_STATE_PREFIXES = [
     "data_",
@@ -1634,17 +1639,51 @@ async function readRemoteModuleEntries(
     moduleId
 ) {
     const { db, firestoreModule } = await services();
-    const snap = await firestoreModule.getDocs(
-        moduleEntriesCollection(
-            db,
-            firestoreModule,
-            workspaceId,
-            moduleId
-        )
+    const collectionRef = moduleEntriesCollection(
+        db,
+        firestoreModule,
+        workspaceId,
+        moduleId
     );
-    const entries = snap.docs
-        .flatMap(stateEntriesFromDoc)
-        .filter(entry => entry.storageKey);
+    const entries = [];
+    let cursor = null;
+    let pageCount = 0;
+
+    while (true) {
+        const constraints = [
+            firestoreModule.orderBy(firestoreModule.documentId()),
+            firestoreModule.limit(REMOTE_ENTRY_READ_BATCH_SIZE)
+        ];
+
+        if (cursor) {
+            constraints.push(firestoreModule.startAfter(cursor));
+        }
+
+        const snap = await firestoreModule.getDocs(
+            firestoreModule.query(collectionRef, ...constraints)
+        );
+
+        snap.docs.forEach(docSnap => {
+            entries.push(
+                ...stateEntriesFromDoc(docSnap)
+                    .filter(entry => entry.storageKey)
+            );
+        });
+        pageCount++;
+
+        recordPerformanceEvent("firebase-app-state:hydrate-entry-page", {
+            type: "firebase",
+            moduleId,
+            page: pageCount,
+            documentCount: snap.docs.length,
+            entryCount: entries.length
+        });
+
+        if (snap.docs.length < REMOTE_ENTRY_READ_BATCH_SIZE) break;
+
+        cursor = snap.docs[snap.docs.length - 1];
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
 
     if (entries.length) entryModulesPresent.add(moduleId);
     return entries;
