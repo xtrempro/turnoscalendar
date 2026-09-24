@@ -16029,4 +16029,23 @@ const startupTarget = hasProfilesAtStartup
     ? targetFromHash() || "homePanel"
     : "profileSection";
 
-void setActiveShortcut(startupTarget, { historyMode: "replace" });
+function finishAppStartup() {
+    const loader = document.getElementById("appStartupLoader");
+
+    document.body.classList.remove("app-is-starting");
+    document.body.removeAttribute("aria-busy");
+
+    if (!loader) return;
+
+    loader.classList.add("is-finished");
+    loader.addEventListener("transitionend", () => loader.remove(), {
+        once: true
+    });
+    setTimeout(() => loader.remove(), 500);
+}
+
+void setActiveShortcut(startupTarget, { historyMode: "replace" })
+    .catch(error => {
+        console.error("No se pudo preparar la vista inicial.", error);
+    })
+    .finally(finishAppStartup);

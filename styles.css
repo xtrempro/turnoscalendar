@@ -28232,3 +28232,85 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 .sync-lock-reload[hidden] {
     display: none !important;
 }
+/* Visible desde el HTML inicial, antes de que el modulo principal termine. */
+.app-startup-loader {
+    position: fixed;
+    inset: 0;
+    z-index: 100000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: #f4f7fb;
+    opacity: 1;
+    transition: opacity 180ms ease, visibility 180ms ease;
+}
+
+.app-startup-loader.is-finished {
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.app-startup-loader__content {
+    width: min(320px, 78vw);
+    text-align: center;
+}
+
+.app-startup-loader__content img {
+    display: block;
+    width: min(220px, 64vw);
+    height: auto;
+    margin: 0 auto 28px;
+}
+
+.app-startup-loader__track {
+    position: relative;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: #dce5f0;
+}
+
+.app-startup-loader__track span {
+    position: absolute;
+    inset: 0 auto 0 -42%;
+    width: 42%;
+    border-radius: inherit;
+    background: #15549a;
+    animation: app-startup-progress 1.05s ease-in-out infinite;
+}
+
+.app-startup-loader__content p {
+    margin: 14px 0 0;
+    color: #465a74;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.theme-dark .app-startup-loader {
+    background: #0d1728;
+}
+
+.theme-dark .app-startup-loader__content p {
+    color: #d8e3f0;
+}
+
+.theme-dark .app-startup-loader__track {
+    background: #26364d;
+}
+
+.theme-dark .app-startup-loader__track span {
+    background: #62a8f1;
+}
+
+@keyframes app-startup-progress {
+    0% { transform: translateX(0); }
+    55% { transform: translateX(170%); }
+    100% { transform: translateX(340%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .app-startup-loader__track span {
+        animation-duration: 2.2s;
+    }
+}
