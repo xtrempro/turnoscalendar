@@ -46,8 +46,13 @@ function monthName(date) {
         .toLocaleUpperCase("es-CL");
 }
 
-export function buildTensConsolidatedReportHTML(rows, monthDate) {
+export function buildTensConsolidatedReportHTML(
+    rows,
+    monthDate,
+    options = {}
+) {
     const safeRows = Array.isArray(rows) ? rows : [];
+    const requesterName = String(options.requesterName || "").trim();
     const body = safeRows.map(row => `
         <tr>
             <td>${escapeHTML(row.name)}</td>
@@ -167,7 +172,7 @@ export function buildTensConsolidatedReportHTML(rows, monthDate) {
             <h1>MEMO - A N E X O&nbsp;&nbsp;&nbsp;1</h1>
             <h2>SOLICITUD Y AUTORIZACION DE TRABAJOS EXTRAORDINARIOS TENS IMAGENOLOGÍA</h2>
             <div class="tens-annex__meta">
-                <p><strong>JEFE SOLICITANTE:</strong> DRA. BERNARDITA FAUNDEZ PUMARINO</p>
+                <p><strong>JEFE SOLICITANTE:</strong> ${escapeHTML(requesterName)}</p>
                 <p><strong>UNIDAD:</strong> IMAGENOLOGÍA</p>
                 <p><strong>MES:</strong> ${escapeHTML(monthName(monthDate))}</p>
             </div>

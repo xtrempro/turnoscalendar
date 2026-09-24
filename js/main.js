@@ -451,7 +451,8 @@ import {
     normalizeProfession,
     SIN_INFORMACION_PROFESSION,
     getTurnChangeConfig,
-    getReplacementRequestConfig
+    getReplacementRequestConfig,
+    getReportSignatureConfig
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import {
@@ -7882,7 +7883,10 @@ async function printTensConsolidatedReport(date) {
         }
 
         printReportPreviewHTML(
-            buildTensConsolidatedReportHTML(rows, monthDate),
+            buildTensConsolidatedReportHTML(rows, monthDate, {
+                requesterName:
+                    getReportSignatureConfig().lines?.[0] || ""
+            }),
             `Anexo 1 TENS ${formatReportPlanillaTitle(monthDate)}`
         );
     } catch (error) {

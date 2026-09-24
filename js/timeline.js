@@ -19,6 +19,10 @@ import {
     getTurnoProgramado,
     getTurnoReal
 } from "./turnEngine.js";
+import {
+    cambioEstaAnulado,
+    getSwapPerspective
+} from "./swaps.js";
 import { TURNO, TURNO_COLOR } from "./constants.js";
 import { getTurnoColor, getTurnoColorConfig } from "./turnoColors.js";
 import { getDayColorGradient, buildHexColorResolver } from "./dayColorBands.js";
@@ -127,7 +131,7 @@ const TIMELINE_FOREGROUND_INITIAL_LIMIT = 5;
 const TIMELINE_INITIAL_BATCH_SIZE = 5;
 const TIMELINE_INCREMENTAL_BATCH_SIZE = 5;
 const TIMELINE_VISIBLE_BATCH_SIZE = 1;
-const TIMELINE_CACHE_VERSION = 4;
+const TIMELINE_CACHE_VERSION = 5;
 const TIMELINE_CACHE_PREFIX = "proturnos_ui_cache_timeline_";
 const TIMELINE_ROW_CACHE_PREFIX = "proturnos_ui_cache_timeline_row_";
 const TIMELINE_METRICS_CACHE_PREFIX = "proturnos_ui_cache_timeline_metrics_";
@@ -2466,6 +2470,28 @@ function addReplacementTurn(index, keyDay, replacement) {
     );
 }
 
+function timelineTurnChangeKeys(profileName, swaps = []) {
+    const keys = new Set();
+
+    swaps.forEach(swap => {
+        if (cambioEstaAnulado(swap)) return;
+
+        const perspective = getSwapPerspective(swap, profileName);
+
+        if (!perspective) return;
+
+        if (!perspective.changeSkipped && perspective.changeDate) {
+            keys.add(keyFromISO(perspective.changeDate));
+        }
+
+        if (!perspective.returnSkipped && perspective.returnDate) {
+            keys.add(keyFromISO(perspective.returnDate));
+        }
+    });
+
+    return keys;
+}
+
 function timelineClockMarkHasSevereIncident(mark) {
     if (!mark?.segments) return false;
 
@@ -2560,6 +2586,7 @@ function buildTimelineRowAuxiliaryContext(
     const needsReplacementByKey = new Map();
     const profileKey = normalizeText(profileName);
     const swaps = renderCache?.swaps || getSwaps();
+    const turnChangeKeys = timelineTurnChangeKeys(profileName, swaps);
     const data =
         rowData?.data || getTimelineCachedData(profileName, renderCache);
     const isReplacement = isReplacementProfile(profileName);
@@ -2800,6 +2827,7 @@ function buildTimelineRowAuxiliaryContext(
         baseWithSwapsByKey,
         actualWithoutReplacementsByKey,
         pendingManualExtraByKey,
+        turnChangeKeys,
         contractErrorByKey,
         needsReplacementByKey
     };
@@ -3405,6 +3433,7 @@ function renderTimelineDayCell(profile, d, {
     const pendingManualExtra = rowAux?.pendingManualExtraByKey?.has(key)
         ? rowAux.pendingManualExtraByKey.get(key)
         : pendingManualExtraMarker(profile.name, key);
+    const turnChange = rowAux?.turnChangeKeys?.has(key) || false;
     // El marcaje se hizo sobre el turno del dia: sin turno la marca quedo
     // huerfana (le quitaron el turno despues de modificarla) y no se marca.
     const clockMarkApplies = clockMarkAppliesToTurn(realTurn);
@@ -3461,6 +3490,7 @@ function renderTimelineDayCell(profile, d, {
     const showExtraReason =
         !contractError &&
         !needsReplacement &&
+        !turnChange &&
         pendingManualExtra;
     const showHonorariaLimit =
         Boolean(honorariaExcess) &&

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
     buildTensConsolidatedReportHTML,
@@ -6,6 +7,8 @@ import {
     isTensReportProfile,
     tensShiftTypeLabel
 } from "../js/tensReport.js";
+
+const main = readFileSync("js/main.js", "utf8");
 
 test("incluye a todo el estamento Tecnico sin depender de la profesion", () => {
     assert.equal(isTensReportProfile({
@@ -62,6 +65,27 @@ test("el anexo conserva campos y columnas del formato exigido", () => {
     assert.match(html, />38<\/td>/);
     assert.match(html, />12<\/td>/);
     assert.match(html, /4° turno sin asignación/);
+});
+
+test("usa como jefe solicitante el nombre configurado en el pie de firma", () => {
+    const html = buildTensConsolidatedReportHTML(
+        [],
+        new Date(2026, 8, 1),
+        { requesterName: "Jefa <Unidad>" }
+    );
+
+    assert.match(
+        html,
+        /JEFE SOLICITANTE:<\/strong> Jefa &lt;Unidad&gt;/
+    );
+    assert.doesNotMatch(html, /BERNARDITA FAUNDEZ/);
+});
+
+test("Informes entrega al anexo la primera linea del pie de firma", () => {
+    assert.match(
+        main,
+        /buildTensConsolidatedReportHTML\(rows, monthDate, \{[\s\S]{0,160}getReportSignatureConfig\(\)\.lines\?\.\[0\]/
+    );
 });
 
 test("marca descanso en vez de pago cuando las horas se devuelven", () => {
