@@ -274,6 +274,35 @@ test("el reporte sin asignacion tampoco muestra 10,8 para un D+N martes", async 
     assert.doesNotMatch(row, />10,8<\/td>/);
 });
 
+test("el D+N del 08-09 con marcajes reales tampoco vuelve a 10,8", async () => {
+    const keyDay = "2026-8-8";
+    seed({
+        [`shift_${NAME}`]: false,
+        [`baseData_${NAME}`]: { [keyDay]: TURNO.NOCHE },
+        [`data_${NAME}`]: { [keyDay]: TURNO.DIURNO_NOCHE },
+        [`clockMarks_${NAME}`]: {
+            [keyDay]: {
+                segments: {
+                    diurno: { entryTime: "08:03", exitTime: "17:04" },
+                    noche: { entryTime: "19:57", exitTime: "08:03" }
+                }
+            }
+        }
+    });
+
+    const html = await buildNoAssignmentReportPreviewHTML(
+        PROFILE,
+        new Date(2026, 8, 1)
+    );
+    const row = html.split("</tr>").find(fragment =>
+        fragment.includes("08-09-2026") &&
+        fragment.includes('data-col="horasDiurnas"')
+    ) || "";
+
+    assert.match(row, />11<\/td>/);
+    assert.doesNotMatch(row, />10,8<\/td>/);
+});
+
 test("un dia con permiso aprobado no genera descuento aunque haya marcaje", async () => {
     // Las horas no trabajadas ya estan justificadas por el feriado legal.
     assertAgree(

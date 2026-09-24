@@ -66,6 +66,8 @@ test("D+N usa 9 horas diurnas de lunes a jueves y 8 el viernes", () => {
 
     assert.equal(lunes.d - calcExtraHours(LUNES, 2, {}).d, 9);
     assert.equal(viernes.d - calcExtraHours(VIERNES, 2, {}).d, 8);
+    assert.deepEqual(lunes, { d: 11, n: 10 });
+    assert.deepEqual(viernes, { d: 9, n: 11 });
 });
 
 test("la semana suma 44 horas, que es de donde salia el promedio", () => {

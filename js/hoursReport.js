@@ -2360,20 +2360,11 @@ function buildNoAssignmentDayRows(
         // Diurno (tambien dentro de D+N) vale 9 h de lunes a jueves y 8 el
         // viernes; 8,8 se reserva para la base contractual mensual.
         const baseHours = extraNumberHours(date, workState, holidays);
-        // Ajuste por incidencias de marcaje de reloj: se suma lo trabajado fuera
-        // del turno (ingreso anticipado, salida tardia) y se descuenta lo
-        // programado no trabajado (atraso, salida anticipada). Sin marca el
-        // ajuste es 0 (turno realizado normal).
-        const clockExtraHours = absence?.full
-            ? { d: 0, n: 0 }
-            : getClockExtraHours(profileName, keyDay, date, actual, holidays);
-        const clockDeficitHours = absence?.full
-            ? { d: 0, n: 0 }
-            : getClockDeficitHours(profileName, keyDay, date, actual, holidays);
-        const hours = {
-            d: Math.max(0, baseHours.d + clockExtraHours.d - clockDeficitHours.d),
-            n: Math.max(0, baseHours.n + clockExtraHours.n - clockDeficitHours.n)
-        };
+        // Este reporte valoriza el horario PROGRAMADO. Los marcajes se muestran
+        // en Entrada/Salida y en Registros de marcaje, pero no alteran estas
+        // horas. Por ejemplo, D+N suma el diurno programado y la distribucion
+        // diurna/nocturna que calcNight define para esa fecha.
+        const hours = baseHours;
         const hasManualBase =
             Object.prototype.hasOwnProperty.call(baseData, keyDay) ||
             rawBase > TURNO.LIBRE;
