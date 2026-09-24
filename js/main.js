@@ -15698,6 +15698,27 @@ async function enforceWorkspaceMfa(workspace) {
 // Cambiar de unidad dos veces seguidas deja una hidratacion en vuelo: cuando
 // termine, sus vistas serian las del entorno ANTERIOR.
 let workspaceChangeGeneration = 0;
+let resolveInitialWorkspaceStartup;
+let initialWorkspaceStartupSettled = false;
+const initialWorkspaceStartup = new Promise(resolve => {
+    resolveInitialWorkspaceStartup = resolve;
+});
+
+function waitForStartupPaint() {
+    return new Promise(resolve => {
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => setTimeout(resolve, 0));
+        });
+    });
+}
+
+async function settleInitialWorkspaceStartup() {
+    if (initialWorkspaceStartupSettled) return;
+
+    await waitForStartupPaint();
+    initialWorkspaceStartupSettled = true;
+    resolveInitialWorkspaceStartup();
+}
 
 initFirebaseShell({
     userChip: DOM.authUserChip,
@@ -15948,13 +15969,19 @@ initFirebaseShell({
                 );
             });
 
-            void estadoHidratado.then(() => {
+            void estadoHidratado.then(async () => {
                 // Otra unidad se activo mientras esto venia en camino: sus
                 // vistas ya no son las de este entorno.
                 if (generacion !== workspaceChangeGeneration) return;
-                if (changeOptions.skipViewRefresh === true) return;
 
-                refrescarVistasDelEntorno();
+                if (changeOptions.skipViewRefresh !== true) {
+                    refrescarVistasDelEntorno();
+                }
+
+                await settleInitialWorkspaceStartup();
+            }).catch(error => {
+                console.error("No se pudo completar la carga inicial de la unidad.", error);
+                void settleInitialWorkspaceStartup();
             });
             startAutoCoverageScheduler();
         } else {
@@ -15978,6 +16005,9 @@ initFirebaseShell({
         }
 
         if (changeOptions.skipViewRefresh === true) {
+            if (!workspace?.id) {
+                await settleInitialWorkspaceStartup();
+            }
             return;
         }
 
@@ -15987,6 +16017,7 @@ initFirebaseShell({
         if (workspace?.id) return;
 
         refrescarVistasDelEntorno();
+        await settleInitialWorkspaceStartup();
     },
     // El panel de unidades enlazadas avisa que hay una ausencia autorizada;
     // crear el contrato es trabajo de aqui, donde vive el borrador de perfil.
@@ -16044,8 +16075,11 @@ function finishAppStartup() {
     setTimeout(() => loader.remove(), 500);
 }
 
-void setActiveShortcut(startupTarget, { historyMode: "replace" })
-    .catch(error => {
-        console.error("No se pudo preparar la vista inicial.", error);
-    })
+const startupViewReady = setActiveShortcut(startupTarget, {
+    historyMode: "replace"
+}).catch(error => {
+    console.error("No se pudo preparar la vista inicial.", error);
+});
+
+void Promise.all([startupViewReady, initialWorkspaceStartup])
     .finally(finishAppStartup);
