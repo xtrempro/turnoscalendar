@@ -52,6 +52,17 @@ function callableError(HttpsError, code, message) {
   throw new HttpsError(code, message);
 }
 
+function storageDownloadURL(bucketName, storagePath, token) {
+  return [
+    "https://firebasestorage.googleapis.com/v0/b/",
+    encodeURIComponent(bucketName),
+    "/o/",
+    encodeURIComponent(storagePath),
+    "?alt=media&token=",
+    encodeURIComponent(token)
+  ].join("");
+}
+
 function defaultIdFactory(prefix, uid) {
   const safeUid = safePathSegment(uid, "worker");
   return `${prefix}_${safeUid}_${Date.now()}_${randomBytes(5).toString("hex")}`;
@@ -258,6 +269,7 @@ async function uploadAttachments({
 
   for (const decoded of decodedFiles) {
     const id = attachmentIdFactory();
+    const downloadToken = randomBytes(24).toString("hex");
     const storagePath = [
       "workspaces",
       safePathSegment(workspaceId, "workspace"),
@@ -278,7 +290,8 @@ async function uploadAttachments({
           ownerId,
           recordId,
           uploadedByUid: uid,
-          originalName: decoded.originalName
+          originalName: decoded.originalName,
+          firebaseStorageDownloadTokens: downloadToken
         }
       }
     });
@@ -290,7 +303,8 @@ async function uploadAttachments({
       size: decoded.buffer.length,
       addedAt: createdAt,
       uploadedByUid: uid,
-      storagePath
+      storagePath,
+      downloadURL: storageDownloadURL(bucket.name, storagePath, downloadToken)
     });
   }
 

@@ -95,6 +95,7 @@ class FakeFirestore {
 
 class FakeBucket {
   constructor() {
+    this.name = "test-bucket";
     this.uploads = [];
   }
 
@@ -189,6 +190,10 @@ test("crea solicitud de incidencia de marcaje con adjunto en Storage", async () 
     bucket.uploads[0].options.metadata.metadata.moduleId,
     "clockmarks"
   );
+  assert.match(
+    bucket.uploads[0].options.metadata.metadata.firebaseStorageDownloadTokens,
+    /^[a-f0-9]{48}$/
+  );
 
   const stored = db.data(
     `workspaces/${WORKSPACE}/workerRequests/clock-123`
@@ -203,6 +208,10 @@ test("crea solicitud de incidencia de marcaje con adjunto en Storage", async () 
   assert.equal(stored.documents.length, 1);
   assert.equal(stored.documents[0].name, "respaldo.png");
   assert.equal(stored.documents[0].storagePath, bucket.uploads[0].path);
+  assert.match(
+    stored.documents[0].downloadURL,
+    /^https:\/\/firebasestorage\.googleapis\.com\/v0\/b\/test-bucket\/o\/.+\?alt=media&token=[a-f0-9]{48}$/
+  );
 });
 
 test("rechaza incidencia sin sesion autenticada", async () => {
