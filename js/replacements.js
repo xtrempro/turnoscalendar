@@ -1088,8 +1088,24 @@ export function workerHasAbsence(profile, keyDay) {
     );
 }
 
+export function replacementCoverageRecordId(data, isoDate) {
+    const replaced = String(data?.replaced || "").trim();
+    const date = String(isoDate || "").trim();
+
+    if (!replaced || !date) return "";
+
+    const coverFrom = normalizeCoverTime(data?.coverFrom);
+    const coverUntil = normalizeCoverTime(data?.coverUntil);
+    const windowId = coverFrom && coverUntil
+        ? `${coverFrom}-${coverUntil}`
+        : "full";
+
+    return `coverage:${date}:${replaced.toUpperCase()}:${windowId}`;
+}
+
 export function saveReplacement(data) {
     const date = parseKey(data.keyDay);
+    const isoDate = isoFromKey(data.keyDay);
     const replacements = getReplacements();
     const hasReplacedWorker = Boolean(data.replaced);
     const absenceType =
@@ -1105,6 +1121,7 @@ export function saveReplacement(data) {
 
     const id =
         data.id ||
+        replacementCoverageRecordId(data, isoDate) ||
         `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     const record = {
@@ -1117,7 +1134,7 @@ export function saveReplacement(data) {
         reason: String(data.reason || "").trim(),
         source: data.source || "replacement",
         addsShift: data.addsShift !== false,
-        date: isoFromKey(data.keyDay),
+        date: isoDate,
         turno: turnoToCode(data.turno),
         clockLabel: data.clockLabel || "",
         clockHours: data.clockHours || null,
@@ -1143,7 +1160,19 @@ export function saveReplacement(data) {
         canceled: false
     };
 
-    replacements.push(record);
+    const existingIndex = replacements.findIndex(replacement =>
+        String(replacement?.id || "") === id
+    );
+
+    if (existingIndex === -1) {
+        replacements.push(record);
+    } else {
+        // Una cobertura completa es un cupo unico. Si dos sesiones la asignan
+        // a la vez, ambas escriben este mismo elemento y Firestore resuelve el
+        // conflicto sin dejar dos reemplazantes. Los tramos horarios usan IDs
+        // distintos y por eso si pueden convivir.
+        replacements[existingIndex] = record;
+    }
 
     saveReplacements(replacements);
     applyTrainingReplacementClockMark(record);
