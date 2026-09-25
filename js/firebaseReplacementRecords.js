@@ -20,6 +20,7 @@ let persistenceHandler = null;
 let recordDocuments = new Map();
 let writeQueue = Promise.resolve();
 let generation = 0;
+let initialReconciliationPending = false;
 
 function clientId() {
     return String(getRaw("proturnos_firebase_client_id", "") || "");
@@ -132,6 +133,7 @@ export function stopFirebaseReplacementRecordShadowSync() {
 
     persistenceHandler = null;
     recordDocuments = new Map();
+    initialReconciliationPending = false;
 }
 
 export async function startFirebaseReplacementRecordShadowSync(workspace) {
@@ -147,6 +149,7 @@ export async function startFirebaseReplacementRecordShadowSync(workspace) {
 
     const expectedGeneration = generation;
     activeWorkspaceId = workspace.id;
+    initialReconciliationPending = true;
     const { db, firestoreModule } = await getFirebaseServices();
 
     if (expectedGeneration !== generation || activeWorkspaceId !== workspace.id) {
@@ -176,13 +179,21 @@ export async function startFirebaseReplacementRecordShadowSync(workspace) {
             const discrepancy = reportAudit(localRecords);
 
             // En modo sombra el formato antiguo manda. Solo se completan o
-            // actualizan documentos; jamas se borran extras durante el arranque.
-            if (canEditMenu("turnos") && discrepancy.upserts.length) {
+            // actualizan documentos durante el PRIMER snapshot. Los siguientes
+            // solo auditan: reconciliar en cada eco hacia que dos clientes se
+            // reescribieran mutuamente registros sanos.
+            if (
+                initialReconciliationPending &&
+                canEditMenu("turnos") &&
+                discrepancy.upserts.length
+            ) {
                 enqueueWrite(workspace.id, {
                     upserts: discrepancy.upserts,
                     deletedIds: []
                 }, expectedGeneration);
             }
+
+            initialReconciliationPending = false;
         },
         error => {
             console.warn("No se pudo auditar la copia individual de reemplazos.", error);

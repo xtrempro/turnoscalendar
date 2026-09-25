@@ -37,6 +37,15 @@ test("la coleccion sombra nunca reemplaza el estado local", () => {
     assert.match(sync, /deletedIds: \[\]/);
 });
 
+test("la reconciliacion completa ocurre solo en el primer snapshot", () => {
+    assert.match(sync, /initialReconciliationPending = true/);
+    assert.match(
+        sync,
+        /initialReconciliationPending &&[\s\S]*discrepancy\.upserts\.length/
+    );
+    assert.match(sync, /initialReconciliationPending = false/);
+});
+
 test("los cambios locales generan upserts y tombstones individuales", () => {
     assert.match(sync, /diffReplacementRecords\(records\.previous, records\.next\)/);
     assert.match(sync, /replacementRecordPayload\(operation\.record, options\)/);
