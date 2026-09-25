@@ -72,7 +72,9 @@ export function setActiveWorkspace(workspace) {
     setJSON(ACTIVE_WORKSPACE_KEY, {
         id: workspace.id,
         name: workspaceLabel(workspace),
-        role: workspace.role || "member"
+        role: workspace.role || "member",
+        stateStorage: String(workspace.stateStorage || ""),
+        replacementStorage: String(workspace.replacementStorage || "")
     });
 }
 
@@ -190,6 +192,7 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
         return {
             ownerUid: data.ownerUid || "",
             stateStorage: String(data.stateStorage || ""),
+            replacementStorage: String(data.replacementStorage || ""),
             deletionStatus: data.deletionStatus || "",
             deletionScheduledMs: scheduledMs,
             deletionRequestedByUid: data.deletionRequestedByUid || ""

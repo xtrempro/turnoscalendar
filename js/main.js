@@ -306,6 +306,10 @@ import {
     startFirebaseAppStateSync,
     stopFirebaseAppStateSync
 } from "./firebaseAppState.js";
+import {
+    startFirebaseReplacementRecordShadowSync,
+    stopFirebaseReplacementRecordShadowSync
+} from "./firebaseReplacementRecords.js";
 import { startRrhhSummaryBackgroundPublisher } from "./rrhhSummaryPublisher.js";
 import {
     startFirebaseReplacementRequestSync,
@@ -15730,6 +15734,7 @@ initFirebaseShell({
     onAuthChange: async user => {
         if (!user) {
             stopFirebaseAppStateSync();
+            stopFirebaseReplacementRecordShadowSync();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();
@@ -15956,6 +15961,13 @@ initFirebaseShell({
             // el estado ya hidratado, no con el del entorno anterior. Solo que
             // ahora se agenda en vez de bloquear.
             void estadoHidratado.then(() => {
+                void startFirebaseReplacementRecordShadowSync(workspace)
+                    .catch(error => {
+                        console.warn(
+                            "No se pudo iniciar la copia individual de reemplazos.",
+                            error
+                        );
+                    });
                 // La reparacion PWA compara documentos derivados con perfiles,
                 // turnos y configuracion local. Si arranca antes de hidratar,
                 // compara contra la foto vieja y reescribe documentos sanos.
@@ -15993,6 +16005,7 @@ initFirebaseShell({
             });
             startAutoCoverageScheduler();
         } else {
+            stopFirebaseReplacementRecordShadowSync();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();

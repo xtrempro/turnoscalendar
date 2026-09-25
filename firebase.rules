@@ -736,6 +736,35 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // Reemplazos individualizados. Durante la migracion convive con la
+      // entrada legacy `stateModules/turnos/entries/replacements`; la marca de
+      // la unidad decidira mas adelante cual lectura es autoritativa.
+      match /replacementRecords/{replacementId} {
+        allow read: if canReadStateModule(workspaceId, "turnos");
+        allow create, update: if
+          canWriteStateModule(workspaceId, "turnos") &&
+          request.resource.data.recordId is string &&
+          request.resource.data.recordId.size() > 0 &&
+          request.resource.data.recordId.size() <= 900 &&
+          request.resource.data.deleted is bool &&
+          request.resource.data.revision is int &&
+          request.resource.data.revision >= 1 &&
+          request.resource.data.updatedAtISO is string &&
+          request.resource.data.updatedAtISO.size() <= 40 &&
+          request.resource.data.clientId is string &&
+          request.resource.data.clientId.size() <= 160 &&
+          (
+            request.resource.data.deleted == true ||
+            (
+              request.resource.data.record is map &&
+              "id" in request.resource.data.record
+            )
+          );
+        // Los borrados logicos conservan la revision para impedir que una
+        // sesion atrasada resucite el registro sin detectar el conflicto.
+        allow delete: if false;
+      }
+
       match /stateModules/{moduleId} {
         allow read: if canReadStateModule(workspaceId, moduleId);
         allow create, update: if

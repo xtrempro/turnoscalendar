@@ -132,6 +132,22 @@ function stateEntry(moduleId, storageKey) {
     };
 }
 
+function replacementRecord(recordId, overrides = {}) {
+    return {
+        recordId,
+        record: {
+            id: recordId,
+            worker: "ANA",
+            date: "2026-09-24"
+        },
+        deleted: false,
+        revision: 1,
+        updatedAtISO: "2026-09-24T12:00:00.000Z",
+        clientId: "rules-test",
+        ...overrides
+    };
+}
+
 function attachmentMetadata(
     moduleId,
     ownerId,
@@ -659,6 +675,38 @@ test("reglas modulares de Firestore y Storage", async t => {
                         "profile"
                     ),
                     manifest("profile", "profile")
+                )
+            );
+        }
+    );
+
+    await t.test(
+        "los reemplazos individuales respetan permisos y tombstones",
+        async () => {
+            const path = [
+                "workspaces",
+                WORKSPACE_ID,
+                "replacementRecords",
+                "r1"
+            ];
+            const turnosRef = doc(turnosEditor.firestore(), ...path);
+
+            await assertSucceeds(
+                setDoc(turnosRef, replacementRecord("r1"))
+            );
+            await assertSucceeds(getDoc(turnosRef));
+            await assertSucceeds(
+                setDoc(turnosRef, replacementRecord("r1", {
+                    deleted: true,
+                    revision: 2,
+                    record: null
+                }))
+            );
+            await assertFails(deleteDoc(turnosRef));
+            await assertFails(
+                setDoc(
+                    doc(profileEditor.firestore(), ...path),
+                    replacementRecord("r1")
                 )
             );
         }

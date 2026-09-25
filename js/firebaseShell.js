@@ -1187,11 +1187,23 @@ async function refreshWorkspaces() {
                 deletionStatus: info?.deletionStatus || "",
                 deletionScheduledMs: info?.deletionScheduledMs || null,
                 ownerUid: info?.ownerUid || workspace.ownerUid || "",
-                stateStorage: info?.stateStorage || ""
+                stateStorage: info?.stateStorage || "",
+                replacementStorage: info?.replacementStorage || ""
             };
         })
     );
-    currentWorkspace = getActiveWorkspace();
+    const storedWorkspace = getActiveWorkspace();
+    const refreshedWorkspace = workspaceList.find(workspace =>
+        workspace.id === storedWorkspace?.id
+    );
+
+    currentWorkspace = refreshedWorkspace || storedWorkspace;
+
+    // Las marcas de migracion viven en el documento raiz. Conservar aqui la
+    // copia antigua de localStorage hacia que un hard refresh las descartara.
+    if (refreshedWorkspace) {
+        setActiveWorkspace(refreshedWorkspace);
+    }
     await refreshSupervisorInvites();
 }
 
