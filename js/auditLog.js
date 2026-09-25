@@ -777,6 +777,44 @@ function canUndoAuditLog(log) {
     return false;
 }
 
+export function equivalentActiveLeaveLogs(logs, sourceLog) {
+    if (sourceLog?.category !== AUDIT_CATEGORY.LEAVE_ABSENCE) return [];
+
+    const profile = String(
+        sourceLog.profile || sourceLog.meta?.profile || ""
+    );
+    const date = String(sourceLog.meta?.date || "");
+    const type = getLeaveUndoType(sourceLog);
+
+    if (!profile || !date || !type) return [];
+
+    return normalizeLogs(logs).filter(log =>
+        log.category === AUDIT_CATEGORY.LEAVE_ABSENCE &&
+        !log.canceledAt &&
+        sameProfileName(
+            String(log.profile || log.meta?.profile || ""),
+            profile
+        ) &&
+        String(log.meta?.date || "") === date &&
+        getLeaveUndoType(log) === type
+    );
+}
+
+function cancelEquivalentLeaveLogs(sourceLog, cancellation) {
+    const logs = getAuditLogs();
+    const matchingIds = new Set(
+        equivalentActiveLeaveLogs(logs, sourceLog).map(log => log.id)
+    );
+
+    if (!matchingIds.size) return;
+
+    setJSON(KEY, trimLogs(logs.map(log =>
+        matchingIds.has(log.id)
+            ? { ...log, ...cancellation }
+            : log
+    )));
+}
+
 function updateLog(logId, updater) {
     const logs = getAuditLogs();
     const nextLogs = logs.map(log =>
@@ -1447,14 +1485,22 @@ export async function undoAuditLogEntry(logId, options = {}) {
         ? "el calendario"
         : "el menu LOG";
 
-    updateLog(logId, entry => ({
-        ...entry,
+    const cancellation = {
         canceledAt: new Date().toISOString(),
         canceledBy: getCurrentActorLabel(),
         cancellationDetails: result.canceledReplacements?.length
             ? `Accion anulada desde ${cancellationSource}. Se anularon ${result.canceledReplacements.length} reemplazo(s)/HHEE asociado(s).`
             : `Accion anulada desde ${cancellationSource}.`
-    }));
+    };
+
+    if (log.category === AUDIT_CATEGORY.LEAVE_ABSENCE) {
+        // Dos supervisores pueden aplicar el mismo permiso casi a la vez. El
+        // calendario solo tiene una ausencia, pero ambos registros del LOG
+        // describen esa misma accion y deben quedar anulados juntos.
+        cancelEquivalentLeaveLogs(log, cancellation);
+    } else {
+        updateLog(logId, entry => ({ ...entry, ...cancellation }));
+    }
 
     const undoProfile = String(log.profile || log.meta?.profile || "");
     const canceledReplacements = result.canceledReplacements || [];
