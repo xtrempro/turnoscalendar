@@ -11,6 +11,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFile } from "node:fs/promises";
 
 const require = createRequire(import.meta.url);
 
@@ -28,6 +29,20 @@ const { stateModuleForKey } = await import("../js/firebaseStateModules.js");
 // El servidor lee los mismos deltas con su propia copia (CommonJS).
 const { applyEntry } = require("../functions/lib/stateReader.js");
 
+test("el guardado real fusiona los items dentro de una transaccion", async () => {
+    const source = await readFile(
+        new URL("../js/firebaseAppState.js", import.meta.url),
+        "utf8"
+    );
+
+    assert.match(source, /runTransaction\(db, async transaction =>/);
+    assert.match(source, /firebase-app-state:transaction-fallback/);
+    assert.match(source, /new firestoreModule\.FieldPath\("items", itemKey\)/);
+    assert.match(source, /payload\.items = \{ \.\.\.\(current\.items \|\| \{\}\) \}/);
+    assert.match(source, /payload\.deletedItems = \{ \.\.\.\(current\.deletedItems \|\| \{\}\) \}/);
+    assert.doesNotMatch(source, /batch\.set\([\s\S]{0,300}payload[\s\S]{0,80}\{ merge: true \}/);
+});
+
 /* ======================================================================
    Firestore de mentira: un documento por clave, con set(merge:true)
    ====================================================================== */
@@ -37,7 +52,8 @@ function crearFirestore() {
 
     return {
         docs,
-        // merge:true funde los mapas en profundidad y reemplaza los escalares.
+        // Simula rutas precisas (`items.id`), no `merge:true` sobre el mapa:
+        // Firestore reemplaza un mapa anidado si se manda como campo completo.
         set(id, payload) {
             const actual = docs.get(id) || {};
             const siguiente = { ...actual, ...payload };

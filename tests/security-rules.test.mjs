@@ -13,6 +13,7 @@ import {
     getDoc,
     getDocs,
     query,
+    runTransaction,
     setDoc,
     updateDoc,
     where
@@ -708,6 +709,51 @@ test("reglas modulares de Firestore y Storage", async t => {
                     doc(profileEditor.firestore(), ...path),
                     replacementRecord("r1")
                 )
+            );
+        }
+    );
+
+    await t.test(
+        "owner y administrador fusionan el LOG mediante transacciones",
+        async () => {
+            const path = [
+                "workspaces",
+                WORKSPACE_ID,
+                "stateModules",
+                "log",
+                "entries",
+                "auditLog"
+            ];
+            const writeEvent = (context, id) => runTransaction(
+                context.firestore(),
+                async transaction => {
+                    const ref = doc(context.firestore(), ...path);
+                    const snapshot = await transaction.get(ref);
+                    const current = snapshot.exists() ? snapshot.data() : {};
+
+                    transaction.set(ref, {
+                        moduleId: "log",
+                        storageKey: "auditLog",
+                        container: "array",
+                        items: {
+                            ...(current.items || {}),
+                            [id]: JSON.stringify({ id })
+                        },
+                        deletedItems: {
+                            ...(current.deletedItems || {}),
+                            [id]: false
+                        }
+                    }, { merge: true });
+                }
+            );
+
+            await assertSucceeds(writeEvent(owner, "owner-event"));
+            await assertSucceeds(writeEvent(legacyFullAdmin, "admin-event"));
+
+            const result = await getDoc(doc(owner.firestore(), ...path));
+            assert.deepEqual(
+                Object.keys(result.data().items).sort(),
+                ["admin-event", "owner-event"]
             );
         }
     );

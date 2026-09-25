@@ -1090,6 +1090,149 @@ function pendingStateEntryId(entry = {}) {
     ].join("\u001e");
 }
 
+function partialStateDocumentPayload(entry, firestoreModule, current = {}) {
+    const payload = {
+        moduleId: entry.moduleId,
+        storageKey: entry.storageKey,
+        clientId: getClientId(),
+        updatedAtISO: new Date().toISOString(),
+        updatedAt: firestoreModule.serverTimestamp()
+    };
+    const itemKeys = new Set([
+        ...Object.keys(entry.items || {}),
+        ...Object.keys(entry.deletedItems || {})
+    ]);
+
+    if (itemKeys.size) {
+        payload.items = { ...(current.items || {}) };
+        payload.deletedItems = { ...(current.deletedItems || {}) };
+
+        itemKeys.forEach(itemKey => {
+            payload.items[itemKey] = entry.items?.[itemKey] ?? "null";
+            payload.deletedItems[itemKey] =
+                entry.deletedItems?.[itemKey] === true;
+        });
+
+        if (entry.container) {
+            payload.container = entry.container;
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(entry, "value")) {
+        payload.value = entry.value;
+        payload.deleted = entry.deleted;
+    }
+
+    return payload;
+}
+
+async function commitPartialStateFields(
+    db,
+    firestoreModule,
+    workspaceId,
+    entries
+) {
+    const batch = firestoreModule.writeBatch(db);
+
+    entries.forEach(entry => {
+        const ref = firestoreModule.doc(
+            moduleEntriesCollection(
+                db,
+                firestoreModule,
+                workspaceId,
+                entry.moduleId
+            ),
+            entryDocId(entry.storageKey)
+        );
+        const payload = partialStateDocumentPayload(
+            entry,
+            firestoreModule
+        );
+        const mergeFields = [
+            "moduleId",
+            "storageKey",
+            "clientId",
+            "updatedAtISO",
+            "updatedAt"
+        ].map(key => new firestoreModule.FieldPath(key));
+        const itemKeys = new Set([
+            ...Object.keys(entry.items || {}),
+            ...Object.keys(entry.deletedItems || {})
+        ]);
+
+        itemKeys.forEach(itemKey => {
+            mergeFields.push(
+                new firestoreModule.FieldPath("items", itemKey),
+                new firestoreModule.FieldPath("deletedItems", itemKey)
+            );
+        });
+        if (itemKeys.size && entry.container) {
+            mergeFields.push(new firestoreModule.FieldPath("container"));
+        }
+        if (Object.prototype.hasOwnProperty.call(entry, "value")) {
+            mergeFields.push(
+                new firestoreModule.FieldPath("value"),
+                new firestoreModule.FieldPath("deleted")
+            );
+        }
+
+        batch.set(ref, payload, { mergeFields });
+    });
+
+    await batch.commit();
+}
+
+async function commitPartialStateSlice(
+    db,
+    firestoreModule,
+    workspaceId,
+    entries
+) {
+    const refs = entries.map(entry => firestoreModule.doc(
+        moduleEntriesCollection(
+            db,
+            firestoreModule,
+            workspaceId,
+            entry.moduleId
+        ),
+        entryDocId(entry.storageKey)
+    ));
+
+    try {
+        await firestoreModule.runTransaction(db, async transaction => {
+            // Firestore exige hacer todas las lecturas antes de la primera escritura.
+            const snapshots = await Promise.all(
+                refs.map(ref => transaction.get(ref))
+            );
+
+            entries.forEach((entry, index) => {
+                const current = snapshots[index].exists()
+                    ? snapshots[index].data()
+                    : {};
+                const payload = partialStateDocumentPayload(
+                    entry,
+                    firestoreModule,
+                    current
+                );
+
+                transaction.set(refs[index], payload, { merge: true });
+            });
+        });
+    } catch (error) {
+        recordPerformanceEvent("firebase-app-state:transaction-fallback", {
+            type: "firebase",
+            error: error?.message || String(error),
+            documentCount: entries.length
+        });
+        await commitPartialStateFields(
+            db,
+            firestoreModule,
+            workspaceId,
+            entries
+        );
+    }
+}
+
 async function commitPartialStateDocumentsNow(
     documents = [],
     {
@@ -1100,53 +1243,15 @@ async function commitPartialStateDocumentsNow(
     if (!workspaceId || !documents.length) return;
 
     const { db, firestoreModule } = await services();
-    const batch = firestoreModule.writeBatch(db);
-
-    documents.forEach(entry => {
-        const payload = {
-            moduleId: entry.moduleId,
-            storageKey: entry.storageKey,
-            clientId: getClientId(),
-            updatedAtISO: new Date().toISOString(),
-            updatedAt: firestoreModule.serverTimestamp()
-        };
-
-        if (
-            Object.keys(entry.items || {}).length ||
-            Object.keys(entry.deletedItems || {}).length
-        ) {
-            payload.items = entry.items || {};
-            payload.deletedItems = entry.deletedItems || {};
-
-            // Igual que en el envio normal: quien lea el documento tiene que
-            // saber si parchea una lista o un mapa.
-            if (entry.container) payload.container = entry.container;
-        }
-
-        if (Object.prototype.hasOwnProperty.call(entry, "value")) {
-            payload.value = entry.value;
-            payload.deleted = entry.deleted;
-        }
-
-        batch.set(
-            firestoreModule.doc(
-                moduleEntriesCollection(
-                    db,
-                    firestoreModule,
-                    workspaceId,
-                    entry.moduleId
-                ),
-                entryDocId(entry.storageKey)
-            ),
-            payload,
-            { merge: true }
-        );
-    });
-
     try {
         await measurePerformance(
             "firebase-app-state:commit-entries-now",
-            () => batch.commit(),
+            () => commitPartialStateSlice(
+                db,
+                firestoreModule,
+                workspaceId,
+                documents
+            ),
             {
                 reason,
                 documentCount: documents.length,
@@ -1365,56 +1470,19 @@ async function flushPartialStateEntries() {
                 return;
             }
 
-            const batch = firestoreModule.writeBatch(db);
             const slice = documents.slice(
                 offset,
                 offset + ENTRY_BATCH_SIZE
             );
 
-            slice.forEach(entry => {
-                const payload = {
-                    moduleId: entry.moduleId,
-                    storageKey: entry.storageKey,
-                    clientId: getClientId(),
-                    updatedAtISO: new Date().toISOString(),
-                    updatedAt: firestoreModule.serverTimestamp()
-                };
-
-                if (
-                    Object.keys(entry.items).length ||
-                    Object.keys(entry.deletedItems).length
-                ) {
-                    payload.items = entry.items;
-                    payload.deletedItems = entry.deletedItems;
-
-                    // Una lista se parchea elemento por elemento; un mapa, por
-                    // clave. Quien lea el documento tiene que saber cual es.
-                    if (entry.container) payload.container = entry.container;
-                }
-
-                if (Object.prototype.hasOwnProperty.call(entry, "value")) {
-                    payload.value = entry.value;
-                    payload.deleted = entry.deleted;
-                }
-
-                batch.set(
-                    firestoreModule.doc(
-                        moduleEntriesCollection(
-                            db,
-                            firestoreModule,
-                            workspaceId,
-                            entry.moduleId
-                        ),
-                        entryDocId(entry.storageKey)
-                    ),
-                    payload,
-                    { merge: true }
-                );
-            });
-
             await measurePerformance(
                 "firebase-app-state:commit-entries",
-                () => batch.commit(),
+                () => commitPartialStateSlice(
+                    db,
+                    firestoreModule,
+                    workspaceId,
+                    slice
+                ),
                 {
                     documentCount: slice.length,
                     entryCount: writable.length,
