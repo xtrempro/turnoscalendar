@@ -100,6 +100,33 @@ function normalizeKeyList(value) {
         .filter(key => DAY_KEY_PATTERN.test(key));
 }
 
+function stableMemoHash(value) {
+    let hash = 2166136261;
+
+    for (const char of String(value || "")) {
+        hash ^= char.codePointAt(0);
+        hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(36);
+}
+
+export function leaveMemoCancellationAuditId({
+    profile,
+    leaveType,
+    keys = []
+} = {}) {
+    const identity = [
+        String(profile || "").trim().toUpperCase(),
+        String(leaveType || "").trim(),
+        [...new Set(normalizeKeyList(keys))].sort().join(",")
+    ].join("|");
+
+    return identity === "||"
+        ? ""
+        : `memo_leave_cancel_${stableMemoHash(identity)}_${identity.length}`;
+}
+
 function normalizeMemo(memo = {}) {
     const sourceId = String(memo.sourceId || "");
     const createdAt = memo.createdAt || new Date().toISOString();
@@ -651,6 +678,12 @@ export function cancelLeaveMemos({ profile, leaveType, keys = [] } = {}) {
 
     persistMemos(next);
 
+    const auditEntryId = leaveMemoCancellationAuditId({
+        profile,
+        leaveType,
+        keys: [...cancelled]
+    });
+
     removed.forEach(memo => {
         addAuditLog(
             AUDIT_CATEGORY.WORKER_REQUESTS,
@@ -659,7 +692,8 @@ export function cancelLeaveMemos({ profile, leaveType, keys = [] } = {}) {
             {
                 profile: memo.profile,
                 memoId: memo.id,
-                memoType: memo.typeLabel
+                memoType: memo.typeLabel,
+                auditEntryId
             }
         );
     });

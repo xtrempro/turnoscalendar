@@ -1438,8 +1438,14 @@ export function addAuditLog(category, action, details = "", meta = {}) {
     const def = categoryDef(category);
     const logs = getAuditLogs();
     const actor = getCurrentActor();
+    const auditEntryId = String(meta.auditEntryId || "").trim();
+    const entryMeta = { ...meta };
+
+    delete entryMeta.auditEntryId;
+
     const entry = {
-        id: `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        id: auditEntryId ||
+            `${Date.now()}_${Math.random().toString(36).slice(2)}`,
         category: def.key,
         action: String(action || def.title),
         details: String(details || ""),
@@ -1451,14 +1457,23 @@ export function addAuditLog(category, action, details = "", meta = {}) {
         actor,
         actorName: actor.name,
         meta: {
-            ...meta,
-            actorName: meta.actorName || actor.name,
-            actorEmail: meta.actorEmail || actor.email,
-            actorUid: meta.actorUid || actor.uid
+            ...entryMeta,
+            actorName: entryMeta.actorName || actor.name,
+            actorEmail: entryMeta.actorEmail || actor.email,
+            actorUid: entryMeta.actorUid || actor.uid
         }
     };
 
-    logs.push(entry);
+    const existingIndex = auditEntryId
+        ? logs.findIndex(log => log.id === auditEntryId)
+        : -1;
+
+    if (existingIndex === -1) {
+        logs.push(entry);
+    } else {
+        logs[existingIndex] = entry;
+    }
+
     setJSON(KEY, trimLogs(logs));
 
     if (document.body.dataset.activeView === "log") {

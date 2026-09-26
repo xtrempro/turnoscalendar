@@ -43,8 +43,14 @@ globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
 const {
     cancelLeaveMemos,
     createLeaveMemoTask,
-    getMemos
+    getMemos,
+    leaveMemoCancellationAuditId
 } = await import("../js/memos.js");
+const {
+    addAuditLog,
+    AUDIT_CATEGORY,
+    getAuditLogs
+} = await import("../js/auditLog.js");
 
 async function read(path) {
     const source = await readFile(new URL(path, import.meta.url), "utf8");
@@ -172,6 +178,67 @@ test("sin dias anulados no se toca nada", () => {
 
     assert.deepEqual(cancelLeaveMemos({ profile: PROFILE, leaveType: "legal", keys: [] }), []);
     assert.equal(getMemos().length, 1);
+});
+
+test("dos sesiones generan la misma identidad para la limpieza", () => {
+    const first = leaveMemoCancellationAuditId({
+        profile: PROFILE,
+        leaveType: "admin",
+        keys: ["2026-8-2", "2026-8-1"]
+    });
+    const concurrent = leaveMemoCancellationAuditId({
+        profile: PROFILE,
+        leaveType: "admin",
+        keys: ["2026-8-1", "2026-8-2", "2026-8-2"]
+    });
+
+    assert.equal(first, concurrent);
+    assert.match(first, /^memo_leave_cancel_/);
+});
+
+test("limpiezas de permisos distintos no comparten identidad", () => {
+    const base = {
+        profile: PROFILE,
+        leaveType: "admin",
+        keys: ["2026-8-1"]
+    };
+
+    assert.notEqual(
+        leaveMemoCancellationAuditId(base),
+        leaveMemoCancellationAuditId({ ...base, keys: ["2026-8-2"] })
+    );
+    assert.notEqual(
+        leaveMemoCancellationAuditId(base),
+        leaveMemoCancellationAuditId({ ...base, leaveType: "legal" })
+    );
+});
+
+test("el LOG reemplaza una accion repetida con identidad estable", () => {
+    localStorage.clear();
+    const meta = {
+        profile: PROFILE,
+        auditEntryId: "memo_leave_cancel_prueba"
+    };
+
+    addAuditLog(
+        AUDIT_CATEGORY.WORKER_REQUESTS,
+        "Quito memorandum de permiso anulado",
+        "primer intento",
+        meta
+    );
+    addAuditLog(
+        AUDIT_CATEGORY.WORKER_REQUESTS,
+        "Quito memorandum de permiso anulado",
+        "segundo intento",
+        meta
+    );
+
+    const logs = getAuditLogs();
+
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].id, "memo_leave_cancel_prueba");
+    assert.equal(logs[0].details, "segundo intento");
+    assert.equal("auditEntryId" in logs[0].meta, false);
 });
 
 /* =========================================================
