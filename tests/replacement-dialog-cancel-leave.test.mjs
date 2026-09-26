@@ -23,6 +23,10 @@ const auditLog = await readFile(
     new URL("../js/auditLog.js", import.meta.url),
     "utf8"
 );
+const replacements = await readFile(
+    new URL("../js/replacements.js", import.meta.url),
+    "utf8"
+);
 
 test("el modal de reemplazo ofrece el boton Anular permiso", () => {
     assert.match(
@@ -250,5 +254,24 @@ test("restoreLeaveBalanceFromUndo es idempotente por logId", () => {
     assert.match(
         main,
         /const restoredBalanceLogIds = new Set\(\)/
+    );
+});
+
+test("una cobertura tardia se anula si el permiso ya no existe", () => {
+    assert.match(
+        replacements,
+        /export function cancelOrphanedReplacementCoverage\(\)/
+    );
+    assert.match(
+        replacements,
+        /String\(replacement\?\.id \|\| ""\)\.startsWith\("coverage:"\)/
+    );
+    assert.match(
+        replacements,
+        /!workerHasAbsence\(\s*replacement\.replaced,\s*keyFromISO\(replacement\.date\)\s*\)/
+    );
+    assert.match(
+        replacements,
+        /queueMicrotask\(cancelOrphanedReplacementCoverage\)/
     );
 });

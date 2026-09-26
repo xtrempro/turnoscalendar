@@ -1088,6 +1088,32 @@ export function workerHasAbsence(profile, keyDay) {
     );
 }
 
+export function cancelOrphanedReplacementCoverage() {
+    const orphanIds = getReplacements()
+        .filter(replacement =>
+            replacementActive(replacement) &&
+            String(replacement?.id || "").startsWith("coverage:") &&
+            Boolean(replacement?.replaced) &&
+            Boolean(replacement?.date) &&
+            !workerHasAbsence(
+                replacement.replaced,
+                keyFromISO(replacement.date)
+            )
+        )
+        .map(replacement => String(replacement.id));
+
+    orphanIds.forEach(replacementId => {
+        cancelReplacementById(replacementId, {
+            reason: "leave_absence_missing",
+            details:
+                "Cobertura anulada porque el permiso o ausencia ya no estaba vigente.",
+            canceledBy: "Calendario"
+        });
+    });
+
+    return orphanIds;
+}
+
 export function replacementCoverageRecordId(data, isoDate) {
     const replaced = String(data?.replaced || "").trim();
     const date = String(isoDate || "").trim();
@@ -1251,6 +1277,20 @@ export function saveReplacement(data) {
     );
 
     return record;
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener("proturnos:persistenceChanged", event => {
+        const keys = event?.detail?.keys || [];
+        const affectsLeaveOrCoverage = keys.some(key =>
+            key === "replacements" ||
+            /^(admin|legal|comp|absences)_/.test(String(key || ""))
+        );
+
+        if (affectsLeaveOrCoverage) {
+            queueMicrotask(cancelOrphanedReplacementCoverage);
+        }
+    });
 }
 
 function isExpiredRequest(request, now = new Date()) {
