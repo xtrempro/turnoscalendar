@@ -11,6 +11,10 @@ import {
     saveReplacementRequests,
     saveReplacements
 } from "./storage.js";
+import {
+    clearLeaveCancellation,
+    markLeaveCancellation
+} from "./leaveCancellationBarrier.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
@@ -1074,6 +1078,8 @@ async function undoLeaveAbsenceLog(log) {
         return { ok: false, canceledReplacements: [] };
     }
 
+    markLeaveCancellation(profile, removedKeys, log.id);
+
     const canceledReplacements =
         cancelReplacementsForAbsence(profile, removedKeys, log);
 
@@ -1463,6 +1469,17 @@ export function addAuditLog(category, action, details = "", meta = {}) {
             actorUid: entryMeta.actorUid || actor.uid
         }
     };
+
+    const leaveType = getLeaveUndoType(entry);
+
+    if (leaveType) {
+        const leaveKeys = normalizeKeyList(meta.keys);
+
+        clearLeaveCancellation(
+            entry.profile,
+            leaveKeys.length ? leaveKeys : [isoToDateKey(meta.date)]
+        );
+    }
 
     const existingIndex = auditEntryId
         ? logs.findIndex(log => log.id === auditEntryId)

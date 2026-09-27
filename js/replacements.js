@@ -51,6 +51,7 @@ import {
     coveredShiftIsComplete,
     normalizeCoverTime
 } from "./shiftCoverage.js";
+import { hasLeaveCancellationBarrier } from "./leaveCancellationBarrier.js";
 
 function formatNotificationDate(value) {
     const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -1095,9 +1096,15 @@ export function cancelOrphanedReplacementCoverage() {
             String(replacement?.id || "").startsWith("coverage:") &&
             Boolean(replacement?.replaced) &&
             Boolean(replacement?.date) &&
-            !workerHasAbsence(
-                replacement.replaced,
-                keyFromISO(replacement.date)
+            (
+                hasLeaveCancellationBarrier(
+                    replacement.replaced,
+                    replacement.date
+                ) ||
+                !workerHasAbsence(
+                    replacement.replaced,
+                    keyFromISO(replacement.date)
+                )
             )
         )
         .map(replacement => String(replacement.id));
@@ -1284,6 +1291,7 @@ if (typeof window !== "undefined") {
         const keys = event?.detail?.keys || [];
         const affectsLeaveOrCoverage = keys.some(key =>
             key === "replacements" ||
+            key === "leaveCancellationBarriers" ||
             /^(admin|legal|comp|absences)_/.test(String(key || ""))
         );
 

@@ -51,6 +51,11 @@ const {
     AUDIT_CATEGORY,
     getAuditLogs
 } = await import("../js/auditLog.js");
+const {
+    clearLeaveCancellation,
+    hasLeaveCancellationBarrier,
+    markLeaveCancellation
+} = await import("../js/leaveCancellationBarrier.js");
 
 async function read(path) {
     const source = await readFile(new URL(path, import.meta.url), "utf8");
@@ -239,6 +244,22 @@ test("el LOG reemplaza una accion repetida con identidad estable", () => {
     assert.equal(logs[0].id, "memo_leave_cancel_prueba");
     assert.equal(logs[0].details, "segundo intento");
     assert.equal("auditEntryId" in logs[0].meta, false);
+});
+
+test("la barrera distingue una anulacion de un permiso nuevo", () => {
+    localStorage.clear();
+
+    markLeaveCancellation(PROFILE, ["2026-8-2"], "leave-log-1");
+    assert.equal(
+        hasLeaveCancellationBarrier(PROFILE, "2026-09-02"),
+        true
+    );
+
+    clearLeaveCancellation(PROFILE, ["2026-8-2"]);
+    assert.equal(
+        hasLeaveCancellationBarrier(PROFILE, "2026-09-02"),
+        false
+    );
 });
 
 /* =========================================================

@@ -30,6 +30,7 @@ const EXACT_KEY_MODULES = new Map([
     ["shiftMoves", "swap"],
     ["turnChangeConfig", "swap"],
     ["replacements", "turnos"],
+    ["leaveCancellationBarriers", "turnos"],
     ["preassignments", "turnos"],
     ["manualHolidays", "turnos"],
     ["manualExtraReasonPresets", "turnos"],
