@@ -40,7 +40,11 @@ export function clearLeaveCancellation(profile, keys = []) {
 }
 
 export function hasLeaveCancellationBarrier(profile, date) {
+    return Boolean(getLeaveCancellationBarrier(profile, date));
+}
+
+export function getLeaveCancellationBarrier(profile, date) {
     const key = barrierKey(profile, date);
 
-    return Boolean(key && getJSON(KEY, {})[key]);
+    return key ? (getJSON(KEY, {})[key] || null) : null;
 }

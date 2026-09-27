@@ -436,6 +436,11 @@ export function guardReplacementEntryWithBarriers(entry, barrierDocument = {}) {
             barrier = {};
         }
 
+        if (
+            replacement.leaveLogId &&
+            barrier.logId !== replacement.leaveLogId
+        ) return;
+
         next.items[itemKey] = JSON.stringify({
             ...replacement,
             canceled: true,

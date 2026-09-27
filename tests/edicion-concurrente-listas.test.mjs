@@ -62,6 +62,7 @@ test("la transaccion cancela una cobertura posterior a la anulacion", () => {
                 worker: "CRISTIAN",
                 replaced: "LUIS AINOL RAMIREZ",
                 date: "2026-09-09",
+                leaveLogId: "leave-1",
                 canceled: false
             })
         }
@@ -80,6 +81,36 @@ test("la transaccion cancela una cobertura posterior a la anulacion", () => {
     assert.equal(replacement.cancelReason, "leave_absence_canceled_server");
     assert.equal(replacement.canceledAt, "2026-09-27T23:10:44.186Z");
     assert.equal(JSON.parse(entry.items[itemKey]).canceled, false);
+});
+
+test("una barrera anterior no cancela un permiso nuevo", () => {
+    const id = "coverage:2026-09-09:LUIS AINOL RAMIREZ:full";
+    const itemKey = encodePartialStateItemKey(id);
+    const barrierKey = encodePartialStateItemKey(
+        "2026-09-09|LUIS AINOL RAMIREZ"
+    );
+    const entry = {
+        storageKey: "replacements",
+        items: {
+            [itemKey]: JSON.stringify({
+                id,
+                replaced: "LUIS AINOL RAMIREZ",
+                date: "2026-09-09",
+                leaveLogId: "leave-new",
+                canceled: false
+            })
+        }
+    };
+    const guarded = guardReplacementEntryWithBarriers(entry, {
+        items: {
+            [barrierKey]: JSON.stringify({
+                logId: "leave-old",
+                canceledAt: "2026-09-27T23:10:44.186Z"
+            })
+        }
+    });
+
+    assert.equal(JSON.parse(guarded.items[itemKey]).canceled, false);
 });
 
 test("sin barrera la transaccion conserva la cobertura activa", () => {

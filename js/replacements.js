@@ -41,7 +41,8 @@ import {
 } from "./clockMarks.js";
 import {
     addAuditLog,
-    AUDIT_CATEGORY
+    AUDIT_CATEGORY,
+    getActiveLeaveLogId
 } from "./auditLog.js";
 import { getWorkerAppLinkForProfile } from "./workerAppLinks.js";
 import { releaseLeaveHoldsForCoverage } from "./leaveHold.js";
@@ -51,7 +52,7 @@ import {
     coveredShiftIsComplete,
     normalizeCoverTime
 } from "./shiftCoverage.js";
-import { hasLeaveCancellationBarrier } from "./leaveCancellationBarrier.js";
+import { getLeaveCancellationBarrier } from "./leaveCancellationBarrier.js";
 
 function formatNotificationDate(value) {
     const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -1097,10 +1098,20 @@ export function cancelOrphanedReplacementCoverage() {
             Boolean(replacement?.replaced) &&
             Boolean(replacement?.date) &&
             (
-                hasLeaveCancellationBarrier(
-                    replacement.replaced,
-                    replacement.date
-                ) ||
+                (() => {
+                    const barrier = getLeaveCancellationBarrier(
+                        replacement.replaced,
+                        replacement.date
+                    );
+
+                    return Boolean(
+                        barrier &&
+                        (
+                            !replacement.leaveLogId ||
+                            barrier.logId === replacement.leaveLogId
+                        )
+                    );
+                })() ||
                 !workerHasAbsence(
                     replacement.replaced,
                     keyFromISO(replacement.date)
@@ -1187,6 +1198,11 @@ export function saveReplacement(data) {
         hostWorkspaceName: data.hostWorkspaceName || "",
         remoteReplacementId: data.remoteReplacementId || "",
         absenceType,
+        leaveLogId: data.leaveLogId || (
+            hasReplacedWorker
+                ? getActiveLeaveLogId(data.replaced, data.keyDay)
+                : ""
+        ),
         year: date.getFullYear(),
         month: date.getMonth(),
         createdAt: new Date().toISOString(),

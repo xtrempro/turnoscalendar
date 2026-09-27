@@ -657,6 +657,22 @@ export function getLeaveApplicationInfo({
     };
 }
 
+export function getActiveLeaveLogId(profile, keyDay) {
+    if (!profile || !keyDay) return "";
+
+    const log = sortedLeaveApplicationLogs().find(item => {
+        const type = getLeaveUndoType(item);
+
+        return (
+            type &&
+            sameProfileName(logProfileName(item), profile) &&
+            leaveLogCoversKey(item, type, keyDay, null)
+        );
+    });
+
+    return String(log?.id || "");
+}
+
 // Fecha y usuario de la ultima modificacion de marcaje reloj control para un
 // dia/perfil (para el modal de detalle). Se apoya en el registro del LOG que crea
 // el flujo de marcaje; si fue evicto, actorName cae a "No registrado".
