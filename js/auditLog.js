@@ -1155,9 +1155,27 @@ function cancelReplacementsForAbsence(profile, removedKeys, sourceLog) {
         return nextReplacement;
     });
 
-    if (!canceled.length) return [];
+    isoDates.forEach(date => {
+        const id = `leave-barrier:${sourceLog.id}:${date}`;
+
+        if (nextReplacements.some(item => item?.id === id)) return;
+
+        nextReplacements.push({
+            id,
+            source: "leave_cancellation_barrier",
+            replaced: profile,
+            date,
+            leaveLogId: sourceLog.id,
+            canceled: true,
+            canceledAt: now,
+            canceledBy: actor,
+            cancelReason: "leave_absence_canceled"
+        });
+    });
 
     saveReplacements(nextReplacements);
+
+    if (!canceled.length) return [];
     cancelLinkedReplacementRequests(canceled, sourceLog);
     cancelReplacementAuditLogs(canceled, sourceLog, now, actor);
 

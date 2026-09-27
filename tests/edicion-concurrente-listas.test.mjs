@@ -43,16 +43,14 @@ test("el guardado real fusiona los items dentro de una transaccion", async () =>
     assert.match(source, /payload\.items = \{ \.\.\.\(current\.items \|\| \{\}\) \}/);
     assert.match(source, /payload\.deletedItems = \{ \.\.\.\(current\.deletedItems \|\| \{\}\) \}/);
     assert.doesNotMatch(source, /batch\.set\([\s\S]{0,300}payload[\s\S]{0,80}\{ merge: true \}/);
-    assert.match(source, /entryDocId\("leaveCancellationBarriers"\)/);
+    assert.match(source, /guardReplacementEntryWithBarriers\(\s*entry,\s*current/);
     assert.match(source, /throw error;/);
 });
 
 test("la transaccion cancela una cobertura posterior a la anulacion", () => {
     const id = "coverage:2026-09-09:LUIS AINOL RAMIREZ:full";
     const itemKey = encodePartialStateItemKey(id);
-    const barrierKey = encodePartialStateItemKey(
-        "2026-09-09|LUIS AINOL RAMIREZ"
-    );
+    const barrierKey = encodePartialStateItemKey("leave-barrier:leave-1:2026-09-09");
     const entry = {
         moduleId: "turnos",
         storageKey: "replacements",
@@ -70,7 +68,10 @@ test("la transaccion cancela una cobertura posterior a la anulacion", () => {
     const guarded = guardReplacementEntryWithBarriers(entry, {
         items: {
             [barrierKey]: JSON.stringify({
-                logId: "leave-1",
+                source: "leave_cancellation_barrier",
+                replaced: "LUIS AINOL RAMIREZ",
+                date: "2026-09-09",
+                leaveLogId: "leave-1",
                 canceledAt: "2026-09-27T23:10:44.186Z"
             })
         }
@@ -86,9 +87,7 @@ test("la transaccion cancela una cobertura posterior a la anulacion", () => {
 test("una barrera anterior no cancela un permiso nuevo", () => {
     const id = "coverage:2026-09-09:LUIS AINOL RAMIREZ:full";
     const itemKey = encodePartialStateItemKey(id);
-    const barrierKey = encodePartialStateItemKey(
-        "2026-09-09|LUIS AINOL RAMIREZ"
-    );
+    const barrierKey = encodePartialStateItemKey("leave-barrier:leave-old:2026-09-09");
     const entry = {
         storageKey: "replacements",
         items: {
@@ -104,7 +103,10 @@ test("una barrera anterior no cancela un permiso nuevo", () => {
     const guarded = guardReplacementEntryWithBarriers(entry, {
         items: {
             [barrierKey]: JSON.stringify({
-                logId: "leave-old",
+                source: "leave_cancellation_barrier",
+                replaced: "LUIS AINOL RAMIREZ",
+                date: "2026-09-09",
+                leaveLogId: "leave-old",
                 canceledAt: "2026-09-27T23:10:44.186Z"
             })
         }

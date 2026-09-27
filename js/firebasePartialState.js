@@ -397,7 +397,7 @@ function applyListStateEntries(snapshot, storageKey, entries, start, end) {
 export function guardReplacementEntryWithBarriers(entry, barrierDocument = {}) {
     if (entry?.storageKey !== "replacements" || !entry?.items) return entry;
 
-    const barriers = barrierDocument?.items || {};
+    const currentItems = barrierDocument?.items || {};
     const next = {
         ...entry,
         items: { ...entry.items },
@@ -421,25 +421,25 @@ export function guardReplacementEntryWithBarriers(entry, barrierDocument = {}) {
             !replacement.date
         ) return;
 
-        const barrierItemKey = encodePartialStateItemKey(
-            `${replacement.date}|${String(replacement.replaced).trim().toUpperCase()}`
-        );
-        const rawBarrier = barriers[barrierItemKey];
+        const barrier = Object.values(currentItems)
+            .map(value => {
+                try {
+                    return JSON.parse(value);
+                } catch {
+                    return null;
+                }
+            })
+            .find(item =>
+                item?.source === "leave_cancellation_barrier" &&
+                item?.replaced === replacement.replaced &&
+                item?.date === replacement.date &&
+                (
+                    !replacement.leaveLogId ||
+                    item.leaveLogId === replacement.leaveLogId
+                )
+            );
 
-        if (!rawBarrier) return;
-
-        let barrier = {};
-
-        try {
-            barrier = JSON.parse(rawBarrier);
-        } catch {
-            barrier = {};
-        }
-
-        if (
-            replacement.leaveLogId &&
-            barrier.logId !== replacement.leaveLogId
-        ) return;
+        if (!barrier) return;
 
         next.items[itemKey] = JSON.stringify({
             ...replacement,

@@ -1198,38 +1198,21 @@ async function commitPartialStateSlice(
         ),
         entryDocId(entry.storageKey)
     ));
-    const guards = entries.map(entry => entry.storageKey === "replacements"
-        ? firestoreModule.doc(
-            moduleEntriesCollection(
-                db,
-                firestoreModule,
-                workspaceId,
-                entry.moduleId
-            ),
-            entryDocId("leaveCancellationBarriers")
-        )
-        : null
-    );
-
     try {
         await firestoreModule.runTransaction(db, async transaction => {
             // Firestore exige hacer todas las lecturas antes de la primera escritura.
             const snapshots = await Promise.all(
-                [...refs, ...guards.filter(Boolean)]
-                    .map(ref => transaction.get(ref))
+                refs.map(ref => transaction.get(ref))
             );
-            let guardIndex = refs.length;
 
             entries.forEach((entry, index) => {
                 const current = snapshots[index].exists()
                     ? snapshots[index].data()
                     : {};
-                const guardedEntry = guards[index]
+                const guardedEntry = entry.storageKey === "replacements"
                     ? guardReplacementEntryWithBarriers(
                         entry,
-                        snapshots[guardIndex++].exists()
-                            ? snapshots[guardIndex - 1].data()
-                            : {}
+                        current
                     )
                     : entry;
                 const payload = partialStateDocumentPayload(
