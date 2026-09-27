@@ -394,6 +394,62 @@ function applyListStateEntries(snapshot, storageKey, entries, start, end) {
     return snapshot;
 }
 
+export function guardReplacementEntryWithBarriers(entry, barrierDocument = {}) {
+    if (entry?.storageKey !== "replacements" || !entry?.items) return entry;
+
+    const barriers = barrierDocument?.items || {};
+    const next = {
+        ...entry,
+        items: { ...entry.items },
+        deletedItems: { ...(entry.deletedItems || {}) }
+    };
+
+    Object.entries(next.items).forEach(([itemKey, raw]) => {
+        let replacement;
+
+        try {
+            replacement = JSON.parse(raw);
+        } catch {
+            return;
+        }
+
+        if (
+            !replacement ||
+            replacement.canceled ||
+            !String(replacement.id || "").startsWith("coverage:") ||
+            !replacement.replaced ||
+            !replacement.date
+        ) return;
+
+        const barrierItemKey = encodePartialStateItemKey(
+            `${replacement.date}|${String(replacement.replaced).trim().toUpperCase()}`
+        );
+        const rawBarrier = barriers[barrierItemKey];
+
+        if (!rawBarrier) return;
+
+        let barrier = {};
+
+        try {
+            barrier = JSON.parse(rawBarrier);
+        } catch {
+            barrier = {};
+        }
+
+        next.items[itemKey] = JSON.stringify({
+            ...replacement,
+            canceled: true,
+            canceledAt: barrier.canceledAt || new Date().toISOString(),
+            canceledBy: "Calendario",
+            cancelReason: "leave_absence_canceled_server",
+            cancellationDetails:
+                "Cobertura rechazada transaccionalmente porque el permiso ya estaba anulado."
+        });
+    });
+
+    return next;
+}
+
 function applyListStateEntry(snapshot, storageKey, entry) {
     return applyListStateEntries(snapshot, storageKey, [entry], 0, 1);
 }

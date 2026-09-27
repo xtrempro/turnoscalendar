@@ -21,6 +21,7 @@ import {
 } from "./firebaseStateModules.js";
 import {
     decodePartialStateItemKey,
+    guardReplacementEntryWithBarriers,
     groupPartialStateEntries,
     mergePartialStateEntries,
     planPartialStateEntries
@@ -1197,20 +1198,42 @@ async function commitPartialStateSlice(
         ),
         entryDocId(entry.storageKey)
     ));
+    const guards = entries.map(entry => entry.storageKey === "replacements"
+        ? firestoreModule.doc(
+            moduleEntriesCollection(
+                db,
+                firestoreModule,
+                workspaceId,
+                entry.moduleId
+            ),
+            entryDocId("leaveCancellationBarriers")
+        )
+        : null
+    );
 
     try {
         await firestoreModule.runTransaction(db, async transaction => {
             // Firestore exige hacer todas las lecturas antes de la primera escritura.
             const snapshots = await Promise.all(
-                refs.map(ref => transaction.get(ref))
+                [...refs, ...guards.filter(Boolean)]
+                    .map(ref => transaction.get(ref))
             );
+            let guardIndex = refs.length;
 
             entries.forEach((entry, index) => {
                 const current = snapshots[index].exists()
                     ? snapshots[index].data()
                     : {};
+                const guardedEntry = guards[index]
+                    ? guardReplacementEntryWithBarriers(
+                        entry,
+                        snapshots[guardIndex++].exists()
+                            ? snapshots[guardIndex - 1].data()
+                            : {}
+                    )
+                    : entry;
                 const payload = partialStateDocumentPayload(
-                    entry,
+                    guardedEntry,
                     firestoreModule,
                     current
                 );
@@ -1224,6 +1247,10 @@ async function commitPartialStateSlice(
             error: error?.message || String(error),
             documentCount: entries.length
         });
+        if (entries.some(entry => entry.storageKey === "replacements")) {
+            throw error;
+        }
+
         await commitPartialStateFields(
             db,
             firestoreModule,
