@@ -1953,8 +1953,11 @@ function incidenciasMesLabel(date) {
     return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
 
+// La unidad va en la clave. El cambio de unidad vacia el estado local EN
+// SILENCIO (sin eventos), asi que con solo el mes el recuadro de otra unidad
+// seguia mostrando las incidencias de Imagenologia: datos sensibles ajenos.
 function incidenciasMesKey(date) {
-    return `${date.getFullYear()}-${date.getMonth()}`;
+    return `${getActiveWorkspace()?.id || ""}|${date.getFullYear()}-${date.getMonth()}`;
 }
 
 /**
@@ -2040,6 +2043,7 @@ async function cargarIncidencias(panel) {
     }
 
     const requestId = ++incidenciasRequest;
+    const clave = incidenciasMesKey(incidenciasMes);
 
     lista.innerHTML = `<div class="hm-empty">Revisando el mes...</div>`;
 
@@ -2049,11 +2053,13 @@ async function cargarIncidencias(panel) {
             incidenciasMes
         );
 
-        // Si mientras tanto se cambio de mes, manda el ultimo pedido.
+        // Si mientras tanto se cambio de mes -o de unidad-, manda el ultimo
+        // pedido: un calculo de la unidad anterior no se pinta en esta.
         if (requestId !== incidenciasRequest) return;
+        if (clave !== incidenciasMesKey(incidenciasMes)) return;
 
         incidenciasCache = {
-            key: incidenciasMesKey(incidenciasMes),
+            key: clave,
             ...resultado
         };
         lista.innerHTML = incidenciasListHTML(resultado.totals);

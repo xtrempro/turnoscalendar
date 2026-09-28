@@ -19,6 +19,7 @@
 
 import { buildAttendanceIncidents } from "./hoursReport.js";
 import { keyFromISO } from "./dateUtils.js";
+import { getActiveWorkspace } from "./workspaces.js";
 
 // Datos de los que dependen las incidencias. Si cambia alguno, lo calculado deja
 // de valer: el turno del dia, sus permisos, el marcaje, la planilla del reloj o
@@ -60,8 +61,10 @@ const cache = new Map();
 const pending = new Map();
 let listeners = new Set();
 
+// Con la unidad: el cambio de unidad vacia el estado local sin avisar, y un
+// trabajador con el mismo nombre en otra unidad veria las marcas de este.
 function cacheKey(profileName, year, month) {
-    return `${profileName}|${year}|${month}`;
+    return `${getActiveWorkspace()?.id || ""}|${profileName}|${year}|${month}`;
 }
 
 /**
