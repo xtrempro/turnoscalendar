@@ -144,9 +144,8 @@ import {
     getCampaignRecipients
 } from "./autoCoverage.js";
 
-// Nombre por defecto para entornos que aun no tienen "Nombre del supervisor"
-// cargado al crearse (entornos de prueba previos al requerimiento).
-const SUPERVISOR_FALLBACK = "Cristian Morales";
+// Ultimo recurso del saludo, solo sin firma, sin nombre de cuenta y sin correo.
+const SUPERVISOR_FALLBACK = "Supervisor";
 
 const DIAS = [
     "Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"
@@ -263,15 +262,21 @@ function getSupervisorName() {
 
     if (asignado) return asignado;
 
-    if (!isWorkspaceOwner() && user) {
-        const propio = String(user.displayName || "").trim();
+    const propio = String(user?.displayName || "").trim();
 
-        if (propio) return propio;
-    }
+    if (!isWorkspaceOwner() && propio) return propio;
 
     const line = String(getReportSignatureConfig().lines?.[0] || "").trim();
 
-    return line || SUPERVISOR_FALLBACK;
+    if (line) return line;
+
+    // Unidad sin firma (se creo con el campo del supervisor vacio): el nombre
+    // de la cuenta del dueño, nunca el de la maqueta.
+    if (propio) return propio;
+
+    const correo = String(user?.email || "").split("@")[0].trim();
+
+    return correo || SUPERVISOR_FALLBACK;
 }
 
 function getUnitName() {

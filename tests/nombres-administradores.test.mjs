@@ -128,10 +128,15 @@ test("el saludo ya no devuelve siempre la firma del supervisor", () => {
 
 test("un invitado sin nombre asignado ve el de su cuenta", () => {
     // Y solo el dueño de la unidad cae en la firma del informe.
-    assert.match(
-        home,
-        /if \(!isWorkspaceOwner\(\) && user\) \{[\s\S]{0,200}user\.displayName/
-    );
+    assert.match(home, /const propio = String\(user\?\.displayName/);
+    assert.match(home, /if \(!isWorkspaceOwner\(\) && propio\) return propio;/);
+});
+
+test("una unidad sin firma saluda con la cuenta del dueño, no con la maqueta", () => {
+    // UCI y UTI se crearon con el campo del supervisor vacio y el inicio decia
+    // "Hola, Cristian Morales".
+    assert.doesNotMatch(home, /Cristian Morales/);
+    assert.match(home, /if \(line\) return line;\s*\n[\s\S]{0,200}if \(propio\) return propio;/);
 });
 
 /* =========================================================

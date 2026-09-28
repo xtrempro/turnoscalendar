@@ -1535,8 +1535,12 @@ async function handleAction(action, backdrop, sourceButton = null) {
             const input = backdrop.querySelector(
                 "#firebaseCreateWorkspaceName"
             );
+            // Sin nombre escrito, la firma parte con el de la cuenta que crea
+            // la unidad (el inicio saluda con esta linea).
             const supervisorName = String(
-                backdrop.querySelector("#firebaseCreateSupervisorName")?.value || ""
+                backdrop.querySelector("#firebaseCreateSupervisorName")?.value ||
+                currentUser?.displayName ||
+                ""
             ).trim();
             const hospitalName = String(
                 backdrop.querySelector("#firebaseCreateHospitalName")?.value || ""
