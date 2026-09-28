@@ -11,6 +11,7 @@
 
 import { getJSON, setJSON } from "./persistence.js";
 import { readXlsRows, dateFromExcelSerial } from "./xlsReader.js";
+import { isXlsxFile, readXlsxRows } from "./xlsxReader.js";
 import {
     groupMarkEvents,
     resolveShiftMarks,
@@ -35,6 +36,9 @@ const COLUMN_ALIASES = {
     rut: ["rut", "run"],
     name: ["nombre", "trabajador", "funcionario"],
     timestamp: ["fecha/hora", "fecha hora", "fechahora", "fecha y hora", "fecha"],
+    // Algunos relojes separan la hora en su propia columna ("Planilla de
+    // Personal.xlsx": Fecha 24/09/2026 y Hora 07:45:19). Es opcional.
+    time: ["hora", "hora registro", "hora marca", "hora de registro"],
     type: ["tipo registro", "tipo de registro", "tipo", "movimiento"],
     id: ["checksum", "id", "codigo registro"]
 };
@@ -113,6 +117,63 @@ export function findHeader(rows) {
     return null;
 }
 
+// "24/09/2026", "24-09-2026 07:45:19" o "2026-09-24 07:45". Hora local.
+function dateFromText(text) {
+    const value = String(text || "").trim();
+    const local = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
+        .exec(value);
+
+    if (local) {
+        let [, day, month, year, hours = 0, minutes = 0, seconds = 0] = local;
+
+        // Formato de EE.UU. (mes primero): se reconoce cuando no cabe al reves.
+        if (Number(month) > 12 && Number(day) <= 12) [day, month] = [month, day];
+
+        return new Date(
+            Number(year), Number(month) - 1, Number(day),
+            Number(hours), Number(minutes), Number(seconds)
+        );
+    }
+
+    return value ? new Date(value.replace(" ", "T")) : null;
+}
+
+// Segundos desde la medianoche: fraccion de dia de Excel o texto "07:45:19".
+function secondsOfDay(value) {
+    if (typeof value === "number") {
+        return Number.isFinite(value)
+            ? Math.round((value - Math.floor(value)) * 86400)
+            : null;
+    }
+
+    const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(value || "").trim());
+
+    return match
+        ? Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3] || 0)
+        : null;
+}
+
+/**
+ * Momento de una marca. La fecha viaja como numero de serie de Excel o como
+ * texto; la hora, en la misma celda o -si el archivo la separa- en `rawTime`.
+ */
+function markDate(raw, rawTime) {
+    const date = typeof raw === "number"
+        ? dateFromExcelSerial(raw)
+        : (raw ? dateFromText(raw) : null);
+
+    if (!date || Number.isNaN(date.getTime()) || rawTime === undefined) return date;
+
+    const seconds = secondsOfDay(rawTime);
+
+    if (seconds === null) return null;
+
+    return new Date(
+        date.getFullYear(), date.getMonth(), date.getDate(),
+        0, 0, seconds
+    );
+}
+
 /**
  * Convierte las filas del Excel en marcas normalizadas.
  * @returns {{marks: Array<Object>, skipped: number}}
@@ -134,12 +195,10 @@ export function parseAttendanceRows(rows) {
     for (let index = header.row + 1; index < rows.length; index++) {
         const row = rows[index] || [];
         const rut = normalizeRut(row[columns.rut]);
-        const raw = row[columns.timestamp];
-        // La fecha viaja como numero de serie de Excel; si el sistema la
-        // exportara como texto, se intenta leer igual.
-        const date = typeof raw === "number"
-            ? dateFromExcelSerial(raw)
-            : (raw ? new Date(String(raw).replace(" ", "T")) : null);
+        const date = markDate(
+            row[columns.timestamp],
+            columns.time === undefined ? undefined : row[columns.time]
+        );
 
         if (!rut || !date || Number.isNaN(date.getTime())) {
             skipped++;
@@ -744,7 +803,11 @@ export async function importAttendanceFile(file) {
     }
 
     const buffer = await file.arrayBuffer();
-    const rows = readXlsRows(buffer);
+    // Por el contenido y no por la extension: un .xls renombrado a .xlsx (o al
+    // reves) se lee igual.
+    const rows = isXlsxFile(buffer)
+        ? await readXlsxRows(buffer)
+        : readXlsRows(buffer);
     const { marks, skipped } = parseAttendanceRows(rows);
 
     if (!marks.length) {
