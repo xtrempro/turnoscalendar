@@ -225,6 +225,7 @@ export async function createWorkspace(user, name) {
         name: cleanName,
         ownerUid: user.uid,
         stateStorage: "entries-v1",
+        replacementStorage: "records-shadow-v1",
         createdByEmail: user.email || "",
         createdAt: now,
         updatedAt: now

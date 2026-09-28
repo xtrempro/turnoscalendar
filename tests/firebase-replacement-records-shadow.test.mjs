@@ -23,6 +23,13 @@ test("la marca de reemplazos viaja desde el documento de unidad", () => {
     assert.match(shell, /setActiveWorkspace\(refreshedWorkspace\)/);
 });
 
+test("las unidades nuevas nacen con la copia individual de reemplazos", () => {
+    assert.match(
+        workspaces,
+        /const workspace = \{[\s\S]*?replacementStorage: "records-shadow-v1"/
+    );
+});
+
 test("el modo sombra exige una marca explicita", () => {
     assert.match(sync, /const SHADOW_STORAGE = "records-shadow-v1"/);
     assert.match(
