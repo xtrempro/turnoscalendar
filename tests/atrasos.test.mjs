@@ -392,6 +392,8 @@ test("el reporte corta las cruces en la ultima planilla subida", () => {
     // faltas; se juzgan cuando llegue la planilla que los cubre.
     assert.match(reporte, /function shiftEndedByLastImport\(/);
     assert.match(reporte, /hasPassed: shiftEndedByLastImport\(/);
+    assert.match(reporte, /const MISSING_ENTRY_IMPORT_GRACE_MINUTES = 30;/);
+    assert.match(reporte, /entryHasPassed: shiftEntryEligibleByLastImport\(/);
     assert.match(reporte, /const importedAt = coverage\?\.at \? new Date\(coverage\.at\) : null;/);
     assert.match(reporte, /return end \? end <= importedAt : date < importedAt;/);
     // Y ademas exige tener datos del reloj para ese dia: sin la planilla
@@ -414,13 +416,21 @@ test("el reporte corta las cruces en la ultima planilla subida", () => {
     });
 });
 
-test("un turno que aun no termina no cuenta, aunque el dia este cargado", () => {
+test("la entrada y la salida tienen cortes de importacion independientes", () => {
     // La planilla se sube a las 10 y el turno largo sale a las 20: a esa hora
     // no hay salida que exigir. El turno de la noche anterior, que cerro a las
     // 08, si se juzga.
     assert.match(reporte, /function shiftEndInstant\(date, scheduledExit, workedShift\)/);
     assert.match(reporte, /if \(shiftEndsNextMorning\(workedShift\)\) \{/);
     assert.match(reporte, /end\.setDate\(end\.getDate\(\) \+ 1\);/);
+    assert.match(
+        reporte,
+        /hasPassed: day\.entryHasPassed && !cells\.entryArrow/
+    );
+    assert.match(
+        reporte,
+        /hasPassed: day\.hasPassed && !cells\.exitArrow/
+    );
 });
 
 test("la hora de la carga viaja con las marcas", () => {
@@ -1219,7 +1229,7 @@ test("que turnos empiezan por la manana sale del modelo", () => {
 });
 
 test("la flecha no cuenta como marca que falta ni genera atraso", () => {
-    assert.match(reporte, /hasPassed: day\.hasPassed && !cells\.entryArrow/);
+    assert.match(reporte, /hasPassed: day\.entryHasPassed && !cells\.entryArrow/);
     assert.match(reporte, /hasPassed: day\.hasPassed && !cells\.exitArrow/);
     assert.match(estilos, /\.report-table td\.report-cell--stacked \{/);
     assert.match(estilos, /white-space: pre-line;/);

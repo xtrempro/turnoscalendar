@@ -850,6 +850,31 @@ function shiftEndInstant(date, scheduledExit, workedShift) {
     return end;
 }
 
+const MISSING_ENTRY_IMPORT_GRACE_MINUTES = 30;
+
+function shiftEntryEligibleByLastImport(date, scheduledEntry, coverage, today) {
+    const importedAt = coverage?.at ? new Date(coverage.at) : null;
+
+    if (!importedAt || Number.isNaN(importedAt.getTime())) {
+        return date < today;
+    }
+
+    const minutes = minutesFromTime(scheduledEntry);
+
+    if (minutes === null) return date < importedAt;
+
+    const eligibleAt = new Date(date);
+
+    eligibleAt.setHours(
+        0,
+        minutes + MISSING_ENTRY_IMPORT_GRACE_MINUTES,
+        0,
+        0
+    );
+
+    return eligibleAt <= importedAt;
+}
+
 /**
  * .Habia terminado este turno cuando se subio la ultima planilla?
  *
@@ -881,6 +906,10 @@ function attendanceDay(profileName, keyDay, date, holidays, data, day) {
         profileName, keyDay, date, day.workedShift, holidays
     );
 
+    const scheduledEntry = scheduledEntryFromShift(
+        profileName, keyDay, date, day.workedShift, holidays
+    );
+
     return {
         baseShift: day.baseShift,
         extraShift: day.extraShift,
@@ -893,9 +922,10 @@ function attendanceDay(profileName, keyDay, date, holidays, data, day) {
         hasPassed: shiftEndedByLastImport(
             date, scheduledExit, day.workedShift, day.coverage, day.today
         ) && isAttendanceCovered(isoFromKey(keyDay), day.coverage),
-        scheduledEntry: scheduledEntryFromShift(
-            profileName, keyDay, date, day.workedShift, holidays
-        ),
+        entryHasPassed: shiftEntryEligibleByLastImport(
+            date, scheduledEntry, day.coverage, day.today
+        ) && isAttendanceCovered(isoFromKey(keyDay), day.coverage),
+        scheduledEntry,
         baseScheduledEntry: scheduledEntryFromShift(
             profileName, keyDay, date, day.baseShift, holidays
         ),
@@ -1135,7 +1165,7 @@ function attendanceDayFacts(profile, iso, day) {
         absent: day.absent,
         // Una flecha no es una marca que falte: el turno viene de largo y no
         // habia nada que marcar, asi que ni cruz ni atraso.
-        hasPassed: day.hasPassed && !cells.entryArrow
+        hasPassed: day.entryHasPassed && !cells.entryArrow
     });
     // El horario es libre; marcar no. La marca que falta se sigue exigiendo
     // igual, porque sin ella no hay forma de saber cuantas horas cumplio.

@@ -191,9 +191,9 @@ test("sin planilla cargada NO se inventan faltas de marcaje", async () => {
 const cargadaEl = (...partes) =>
     set("attendanceMarksImportedAt", new Date(...partes).toISOString());
 
-test("un turno que aun no terminaba al subir la planilla no cuenta", async () => {
+test("una carga posterior al inicio alerta la entrada pero espera la salida", async () => {
     // El dia 6 tiene Larga (sale 20:00) y la planilla se subio ese mismo dia a
-    // las 10: a esa hora no hay salida que exigir, ni entrada que reclamar.
+    // las 10: ya pasaron 30 minutos desde su entrada, pero aun no termina.
     sembrar({ [dia(6)]: 1 }, {
         [iso(3)]: [{ time: "08:00", type: "in" }],
         [iso(9)]: [{ time: "08:00", type: "in" }]
@@ -202,7 +202,32 @@ test("un turno que aun no terminaba al subir la planilla no cuenta", async () =>
 
     const { events } = await buildAttendanceIncidents(PERFIL, new Date(A, M, 1));
 
-    assert.deepEqual(events.filter(evento => evento.iso === iso(6)), []);
+    assert.deepEqual(
+        events
+            .filter(evento => evento.iso === iso(6))
+            .map(evento => evento.kind),
+        ["missingEntry"]
+    );
+});
+
+test("la entrada se alerta desde los 30 minutos posteriores", async () => {
+    sembrar({ [dia(6)]: 1 }, {
+        [iso(3)]: [{ time: "08:00", type: "in" }],
+        [iso(9)]: [{ time: "08:00", type: "in" }]
+    });
+
+    cargadaEl(A, M, 6, 8, 29);
+    let result = await buildAttendanceIncidents(PERFIL, new Date(A, M, 1));
+    assert.deepEqual(result.events.filter(evento => evento.iso === iso(6)), []);
+
+    cargadaEl(A, M, 6, 8, 30);
+    result = await buildAttendanceIncidents(PERFIL, new Date(A, M, 1));
+    assert.deepEqual(
+        result.events
+            .filter(evento => evento.iso === iso(6))
+            .map(evento => evento.kind),
+        ["missingEntry"]
+    );
 });
 
 test("y si cuenta cuando la planilla llego despues", async () => {
