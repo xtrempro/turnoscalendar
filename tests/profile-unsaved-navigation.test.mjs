@@ -66,6 +66,60 @@ test("guardarPerfil comunica exito o bloqueo al guard", () => {
     assert.doesNotMatch(guardarPerfil, /^\s*return;$/m);
 });
 
+test("guardar un perfil sin cambios no dispara guardado remoto", () => {
+    const guardarPerfil = sourceBlock(
+        "async function guardarPerfil",
+        "function handleAvailabilityEdit"
+    );
+
+    const noChangesIndex = guardarPerfil.indexOf(
+        "!hasUnsavedProfileDraftChanges()"
+    );
+    const validationIndex = guardarPerfil.indexOf("validateDraft()");
+    const sealIndex = guardarPerfil.indexOf("sealCriticalProfileState");
+
+    assert.ok(noChangesIndex >= 0, "falta salida para perfil sin cambios");
+    assert.ok(
+        noChangesIndex < validationIndex,
+        "el caso sin cambios debe salir antes de validar/guardar"
+    );
+    assert.ok(
+        noChangesIndex < sealIndex,
+        "el caso sin cambios no debe confirmar estado remoto"
+    );
+    assert.match(
+        guardarPerfil,
+        /profileDraft\.mode === PROFILE_MODE\.EDIT &&\s*\n\s*!hasUnsavedProfileDraftChanges\(\)[\s\S]{0,140}discardProfileDraftChangesBeforeLeaving\(\);\s*\n\s*return true;/
+    );
+});
+
+test("guardar cambios confirma solo las claves que realmente variaron", () => {
+    const guardarPerfil = sourceBlock(
+        "async function guardarPerfil",
+        "function handleAvailabilityEdit"
+    );
+    const seal = sourceBlock(
+        "async function sealCriticalProfileState",
+        "function renderContractHistory"
+    );
+
+    assert.match(
+        guardarPerfil,
+        /const profileStateBeforeSave =\s*\n\s*snapshotCriticalProfileState\(profileSaveSealNames\);/
+    );
+    assert.match(
+        guardarPerfil,
+        /const profileStateChanges = changedCriticalProfileState\(\s*\n\s*profileStateBeforeSave,\s*\n\s*profileSaveSealNames\s*\n\s*\);/
+    );
+    assert.match(
+        guardarPerfil,
+        /sealCriticalProfileState\(\s*\n\s*profileSaveSealNames,\s*\n\s*"profile-save",\s*\n\s*profileStateChanges\s*\n\s*\)/
+    );
+    assert.match(seal, /const keys = hasExplicitChanges\s*\? Object\.keys\(changes\)/);
+    assert.match(seal, /changes: hasExplicitChanges \? changes : \{\}/);
+    assert.match(seal, /reason: "unchanged"/);
+});
+
 test("al guardar un perfil desactivado se selecciona otro activo", () => {
     const selectionHelpers = sourceBlock(
         "function activeProfileNameAfterSave",

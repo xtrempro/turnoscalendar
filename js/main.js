@@ -1507,7 +1507,49 @@ function criticalProfileStateKeys(profileNames = [], extraKeys = []) {
     return [...keys];
 }
 
-async function sealCriticalProfileState(profileNames, reason = "profile-save") {
+function snapshotCriticalProfileState(profileNames = []) {
+    return new Map(
+        criticalProfileStateKeys(profileNames)
+            .map(key => [key, getRaw(key, null)])
+    );
+}
+
+function changedCriticalProfileState(
+    previousState,
+    profileNames = []
+) {
+    const keys = new Set([
+        ...criticalProfileStateKeys(profileNames),
+        ...(previousState instanceof Map
+            ? previousState.keys()
+            : [])
+    ]);
+    const changes = {};
+
+    keys.forEach(key => {
+        const previous = previousState instanceof Map &&
+            previousState.has(key)
+            ? previousState.get(key)
+            : null;
+        const next = getRaw(key, null);
+
+        if (previous === next) return;
+
+        changes[key] = {
+            previous,
+            next,
+            ...(next === null ? { removed: true } : {})
+        };
+    });
+
+    return changes;
+}
+
+async function sealCriticalProfileState(
+    profileNames,
+    reason = "profile-save",
+    changes = null
+) {
     const workspace = getActiveWorkspace();
 
     if (!workspace?.id) {
@@ -1516,8 +1558,23 @@ async function sealCriticalProfileState(profileNames, reason = "profile-save") {
         );
     }
 
+    const hasExplicitChanges = changes &&
+        typeof changes === "object";
+    const keys = hasExplicitChanges
+        ? Object.keys(changes)
+        : criticalProfileStateKeys(profileNames);
+
+    if (!keys.length) {
+        return {
+            flushed: true,
+            count: 0,
+            reason: "unchanged"
+        };
+    }
+
     const result = await flushPendingFirebaseAppStateEntries({
-        keys: criticalProfileStateKeys(profileNames),
+        keys,
+        changes: hasExplicitChanges ? changes : {},
         reason
     });
 
@@ -11693,6 +11750,15 @@ async function resolveDuplicateEmailBeforeSave() {
 
 async function guardarPerfil() {
     if (!canEditCurrentProfileMenu()) return false;
+
+    if (
+        profileDraft.mode === PROFILE_MODE.EDIT &&
+        !hasUnsavedProfileDraftChanges()
+    ) {
+        discardProfileDraftChangesBeforeLeaving();
+        return true;
+    }
+
     if (!await resolveDuplicateEmailBeforeSave()) return false;
     if (!validateDraft()) return false;
 
@@ -12041,6 +12107,8 @@ async function guardarPerfil() {
             ? profileDraft.contractBridgeProfile
             : ""
     ].filter(Boolean);
+    const profileStateBeforeSave =
+        snapshotCriticalProfileState(profileSaveSealNames);
 
     try {
         if (shouldReplaceWorkerAppLink) {
@@ -12330,10 +12398,15 @@ async function guardarPerfil() {
                 }
             );
         }
+        const profileStateChanges = changedCriticalProfileState(
+            profileStateBeforeSave,
+            profileSaveSealNames
+        );
         await withBusyState(
             () => sealCriticalProfileState(
                 profileSaveSealNames,
-                "profile-save"
+                "profile-save",
+                profileStateChanges
             ),
             {
                 label: "Confirmando guardado..."
