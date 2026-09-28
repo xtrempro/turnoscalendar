@@ -11,6 +11,13 @@ test("la marca de almacenamiento viaja desde el documento raiz", () => {
     assert.match(shell, /stateStorage: info\?\.stateStorage \|\| ""/);
 });
 
+test("las unidades nuevas nacen con entries-v1 autoritativo", () => {
+    assert.match(
+        workspaces,
+        /const workspace = \{[\s\S]*?stateStorage: "entries-v1"/
+    );
+});
+
 test("solo entries-v1 omite los manifiestos heredados", () => {
     assert.match(
         appState,

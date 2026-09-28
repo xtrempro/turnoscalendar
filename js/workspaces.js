@@ -224,6 +224,7 @@ export async function createWorkspace(user, name) {
         id: workspaceRef.id,
         name: cleanName,
         ownerUid: user.uid,
+        stateStorage: "entries-v1",
         createdByEmail: user.email || "",
         createdAt: now,
         updatedAt: now
