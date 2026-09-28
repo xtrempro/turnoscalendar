@@ -1557,18 +1557,17 @@ async function handleAction(action, backdrop, sourceButton = null) {
             linkedUnitState.message = "";
             refreshShellGate();
             updateTopbar();
-            await options.onWorkspaceChange?.(currentWorkspace);
-
             // Pre-rellena el pie de firma de la nueva unidad: 1a linea el
             // supervisor, 2a la unidad (entorno), 3a el hospital. Editable
-            // luego en Ajustes -> Pie de Firma.
-            saveReportSignatureConfig({
-                lines: [
-                    supervisorName,
-                    currentWorkspace?.name || String(input?.value || "").trim(),
-                    hospitalName,
-                    ""
-                ]
+            // luego en Ajustes -> Pie de Firma. Se escribe cuando termina la
+            // hidratacion; antes, la hidratacion lo pisaba con la firma vacia.
+            const unitName =
+                currentWorkspace?.name || String(input?.value || "").trim();
+
+            await options.onWorkspaceChange?.(currentWorkspace, {
+                afterStateHydrated: () => saveReportSignatureConfig({
+                    lines: [supervisorName, unitName, hospitalName, ""]
+                })
             });
 
             createWorkspaceFormOpen = false;

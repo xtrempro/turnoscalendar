@@ -16221,6 +16221,14 @@ initFirebaseShell({
                 // vistas ya no son las de este entorno.
                 if (generacion !== workspaceChangeGeneration) return;
 
+                // Lo que la unidad recien creada escribe al nacer (el pie de
+                // firma) va DESPUES de hidratar: escrito antes, la hidratacion
+                // lo pisaba y UCI y UTI quedaron con la firma vacia.
+                if (typeof changeOptions.afterStateHydrated === "function") {
+                    changeOptions.afterStateHydrated();
+                    scheduleHomePanelRender();
+                }
+
                 if (changeOptions.skipViewRefresh !== true) {
                     refrescarVistasDelEntorno();
                 }

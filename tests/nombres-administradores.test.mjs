@@ -132,6 +132,19 @@ test("un invitado sin nombre asignado ve el de su cuenta", () => {
     assert.match(home, /if \(!isWorkspaceOwner\(\) && propio\) return propio;/);
 });
 
+test("el pie de firma de una unidad nueva se escribe despues de hidratar", async () => {
+    // Escrito antes, la hidratacion lo pisaba: UCI y UTI quedaron con las
+    // cuatro lineas vacias un minuto despues de crearse.
+    const shell = await readFile(new URL("../js/firebaseShell.js", import.meta.url), "utf8");
+    const main = await readFile(new URL("../js/main.js", import.meta.url), "utf8");
+
+    assert.match(shell, /afterStateHydrated: \(\) => saveReportSignatureConfig\(/);
+    assert.match(
+        main,
+        /void estadoHidratado\.then\(async \(\) => \{[\s\S]{0,600}changeOptions\.afterStateHydrated\(\);/
+    );
+});
+
 test("una unidad sin firma saluda con la cuenta del dueño, no con la maqueta", () => {
     // UCI y UTI se crearon con el campo del supervisor vacio y el inicio decia
     // "Hola, Cristian Morales".
