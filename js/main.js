@@ -578,6 +578,7 @@ import {
 } from "./leaveEngine.js";
 import {
     installAppDialogs,
+    showAlert,
     showConfirm,
     showPrompt
 } from "./dialogs.js";
@@ -4445,10 +4446,44 @@ function bindAttendanceImport() {
             status.className = `attendance-import__status attendance-import__status--${tone}`;
         };
 
+        // Fuera de Reportes el resultado va en una ventana: el aviso de abajo
+        // del boton no esta a la vista y un toast se pierde en segundos.
+        const enVentana = document.body.dataset.activeView !== "reports";
+
         show(`Leyendo ${file.name}...`, "info");
 
         try {
             const result = await importAttendanceFile(file);
+
+            refreshAll();
+
+            if (enVentana) {
+                const lineas = [
+                    result.added
+                        ? `Se agregaron ${result.added} marca(s) nueva(s).`
+                        : "El archivo no trae marcas nuevas.",
+                    result.duplicated
+                        ? `${result.duplicated} marca(s) ya estaban cargadas y no se duplicaron.`
+                        : "",
+                    result.workers
+                        ? `Trabajadores con marcas nuevas: ${result.workers}.`
+                        : "",
+                    result.dates.length
+                        ? `Periodo: del ${formatImportDate(result.dates[0])} ` +
+                          `al ${formatImportDate(result.dates.at(-1))}.`
+                        : "",
+                    result.skipped
+                        ? `${result.skipped} fila(s) del archivo no se pudieron leer.`
+                        : ""
+                ].filter(Boolean);
+
+                void showAlert(lineas.join("\n"), {
+                    title: "Registro del reloj cargado",
+                    tone: result.added ? "success" : "info"
+                });
+                return;
+            }
+
             const partes = [
                 `${result.added} marca(s) nueva(s)`,
                 result.duplicated
@@ -4464,9 +4499,17 @@ function bindAttendanceImport() {
             ].filter(Boolean);
 
             show(partes.join(" · "), result.added ? "ok" : "info");
-            refreshAll();
         } catch (error) {
             console.warn("No se pudo importar el registro de asistencia.", error);
+
+            if (enVentana) {
+                void showAlert(
+                    error?.message || "No se pudo leer el archivo.",
+                    { title: "No se pudo cargar el registro", tone: "danger" }
+                );
+                return;
+            }
+
             show(
                 error?.message || "No se pudo leer el archivo.",
                 "error"
@@ -16284,6 +16327,10 @@ initFirebaseShell({
 bindProfileForm();
 initializeInactiveProfileToggles();
 bindShellInteractions();
+// Al arrancar y no al abrir Reportes: el boton "Adjuntar registro" del inicio
+// aprieta este mismo input, y sin haber pasado por Reportes nadie escuchaba el
+// archivo elegido.
+bindAttendanceImport();
 loadWorkspacePermissions()
     .then(() => {
         syncWorkspacePermissionUI();
