@@ -251,6 +251,12 @@ function cededSwapBlocks(state, profileName, dateISO, neededTurn) {
 }
 
 function scheduledTurn(state, profileName, dateISO) {
+  const profile = storageValue(state, "profiles", [])
+    .find(item => item && item.name === profileName);
+  const exitDate = String(profile?.unitExitDate || "").trim().slice(0, 10);
+
+  if (exitDate && dateISO > exitDate) return TURN.FREE;
+
   const keyDay = keyFromISO(dateISO);
   const data = storageValue(state, `data_${profileName}`, {});
   if (Object.prototype.hasOwnProperty.call(data, keyDay)) {
@@ -269,6 +275,12 @@ function scheduledTurn(state, profileName, dateISO) {
 }
 
 function actualTurn(state, profileName, dateISO, loanTurns = new Map()) {
+  const profile = storageValue(state, "profiles", [])
+    .find(item => item && item.name === profileName);
+  const exitDate = String(profile?.unitExitDate || "").trim().slice(0, 10);
+
+  if (exitDate && dateISO > exitDate) return TURN.FREE;
+
   let turn = scheduledTurn(state, profileName, dateISO);
   const swapped = applySwaps(
     state,

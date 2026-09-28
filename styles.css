@@ -7898,6 +7898,23 @@ body.auth-gate-active .app-shell {
     gap: 10px;
 }
 
+.profile-inactivation-dialog {
+    width: min(620px, 100%);
+}
+
+.profile-inactivation-calendar {
+    margin: 12px 0;
+}
+
+.profile-inactivation-calendar .profile-mini-day {
+    min-height: 64px;
+}
+
+.profile-inactivation-calendar .profile-mini-day.is-selected {
+    outline: 3px solid var(--accent);
+    outline-offset: 1px;
+}
+
 /* ===== Planes / suscripcion ===== */
 .plans-button svg {
     color: #f5b94a;

@@ -9,7 +9,8 @@ import {
     getProfileData,
     getBaseProfileData,
     getTurnChangeConfig,
-    getRotativa
+    getRotativa,
+    getProfiles
 } from "./storage.js";
 import { getJSON } from "./persistence.js";
 import { getCachedHolidays } from "./holidays.js";
@@ -432,6 +433,8 @@ export function aplicarCambiosTurno(
     turnoBase,
     options = {}
 ) {
+
+    if (isAfterProfileExitDate(nombre, key)) return TURNO.LIBRE;
 
     let turno = Number(turnoBase) || TURNO.LIBRE;
     const includeReplacements =
@@ -1128,7 +1131,22 @@ export function getAddTurnResult(
 // la rotativa calculada, y si no el respaldo por dia bloqueado. `visited` arrastra
 // el guard de ciclos para poder resolver cadenas de reemplazo sin recursion
 // infinita (un reemplazo hereda de su reemplazado, que puede ser otro reemplazo).
+function isAfterProfileExitDate(nombre, key) {
+    const exitDate = normalizeProfileExitDate(
+        getProfiles().find(profile => profile.name === nombre)?.unitExitDate
+    );
+
+    return Boolean(exitDate) && isoFromKey(key) > exitDate;
+}
+
+function normalizeProfileExitDate(value) {
+    const match = String(value || "").trim().match(/^\d{4}-\d{2}-\d{2}/);
+    return match ? match[0] : "";
+}
+
 function resolveTurnoBase(nombre, key, visited) {
+    if (isAfterProfileExitDate(nombre, key)) return TURNO.LIBRE;
+
     if (isReplacementProfile(nombre, key)) {
         return rotativaTurnoBase(nombre, key, visited);
     }
@@ -1176,6 +1194,8 @@ export function getTurnoBase(nombre, key) {
 }
 
 export function getTurnoProgramado(nombre, key) {
+    if (isAfterProfileExitDate(nombre, key)) return TURNO.LIBRE;
+
     if (
         isHonorariaProfile(nombre, key) &&
         !hasHonorariaContractForDate(nombre, key)

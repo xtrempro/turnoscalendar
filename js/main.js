@@ -456,7 +456,9 @@ import {
     SIN_INFORMACION_PROFESSION,
     getTurnChangeConfig,
     getReplacementRequestConfig,
-    getReportSignatureConfig
+    getReportSignatureConfig,
+    getWorkerRequests,
+    saveWorkerRequests
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import {
@@ -11145,10 +11147,17 @@ async function cleanupFutureSchedule(startDate, options = {}) {
 
     // Lo que se conserva no se borra NI se devuelve al saldo: el trabajador
     // sigue ausente esos dias, asi que el permiso no vuelve a su bolsa.
-    const kept = protectedLeaveKeys(
-        { admin, legal, comp, absences },
-        startDate
-    );
+    const kept = options.preserveProtectedLeaves === false
+        ? {
+            admin: new Set(),
+            legal: new Set(),
+            comp: new Set(),
+            absences: new Set()
+        }
+        : protectedLeaveKeys(
+            { admin, legal, comp, absences },
+            startDate
+        );
     // Cada permiso mira SU propio conjunto: una licencia del dia X no puede
     // salvar al administrativo del mismo dia X.
     const overwritable = (name, keys) =>
@@ -11223,6 +11232,182 @@ async function cleanupFutureSchedule(startDate, options = {}) {
     saveCompDays(comp);
     saveAbsences(absences);
     saveHourReturns(profileName, hourReturns);
+}
+
+function nextCalendarISO(iso) {
+    const date = parseInputDate(iso);
+
+    if (!date) return "";
+
+    date.setDate(date.getDate() + 1);
+    return toInputDate(date);
+}
+
+function requestTouchesProfileFromDate(request, profileName, startISO) {
+    if (!request || request.status !== "pending") return false;
+
+    const names = [
+        request.profile,
+        request.worker,
+        request.workerName,
+        request.profileName,
+        request.from,
+        request.to,
+        request.replaced,
+        request.replacementWorker
+    ].map(value => String(value || "").trim());
+
+    if (!names.includes(profileName)) return false;
+
+    const dates = [
+        request.date,
+        request.startDate,
+        request.endDate,
+        request.changeDate,
+        request.returnDate,
+        request.fecha,
+        request.devolucion
+    ].map(value => normalizeStoredStart(value || "")).filter(Boolean);
+
+    return dates.some(date => compareISODate(date, startISO) >= 0);
+}
+
+function cancelFutureWorkerRequests(profileName, startISO) {
+    const now = new Date().toISOString();
+    let canceled = 0;
+    const requests = getWorkerRequests().map(request => {
+        if (!requestTouchesProfileFromDate(request, profileName, startISO)) {
+            return request;
+        }
+
+        canceled += 1;
+        return {
+            ...request,
+            status: "canceled",
+            adminNote: "Cancelada al inactivar el perfil.",
+            updatedAt: now
+        };
+    });
+
+    if (canceled) saveWorkerRequests(requests);
+    return canceled;
+}
+
+function profileInactivationDayLabel(profileName, key) {
+    const admin = getAdminDays(profileName)[key];
+
+    if (getLegalDays(profileName)[key]) return "F. Legal";
+    if (getCompDays(profileName)[key]) return "F. Comp.";
+    if (getAbsences(profileName)[key]) return "Licencia";
+    if (admin) return admin === 1 ? "P. Administrativo" : "1/2 P. Admin.";
+
+    const turn = getTurnoProgramado(profileName, key);
+    return turn ? turnoLabel(turn) : "Libre";
+}
+
+function requestProfileInactivationDate(profileName, displayName = profileName) {
+    return new Promise(resolve => {
+        const selectedProfile = getProfiles().find(
+            profile => profile.name === profileName
+        );
+        const initialISO = normalizeStoredStart(
+            selectedProfile?.unitExitDate || toInputDate(currentDate)
+        );
+        const initialDate = parseInputDate(initialISO) || new Date();
+        const state = {
+            month: new Date(initialDate.getFullYear(), initialDate.getMonth(), 1),
+            selectedISO: initialISO
+        };
+        const backdrop = document.createElement("div");
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        document.body.appendChild(backdrop);
+
+        const close = value => {
+            backdrop.remove();
+            resolve(value);
+        };
+        const render = () => {
+            const year = state.month.getFullYear();
+            const month = state.month.getMonth();
+            const first = (new Date(year, month, 1).getDay() + 6) % 7;
+            const days = new Date(year, month + 1, 0).getDate();
+            let cells = "";
+
+            for (let index = 0; index < first; index += 1) {
+                cells += '<span class="profile-mini-spacer"></span>';
+            }
+
+            for (let day = 1; day <= days; day += 1) {
+                const key = `${year}-${month}-${day}`;
+                const iso = calendarKeyToInputDate(key);
+                const selected = iso === state.selectedISO;
+                const label = profileInactivationDayLabel(profileName, key);
+
+                cells += `
+                    <button
+                        class="profile-mini-day is-pickable${selected ? " is-selected" : ""}"
+                        type="button"
+                        data-inactivation-date="${escapeHTML(iso)}"
+                        aria-pressed="${selected ? "true" : "false"}"
+                    >
+                        <span>${day}</span>
+                        <small>${escapeHTML(label)}</small>
+                    </button>
+                `;
+            }
+
+            backdrop.innerHTML = `
+                <div class="turn-change-dialog profile-inactivation-dialog" role="dialog" aria-modal="true" aria-labelledby="profileInactivationTitle">
+                    <strong id="profileInactivationTitle">Ultimo dia de ${escapeHTML(displayName)}</strong>
+                    <p>Selecciona su ultimo turno trabajado o el ultimo dia valido de vacaciones o licencia. Desde el dia siguiente, su calendario y solicitudes futuras quedaran vacios.</p>
+                    <div class="profile-mini-head rotation-modal-head">
+                        <button type="button" data-inactivation-nav="-1" aria-label="Mes anterior">&lt;</button>
+                        <span>${escapeHTML(formatMonthHeading(state.month))}</span>
+                        <button type="button" data-inactivation-nav="1" aria-label="Mes siguiente">&gt;</button>
+                    </div>
+                    <div class="rotation-modal-calendar profile-inactivation-calendar">
+                        <div class="profile-mini-weekdays">
+                            <span>L</span><span>M</span><span>M</span><span>J</span><span>V</span><span>S</span><span>D</span>
+                        </div>
+                        <div class="profile-mini-grid rotation-modal-grid">${cells}</div>
+                    </div>
+                    <div class="profile-mini-help">
+                        ${state.selectedISO
+                            ? `Ultimo dia valido: ${escapeHTML(formatDisplayDate(state.selectedISO))}.`
+                            : "Selecciona una fecha para continuar."}
+                    </div>
+                    <div class="turn-change-dialog__actions">
+                        <button class="primary-button" type="button" data-inactivation-confirm ${state.selectedISO ? "" : "disabled"}>Inactivar perfil</button>
+                        <button class="secondary-button" type="button" data-inactivation-cancel>Cancelar</button>
+                    </div>
+                </div>
+            `;
+
+            backdrop.querySelectorAll("[data-inactivation-nav]").forEach(button => {
+                button.onclick = () => {
+                    state.month = new Date(
+                        year,
+                        month + Number(button.dataset.inactivationNav),
+                        1
+                    );
+                    render();
+                };
+            });
+            backdrop.querySelectorAll("[data-inactivation-date]").forEach(button => {
+                button.onclick = () => {
+                    state.selectedISO = button.dataset.inactivationDate;
+                    render();
+                };
+            });
+            backdrop.querySelector("[data-inactivation-confirm]").onclick = () =>
+                close(state.selectedISO);
+            backdrop.querySelector("[data-inactivation-cancel]").onclick = () =>
+                close("");
+        };
+
+        render();
+    });
 }
 
 // Rotativas que PRODUCEN turnos por si solas. "libre", "reemplazo" y la vacia
@@ -11480,6 +11665,7 @@ async function guardarPerfil() {
     const wasActive = isEditing
         ? isProfileActive(profileDraft.originalName)
         : false;
+    const isDeactivating = isEditing && wasActive && !willBeActive;
 
     if (willBeActive && !wasActive) {
         await refreshAccountUsage({ force: true });
@@ -11578,6 +11764,9 @@ async function guardarPerfil() {
             : [],
         active: profileDraft.active !== false,
         unitEntryDate: nextUnitEntryDate,
+        unitExitDate: willBeActive
+            ? ""
+            : normalizeStoredStart(previousSnapshot?.unitExitDate || ""),
         contractType: profileDraft.contractType,
         // Los contratos de Honorarios viven en honorariaContracts_{nombre} (lista),
         // no en el perfil. No se escriben aqui para no pisar los campos legados de
@@ -11667,6 +11856,20 @@ async function guardarPerfil() {
         })
     ) {
         return false;
+    }
+
+    let inactivationLastDate = "";
+
+    if (isDeactivating) {
+        inactivationLastDate = await requestProfileInactivationDate(
+            profileDraft.originalName,
+            nextName
+        );
+
+        if (!inactivationLastDate) return false;
+
+        nextProfilePayload.unitExitDate = inactivationLastDate;
+        nextSnapshot.unitExitDate = inactivationLastDate;
     }
 
     if (shiftAssignmentChanged) {
@@ -11995,6 +12198,30 @@ async function guardarPerfil() {
         }
 
         exitProfileMode(nextName);
+
+        if (isDeactivating) {
+            const cleanupStart = nextCalendarISO(inactivationLastDate);
+
+            await cleanupFutureSchedule(parseInputDate(cleanupStart), {
+                preserveProtectedLeaves: false
+            });
+            const canceledRequests = cancelFutureWorkerRequests(
+                nextName,
+                cleanupStart
+            );
+
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Vacio calendario por inactivacion",
+                `${nextName}: ultimo dia valido ${formatDisplayDate(inactivationLastDate)}; se retiro la programacion desde ${formatDisplayDate(cleanupStart)}.`,
+                {
+                    profile: nextName,
+                    lastActiveDate: inactivationLastDate,
+                    cleanupStart,
+                    canceledRequests
+                }
+            );
+        }
 
         // Va ANTES de aplicar la rotativa: al reves borraria los turnos que
         // esta acaba de escribir. Si la rotativa nueva genera turnos, el motor
