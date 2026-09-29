@@ -153,8 +153,10 @@ import {
     workerHasAbsence
 } from "./replacements.js";
 import {
+    excludeReplacementContractDate,
     getHonorariaContractForDate,
     getInheritedReplacementContractForCoveredShift,
+    getReplacementContractCoverageWorker,
     getReplacementContractsForDate,
     hasContractForDate,
     isReplacementProfile
@@ -4753,7 +4755,18 @@ function openLeaveDetailDialog({
             )
         });
     const canUndo = Boolean(info?.canUndo && info?.logId);
-    const covering = getCoveringWorkersForShift(profile, keyDay);
+    // Quien cubre por un CONTRATO de reemplazo (hereda los turnos del ausente)
+    // no deja un registro por dia, asi que no salia en "Cubre" ni se podia
+    // quitar. Se suma aqui junto a los reemplazos de siempre.
+    const coveringContract =
+        getInheritedReplacementContractForCoveredShift(profile, keyDay);
+    const contractWorker = coveringContract
+        ? getReplacementContractCoverageWorker(coveringContract)
+        : "";
+    const covering = [
+        ...getCoveringWorkersForShift(profile, keyDay),
+        ...(contractWorker ? [`${contractWorker} (contrato de reemplazo)`] : [])
+    ];
     const noCoverage = isNoCoverageDay(profile, keyDay);
     const noCoverageInfo = noCoverage
         ? getNoCoverageAuditInfo(profile, keyDay)
@@ -4777,7 +4790,7 @@ function openLeaveDetailDialog({
     // turno vuelve a quedar pendiente de reemplazo.
     const coveringReplacements =
         getActiveReplacementsForCoveredShift(profile, keyDay);
-    const dropCoverButton = coveringReplacements.length
+    const dropCoverButton = coveringReplacements.length || coveringContract
         ? `<button class="secondary-button" type="button" data-action="drop-cover">Quitar reemplazo</button>`
         : "";
 
@@ -4876,13 +4889,18 @@ function openLeaveDetailDialog({
         .querySelector("[data-action='drop-cover']")
         ?.addEventListener("click", async event => {
             const button = event.currentTarget;
-            const quienes = coveringReplacements
-                .map(replacement => String(replacement.worker || ""))
-                .filter(Boolean);
+            const quienes = [
+                ...coveringReplacements
+                    .map(replacement => String(replacement.worker || "")),
+                contractWorker
+            ].filter(Boolean);
             const confirmed = await showConfirm(
                 `Se le quitará el turno a ${quienes.join(", ")} y se le avisará `
                 + `por la aplicación. El permiso de ${profile} se mantiene, y `
-                + "el turno volverá a quedar pendiente de cobertura.",
+                + "el turno volverá a quedar pendiente de cobertura."
+                + (contractWorker
+                    ? `\n\nA ${contractWorker} se le quita solo el turno de este día: el resto de su contrato de reemplazo se mantiene.`
+                    : ""),
                 {
                     title: "Quitar reemplazo",
                     tone: "danger",
@@ -4908,7 +4926,41 @@ function openLeaveDetailDialog({
                     }))
                     .filter(Boolean);
 
-                if (!quitados.length) {
+                // Contrato de reemplazo: se excluye SOLO este dia. El
+                // reemplazante queda Libre ese dia y conserva el resto.
+                const excluido = coveringContract
+                    ? excludeReplacementContractDate(
+                        coveringContract,
+                        isoFromKeyDay(keyDay)
+                    )
+                    : false;
+
+                if (excluido) {
+                    addAuditLog(
+                        AUDIT_CATEGORY.CALENDAR,
+                        "Quito un dia del contrato de reemplazo",
+                        `${contractWorker}: deja de cubrir a ${profile} el ${leaveDateLabelFromKey(keyDay)}; el resto del contrato se mantiene.`,
+                        { profile: contractWorker, replaced: profile, keyDay }
+                    );
+                    window.dispatchEvent(new CustomEvent("proturnos:calendarProfilesChanged", {
+                        detail: {
+                            profiles: [
+                                contractWorker,
+                                coveringContract.worker,
+                                profile
+                            ].filter(Boolean),
+                            metadata: {
+                                changeType: "replacement_contract_day_removed",
+                                source: "replacement_contract",
+                                title: "Turno quitado",
+                                message: `Se te quitó el turno del ${leaveDateLabelFromKey(keyDay)} en reemplazo de ${profile}.`,
+                                affectedDates: [isoFromKeyDay(keyDay)]
+                            }
+                        }
+                    }));
+                }
+
+                if (!quitados.length && !excluido) {
                     button.disabled = false;
                     button.textContent = "Quitar reemplazo";
                     alert(
@@ -4918,6 +4970,12 @@ function openLeaveDetailDialog({
                 }
 
                 close();
+
+                if (excluido) {
+                    await updateDayCell(contractWorker, keyDay);
+                    updateTimelineCells(contractWorker, [keyDay]);
+                }
+
                 await updateVisibleCalendarDays({ updateSummary: true });
             } catch (error) {
                 console.error(error);

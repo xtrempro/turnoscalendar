@@ -179,7 +179,8 @@ test("avisa que el permiso se mantiene", () => {
 });
 
 test("si ya no quedaba nada vigente, se avisa en vez de callar", () => {
-    assert.match(calendario, /if \(!quitados\.length\) \{/);
+    // Ni reemplazos por dia ni un dia de contrato que excluir.
+    assert.match(calendario, /if \(!quitados\.length && !excluido\) \{/);
     assert.match(calendario, /Es posible que ya no este vigente/);
 });
 
@@ -187,6 +188,6 @@ test("al terminar se repinta el calendario y el resumen", () => {
     // Sin esto la alerta no reaparece hasta el proximo repintado.
     assert.match(
         calendario,
-        /button\.textContent = "Quitando\.\.\.";[\s\S]{0,1600}updateVisibleCalendarDays\(\{ updateSummary: true \}\)/
+        /button\.textContent = "Quitando\.\.\.";[\s\S]{0,4500}updateVisibleCalendarDays\(\{ updateSummary: true \}\)/
     );
 });

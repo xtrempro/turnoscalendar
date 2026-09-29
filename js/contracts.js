@@ -155,6 +155,51 @@ export function saveContractsForProfile(profileName, contracts) {
     );
 }
 
+/**
+ * Quita UN dia de un contrato de reemplazo, sin tocar el resto: el reemplazante
+ * deja de heredar ese turno (el motor lo da Libre, ver rotativaTurnoBase) y el
+ * turno del ausente vuelve a quedar pendiente de cobertura.
+ *
+ * Trabaja sobre la lista GUARDADA, no sobre getContractsForProfile: esa filtra
+ * los contratos incompletos y fabrica ids con la hora, y volver a guardarla
+ * perderia contratos. El contrato se reconoce por su id o, si no tiene, por
+ * inicio, fin y ausente.
+ *
+ * @returns {boolean} si se excluyo el dia
+ */
+export function excludeReplacementContractDate(contract, iso) {
+    const worker = String(contract?.worker || "").trim();
+    const day = String(iso || "").slice(0, 10);
+
+    if (!worker || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
+
+    const sameContract = item =>
+        (item?.id && contract.id && String(item.id) === String(contract.id)) ||
+        (
+            String(item?.start || "") === String(contract.start || "") &&
+            String(item?.end || "") === String(contract.end || "") &&
+            String(item?.replaces || "").trim() === String(contract.replaces || "").trim()
+        );
+    let changed = false;
+    const next = getReplacementContracts(worker).map(item => {
+        if (changed || !sameContract(item)) return item;
+
+        changed = true;
+
+        return {
+            ...item,
+            excludedDates: Array.from(new Set([
+                ...(Array.isArray(item.excludedDates) ? item.excludedDates : []),
+                day
+            ])).sort()
+        };
+    });
+
+    if (changed) saveContractsForProfile(worker, next);
+
+    return changed;
+}
+
 export function addReplacementContract(profileName, contract) {
     const nextContract = normalizeContract({
         ...contract,
