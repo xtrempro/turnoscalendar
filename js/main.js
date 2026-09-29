@@ -5981,8 +5981,9 @@ function renderLeaveActionLabels() {
         !isReplacementContractType(effectiveProfile.contractType) &&
         !isHonorariaContractType(effectiveProfile.contractType) &&
         !isOtherContractType(effectiveProfile.contractType);
-    // Honorarios no puede tomar P. Administrativo, 1/2 ADM, F. Legal ni permiso sin
-    // goce: esos botones quedan deshabilitados.
+    // Honorarios no puede tomar ningun permiso (administrativo, feriados,
+    // licencias, sin goce, devolucion de horas ni ausencia): esos botones
+    // quedan deshabilitados.
     const blocksLeaveBenefits =
         contractBlocksLeaveBenefits(effectiveProfile);
 
@@ -5998,10 +5999,12 @@ function renderLeaveActionLabels() {
     DOM.adminBtn.disabled = blocksLeaveBenefits || saldos.admin <= 0;
     DOM.halfAdminMorningBtn.disabled = blocksLeaveBenefits || saldos.admin <= 0;
     DOM.halfAdminAfternoonBtn.disabled = blocksLeaveBenefits || saldos.admin <= 0;
-    DOM.compBtn.disabled = saldos.comp <= 0;
+    // Honorarios no tiene NINGUN permiso: se le pagan solo las horas que
+    // trabaja. Si un dia tiene licencia, el supervisor deja ese dia sin turno.
+    DOM.compBtn.disabled = blocksLeaveBenefits || saldos.comp <= 0;
     DOM.legalBtn.disabled = blocksLeaveBenefits || saldos.legal <= 0;
-    DOM.licenseBtn.disabled = false;
-    DOM.professionalLicenseBtn.disabled = false;
+    DOM.licenseBtn.disabled = blocksLeaveBenefits;
+    DOM.professionalLicenseBtn.disabled = blocksLeaveBenefits;
     if (DOM.unionLeaveBtn) {
         DOM.unionLeaveBtn.classList.toggle(
             "hidden",
@@ -6010,8 +6013,8 @@ function renderLeaveActionLabels() {
         DOM.unionLeaveBtn.disabled = !canUseUnionLeave;
     }
     DOM.unpaidLeaveBtn.disabled = blocksLeaveBenefits;
-    DOM.hoursReturnBtn.disabled = saldos.hoursReturn <= 0;
-    DOM.unjustifiedAbsenceBtn.disabled = false;
+    DOM.hoursReturnBtn.disabled = blocksLeaveBenefits || saldos.hoursReturn <= 0;
+    DOM.unjustifiedAbsenceBtn.disabled = blocksLeaveBenefits;
     DOM.clockMarkBtn.disabled = false;
     if (DOM.trainingBtn) DOM.trainingBtn.disabled = false;
     DOM.moveShiftBtn.disabled = false;
@@ -8291,6 +8294,19 @@ async function renderReportsDetail() {
         DOM.printReportPdfBtn.onclick = () =>
             printSpecificReportPdf(profile, reportDate);
     }
+
+    // Honorarios no tiene Anexo 1 (horas extras TENS) ni Anexo 2 (autorizacion
+    // de cobertura): se le pagan solo las horas trabajadas.
+    const honorariaReport = isHonorariaProfile(
+        profile.name,
+        `${reportDate.getFullYear()}-${reportDate.getMonth()}-1`
+    );
+
+    DOM.printTensReportBtn?.classList.toggle("hidden", honorariaReport);
+    DOM.printCoverageAuthorizationBtn?.classList.toggle(
+        "hidden",
+        honorariaReport
+    );
 
     if (DOM.printTensReportBtn) {
         DOM.printTensReportBtn.onclick = () =>

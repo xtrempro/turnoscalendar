@@ -47,6 +47,7 @@ import {
 import { getWorkerAppLinkForProfile } from "./workerAppLinks.js";
 import { releaseLeaveHoldsForCoverage } from "./leaveHold.js";
 import { removePreassignment } from "./preassignments.js";
+import { isHonorariaProfile } from "./contracts.js";
 import {
     coverageGapsFromRecords,
     coveredShiftIsComplete,
@@ -1816,6 +1817,10 @@ function formatHours(hours) {
 }
 
 function getPendingManualExtraTurn(profile, keyDay) {
+    // Honorarios: se le pagan las horas que trabaja. Un turno agregado no es
+    // "extra" ni cubre a nadie, asi que nunca pide motivo.
+    if (isHonorariaProfile(profile, keyDay)) return 0;
+
     const baseWithSwaps = aplicarCambiosTurno(
         profile,
         keyDay,

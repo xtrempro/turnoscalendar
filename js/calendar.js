@@ -159,6 +159,7 @@ import {
     getReplacementContractCoverageWorker,
     getReplacementContractsForDate,
     hasContractForDate,
+    isHonorariaProfile,
     isReplacementProfile
 } from "./contracts.js";
 import {
@@ -5317,6 +5318,11 @@ function getPendingManualExtraTurn(
     keyDay,
     profileData
 ) {
+    // Honorarios: el turno se agrega para cubrir una brecha o de apoyo; no es
+    // extra ni cubre a nadie, asi que nunca pide motivo ni a quien reemplaza.
+    // Lo que se vigila es el tope de horas de su contrato.
+    if (isHonorariaProfile(profileName, keyDay)) return 0;
+
     const extraTurn = getManualExtraTurn(
         profileName,
         keyDay,

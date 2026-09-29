@@ -3,6 +3,41 @@ import {
 } from "./contracts.js";
 import { calcHours } from "./calculations.js";
 import { getTurnoReal } from "./turnEngine.js";
+import { getClockMark, getWorkedIntervalsForState } from "./clockMarks.js";
+
+/**
+ * Horas de un dia de honorarios: las del turno, o las TRABAJADAS si el
+ * supervisor modifico el marcaje. Es la forma que tiene de ajustar un periodo
+ * que se paso del tope sin quitar el turno entero, asi que tiene que contar.
+ *
+ * El reparto diurno/nocturno se conserva en la misma proporcion del turno: el
+ * tope es de horas totales, el reparto solo informa.
+ */
+function honorariaDayHours(profileName, keyDay, date, state, holidays) {
+    const base = calcHours(date, state, holidays);
+    const baseDay = Math.max(0, Number(base.d) || 0);
+    const baseNight = Math.max(0, Number(base.n) || 0);
+
+    if (!getClockMark(profileName, keyDay)) {
+        return { d: baseDay, n: baseNight };
+    }
+
+    const worked = getWorkedIntervalsForState(
+        profileName,
+        keyDay,
+        date,
+        state,
+        holidays
+    ).reduce((total, interval) =>
+        total + Math.max(0, (interval.end - interval.start) / 3600000), 0);
+    const baseTotal = baseDay + baseNight;
+
+    if (baseTotal <= 0) return { d: worked, n: 0 };
+
+    const ratio = worked / baseTotal;
+
+    return { d: baseDay * ratio, n: baseNight * ratio };
+}
 
 function roundHours(value) {
     return Math.round((Number(value) || 0) * 100) / 100;
@@ -167,7 +202,13 @@ export function getHonorariaMonthlySummary(
             week.allowedHours = cap;
 
             const state = getTurnoReal(profileName, keyDay);
-            const hours = calcHours(date, state, holidays);
+            const hours = honorariaDayHours(
+                profileName,
+                keyDay,
+                date,
+                state,
+                holidays
+            );
             const dayHours = Math.max(0, Number(hours.d) || 0);
             const nightHours = Math.max(0, Number(hours.n) || 0);
             const turnHours = roundHours(dayHours + nightHours);

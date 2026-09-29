@@ -3904,6 +3904,23 @@ body[data-active-view="log"] .secondary-grid {
     background: rgba(248, 113, 113, 0.16);
 }
 
+/* Honorarios: el periodo o el dia que pasa el tope de horas del contrato. */
+.report-table .report-row--excess td {
+    background: rgba(248, 113, 113, 0.16);
+    color: #b91c1c;
+    font-weight: 600;
+}
+
+.honoraria-report-total {
+    margin: 4px 0 10px;
+    font-size: 0.92rem;
+}
+
+.honoraria-report-excess {
+    color: #b91c1c;
+    font-weight: 600;
+}
+
 /* Cruz del dia trabajado sin registro de entrada. El cursor de ayuda avisa que
    hay algo que leer al pasar el mouse; sin el, el tooltip pasa desapercibido. */
 .report-table td.report-cell--missing-entry {

@@ -12,7 +12,7 @@ import {
     getCompensationProfileAt,
     isProfileActive
 } from "./storage.js";
-import { fetchHolidays } from "./holidays.js";
+import { fetchHolidays, getCachedHolidays } from "./holidays.js";
 import {
     AVERAGE_DIURNAL_WORKDAY_HOURS,
     diurnoExtraDayHoursWithHolidays
@@ -85,9 +85,11 @@ import {
     formatContractDate,
     getContractsForProfile,
     isHonorariaContractType,
+    isHonorariaProfile,
     isReplacementContractType,
     isReplacementProfile
 } from "./contracts.js";
+import { getHonorariaMonthlySummary } from "./honoraria.js";
 import { REPLACEMENT_ROTATION_MODE } from "./replacementRotation.js";
 import {
     coverWindowFromRecord,
@@ -3366,10 +3368,15 @@ function cellHTML(row, column) {
 function reportTableRowsHTML(columns, rows, emptyText) {
     return rows.length
         ? rows.map(row => {
-            const rowClass =
-                row.diaHabil === "No"
-                    ? ` class="report-row--inhabil"`
-                    : "";
+            // `rowClass` marca la fila entera (honorarios: el periodo o el dia
+            // que pasa el tope del contrato va en rojo).
+            const classes = [
+                row.diaHabil === "No" ? "report-row--inhabil" : "",
+                row.rowClass || ""
+            ].filter(Boolean);
+            const rowClass = classes.length
+                ? ` class="${escapeHTML(classes.join(" "))}"`
+                : "";
 
             return `
             <tr${rowClass}>
@@ -3686,7 +3693,151 @@ function noAssignmentProfileRows(model) {
     ];
 }
 
+/* =========================================================
+   Honorarios
+
+   Se le pagan solo las horas trabajadas: no tiene asignacion de turno, grado,
+   horas extras, permisos ni cambios de turno. Lo que el supervisor vigila es
+   que no pase las horas de su contrato (semanal o mensual). Por eso el reporte
+   muestra, por periodo del tope, las horas del contrato contra las realizadas
+   -con el marcaje modificado aplicado- y marca en rojo lo que se pasa, y en el
+   detalle los dias donde se pasa, para saber que turno recortar o quitar.
+========================================================= */
+
+function isHonorariaReportModel(model) {
+    const name = model?.profile?.name;
+    const date = model?.monthDate;
+
+    if (!name || !(date instanceof Date)) return false;
+
+    return isHonorariaProfile(
+        name,
+        `${date.getFullYear()}-${date.getMonth()}-1`
+    );
+}
+
+function honorariaProfileRows(model) {
+    return noAssignmentProfileRows(model).filter(row =>
+        !["Grado", "Asignación de Turno"].includes(row.campo)
+    );
+}
+
+function formatReportHours(value) {
+    const hours = Math.round((Number(value) || 0) * 100) / 100;
+
+    return `${hours.toLocaleString("es-CL")} h`;
+}
+
+function shortISODate(iso) {
+    const [year, month, day] = String(iso || "").split("-");
+
+    return year && month && day ? `${day}-${month}-${year}` : String(iso || "");
+}
+
+function honorariaPeriodRows(summary, model) {
+    if (!summary) return [];
+
+    const monthly = summary.contract?.limitPeriod === "monthly";
+    const row = ({ periodo, allowed, assigned }) => {
+        const excess = Math.round((assigned - allowed) * 100) / 100;
+
+        return {
+            periodo,
+            contrato: formatReportHours(allowed),
+            realizadas: formatReportHours(assigned),
+            diferencia: excess > 0
+                ? `+${formatReportHours(excess)} (se pasa)`
+                : `Quedan ${formatReportHours(-excess)}`,
+            rowClass: excess > 0 ? "report-row--excess" : ""
+        };
+    };
+
+    if (monthly) {
+        return [row({
+            periodo: `Mes de ${model.monthName}`,
+            allowed: summary.allowedHours,
+            assigned: summary.assignedHours
+        })];
+    }
+
+    return Object.values(summary.weeks || {})
+        .filter(week => week.allowedHours || week.assignedHours)
+        .sort((a, b) => String(a.start).localeCompare(String(b.start)))
+        .map(week => row({
+            periodo: `Semana ${shortISODate(week.start)} al ${shortISODate(week.end)}`,
+            allowed: week.allowedHours,
+            assigned: week.assignedHours
+        }));
+}
+
+function buildHonorariaReportHTML(model) {
+    const date = model.monthDate;
+    const summary = getHonorariaMonthlySummary(
+        model.profile.name,
+        date.getFullYear(),
+        date.getMonth(),
+        getCachedHolidays(date.getFullYear()) || {}
+    );
+    const excessDays = new Set(
+        Object.keys(summary?.excessByKey || {}).map(key => isoFromKey(key))
+    );
+    const periodRows = honorariaPeriodRows(summary, model);
+    const period = summary?.contract?.limitPeriod === "monthly"
+        ? "mensual"
+        : "semanal";
+    const dayRows = (model.dayRows || []).map(row => {
+        const [day, month, year] = String(row.fecha || "").split("-");
+        const iso = year && month && day ? `${year}-${month}-${day}` : "";
+
+        return excessDays.has(iso)
+            ? { ...row, rowClass: "report-row--excess" }
+            : row;
+    });
+
+    return `
+        <div class="no-assignment-report honoraria-report">
+            <div class="report-title-strip">
+                PLANILLA "${escapeHTML(model.monthName.toUpperCase())}"
+            </div>
+            ${reportTable("Datos del trabajador", [
+                { key: "campo", label: "Campo" },
+                { key: "valor", label: "Valor" }
+            ], honorariaProfileRows(model))}
+            ${reportTable(`Horas del contrato (tope ${period})`, [
+                { key: "periodo", label: "Periodo" },
+                { key: "contrato", label: "Horas del contrato" },
+                { key: "realizadas", label: "Horas realizadas" },
+                { key: "diferencia", label: "Saldo" }
+            ], periodRows, "Sin contrato de honorarios vigente este mes.")}
+            ${summary ? `
+                <p class="honoraria-report-total">
+                    Horas realizadas en el mes: <strong>${escapeHTML(formatReportHours(summary.assignedHours))}</strong>
+                    ${summary.overtimeHours > 0
+                        ? ` · <span class="honoraria-report-excess">Se pasa del contrato en ${escapeHTML(formatReportHours(summary.overtimeHours))}: recorta el marcaje de algún turno o quita uno (días en rojo).</span>`
+                        : ""}
+                </p>
+            ` : ""}
+            ${reportTable("Registros de marcaje", [
+                { key: "fecha", label: "Fecha" },
+                { key: "turno", label: "Turno" },
+                { key: "incidencia", label: "Tipo de Incidencia" },
+                { key: "comentario", label: "Comentario" }
+            ], model.clockRows || [])}
+            ${reportTable("Detalle de turnos", [
+                { key: "fecha", label: "Fecha" },
+                { key: "turnoRealizado", label: "Turno realizado" },
+                { key: "entrada", label: "Entrada" },
+                { key: "salida", label: "Salida" },
+                { key: "atrasos", label: "Atrasos" }
+            ], dayRows)}
+            ${reportSignatureFooterHTML()}
+        </div>
+    `;
+}
+
 function buildNoAssignmentReportHTML(model) {
+    if (isHonorariaReportModel(model)) return buildHonorariaReportHTML(model);
+
     return `
         <div class="no-assignment-report">
             <div class="report-title-strip">
@@ -3761,6 +3912,8 @@ function buildNoAssignmentReportHTML(model) {
 }
 
 function buildAssignedShiftReportHTML(model) {
+    if (isHonorariaReportModel(model)) return buildHonorariaReportHTML(model);
+
     return `
         <div class="no-assignment-report assigned-shift-report">
             <div class="report-title-strip">
@@ -3833,6 +3986,8 @@ function noAssignmentWorkbookHTML(model) {
                     .report-section--worker-data th:first-child,
                     .report-section--worker-data td:first-child { width: 1%; white-space: nowrap; padding-right: 22px; }
                     .report-row--inhabil td:first-child { background: #fee2e2; }
+                    .report-row--excess td { background: #fee2e2; color: #b91c1c; font-weight: 700; }
+                    .honoraria-report-excess { color: #b91c1c; font-weight: 700; }
                     .report-signature-footer { width: 320px; margin: 72px 28px 0 auto; padding: 8px 0 0; border-top: 1px solid #1e2f4d; color: #1e2f4d; font-size: 11px; line-height: 1.3; text-align: center; }
                 </style>
             </head>
@@ -3860,6 +4015,8 @@ function assignedShiftWorkbookHTML(model) {
                     .report-section--worker-data th:first-child,
                     .report-section--worker-data td:first-child { width: 1%; white-space: nowrap; padding-right: 22px; }
                     .report-row--inhabil td:first-child { background: #fee2e2; }
+                    .report-row--excess td { background: #fee2e2; color: #b91c1c; font-weight: 700; }
+                    .honoraria-report-excess { color: #b91c1c; font-weight: 700; }
                     .report-signature-footer { width: 320px; margin: 72px 28px 0 auto; padding: 8px 0 0; border-top: 1px solid #1e2f4d; color: #1e2f4d; font-size: 11px; line-height: 1.3; text-align: center; }
                 </style>
             </head>

@@ -82,6 +82,7 @@ import {
     getInheritedReplacementContractForCoveredShift,
     getReplacementContractCoverageWorker,
     hasContractForDate,
+    isHonorariaProfile,
     isReplacementProfile,
     replacementContractCoversCoveredShift
 } from "./contracts.js";
@@ -2405,6 +2406,9 @@ function replacementMarker(nombre, key) {
 }
 
 function pendingManualExtraMarker(nombre, key) {
+    // Honorarios: un turno agregado no pide motivo (ver replacements.js).
+    if (isHonorariaProfile(nombre, key)) return 0;
+
     const data = getData(nombre);
     const baseWithSwaps = aplicarCambiosTurno(
         nombre,
