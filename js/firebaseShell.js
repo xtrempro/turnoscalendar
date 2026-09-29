@@ -55,6 +55,11 @@ import {
     listInterUnitAbsenceRequests,
     respondInterUnitAbsence
 } from "./firebaseInterUnitAbsences.js";
+import {
+    cancelWorkerTransfer,
+    listWorkerTransferRequests,
+    respondWorkerTransfer
+} from "./workerTransfers.js";
 
 let currentUser = null;
 let currentWorkspace = getActiveWorkspace();
@@ -67,7 +72,10 @@ let linkedUnitState = {
     // Solicitudes para usar la ausencia de un trabajador de otra unidad como
     // respaldo de un contrato de reemplazo. Viven junto a los enlaces porque
     // son del mismo panel y se recargan a la vez.
-    absenceRequests: []
+    absenceRequests: [],
+    // Trabajadores que otra unidad quiere transferir a esta, y los que esta
+    // envio. Mismo panel y misma recarga que las ausencias.
+    transferRequests: []
 };
 let supervisorInviteState = {
     loading: false,
@@ -86,6 +94,13 @@ const SUPERVISOR_INVITE_DISPLAY_LIMITS = {
 };
 let activatingWorkspace = false;
 let claimingPendingSupervisorInvite = false;
+
+// "2026-10-01" -> "01/10/2026", como se muestran las fechas en la app.
+function formatTransferDate(iso) {
+    const [year, month, day] = String(iso || "").split("-");
+
+    return year && month && day ? `${day}/${month}/${year}` : String(iso || "");
+}
 
 function displayUserName(user) {
     if (!isFirebaseConfigured()) return "Modo local";
@@ -766,6 +781,16 @@ function linkedUnitsPanelHTML() {
         item.requesterWorkspaceId === currentWorkspace.id &&
         item.status === "approved"
     );
+    // Trabajadores que otra unidad quiere transferir a esta, y los que esta
+    // envio y siguen esperando respuesta.
+    const transferIncoming = linkedUnitState.transferRequests.filter(item =>
+        item.targetWorkspaceId === currentWorkspace.id &&
+        item.status === "pending"
+    );
+    const transferOutgoing = linkedUnitState.transferRequests.filter(item =>
+        item.sourceWorkspaceId === currentWorkspace.id &&
+        item.status === "pending"
+    );
     const message = linkedUnitState.message
         ? `
             <div class="firebase-linked-status">
@@ -869,6 +894,53 @@ function linkedUnitsPanelHTML() {
                             <div class="firebase-linked-actions">
                                 <button class="primary-button" type="button" data-action="create-contract-from-absence" data-absence-request-ref="${escapeHTML(item.id)}">
                                     Crear contrato
+                                </button>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
+            ` : ""}
+            ${transferIncoming.length ? `
+                <div class="firebase-linked-list">
+                    <span>Trabajadores transferidos a tu unidad</span>
+                    ${transferIncoming.map(item => `
+                        <article class="firebase-linked-item">
+                            <div>
+                                <strong>${escapeHTML(item.profileName || "Trabajador")}</strong>
+                                <small>
+                                    Desde ${escapeHTML(item.sourceWorkspaceName || "otra unidad")},
+                                    a partir del ${escapeHTML(formatTransferDate(item.startDate))}
+                                </small>
+                                <small>Al aceptar creas su perfil y eliges su rotativa</small>
+                            </div>
+                            <div class="firebase-linked-actions">
+                                <button class="primary-button" type="button" data-action="accept-worker-transfer" data-transfer-ref="${escapeHTML(item.id)}">
+                                    Aceptar
+                                </button>
+                                <button class="secondary-button" type="button" data-action="reject-worker-transfer" data-transfer-ref="${escapeHTML(item.id)}">
+                                    Rechazar
+                                </button>
+                            </div>
+                        </article>
+                    `).join("")}
+                </div>
+            ` : ""}
+            ${transferOutgoing.length ? `
+                <div class="firebase-linked-list">
+                    <span>Transferencias que enviaste</span>
+                    ${transferOutgoing.map(item => `
+                        <article class="firebase-linked-item">
+                            <div>
+                                <strong>${escapeHTML(item.profileName || "Trabajador")}</strong>
+                                <small>
+                                    A ${escapeHTML(item.targetWorkspaceName || "otra unidad")},
+                                    desde el ${escapeHTML(formatTransferDate(item.startDate))}
+                                </small>
+                                <small>Esperando que la otra unidad la acepte</small>
+                            </div>
+                            <div class="firebase-linked-actions">
+                                <button class="secondary-button" type="button" data-action="cancel-worker-transfer" data-transfer-ref="${escapeHTML(item.id)}">
+                                    Retirar
                                 </button>
                             </div>
                         </article>
@@ -1353,6 +1425,7 @@ async function refreshLinkedUnits() {
     ) {
         linkedUnitState.links = [];
         linkedUnitState.absenceRequests = [];
+        linkedUnitState.transferRequests = [];
         return;
     }
 
@@ -1375,6 +1448,17 @@ async function refreshLinkedUnits() {
         linkedUnitState.absenceRequests = [];
         console.warn(
             "No se pudieron cargar las solicitudes de ausencia entre unidades.",
+            error
+        );
+    }
+
+    try {
+        linkedUnitState.transferRequests =
+            await listWorkerTransferRequests();
+    } catch (error) {
+        linkedUnitState.transferRequests = [];
+        console.warn(
+            "No se pudieron cargar las transferencias de trabajadores.",
             error
         );
     }
@@ -1717,6 +1801,72 @@ async function handleAction(action, backdrop, sourceButton = null) {
             // la vista; si no, se abriria detras de este cuadro.
             closeModal(backdrop, { force: true });
             await options.onCreateContractFromAbsence?.(solicitud);
+            return;
+        }
+
+        if (action === "accept-worker-transfer") {
+            const solicitud = linkedUnitState.transferRequests.find(item =>
+                item.id === sourceButton?.dataset.transferRef
+            );
+
+            if (!solicitud) return;
+
+            // Aceptar es crear el perfil, y eso es de main.js. La solicitud se
+            // da por aceptada recien cuando el perfil queda guardado.
+            closeModal(backdrop, { force: true });
+            await options.onAcceptWorkerTransfer?.(solicitud);
+            return;
+        }
+
+        if (action === "reject-worker-transfer") {
+            const requestId = sourceButton?.dataset.transferRef;
+            const solicitud = linkedUnitState.transferRequests.find(item =>
+                item.id === requestId
+            );
+            const motivo = await showPrompt(
+                `¿Por qué rechazas la transferencia de ${solicitud?.profileName || "este trabajador"}? (opcional)`,
+                {
+                    title: "Rechazar transferencia",
+                    confirmText: "Rechazar",
+                    placeholder: "Motivo"
+                }
+            );
+
+            if (motivo === null) return;
+
+            await respondWorkerTransfer({
+                requestId,
+                status: "rejected",
+                rejectReason: String(motivo || "").trim(),
+                resolvedByName: displayUserName(currentUser)
+            });
+            linkedUnitState.message =
+                "Transferencia rechazada. El trabajador sigue en su unidad.";
+            await refreshLinkedUnits();
+            renderSignedInModal(backdrop);
+            return;
+        }
+
+        if (action === "cancel-worker-transfer") {
+            const requestId = sourceButton?.dataset.transferRef;
+            const solicitud = linkedUnitState.transferRequests.find(item =>
+                item.id === requestId
+            );
+            const confirmado = await showConfirm(
+                `Se retirará la transferencia de ${solicitud?.profileName || "este trabajador"} a ${solicitud?.targetWorkspaceName || "la otra unidad"}.`,
+                {
+                    title: "Retirar transferencia",
+                    tone: "warning",
+                    confirmText: "Retirar"
+                }
+            );
+
+            if (!confirmado) return;
+
+            await cancelWorkerTransfer(requestId);
+            linkedUnitState.message = "Transferencia retirada.";
+            await refreshLinkedUnits();
+            renderSignedInModal(backdrop);
             return;
         }
 

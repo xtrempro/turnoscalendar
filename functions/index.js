@@ -44,6 +44,13 @@ const {
   respondInterUnitAbsenceRequestHandler
 } = require("./interUnitAbsenceRequests");
 const {
+  cancelWorkerTransferRequestHandler,
+  claimWorkerTransferApplicationHandler,
+  createWorkerTransferRequestHandler,
+  moveDueWorkerLinksHandler,
+  respondWorkerTransferRequestHandler
+} = require("./workerTransferRequests");
+const {
   advanceAutoCoverageCampaigns
 } = require("./autoCoverageScheduler");
 const {
@@ -380,6 +387,32 @@ async function requireWorkspaceRequestManager(
   const member = memberSnap.data();
 
   requireMemberMfa(member, token);
+  return member;
+}
+
+// Quien puede crear, editar o inactivar perfiles: el dueño, o un supervisor con
+// el menu Perfil en edicion. Es la misma regla que canManageProfiles en
+// firebase.rules.
+function memberCanManageProfiles(member = {}) {
+  if (member.role === "owner") return true;
+
+  const permissions = member.permissions && typeof member.permissions === "object"
+    ? member.permissions
+    : {};
+
+  return permissions.profile?.edit === true;
+}
+
+async function requireWorkspaceProfileManager(workspaceId, uid, token) {
+  const member = await requireWorkspaceMember(workspaceId, uid, token);
+
+  if (!memberCanManageProfiles(member)) {
+    throw new HttpsError(
+      "permission-denied",
+      "No tienes permisos para administrar perfiles en esta unidad."
+    );
+  }
+
   return member;
 }
 
@@ -4276,6 +4309,67 @@ exports.respondInterUnitAbsenceRequest = onCall(
     serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
     requireWorkspaceRequestManager
   })
+);
+
+// Transferir a un trabajador a otra unidad enlazada (functions/
+// workerTransferRequests.js, con prueba propia en functions/test).
+const workerTransferDependencies = () => ({
+  db,
+  HttpsError,
+  logger,
+  serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  requireWorkspaceProfileManager,
+  requireAcceptedWorkspaceLink
+});
+
+// El enlace de la app de un trabajador transferido se muda a la unidad nueva
+// el dia en que empieza alla (hora de Chile).
+exports.moveDueWorkerTransferLinks = onSchedule(
+  {
+    schedule: "every day 00:10",
+    timeZone: "America/Santiago",
+    region: "us-central1",
+    timeoutSeconds: 300
+  },
+  async () => {
+    const result = await moveDueWorkerLinksHandler(
+      workerTransferDependencies()
+    );
+
+    logger.info("Enlaces de transferencias mudados.", result);
+  }
+);
+
+exports.createWorkerTransferRequest = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => createWorkerTransferRequestHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
+exports.respondWorkerTransferRequest = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => respondWorkerTransferRequestHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
+exports.cancelWorkerTransferRequest = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => cancelWorkerTransferRequestHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
+exports.claimWorkerTransferApplication = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => claimWorkerTransferApplicationHandler(
+    request,
+    workerTransferDependencies()
+  )
 );
 
 // Ausencias de las unidades enlazadas, para respaldar el contrato de un

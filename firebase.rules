@@ -654,6 +654,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Transferir a un trabajador a otra unidad enlazada. Lo crea, lo responde
+    // y lo marca aplicado SOLO el servidor (functions/workerTransferRequests.js),
+    // que comprueba el enlace y quien actua. Las dos unidades lo leen: la de
+    // origen para aplicarlo al ser aceptado, la destino para responderlo.
+    match /workerTransferRequests/{requestId} {
+      allow read: if canManageProfiles(resource.data.sourceWorkspaceId) ||
+        canManageProfiles(resource.data.targetWorkspaceId);
+      allow create, update, delete: if false;
+    }
+
     match /workerAppEmailInvites/{emailKey}/items/{inviteId} {
       // Un trabajador solo puede leer las invitaciones dirigidas a SU propio
       // correo (la clave del documento es el email normalizado en minusculas).

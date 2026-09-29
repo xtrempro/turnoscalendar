@@ -10,6 +10,7 @@ export const DOM = {
     openEditProfileBtn: document.getElementById("openEditProfile"),
     workerAppInviteBtn: document.getElementById("workerAppInviteBtn"),
     workerLinkStatusBtn: document.getElementById("workerLinkStatusBtn"),
+    workerTransferBtn: document.getElementById("workerTransferBtn"),
 
     /* formulario perfil */
     profileNameInput: document.getElementById("profileNameField"),

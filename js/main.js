@@ -579,9 +579,21 @@ import {
 import {
     installAppDialogs,
     showAlert,
+    showChoice,
     showConfirm,
     showPrompt
 } from "./dialogs.js";
+import {
+    listWorkspaceLinks,
+    workspaceLinkDisplayName
+} from "./firebaseLinkedUnits.js";
+import {
+    claimWorkerTransferApplication,
+    requestWorkerTransfer,
+    respondWorkerTransfer,
+    stopWatchingAcceptedOutgoingTransfers,
+    watchAcceptedOutgoingTransfers
+} from "./workerTransfers.js";
 
 initPerformanceMonitor();
 installAppDialogs();
@@ -6798,6 +6810,17 @@ function renderDashboardState() {
         profileDraft.mode === PROFILE_MODE.CREATE ||
         (!profile && profileDraft.mode !== PROFILE_MODE.EDIT);
 
+    if (DOM.workerTransferBtn) {
+        // Un trabajador guardado y activo, mirado (no editandose), y quien mira
+        // puede editar perfiles. Las unidades enlazadas se revisan al abrir.
+        DOM.workerTransferBtn.disabled = !(
+            profileCanEdit &&
+            profile &&
+            isProfileActive(profile) &&
+            profileDraft.mode === PROFILE_MODE.VIEW
+        );
+    }
+
     if (DOM.workerAppInviteBtn) {
         const canInviteWorker =
             profileCanEdit &&
@@ -9721,6 +9744,9 @@ function startCreateMode() {
 
     clearSelectionMode(false);
     resetProfileDraft();
+    // Un "Crear nuevo" normal no acepta ninguna transferencia; acceptWorkerTransfer
+    // la vuelve a poner despues de llamar aqui.
+    pendingTransferIntake = null;
     profileAvailabilityDraftTouched = false;
     availabilityEditMode = true;
     createAvailabilityBalances =
@@ -10320,6 +10346,466 @@ function createContractFromApprovedAbsence(solicitud = {}) {
     );
 }
 
+// ───────── Transferir a otra unidad ─────────
+//
+// Origen: "Transferir a otra unidad" en el perfil pide la unidad enlazada y la
+// fecha de inicio alla, y deja una solicitud pendiente. Destino: la acepta
+// creando el perfil con el formulario de siempre (y la rotativa con su modal de
+// siempre). Origen otra vez: al saberla aceptada, inactiva el perfil y vacia
+// su calendario desde esa fecha. El servidor solo guarda la solicitud
+// (functions/workerTransferRequests.js).
+
+// La solicitud que se esta aceptando con el formulario de nuevo perfil. Se
+// confirma al guardarlo; si el supervisor lo cancela, sigue pendiente.
+let pendingTransferIntake = null;
+
+function previousCalendarISO(iso) {
+    const date = parseInputDate(iso);
+
+    if (!date) return "";
+
+    date.setDate(date.getDate() - 1);
+    return toInputDate(date);
+}
+
+// Saldos de vacaciones que se llevan a la unidad nueva: lo que le queda este
+// año MAS lo que se le devolvera al vaciar su calendario desde la fecha
+// (cleanupFutureSchedule devuelve al saldo los F. Legal, F. Compensatorios y
+// Administrativos que borra). Asi no pierde los dias que tenia agendados alla.
+//
+// Solo si empieza este mismo año: los saldos son por año, y uno que empieza el
+// año siguiente parte con los saldos de ese año en la unidad nueva.
+async function transferLeaveBalances(profileName, startISO) {
+    const year = new Date().getFullYear();
+
+    if (Number(String(startISO).slice(0, 4)) !== year) return null;
+
+    const holidays = await fetchHolidays(year);
+    const startDate = parseInputDate(startISO);
+
+    // getLeaveBalances y los dias de permiso leen el perfil ABIERTO.
+    return withProfile(profileName, () => {
+        const saldos = getLeaveBalances(year, holidays, { profileName });
+        const desde = map => Object.fromEntries(
+            scheduleWindowKeys(map, startDate).map(key => [key, map[key]])
+        );
+        const admin = getAdminDays();
+        const adminDevuelto = scheduleWindowKeys(admin, startDate)
+            .filter(key => key.startsWith(`${year}-`))
+            .reduce((total, key) => total + (admin[key] === 1 ? 1 : 0.5), 0);
+
+        return {
+            year,
+            legal: saldos.legal + contarHabiles(desde(getLegalDays()), year, holidays),
+            comp: saldos.comp + contarHabiles(desde(getCompDays()), year, holidays),
+            admin: saldos.admin + adminDevuelto,
+            hoursReturn: saldos.hoursReturn
+        };
+    });
+}
+
+function transferTomorrowISO() {
+    const date = new Date();
+
+    date.setDate(date.getDate() + 1);
+    return toInputDate(date);
+}
+
+async function openWorkerTransferDialog(profile) {
+    if (!profile?.name) return;
+
+    if (!isProfileActive(profile)) {
+        alert("Solo se puede transferir a un trabajador activo.");
+        return;
+    }
+
+    const workspace = getActiveWorkspace();
+
+    if (!workspace?.id) {
+        alert("Selecciona una unidad antes de transferir.");
+        return;
+    }
+
+    let links = [];
+
+    try {
+        links = (await listWorkspaceLinks(workspace)).filter(link =>
+            link.status === "accepted" &&
+            (
+                link.fromWorkspaceId === workspace.id ||
+                link.toWorkspaceId === workspace.id
+            )
+        );
+    } catch (error) {
+        console.warn("No se pudieron leer las unidades enlazadas.", error);
+        alert("No se pudieron leer las unidades enlazadas.");
+        return;
+    }
+
+    if (!links.length) {
+        await showAlert(
+            "Esta unidad no tiene unidades enlazadas. Enlázala primero desde Unidades enlazadas.",
+            { title: "Transferir a otra unidad", tone: "info" }
+        );
+        return;
+    }
+
+    const linkId = await showChoice(
+        `¿A qué unidad deseas transferir a ${profile.name}?`,
+        {
+            title: "Transferir a otra unidad",
+            confirmText: "Continuar",
+            choices: links.map(link => ({
+                value: link.id,
+                label: workspaceLinkDisplayName(link, workspace)
+            }))
+        }
+    );
+
+    if (!linkId) return;
+
+    const link = links.find(item => item.id === linkId);
+    const targetWorkspaceId = link.fromWorkspaceId === workspace.id
+        ? link.toWorkspaceId
+        : link.fromWorkspaceId;
+    const targetName = workspaceLinkDisplayName(link, workspace);
+    const startDate = await showPrompt(
+        `¿Desde qué fecha comienza ${profile.name} en ${targetName}?`,
+        {
+            title: "Fecha de inicio en la nueva unidad",
+            inputType: "date",
+            value: transferTomorrowISO(),
+            confirmText: "Continuar"
+        }
+    );
+
+    if (startDate === null) return;
+
+    const startISO = normalizeStoredStart(String(startDate || ""));
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
+        alert("Selecciona una fecha válida.");
+        return;
+    }
+
+    const confirmado = await showConfirm(
+        `Se enviará a ${targetName} la solicitud para transferir a ${profile.name} desde el ${formatDisplayDate(startISO)}.\n\n` +
+        "Cuando la otra unidad la acepte, su calendario en esta unidad se vaciará desde esa fecha y su perfil quedará inactivo. " +
+        "Sus saldos de vacaciones pasan a la nueva unidad y su app se cambia a ella el día en que empieza. " +
+        "Podrá seguir haciendo turnos aquí como trabajador de una unidad enlazada.",
+        {
+            title: "Transferir a otra unidad",
+            tone: "warning",
+            confirmText: "Enviar solicitud"
+        }
+    );
+
+    if (!confirmado) return;
+
+    try {
+        const leaveBalances = await transferLeaveBalances(profile.name, startISO);
+
+        await requestWorkerTransfer({
+            targetWorkspaceId,
+            targetWorkspaceName: targetName,
+            linkId,
+            startDate: startISO,
+            profile: {
+                leaveBalances,
+                name: profile.name,
+                email: profile.email || "",
+                rut: profile.rut || "",
+                phone: profile.phone || "",
+                birthDate: profile.birthDate || "",
+                contractType: profile.contractType || "",
+                estamento: profile.estamento || "",
+                profession: profile.profession || "",
+                grade: String(profile.grade || ""),
+                unionLeaveEnabled: Boolean(profile.unionLeaveEnabled),
+                sourceRotationType: getRotativa(profile.name)?.type || ""
+            },
+            requestedByName: getCurrentActor().name
+        });
+        addAuditLog(
+            AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+            "Solicito transferencia a otra unidad",
+            `${profile.name}: solicitud de transferencia a ${targetName} desde el ${formatDisplayDate(startISO)}.`,
+            { profile: profile.name, targetWorkspaceId, startDate: startISO }
+        );
+        await showAlert(
+            `La solicitud quedó enviada. ${targetName} la verá en Unidades enlazadas; ${profile.name} sigue activo aquí hasta que la acepten.`,
+            { title: "Solicitud enviada", tone: "success" }
+        );
+    } catch (error) {
+        console.warn("No se pudo solicitar la transferencia.", error);
+        alert(error?.message || "No se pudo solicitar la transferencia.");
+    }
+}
+
+// Los saldos que envio la unidad de origen, si son de este año.
+function transferredLeaveBalances(solicitud = {}) {
+    const saldos = solicitud.profile?.leaveBalances;
+    const year = Number(saldos?.year);
+
+    if (!saldos || year !== new Date().getFullYear()) return null;
+
+    const balances = {};
+
+    ["legal", "comp", "admin", "hoursReturn"].forEach(field => {
+        const value = Number(saldos[field]);
+
+        if (Number.isFinite(value) && value >= 0) balances[field] = value;
+    });
+
+    return Object.keys(balances).length ? { year, balances } : null;
+}
+
+async function confirmWorkerTransferAccepted(
+    solicitud,
+    profileName,
+    { applyBalances = false } = {}
+) {
+    // Exactos: el formulario redondea el FC a su derecho anual (0, 10 o 20) y
+    // aqui van los dias que de verdad le quedan. Solo si el supervisor no
+    // cambio los saldos a mano; si los cambio, mandan los suyos.
+    const saldos = applyBalances ? transferredLeaveBalances(solicitud) : null;
+
+    if (saldos) {
+        saveManualLeaveBalances(saldos.year, saldos.balances, profileName);
+    }
+
+    const origen = solicitud.sourceWorkspaceName || "otra unidad";
+
+    // Id fijo: si la confirmacion se reintenta, no se duplica la entrada.
+    addContractHistoryEntry(profileName, {
+        id: `transfer_${solicitud.id}_in`,
+        effectiveDate: solicitud.startDate,
+        summary: `Ingreso por transferencia desde ${origen}`,
+        actor: getCurrentActor(),
+        changes: [{
+            field: "unit",
+            label: "Unidad",
+            from: origen,
+            to: getActiveWorkspace()?.name || "esta unidad",
+            effectiveDate: solicitud.startDate
+        }]
+    });
+
+    // Arriba ANTES de aceptar: si la fecha ya llego, aceptar muda en el acto el
+    // enlace de su app y el servidor publica su calendario con lo que haya en
+    // la nube. Sin esto saldria con los saldos por defecto.
+    await sealCriticalProfileState([profileName], "worker-transfer");
+
+    await respondWorkerTransfer({
+        requestId: solicitud.id,
+        status: "accepted",
+        targetProfileName: profileName,
+        resolvedByName: getCurrentActor().name
+    });
+
+    addAuditLog(
+        AUDIT_CATEGORY.COLLABORATOR_CREATED,
+        "Acepto transferencia de trabajador",
+        `${profileName}: transferido desde ${origen} a partir del ${formatDisplayDate(solicitud.startDate)}.`,
+        { profile: profileName, requestId: solicitud.id }
+    );
+}
+
+// Destino: aceptar abre el formulario de nuevo perfil con los datos que envio
+// la unidad de origen. La rotativa la elige el supervisor, con su modal.
+async function acceptWorkerTransfer(solicitud = {}) {
+    const datos = solicitud.profile || {};
+    const nombre = String(datos.name || solicitud.profileName || "").trim();
+
+    if (!nombre || !solicitud.id) return;
+
+    if (!canEditCurrentProfileMenu()) {
+        alert("No tienes permisos para crear perfiles en esta unidad.");
+        return;
+    }
+
+    // Ya hay un perfil con ese nombre (p. ej. se creo y fallo la confirmacion):
+    // se acepta con ese, en vez de crear otro.
+    if (getProfiles().some(profile => profile.name === nombre)) {
+        const usarExistente = await showConfirm(
+            `Ya existe un perfil llamado ${nombre} en esta unidad. ¿Aceptar la transferencia con ese perfil?`,
+            {
+                title: "Aceptar transferencia",
+                tone: "warning",
+                confirmText: "Aceptar con ese perfil"
+            }
+        );
+
+        if (!usarExistente) return;
+
+        try {
+            await confirmWorkerTransferAccepted(solicitud, nombre);
+            await showAlert(
+                `La transferencia de ${nombre} quedó aceptada.`,
+                { title: "Transferencia aceptada", tone: "success" }
+            );
+        } catch (error) {
+            alert(error?.message || "No se pudo aceptar la transferencia.");
+        }
+        return;
+    }
+
+    startCreateMode();
+
+    const inicio = normalizeStoredStart(solicitud.startDate || "");
+
+    Object.assign(profileDraft, {
+        name: nombre,
+        email: String(datos.email || ""),
+        rut: String(datos.rut || ""),
+        phone: String(datos.phone || ""),
+        birthDate: String(datos.birthDate || "") || profileDraft.birthDate,
+        contractType: String(datos.contractType || ""),
+        estamento: String(datos.estamento || ""),
+        profession: normalizeProfession(datos.profession, datos.estamento),
+        grade: String(datos.grade || ""),
+        unionLeaveEnabled: Boolean(datos.unionLeaveEnabled),
+        unitEntryDate: inicio,
+        rotationStart: inicio,
+        rotationType: "",
+        active: true
+    });
+    pendingTransferIntake = solicitud;
+    profileRotationMiniDate = inicio ? parseInputDate(inicio) : new Date();
+
+    // Los saldos de vacaciones que trae de su unidad, en vez de los por
+    // defecto de un trabajador nuevo.
+    const saldos = transferredLeaveBalances(solicitud);
+
+    if (saldos) {
+        createAvailabilityBalances = {
+            ...defaultCreateAvailabilityBalances(),
+            ...saldos.balances
+        };
+    }
+
+    renderDashboardState();
+    renderBotones();
+
+    await showAlert(
+        `Revisa los datos de ${nombre}, elige su rotativa (comienza el ${formatDisplayDate(inicio)}) y guarda el perfil. ` +
+        "La transferencia queda aceptada al guardar.",
+        { title: "Transferencia desde " + (solicitud.sourceWorkspaceName || "otra unidad"), tone: "info" }
+    );
+}
+
+// Origen: las transferencias aceptadas que falta aplicar aqui. Se procesan de a
+// una; `transfersInFlight` evita tomar dos veces la misma si el oyente vuelve
+// a disparar mientras se aplica.
+const transfersInFlight = new Set();
+
+async function applyAcceptedWorkerTransfers(pendientes = []) {
+    for (const solicitud of pendientes) {
+        if (transfersInFlight.has(solicitud.id)) continue;
+
+        const profile = getProfiles()
+            .find(item => item.name === solicitud.profileName);
+
+        if (!profile) {
+            console.warn(
+                "Transferencia aceptada de un perfil que no existe aqui.",
+                solicitud.profileName
+            );
+            continue;
+        }
+
+        transfersInFlight.add(solicitud.id);
+
+        try {
+            // Solo una sesion del origen la aplica: las demas reciben false.
+            if (!await claimWorkerTransferApplication(solicitud.id)) continue;
+
+            await applyWorkerTransferAtSource(solicitud, profile);
+        } catch (error) {
+            console.warn("No se pudo aplicar la transferencia aceptada.", error);
+        } finally {
+            transfersInFlight.delete(solicitud.id);
+        }
+    }
+}
+
+async function applyWorkerTransferAtSource(solicitud, profile) {
+    const name = profile.name;
+    const startISO = normalizeStoredStart(solicitud.startDate || "");
+    const lastActiveDate = previousCalendarISO(startISO);
+    const destino = solicitud.targetWorkspaceName || "otra unidad";
+    const antes = auditProfileSnapshot(name);
+
+    // Lo mismo que inactivar a mano (guardarPerfil): calendario vacio desde la
+    // fecha, solicitudes futuras anuladas y perfil inactivo con su fecha de
+    // salida. Con withProfile para no tocar al perfil que este abierto.
+    await withProfile(name, () =>
+        cleanupFutureSchedule(parseInputDate(startISO), {
+            preserveProtectedLeaves: false
+        })
+    );
+    const canceledRequests = cancelFutureWorkerRequests(name, startISO);
+
+    if (isProfileActive(profile)) {
+        updateProfile(name, {
+            ...profile,
+            active: false,
+            unitExitDate: lastActiveDate
+        });
+        syncStaffingConfigForProfileChange(antes, auditProfileSnapshot(name));
+    }
+
+    addContractHistoryEntry(name, {
+        id: `transfer_${solicitud.id}_out`,
+        effectiveDate: startISO,
+        summary: `Transferido a ${destino}`,
+        actor: getCurrentActor(),
+        changes: [{
+            field: "unit",
+            label: "Unidad",
+            from: getActiveWorkspace()?.name || "esta unidad",
+            to: destino,
+            effectiveDate: startISO
+        }]
+    });
+    addAuditLog(
+        AUDIT_CATEGORY.PROFILE_STATUS,
+        "Transfirio trabajador a otra unidad",
+        `${name}: transferido a ${destino} desde el ${formatDisplayDate(startISO)}. Perfil inactivo y calendario vaciado desde esa fecha.`,
+        {
+            profile: name,
+            requestId: solicitud.id,
+            lastActiveDate,
+            cleanupStart: startISO,
+            canceledRequests
+        }
+    );
+
+    // Su app NO se desenlaza: el servidor muda el enlace a la unidad nueva el
+    // dia en que empieza alla (moveDueWorkerTransferLinks). Hasta entonces
+    // sigue viendo aqui sus ultimos turnos.
+    try {
+        await sealCriticalProfileState([name], "worker-transfer");
+    } catch (error) {
+        // Se sube con la sincronizacion normal; el sello solo lo adelanta.
+        console.warn("No se pudo confirmar al instante la transferencia.", error);
+    }
+    scheduleWorkerAppDataPublish(300, name);
+
+    if (getCurrentProfile() === name) {
+        setCurrentProfile(activeProfileNameAfterSave(name, { active: false }) || null);
+    }
+
+    renderProfiles({ dashboard: false });
+    renderBotones();
+    refreshAll();
+
+    void showAlert(
+        `${destino} aceptó la transferencia de ${name}. Su perfil quedó inactivo aquí y su calendario se vació desde el ${formatDisplayDate(startISO)}.`,
+        { title: "Transferencia aplicada", tone: "success" }
+    );
+}
+
 // ───────── Estado de enlace de la app del trabajador ─────────
 
 function workerInviteDateLabel(invite) {
@@ -10433,6 +10919,7 @@ function openWorkerLinkStatusPanel() {
 function exitProfileMode(selectedName = getCurrentProfile()) {
     clearSelectionMode(false);
     resetProfileDraft();
+    pendingTransferIntake = null;
     profileAvailabilityDraftTouched = false;
     availabilityEditMode = false;
     createAvailabilityBalances = null;
@@ -11766,6 +12253,9 @@ async function guardarPerfil() {
         profileDraft.mode === PROFILE_MODE.CREATE;
     const isEditing =
         profileDraft.mode === PROFILE_MODE.EDIT;
+    // Se toma ahora: exitProfileMode, a mitad del guardado, limpia el borrador.
+    const transferIntake = isCreating ? pendingTransferIntake : null;
+    const transferBalancesTouched = profileAvailabilityDraftTouched;
 
     // Gate de plan: impide AGREGAR un trabajador activo mas alla del limite del
     // plan (conteo autoritativo de activos entre todos los entornos del dueno).
@@ -12396,6 +12886,24 @@ async function guardarPerfil() {
         renderBotones();
         refreshAll();
         scheduleWorkerAppDataPublish(300, nextName);
+
+        if (transferIntake) {
+            try {
+                await confirmWorkerTransferAccepted(transferIntake, nextName, {
+                    applyBalances: !transferBalancesTouched
+                });
+                void showAlert(
+                    `${nextName} quedó creado y la transferencia aceptada. ${transferIntake.sourceWorkspaceName || "La unidad de origen"} lo dejará inactivo desde el ${formatDisplayDate(transferIntake.startDate)}.`,
+                    { title: "Transferencia aceptada", tone: "success" }
+                );
+            } catch (error) {
+                console.warn("No se pudo confirmar la transferencia.", error);
+                alert(
+                    `El perfil de ${nextName} se guardó, pero no se pudo confirmar la transferencia. ` +
+                    "Vuelve a Aceptar en Unidades enlazadas para confirmarla con este perfil."
+                );
+            }
+        }
 
         return true;
     } catch (error) {
@@ -14381,6 +14889,11 @@ function bindProfileForm() {
             openWorkerAppInviteDialog(getPerfilActual());
     }
 
+    if (DOM.workerTransferBtn) {
+        DOM.workerTransferBtn.onclick = () =>
+            openWorkerTransferDialog(getPerfilActual());
+    }
+
     if (DOM.workerLinkStatusBtn) {
         DOM.workerLinkStatusBtn.onclick = openWorkerLinkStatusPanel;
     }
@@ -16297,6 +16810,23 @@ initFirebaseShell({
                     }
                 );
 
+                // Transferencias que otra unidad acepto: se aplican aqui con el
+                // estado ya hidratado, o se inactivaria un perfil que aun no
+                // llego y se vaciaria un calendario a medio cargar.
+                void watchAcceptedOutgoingTransfers(
+                    workspace,
+                    pendientes => {
+                        if (generacion !== workspaceChangeGeneration) return;
+
+                        void applyAcceptedWorkerTransfers(pendientes);
+                    }
+                ).catch(error => {
+                    console.warn(
+                        "No se pudo escuchar las transferencias aceptadas.",
+                        error
+                    );
+                });
+
                 // La bitacora se queda fuera del arranque, pero su barrera de
                 // publicacion no puede durar toda la sesion: en cuanto hay hueco
                 // se trae, sin competir con lo que el usuario esta esperando.
@@ -16330,6 +16860,7 @@ initFirebaseShell({
             });
             startAutoCoverageScheduler();
         } else {
+            stopWatchingAcceptedOutgoingTransfers();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
@@ -16369,7 +16900,10 @@ initFirebaseShell({
     // crear el contrato es trabajo de aqui, donde vive el borrador de perfil.
     onCreateContractFromAbsence: solicitud => {
         createContractFromApprovedAbsence(solicitud);
-    }
+    },
+    // Aceptar un trabajador que otra unidad transfiere a esta: se crea su
+    // perfil aqui, con el formulario de siempre.
+    onAcceptWorkerTransfer: solicitud => acceptWorkerTransfer(solicitud)
 });
 bindProfileForm();
 initializeInactiveProfileToggles();
