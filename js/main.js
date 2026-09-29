@@ -587,6 +587,7 @@ import {
     listWorkspaceLinks,
     workspaceLinkDisplayName
 } from "./firebaseLinkedUnits.js";
+import { renderMonthlyCalendarPanel } from "./monthlyCalendar.js";
 import {
     claimWorkerTransferApplication,
     claimWorkerTransferBalances,
@@ -7294,6 +7295,10 @@ async function setActiveShortcut(targetId, options = {}) {
 
         if (nextView === "holders") {
             void renderShiftHoldersPanel();
+        }
+
+        if (nextView === "monthly") {
+            void renderMonthlyCalendarPanel();
         }
 
         if (nextView === "agenda") {

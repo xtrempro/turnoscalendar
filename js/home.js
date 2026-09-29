@@ -338,7 +338,9 @@ function classifyAbsence(name, keyDay) {
 // Un turno queda "sin cubrir": el turno base requiere reemplazo por la ausencia
 // y no hay reemplazo activo, ni preasignacion, ni marca "no requiere cobertura".
 // Misma logica que el badge "!" del calendario.
-function isShiftUncovered(name, keyDay) {
+// Exportada: el Calendario Mensual marca sus huecos con esta MISMA regla, asi
+// el inicio, el calendario y el mensual no pueden discrepar.
+export function isShiftUncovered(name, keyDay) {
     const admin = profileMap("admin", name);
     const legal = profileMap("legal", name);
     const comp = profileMap("comp", name);

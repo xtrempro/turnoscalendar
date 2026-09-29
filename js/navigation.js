@@ -87,6 +87,10 @@ export function getViewForTarget(targetId) {
         return "holders";
     }
 
+    if (targetId === "monthlyCalendarPanel") {
+        return "monthly";
+    }
+
     if (targetId === "agendaPanel") {
         return "agenda";
     }

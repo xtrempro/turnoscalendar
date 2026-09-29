@@ -48,7 +48,10 @@ const TARGET_TO_MENU = MENU_PERMISSION_DEFS.reduce((map, menu) => {
     timelinePanel: "turnos",
     // Titulares de Turnos es una lectura del calendario de la unidad: quien no
     // puede ver Turnos tampoco tiene por que ver en que grupo va cada persona.
-    shiftHoldersPanel: "turnos"
+    shiftHoldersPanel: "turnos",
+    // Calendario Mensual: la misma lectura (y edicion) del calendario de la
+    // unidad, asi que va con el permiso de Turnos.
+    monthlyCalendarPanel: "turnos"
 });
 const LEGACY_FULL_ADMIN_PERMISSION_KEYS = MENU_PERMISSION_DEFS
     .map(menu => menu.key)
