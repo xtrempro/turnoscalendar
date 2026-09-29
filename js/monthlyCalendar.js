@@ -224,6 +224,36 @@ function ownTurn(name, keyDay) {
     );
 }
 
+// Tramos que ocupa el turno de un registro de reemplazo (codigo "L", "N"...).
+const CODE_SLOTS = {
+    L: ["day"],
+    HM: ["day"],
+    HT: ["day"],
+    N: ["night"],
+    "D+N": ["night"],
+    "24": ["day", "night"],
+    "18": ["day", "night"]
+};
+
+/**
+ * El motivo de horas extras con que se respaldo el turno de mas de ese tramo,
+ * si NO cubre a nadie ("Apoyo pacientes TC oncologicos"). Esos van en su
+ * propia columna; quien reemplaza a alguien sigue con los titulares, en rojo.
+ */
+function extraReasonFor(name, iso, slot) {
+    const record = getReplacements().find(item =>
+        replacementActive(item) &&
+        item.worker === name &&
+        item.date === iso &&
+        item.source === "manual_extra" &&
+        !item.replaced &&
+        String(item.reason || "").trim() &&
+        (CODE_SLOTS[String(item.turno || "")] || []).includes(slot)
+    );
+
+    return record ? String(record.reason).trim() : "";
+}
+
 function slotsOf(state) {
     const value = Number(state) || TURNO.LIBRE;
 
@@ -258,7 +288,9 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
             weekday: WEEKDAY_INITIALS[date.getDay()],
             business: isBusinessDay(date, holidays),
             slots: { day: [], night: [] },
-            gaps: { day: [], night: [] }
+            gaps: { day: [], night: [] },
+            // Motivo de horas extras -> quienes vienen por el (su columna).
+            extras: { day: {}, night: {} }
         };
 
         profiles.forEach(profile => {
@@ -292,12 +324,28 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
             ["day", "night"].forEach(slot => {
                 if (!realSlots[slot]) return;
 
-                row.slots[slot].push({
+                const person = {
                     name,
                     initials: initials.get(name) || workerInitials(name),
                     covering: byContract || !ownSlots[slot],
                     half: HALF_LABEL[real] || ""
-                });
+                };
+                // Apoyo extra con motivo (no reemplaza a nadie): a la columna
+                // de su motivo, sin rojo.
+                const reason = !byContract && !ownSlots[slot]
+                    ? extraReasonFor(name, row.iso, slot)
+                    : "";
+
+                if (reason) {
+                    (row.extras[slot][reason] ||= []).push({
+                        ...person,
+                        covering: false,
+                        extraReason: reason
+                    });
+                    return;
+                }
+
+                row.slots[slot].push(person);
             });
         });
 
@@ -317,7 +365,20 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
         }
     }
 
-    return { year, month: monthIndex, rows };
+    // Una columna por motivo distinto del mes, en el orden en que aparecen.
+    const extraColumns = { day: [], night: [] };
+
+    rows.forEach(row => {
+        ["day", "night"].forEach(slot => {
+            Object.keys(row.extras[slot]).forEach(reason => {
+                if (!extraColumns[slot].includes(reason)) {
+                    extraColumns[slot].push(reason);
+                }
+            });
+        });
+    });
+
+    return { year, month: monthIndex, rows, extraColumns };
 }
 
 /* =========================================================
@@ -362,10 +423,19 @@ function panelHTML(model, groups) {
                 <table class="mcal-table">
                     <thead>
                         <tr>
-                            <th>Fecha</th>
-                            <th></th>
-                            <th>Día</th>
-                            <th>Noche</th>
+                            <th rowspan="2">Fecha</th>
+                            <th rowspan="2"></th>
+                            ${["day", "night"].map(slot => `
+                                <th colspan="${1 + model.extraColumns[slot].length}" class="mcal-group-head">${slot === "day" ? "Día" : "Noche"}</th>
+                            `).join("")}
+                        </tr>
+                        <tr>
+                            ${["day", "night"].map(slot => `
+                                <th class="mcal-sub-head">Titulares</th>
+                                ${model.extraColumns[slot].map(reason => `
+                                    <th class="mcal-sub-head mcal-sub-head--extra" title="Apoyo extra: ${escapeHTML(reason)}">${escapeHTML(reason)}</th>
+                                `).join("")}
+                            `).join("")}
                         </tr>
                     </thead>
                     <tbody>
@@ -373,8 +443,14 @@ function panelHTML(model, groups) {
                             <tr class="${row.business ? "" : "is-weekend"}">
                                 <td class="mcal-date">${row.day}</td>
                                 <td class="mcal-weekday">${row.weekday}</td>
-                                <td class="mcal-slot" data-mcal-slot="day" data-mcal-key="${escapeHTML(row.keyDay)}" tabindex="0">${chipsHTML(row.slots.day, row.gaps.day)}</td>
-                                <td class="mcal-slot" data-mcal-slot="night" data-mcal-key="${escapeHTML(row.keyDay)}" tabindex="0">${chipsHTML(row.slots.night, row.gaps.night)}</td>
+                                ${["day", "night"].map(slot => `
+                                    <td class="mcal-slot" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" tabindex="0">${chipsHTML(row.slots[slot], row.gaps[slot])}</td>
+                                    ${model.extraColumns[slot].map(reason => `
+                                        <td class="mcal-slot mcal-slot--extra" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" tabindex="0">${(row.extras[slot][reason] || []).length
+                                            ? chipsHTML(row.extras[slot][reason], [])
+                                            : ""}</td>
+                                    `).join("")}
+                                `).join("")}
                             </tr>
                         `).join("")}
                     </tbody>
@@ -605,12 +681,10 @@ async function removeCover(person, keyDay) {
         isReplacementProfile(name, keyDay) &&
         getContractForDate(name, keyDay);
 
+    // Turno agregado a mano (no reemplaza a nadie): se quita como en su
+    // calendario, devolviendo el dia a su turno base.
     if (!records.length && !contract) {
-        await showAlert(
-            `${name} tiene un turno agregado a mano ese día, no un reemplazo. Quítalo desde su calendario.`,
-            { title: "Quitar del turno", tone: "info" }
-        );
-        return false;
+        return Boolean(await window.offerManualExtraRemoval?.(name, keyDay));
     }
 
     const covered = records.map(record => record.replaced).filter(Boolean);
@@ -671,7 +745,11 @@ function closeSlotDialog(backdrop, onKeydown) {
 }
 
 function openSlotDialog(row, slot) {
-    const people = row.slots[slot];
+    // Titulares y, despues, los apoyos extra de ese tramo (con su motivo).
+    const people = [
+        ...row.slots[slot],
+        ...Object.values(row.extras?.[slot] || {}).flat()
+    ];
     const gaps = row.gaps[slot];
     const date = dateFromKey(row.keyDay);
     const title = `${slot === "day" ? "Día" : "Noche"} · ${date.toLocaleDateString("es-CL", {
@@ -691,7 +769,7 @@ function openSlotDialog(row, slot) {
                     ${people.map((person, index) => `
                         <li>
                             <span class="mcal-chip${person.covering ? " is-covering" : ""}">${escapeHTML(person.initials)}</span>
-                            <span class="mcal-dialog-name">${escapeHTML(person.name)}${person.half ? ` <small>(${escapeHTML(person.half)})</small>` : ""}<small>${person.covering ? "Cubriendo" : "Su turno"}</small></span>
+                            <span class="mcal-dialog-name">${escapeHTML(person.name)}${person.half ? ` <small>(${escapeHTML(person.half)})</small>` : ""}<small>${person.extraReason ? `Apoyo extra: ${escapeHTML(person.extraReason)}` : person.covering ? "Cubriendo" : "Su turno"}</small></span>
                             ${canEdit ? `<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button>` : ""}
                         </li>
                     `).join("")}
@@ -735,7 +813,11 @@ function openSlotDialog(row, slot) {
 
             closeSlotDialog(backdrop, onKeydown);
 
-            const changed = person.covering
+            // Apoyo extra: se quita el turno agregado, sin permiso. Quien
+            // cubre: se anula su cobertura. Su propio turno: con un permiso.
+            const changed = person.extraReason
+                ? Boolean(await window.offerManualExtraRemoval?.(person.name, row.keyDay))
+                : person.covering
                 ? await removeCover(person, row.keyDay)
                 : await removeWithLeave(person, row.keyDay);
 

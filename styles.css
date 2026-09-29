@@ -2140,6 +2140,31 @@ body[data-active-view="home"] .secondary-grid {
     letter-spacing: 0.02em;
 }
 
+.mcal-group-head {
+    font-size: 0.95rem;
+}
+
+.mcal-sub-head {
+    font-size: 0.76rem;
+    font-style: normal !important;
+    font-weight: 700 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+/* Un motivo de horas extras por columna: angosta, con el motivo en varias
+   lineas si es largo. */
+.mcal-sub-head--extra {
+    max-width: 150px;
+    white-space: normal;
+    color: var(--muted);
+}
+
+.mcal-slot--extra {
+    min-width: 90px;
+    background: rgba(100, 116, 139, 0.05);
+}
+
 .mcal-slot:hover,
 .mcal-slot:focus-visible {
     outline: 2px solid var(--accent);

@@ -7429,6 +7429,10 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
 }
 
 window.openReplacementDialog = openReplacementDialog;
+// El Calendario Mensual quita desde aqui un turno extra agregado a mano (un
+// apoyo con motivo), con la misma confirmacion y el mismo guardado.
+window.offerManualExtraRemoval = (profileName, keyDay) =>
+    offerManualExtraRemoval(profileName, keyDay);
 
 /**
  * Un trabajador a reemplazo toma UN turno de `replaced`, que tiene mas dias en

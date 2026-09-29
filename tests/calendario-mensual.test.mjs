@@ -127,6 +127,31 @@ test("un ausente sin cubrir es un hueco; quien lo cubre va en rojo", async () =>
     );
 });
 
+test("un apoyo extra con motivo va en la columna de su motivo, no con los titulares", async () => {
+    // Pablo libre el 1: se le agrega una Larga de apoyo, con motivo.
+    setJSON("data_Pablo Ignacio Rojas Aravena", { "2026-9-1": 1 });
+    ["2026-9-1"].forEach(keyDay => saveReplacement({
+        worker: "Pablo Ignacio Rojas Aravena",
+        keyDay,
+        turno: 1,
+        reason: "Apoyo pacientes TC oncológicos",
+        absenceType: "Motivo manual",
+        source: "manual_extra",
+        addsShift: false
+    }));
+
+    const mes = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+    const uno = mes.rows[0];
+
+    assert.deepEqual(mes.extraColumns.day, ["Apoyo pacientes TC oncológicos"]);
+    assert.deepEqual(mes.extraColumns.night, []);
+    assert.deepEqual(uno.slots.day.map(p => p.initials), ["JZ"]);
+    assert.deepEqual(
+        uno.extras.day["Apoyo pacientes TC oncológicos"].map(p => [p.initials, p.covering]),
+        [["PR", false]]
+    );
+});
+
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {
     const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
     const [html, navegacion, permisos, fuente] = await Promise.all([
