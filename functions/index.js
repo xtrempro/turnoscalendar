@@ -46,8 +46,10 @@ const {
 const {
   cancelWorkerTransferRequestHandler,
   claimWorkerTransferApplicationHandler,
+  claimWorkerTransferBalancesHandler,
   createWorkerTransferRequestHandler,
   moveDueWorkerLinksHandler,
+  reportWorkerTransferBalancesHandler,
   respondWorkerTransferRequestHandler
 } = require("./workerTransferRequests");
 const {
@@ -4367,6 +4369,23 @@ exports.cancelWorkerTransferRequest = onCall(
 exports.claimWorkerTransferApplication = onCall(
   { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
   (request) => claimWorkerTransferApplicationHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
+// Saldos reales tras vaciar el calendario en origen, y su ajuste en destino.
+exports.reportWorkerTransferBalances = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => reportWorkerTransferBalancesHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
+exports.claimWorkerTransferBalances = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => claimWorkerTransferBalancesHandler(
     request,
     workerTransferDependencies()
   )

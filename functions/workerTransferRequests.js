@@ -564,7 +564,127 @@ async function claimWorkerTransferApplicationHandler(request, dependencies) {
   });
 }
 
+/**
+ * El ORIGEN informa los saldos que de verdad quedaron tras vaciar el calendario
+ * (los permisos anulados ya volvieron al saldo). La unidad destino compara con
+ * los que se enviaron al pedir y ajusta la diferencia.
+ */
+async function reportWorkerTransferBalancesHandler(request, dependencies) {
+  const {
+    db,
+    HttpsError,
+    serverTimestamp,
+    requireWorkspaceProfileManager
+  } = dependencies;
+  const { uid, workspaceId, requestId } =
+    validateBasePayload(request, HttpsError);
+  const balances = cleanLeaveBalances(request.data?.leaveBalances);
+
+  if (!balances) {
+    callableError(
+      HttpsError,
+      "invalid-argument",
+      "Los saldos informados no son validos."
+    );
+  }
+
+  const { ref, solicitud } = await readRequest(db, HttpsError, requestId);
+
+  if (solicitud.sourceWorkspaceId !== workspaceId) {
+    callableError(
+      HttpsError,
+      "permission-denied",
+      "Solo la unidad de origen informa los saldos."
+    );
+  }
+
+  if (solicitud.status !== ACCEPTED) {
+    callableError(
+      HttpsError,
+      "failed-precondition",
+      "La transferencia no esta aceptada."
+    );
+  }
+
+  await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
+
+  const now = serverTimestamp();
+
+  await ref.update({
+    finalLeaveBalances: balances,
+    finalLeaveBalancesAt: now,
+    updatedAt: now
+  });
+
+  return { ok: true, requestId };
+}
+
+/**
+ * La unidad DESTINO reclama el ajuste de saldos. Solo la primera sesion que lo
+ * pide recibe `claimed: true`: sumar la diferencia dos veces la duplicaria.
+ */
+async function claimWorkerTransferBalancesHandler(request, dependencies) {
+  const {
+    db,
+    HttpsError,
+    serverTimestamp,
+    requireWorkspaceProfileManager
+  } = dependencies;
+  const { uid, workspaceId, requestId } =
+    validateBasePayload(request, HttpsError);
+
+  if (!requestId) {
+    callableError(
+      HttpsError,
+      "invalid-argument",
+      "No fue posible identificar la transferencia."
+    );
+  }
+
+  await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
+
+  const ref = db.collection(COLLECTION).doc(requestId);
+
+  return db.runTransaction(async transaction => {
+    const snap = await transaction.get(ref);
+
+    if (!snap.exists) {
+      callableError(HttpsError, "not-found", "La transferencia ya no existe.");
+    }
+
+    const solicitud = snap.data() || {};
+
+    if (solicitud.targetWorkspaceId !== workspaceId) {
+      callableError(
+        HttpsError,
+        "permission-denied",
+        "Solo la unidad destino ajusta estos saldos."
+      );
+    }
+
+    if (
+      solicitud.status !== ACCEPTED ||
+      !solicitud.finalLeaveBalances ||
+      solicitud.targetBalancesAppliedAt
+    ) {
+      return { ok: true, requestId, claimed: false };
+    }
+
+    const now = serverTimestamp();
+
+    transaction.update(ref, {
+      targetBalancesAppliedAt: now,
+      targetBalancesAppliedByUid: uid,
+      updatedAt: now
+    });
+
+    return { ok: true, requestId, claimed: true };
+  });
+}
+
 module.exports = {
+  claimWorkerTransferBalancesHandler,
+  reportWorkerTransferBalancesHandler,
   ACCEPTED,
   CANCELED,
   COLLECTION,

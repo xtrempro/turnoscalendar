@@ -454,3 +454,62 @@ test("sin app enlazada, aceptar no inventa ningun enlace", async () => {
     false
   );
 });
+
+/* =========================================================
+   Saldos reales tras vaciar el calendario en origen
+========================================================= */
+
+const {
+  claimWorkerTransferBalancesHandler,
+  reportWorkerTransferBalancesHandler
+} = require("../workerTransferRequests.js");
+
+test("solo el ORIGEN informa los saldos finales, y solo si esta aceptada", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: pendiente(),
+    [`${COLLECTION}/t-2`]: pendiente({ status: ACCEPTED })
+  });
+  const { deps } = dependencies(db);
+  const saldos = { year: 2026, legal: 15, comp: 10, admin: 6 };
+
+  await falla(
+    reportWorkerTransferBalancesHandler(
+      peticion({ workspaceId: "w-origen", requestId: "t-1", leaveBalances: saldos }),
+      deps
+    ),
+    "failed-precondition"
+  );
+  await falla(
+    reportWorkerTransferBalancesHandler(
+      peticion({ workspaceId: "w-destino", requestId: "t-2", leaveBalances: saldos }),
+      deps
+    ),
+    "permission-denied"
+  );
+
+  await reportWorkerTransferBalancesHandler(
+    peticion({ workspaceId: "w-origen", requestId: "t-2", leaveBalances: saldos }),
+    deps
+  );
+
+  assert.deepEqual(db.documents.get(`${COLLECTION}/t-2`).finalLeaveBalances, saldos);
+});
+
+test("el ajuste de saldos en destino se reclama UNA vez", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: pendiente({
+      status: ACCEPTED,
+      finalLeaveBalances: { year: 2026, legal: 15 }
+    }),
+    [`${COLLECTION}/t-2`]: pendiente({ status: ACCEPTED })
+  });
+  const { deps } = dependencies(db);
+  const pedir = (requestId, workspaceId = "w-destino") =>
+    claimWorkerTransferBalancesHandler(peticion({ workspaceId, requestId }), deps);
+
+  await falla(pedir("t-1", "w-origen"), "permission-denied");
+  assert.equal((await pedir("t-1")).claimed, true);
+  assert.equal((await pedir("t-1")).claimed, false);
+  // Sin saldos finales todavia no hay nada que ajustar.
+  assert.equal((await pedir("t-2")).claimed, false);
+});

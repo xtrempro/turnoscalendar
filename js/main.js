@@ -589,10 +589,14 @@ import {
 } from "./firebaseLinkedUnits.js";
 import {
     claimWorkerTransferApplication,
+    claimWorkerTransferBalances,
+    reportWorkerTransferBalances,
     requestWorkerTransfer,
     respondWorkerTransfer,
     stopWatchingAcceptedOutgoingTransfers,
-    watchAcceptedOutgoingTransfers
+    stopWatchingIncomingTransferBalances,
+    watchAcceptedOutgoingTransfers,
+    watchIncomingTransferBalances
 } from "./workerTransfers.js";
 
 initPerformanceMonitor();
@@ -10694,6 +10698,14 @@ async function acceptWorkerTransfer(solicitud = {}) {
     );
 }
 
+// Aceptar desde el menu Solicitudes (js/workerRequests.js) abre el mismo
+// formulario que desde Unidades enlazadas.
+window.addEventListener("proturnos:acceptWorkerTransfer", event => {
+    const transfer = event.detail?.transfer;
+
+    if (transfer?.id) void acceptWorkerTransfer(transfer);
+});
+
 // Origen: las transferencias aceptadas que falta aplicar aqui. Se procesan de a
 // una; `transfersInFlight` evita tomar dos veces la misma si el oyente vuelve
 // a disparar mientras se aplica.
@@ -10729,6 +10741,82 @@ async function applyAcceptedWorkerTransfers(pendientes = []) {
     }
 }
 
+// Destino: ajusta los saldos del trabajador recibido con los que informo el
+// origen tras vaciar su calendario. Suma la DIFERENCIA con los enviados al
+// pedir, sobre lo que tenga hoy: si aqui ya tomo un permiso, no se pisa.
+async function applyIncomingTransferBalances(pendientes = []) {
+    const year = new Date().getFullYear();
+
+    for (const solicitud of pendientes) {
+        const clave = `balances:${solicitud.id}`;
+        const name = String(solicitud.targetProfileName || "").trim();
+        const finales = solicitud.finalLeaveBalances || {};
+        const enviados = solicitud.profile?.leaveBalances || {};
+
+        if (
+            transfersInFlight.has(clave) ||
+            !name ||
+            Number(finales.year) !== year ||
+            !getProfiles().some(profile => profile.name === name)
+        ) {
+            continue;
+        }
+
+        transfersInFlight.add(clave);
+
+        try {
+            if (!await claimWorkerTransferBalances(solicitud.id)) continue;
+
+            const actuales = getManualLeaveBalances(year, name);
+            const ajuste = {};
+
+            ["legal", "comp", "admin", "hoursReturn"].forEach(field => {
+                const final = Number(finales[field]);
+                const enviado = Number(enviados[field]);
+
+                if (!Number.isFinite(final)) return;
+
+                const base = Number.isFinite(Number(actuales[field]))
+                    ? Number(actuales[field])
+                    : Number.isFinite(enviado) ? enviado : final;
+                const diferencia = Number.isFinite(enviado)
+                    ? final - enviado
+                    : final - base;
+
+                if (!diferencia) return;
+
+                ajuste[field] = Math.max(
+                    0,
+                    normalizeBalanceValue(base + diferencia)
+                );
+            });
+
+            if (!Object.keys(ajuste).length) continue;
+
+            saveManualLeaveBalances(year, ajuste, name);
+            addAuditLog(
+                AUDIT_CATEGORY.LEAVE_ABSENCE,
+                "Ajusto saldos por transferencia",
+                `${name}: saldos ajustados con los que informo ${solicitud.sourceWorkspaceName || "la unidad de origen"} tras vaciar su calendario.`,
+                { profile: name, requestId: solicitud.id, year, ajuste }
+            );
+
+            try {
+                await sealCriticalProfileState([name], "worker-transfer");
+            } catch (error) {
+                console.warn("No se pudo confirmar al instante el ajuste de saldos.", error);
+            }
+
+            scheduleWorkerAppDataPublish(300, name);
+            refreshAll();
+        } catch (error) {
+            console.warn("No se pudieron ajustar los saldos de la transferencia.", error);
+        } finally {
+            transfersInFlight.delete(clave);
+        }
+    }
+}
+
 async function applyWorkerTransferAtSource(solicitud, profile) {
     const name = profile.name;
     const startISO = normalizeStoredStart(solicitud.startDate || "");
@@ -10745,6 +10833,21 @@ async function applyWorkerTransferAtSource(solicitud, profile) {
         })
     );
     const canceledRequests = cancelFutureWorkerRequests(name, startISO);
+
+    // Los permisos anulados por el vaciado ya volvieron a su saldo: estos son
+    // los saldos REALES que se lleva. La unidad destino ajusta contra los que
+    // se enviaron al pedir (pudo cambiar algo entre medio).
+    if (solicitud.profile?.leaveBalances) {
+        try {
+            const finales = await transferLeaveBalances(name, startISO);
+
+            if (finales) {
+                await reportWorkerTransferBalances(solicitud.id, finales);
+            }
+        } catch (error) {
+            console.warn("No se pudieron informar los saldos finales.", error);
+        }
+    }
 
     if (isProfileActive(profile)) {
         updateProfile(name, {
@@ -16826,6 +16929,21 @@ initFirebaseShell({
                         error
                     );
                 });
+                // Y las recibidas: el origen informa los saldos reales tras
+                // vaciar su calendario, y aqui se ajusta la diferencia.
+                void watchIncomingTransferBalances(
+                    workspace,
+                    pendientes => {
+                        if (generacion !== workspaceChangeGeneration) return;
+
+                        void applyIncomingTransferBalances(pendientes);
+                    }
+                ).catch(error => {
+                    console.warn(
+                        "No se pudo escuchar los saldos de transferencias.",
+                        error
+                    );
+                });
 
                 // La bitacora se queda fuera del arranque, pero su barrera de
                 // publicacion no puede durar toda la sesion: en cuanto hay hueco
@@ -16861,6 +16979,7 @@ initFirebaseShell({
             startAutoCoverageScheduler();
         } else {
             stopWatchingAcceptedOutgoingTransfers();
+            stopWatchingIncomingTransferBalances();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();

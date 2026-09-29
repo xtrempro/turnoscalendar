@@ -73,3 +73,22 @@ test("solo el servidor escribe las transferencias", () => {
         /match \/workerTransferRequests\/\{requestId\} \{[\s\S]{0,300}allow create, update, delete: if false;/
     );
 });
+
+test("la transferencia llega al menu Solicitudes de la unidad destino", async () => {
+    const solicitudes = await leer("../js/workerRequests.js");
+
+    assert.match(solicitudes, /worker_transfer: "Transferencia de Trabajador"/);
+    assert.match(solicitudes, /const transferRequests = await getWorkerTransferPanelRequests\(\);[\s\S]{0,300}\.\.\.transferRequests,/);
+    assert.match(solicitudes, /item\.targetWorkspaceId === activeWorkspace\.id/);
+    // En vivo, con el mismo aviso que los enlaces entre unidades.
+    assert.match(solicitudes, /collection\(db, "workerTransferRequests"\),\s*firestoreModule\.where\("targetWorkspaceId", "==", workspaceId\)/);
+    // Aceptar desde ahi abre el mismo formulario.
+    assert.match(solicitudes, /new CustomEvent\("proturnos:acceptWorkerTransfer"/);
+    assert.match(main, /addEventListener\("proturnos:acceptWorkerTransfer"/);
+});
+
+test("el origen informa los saldos reales tras vaciar, y el destino ajusta la diferencia", () => {
+    assert.match(main, /const finales = await transferLeaveBalances\(name, startISO\);[\s\S]{0,120}await reportWorkerTransferBalances\(solicitud\.id, finales\);/);
+    assert.match(main, /if \(!await claimWorkerTransferBalances\(solicitud\.id\)\) continue;/);
+    assert.match(main, /const diferencia = Number\.isFinite\(enviado\)\s*\? final - enviado/);
+});

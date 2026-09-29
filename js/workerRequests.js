@@ -29,7 +29,11 @@ import {
 } from "./workspaces.js";
 import { isWorkspaceOwner } from "./workspacePermissions.js";
 import { cancelReplacementRequest } from "./replacements.js";
-import { showConfirm } from "./dialogs.js";
+import { showConfirm, showPrompt } from "./dialogs.js";
+import {
+    listWorkerTransferRequests,
+    respondWorkerTransfer
+} from "./workerTransfers.js";
 import {
     formatInviteDate,
     showSupervisorInvitePermissionsDialog,
@@ -90,6 +94,7 @@ const REQUEST_TYPE_LABELS = {
     leave_cancel: "Anulación de permiso",
     report_request: "Informe mensual",
     workspace_link: "Enlace de Unidad",
+    worker_transfer: "Transferencia de Trabajador",
     supervisor_invite: "Acceso Supervisor",
     unknown: "Solicitud"
 };
@@ -259,6 +264,11 @@ function timestampISO(value) {
 
 function isWorkspaceLinkRequest(request = {}) {
     return request.kind === "workspace_link";
+}
+
+// Un trabajador que otra unidad transfiere a esta (js/workerTransfers.js).
+function isWorkerTransferRequest(request = {}) {
+    return request.kind === "worker_transfer";
 }
 
 function isSupervisorInviteRequest(request = {}) {
@@ -1269,6 +1279,16 @@ function requestDetailsHTML(request) {
         return pieces.join(" | ");
     }
 
+    if (isWorkerTransferRequest(request)) {
+        pieces.push(`Desde: ${request.sourceWorkspaceName || "otra unidad"}`);
+
+        if (request.startDate) {
+            pieces.push(`Comienza: ${formatDate(request.startDate)}`);
+        }
+
+        return pieces.join(" | ");
+    }
+
     if (isWorkspaceLinkRequest(request)) {
         pieces.push(`Unidad solicitante: ${request.fromWorkspaceName || "Sin nombre"}`);
 
@@ -1533,16 +1553,91 @@ export async function refreshWorkerRequestsNavBadge() {
     const replacementRequests = getReplacementRequests()
         .map(replacementRequestToPanelRequest);
     const linkRequests = await getWorkspaceLinkRequests();
+    const transferRequests = await getWorkerTransferPanelRequests();
     const supervisorInviteRequests =
         await getSupervisorInviteRequests();
     const pending = [
         ...supervisorInviteRequests,
         ...linkRequests,
+        ...transferRequests,
         ...workerRequests,
         ...replacementRequests
     ].filter(request => request.status === "pending");
 
     updateRequestsNavBadge(pending.length);
+}
+
+// Transferencias de trabajadores hacia ESTA unidad. Las que esta unidad envio
+// se ven en Unidades enlazadas; aqui solo las que le toca responder.
+async function getWorkerTransferPanelRequests() {
+    const activeWorkspace = getActiveWorkspace();
+
+    if (
+        !isFirebaseConfigured() ||
+        !getCurrentFirebaseUser() ||
+        !activeWorkspace?.id
+    ) {
+        return [];
+    }
+
+    try {
+        const transfers = await listWorkerTransferRequests();
+
+        return transfers
+            .filter(item =>
+                item.targetWorkspaceId === activeWorkspace.id &&
+                ["pending", "accepted", "rejected"].includes(item.status)
+            )
+            .map(item => ({
+                kind: "worker_transfer",
+                id: `worker_transfer:${item.id}`,
+                transfer: item,
+                type: "worker_transfer",
+                status: item.status,
+                profile: item.profileName || "Trabajador",
+                sourceWorkspaceName: item.sourceWorkspaceName || "",
+                startDate: item.startDate || "",
+                note: item.status === "pending"
+                    ? "Al aceptar creas su perfil en esta unidad y eliges su rotativa."
+                    : "",
+                rejectReason: item.rejectReason || "",
+                createdAt: timestampISO(item.createdAt || item.updatedAt || new Date())
+            }));
+    } catch (error) {
+        console.warn(
+            "No se pudieron cargar las transferencias de trabajadores.",
+            error
+        );
+        return [];
+    }
+}
+
+async function acceptWorkerTransferRequest(request) {
+    // Aceptar es crear el perfil, y eso vive en main.js (formulario de perfil).
+    window.dispatchEvent(new CustomEvent("proturnos:acceptWorkerTransfer", {
+        detail: { transfer: request.transfer }
+    }));
+}
+
+async function rejectWorkerTransferRequest(request) {
+    const motivo = await showPrompt(
+        `¿Por qué rechazas la transferencia de ${request.profile}? (opcional)`,
+        {
+            title: "Rechazar transferencia",
+            confirmText: "Rechazar",
+            placeholder: "Motivo"
+        }
+    );
+
+    if (motivo === null) return;
+
+    await respondWorkerTransfer({
+        requestId: request.transfer.id,
+        status: "rejected",
+        rejectReason: String(motivo || "").trim(),
+        resolvedByName: getCurrentFirebaseUser()?.displayName ||
+            getCurrentFirebaseUser()?.email || ""
+    });
 }
 
 async function getWorkspaceLinkRequests() {
@@ -1777,6 +1872,14 @@ export async function startSupervisorInviteRequestsListener(
                 )
             );
         }
+
+        // Transferencias de trabajadores hacia esta unidad: mismo aviso.
+        workspaceLinkQueries.push(
+            firestoreModule.query(
+                firestoreModule.collection(db, "workerTransferRequests"),
+                firestoreModule.where("targetWorkspaceId", "==", workspaceId)
+            )
+        );
 
         unsubscribeWorkspaceLinkRequests = workspaceLinkQueries.map(queryRef =>
             firestoreModule.onSnapshot(
@@ -2092,11 +2195,13 @@ export async function renderWorkerRequestsPanel() {
     const replacementRequests = getReplacementRequests()
         .map(replacementRequestToPanelRequest);
     const linkRequests = await getWorkspaceLinkRequests();
+    const transferRequests = await getWorkerTransferPanelRequests();
     const supervisorInviteRequests =
         await getSupervisorInviteRequests();
     const allRequests = [
         ...supervisorInviteRequests,
         ...linkRequests,
+        ...transferRequests,
         ...workerRequests,
         ...replacementRequests
     ];
@@ -2242,7 +2347,13 @@ export async function renderWorkerRequestsPanel() {
 
             const accepting = action === "accept";
 
-            if (isWorkspaceLinkRequest(request)) {
+            if (isWorkerTransferRequest(request)) {
+                if (accepting) {
+                    await acceptWorkerTransferRequest(request);
+                } else {
+                    await rejectWorkerTransferRequest(request);
+                }
+            } else if (isWorkspaceLinkRequest(request)) {
                 if (accepting) {
                     await acceptWorkspaceLinkRequest(request);
                 } else {

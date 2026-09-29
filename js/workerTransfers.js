@@ -124,6 +124,76 @@ export async function claimWorkerTransferApplication(requestId) {
     return result?.claimed === true;
 }
 
+/**
+ * Origen: informa los saldos que quedaron tras vaciar su calendario.
+ */
+export async function reportWorkerTransferBalances(requestId, leaveBalances) {
+    const workspace = activeWorkspaceOrThrow();
+
+    return callFunction("reportWorkerTransferBalances", {
+        workspaceId: workspace.id,
+        requestId,
+        leaveBalances
+    });
+}
+
+/**
+ * Destino: reclama el ajuste de saldos. true solo para la primera sesion.
+ */
+export async function claimWorkerTransferBalances(requestId) {
+    const workspace = activeWorkspaceOrThrow();
+    const result = await callFunction("claimWorkerTransferBalances", {
+        workspaceId: workspace.id,
+        requestId
+    });
+
+    return result?.claimed === true;
+}
+
+let stopIncomingListener = null;
+let incomingGeneration = 0;
+
+/**
+ * Destino: transferencias aceptadas hacia ESTA unidad cuyos saldos finales ya
+ * informo el origen y aun no se ajustan aqui.
+ */
+export async function watchIncomingTransferBalances(workspace, onPending) {
+    stopWatchingIncomingTransferBalances();
+
+    if (!workspace?.id || typeof onPending !== "function") return;
+
+    const generation = incomingGeneration;
+    const { db, firestoreModule } = await getFirebaseServices();
+
+    if (generation !== incomingGeneration) return;
+
+    stopIncomingListener = firestoreModule.onSnapshot(
+        firestoreModule.query(
+            firestoreModule.collection(db, COLLECTION),
+            firestoreModule.where("targetWorkspaceId", "==", workspace.id),
+            firestoreModule.where("status", "==", "accepted")
+        ),
+        snap => {
+            onPending(
+                snap.docs
+                    .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+                    .filter(item =>
+                        item.finalLeaveBalances && !item.targetBalancesAppliedAt
+                    )
+            );
+        },
+        error => {
+            console.warn("No se pudieron leer los saldos de transferencias.", error);
+        }
+    );
+}
+
+export function stopWatchingIncomingTransferBalances() {
+    incomingGeneration++;
+    stopIncomingListener?.();
+    stopIncomingListener = null;
+}
+
 let stopAcceptedListener = null;
 // Si se cambia de unidad mientras se piden los servicios, el oyente que llega
 // tarde ya no es de la unidad activa y no se registra.
