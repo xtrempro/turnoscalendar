@@ -10691,11 +10691,28 @@ async function acceptWorkerTransfer(solicitud = {}) {
     renderDashboardState();
     renderBotones();
 
-    await showAlert(
-        `Revisa los datos de ${nombre}, elige su rotativa (comienza el ${formatDisplayDate(inicio)}) y guarda el perfil. ` +
-        "La transferencia queda aceptada al guardar.",
-        { title: "Transferencia desde " + (solicitud.sourceWorkspaceName || "otra unidad"), tone: "info" }
+    // La modalidad se pregunta de inmediato y el modal de rotativa (fecha y
+    // punto de la secuencia) se abre solo: es el mismo paso que elegirla en el
+    // selector del perfil, con el calendario en la fecha de inicio.
+    const modalidad = await showChoice(
+        `¿Qué modalidad seguirá ${nombre} en esta unidad? Comienza el ${formatDisplayDate(inicio)}.\n\n` +
+        "Después revisa sus datos y guarda el perfil: la transferencia queda aceptada al guardar.",
+        {
+            title: "Transferencia desde " + (solicitud.sourceWorkspaceName || "otra unidad"),
+            confirmText: "Continuar",
+            choices: [
+                { value: "3turno", label: "3er Turno" },
+                { value: "4turno", label: "4° Turno" },
+                { value: "diurno", label: "Diurno" }
+            ]
+        }
     );
+
+    // Sin elegir, el formulario queda abierto para hacerlo a mano.
+    if (!modalidad || !DOM.profileRotationSelect) return;
+
+    DOM.profileRotationSelect.value = modalidad;
+    handleRotationSelectionChange();
 }
 
 // Aceptar desde el menu Solicitudes (js/workerRequests.js) abre el mismo

@@ -92,3 +92,15 @@ test("el origen informa los saldos reales tras vaciar, y el destino ajusta la di
     assert.match(main, /if \(!await claimWorkerTransferBalances\(solicitud\.id\)\) continue;/);
     assert.match(main, /const diferencia = Number\.isFinite\(enviado\)\s*\? final - enviado/);
 });
+
+test("al aceptar se pregunta la modalidad y se abre solo el modal de rotativa", () => {
+    const aceptar = main.slice(
+        main.indexOf("async function acceptWorkerTransfer"),
+        main.indexOf('window.addEventListener("proturnos:acceptWorkerTransfer"')
+    );
+
+    assert.match(aceptar, /¿Qué modalidad seguirá \$\{nombre\} en esta unidad\?/);
+    assert.match(aceptar, /\{ value: "3turno", label: "3er Turno" \},\s*\{ value: "4turno", label: "4° Turno" \},\s*\{ value: "diurno", label: "Diurno" \}/);
+    // El mismo camino que el selector del perfil: abre el modal de fechas.
+    assert.match(aceptar, /DOM\.profileRotationSelect\.value = modalidad;\s*handleRotationSelectionChange\(\);/);
+});
