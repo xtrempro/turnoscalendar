@@ -315,7 +315,7 @@ import {
     canViewTarget,
     ensureCanEditTarget
 } from "./workspacePermissions.js";
-import { searchReplacementsInWorker } from "./workerService.js";
+import { sortPreparedReplacementCandidates } from "./replacementCandidateOrder.js";
 import {
     measurePerformance,
     startPerformanceSpan
@@ -5420,22 +5420,12 @@ async function getReplacementCandidates(
 
     if (!built.completed) return null;
 
-    try {
-        const result = await searchReplacementsInWorker({
-            mode: "turnoplus-prepared",
-            candidates: built.candidates
-        }, {
-            channel: `replacement:${profileName}:${keyDay}`,
-            timeoutMs: 15000
-        });
-
-        return requestId === replacementCandidateRequest
-            ? result.candidates
-            : null;
-    } catch (error) {
-        if (error?.name === "AbortError") return null;
-        throw error;
-    }
+    // Se ordena aqui, sin el Web Worker: son unas decenas de candidatos ya
+    // calculados. El worker ponia un limite de 15 s que, con la pagina ocupada,
+    // vencia en falso y dejaba el modal sin abrir (replacementCandidateOrder.js).
+    return requestId === replacementCandidateRequest
+        ? sortPreparedReplacementCandidates(built.candidates)
+        : null;
 }
 
 
@@ -7251,12 +7241,30 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
         normalizeReplacementDialogState();
         expireReplacementRequests();
 
-        const candidates =
-            await getReplacementCandidates(
-                profileName,
-                keyDay,
-                { scope }
+        let candidates;
+
+        // Un error aqui no puede dejar el modal sin abrir y sin aviso: antes
+        // subia como "Uncaught (in promise)" y quedaba el fondo vacio puesto.
+        try {
+            candidates =
+                await getReplacementCandidates(
+                    profileName,
+                    keyDay,
+                    { scope }
+                );
+        } catch (error) {
+            console.warn("No se pudieron calcular las sugerencias de reemplazo.", error);
+            alert(
+                "No se pudieron calcular las sugerencias de reemplazo." +
+                (error?.message ? `\n\n${error.message}` : "")
             );
+
+            if (!backdrop.innerHTML.trim()) {
+                document.removeEventListener("keydown", onKeydown);
+                backdrop.remove();
+            }
+            return;
+        }
         if (!candidates) return;
         const pendingRequests =
             getPendingReplacementRequestsForShift(

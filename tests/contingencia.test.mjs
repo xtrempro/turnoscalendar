@@ -294,8 +294,10 @@ test("con dias por delante aparece igual, pero sin saltarse la fila", () => {
     assert.ok(lista.includes("Lejano"));
 });
 
-test("la contingencia se compara despues del tope y del dia siguiente", () => {
-    const orden = worker.slice(worker.indexOf("turnoplus-prepared"));
+test("la contingencia se compara despues del tope y del dia siguiente", async () => {
+    // El orden vive en replacementCandidateOrder.js (lo usan el calendario y el
+    // worker).
+    const orden = await leer("../js/replacementCandidateOrder.js");
 
     assert.ok(
         orden.indexOf("nextDayMorningShift") <

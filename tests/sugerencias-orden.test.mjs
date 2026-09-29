@@ -108,8 +108,8 @@ test("entre iguales se conserva el orden de siempre", () => {
 
 test("los dos criterios nuevos se comparan primero", async () => {
     // Si fueran los ultimos desempates, casi nunca se aplicarian.
-    const worker = await read("../js/workers/scheduleWorker.js");
-    const sort = worker.slice(worker.indexOf("turnoplus-prepared"));
+    // El orden vive en replacementCandidateOrder.js (calendario y worker).
+    const sort = await read("../js/replacementCandidateOrder.js");
 
     assert.ok(
         sort.indexOf("exceedsDiurnalLimit") <
