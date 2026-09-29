@@ -316,6 +316,7 @@ import {
     ensureCanEditTarget
 } from "./workspacePermissions.js";
 import { sortPreparedReplacementCandidates } from "./replacementCandidateOrder.js";
+import { formatDisplayDate } from "./dateUtils.js";
 import {
     measurePerformance,
     startPerformanceSpan
@@ -6870,6 +6871,34 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                 }
             }
 
+            // Reemplazante CON contrato vigente ese dia, pero por OTRO ausente,
+            // y el ausente de este turno tiene mas dias en el mismo permiso:
+            // se pregunta si cubre solo este turno o hereda todos los de ese
+            // permiso. Antes se asignaba solo el turno elegido, sin preguntar.
+            //
+            // Heredar abre el mismo editor de contrato que arriba: el contrato
+            // nuevo se recorta a los dias en que quedaria sin contrato, y dentro
+            // de su contrato vigente los turnos se asignan como reemplazos
+            // (saveReplacementContractFromDraft).
+            if (
+                !button.dataset.workerWorkspaceId &&
+                coveringWorker &&
+                hasContractForDate(coveringWorker, keyDay) &&
+                await askInheritReplacementTurns({
+                    worker: coveringWorker,
+                    replaced: profileName,
+                    keyDay
+                })
+            ) {
+                close();
+                window.startReplacementContractEdit?.(
+                    coveringWorker,
+                    keyDay,
+                    { replaced: profileName }
+                );
+                return;
+            }
+
             await withBusyState(async () => {
                 if (typeof window.pushUndoState === "function") {
                     window.pushUndoState(
@@ -7336,6 +7365,54 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
 }
 
 window.openReplacementDialog = openReplacementDialog;
+
+/**
+ * Un trabajador a reemplazo toma UN turno de `replaced`, que tiene mas dias en
+ * el mismo permiso: ¿cubre solo ese turno o hereda todos los de ese permiso?
+ *
+ * No pregunta si no es reemplazo, si ya tiene un contrato que cubre a
+ * `replaced` ese dia, o si el permiso es de un solo dia (no hay nada mas que
+ * heredar). Heredar lo hace el editor de contrato: el contrato nuevo se recorta
+ * a los dias en que quedaria sin contrato, y dentro de uno vigente los turnos
+ * se le asignan como reemplazos (saveReplacementContractFromDraft en main.js).
+ *
+ * @returns {Promise<boolean>} true si eligio heredar
+ */
+async function askInheritReplacementTurns({ worker, replaced, keyDay }) {
+    if (
+        !worker ||
+        !replaced ||
+        worker === replaced ||
+        !isReplacementProfile(worker) ||
+        getReplacementContractsForDate(worker, keyDay)
+            .some(contract => contract.replaces === replaced)
+    ) {
+        return false;
+    }
+
+    const span = window.replacementLeaveSpanFor?.(replaced, keyDay);
+
+    if (!span || span.start === span.end) return false;
+
+    const vigente = getReplacementContractsForDate(worker, keyDay)[0];
+    const contexto = vigente
+        ? `${worker} ya tiene un contrato vigente${vigente.replaces ? ` (reemplaza a ${vigente.replaces})` : ""}. `
+        : `${worker} no tiene contrato vigente en esta fecha. `;
+
+    return showConfirm(
+        contexto +
+        `${replaced} tiene ${span.label || "un permiso"} del ${formatDisplayDate(span.start)} al ${formatDisplayDate(span.end)}.\n\n` +
+        `¿${worker} cubre solo este turno, o hereda todos los turnos de ${replaced} en ese período?\n\n` +
+        `Al heredar, el contrato se agrega en los días en que ${worker} quede sin contrato` +
+        (vigente ? ", y dentro de su contrato actual esos turnos se le asignan como reemplazos." : "."),
+        {
+            title: "¿Solo este turno o todos?",
+            tone: "info",
+            confirmText: "Heredar sus turnos",
+            cancelText: "Solo este turno"
+        }
+    );
+}
 
 function getExtraReasonMatches(
     profileName,
@@ -8026,6 +8103,29 @@ async function openExtraReasonDialog(
             return;
         }
 
+        // Trabajador a reemplazo que respalda el turno con la ausencia de otro:
+        // ¿solo este turno o todos los de ese permiso? Se pregunta ANTES de
+        // guardar; el respaldo de este dia se guarda igual, y al heredar el
+        // contrato se abre con este dia excluido (el turno ya esta escrito).
+        const inheritFrom = await (async () => {
+            for (const backup of manualBackups) {
+                const replaced = backup.selectedMatch?.profile?.name;
+
+                if (
+                    replaced &&
+                    await askInheritReplacementTurns({
+                        worker: profileName,
+                        replaced,
+                        keyDay
+                    })
+                ) {
+                    return replaced;
+                }
+            }
+
+            return "";
+        })();
+
         if (typeof window.pushUndoState === "function") {
             window.pushUndoState("Respaldar horas extras");
         }
@@ -8069,6 +8169,17 @@ async function openExtraReasonDialog(
         // Refresca la fila del timeline (casillas del dia + columna de HH.EE) del
         // trabajador que tomo el turno extra, sin reconstruir todo el timeline.
         updateTimelineCells(profileName, [keyDay]);
+
+        if (inheritFrom) {
+            window.startReplacementContractEdit?.(
+                profileName,
+                keyDay,
+                {
+                    replaced: inheritFrom,
+                    excludedDates: [isoFromKeyDay(keyDay)]
+                }
+            );
+        }
     };
 
     // "Falta" / "Listo" por tramo. Es lo que faltaba para darse cuenta de que

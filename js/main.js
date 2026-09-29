@@ -2173,10 +2173,50 @@ async function saveReplacementContractFromDraft(
     );
 
     if (!clampedRange) {
+        // El permiso cae ENTERO dentro de un contrato suyo: no nace contrato
+        // nuevo, pero el trabajador ya esta contratado esos dias y hereda igual
+        // los turnos del segundo ausente, como reemplazos (el mismo tratamiento
+        // que el tramo traslapado de abajo). Antes aqui no se hacia nada y solo
+        // quedaba cubierto el turno que se habia elegido en el calendario.
+        const inherited = buildInheritedTurnPreview({
+            replacementWorker,
+            replaced,
+            startISO: requestedStart,
+            endISO: requestedEnd,
+            rotationMode,
+            excludedDates: profileDraft.contractExcludedDates || []
+        }).dias.filter(dia => dia.estado === "heredado");
+
+        inherited.forEach(dia => {
+            saveReplacement({
+                worker: replacementWorker,
+                replaced,
+                keyDay: dia.key,
+                turno: dia.heredado,
+                absenceType: profileDraft.contractReason,
+                source: "replacement_contract_overlap"
+            });
+        });
+
+        if (inherited.length) {
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Heredo turnos dentro de su contrato",
+                `${replacementWorker}: cubre ${inherited.length} turno(s) de ${replaced} del ${formatDisplayDate(requestedStart)} al ${formatDisplayDate(requestedEnd)}, dentro de su contrato vigente.`,
+                { profile: replacementWorker, replaced }
+            );
+            [replacementWorker, replaced].forEach(worker =>
+                scheduleWorkerAppDataPublish(300, worker)
+            );
+        }
+
         alert(
-            `El periodo del permiso ya esta cubierto por otro contrato de ${replacementWorker}. No se creo un contrato nuevo.`
+            inherited.length
+                ? `El permiso de ${replaced} cae dentro del contrato vigente de ${replacementWorker}, así que no se creó un contrato nuevo: se le asignaron como reemplazos los ${inherited.length} turno(s) de ${replaced} en ese período.`
+                : `El periodo del permiso ya esta cubierto por otro contrato de ${replacementWorker} y no quedan turnos de ${replaced} que heredar. No se creo un contrato nuevo.`
         );
-        return null;
+
+        return inherited.length ? { overlapOnly: true, inherited: inherited.length } : null;
     }
 
     const start = clampedRange.start;
@@ -10287,6 +10327,12 @@ function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
     }
     profileDraft.contractBridgeProfile =
         String(prefill.bridgeProfile || "").trim();
+    // Dias que el contrato NO toma: el turno que el supervisor ya escribio a
+    // mano en el calendario (y respaldo con el motivo). Heredarlo otra vez lo
+    // sumaria dos veces.
+    profileDraft.contractExcludedDates = Array.isArray(prefill.excludedDates)
+        ? prefill.excludedDates.filter(iso => /^\d{4}-\d{2}-\d{2}$/.test(String(iso)))
+        : [];
     profileRotationMiniDate = parseKey(keyDay);
 
     renderDashboardState();
@@ -10300,6 +10346,19 @@ function startReplacementContractEdit(profileName, keyDay, prefill = {}) {
 
 window.startReplacementContractEdit =
     startReplacementContractEdit;
+
+// El permiso del ausente que cubre ese dia (el que se ofreceria para un
+// contrato). El calendario lo usa para saber si al asignar un turno hay MAS
+// turnos del mismo permiso que el reemplazante podria heredar.
+window.replacementLeaveSpanFor = (profileName, keyDay) => {
+    const coverISO = calendarKeyToInputDate(keyDay);
+
+    return getReplacementLeaveOptionsForProfile(profileName)
+        .find(option =>
+            option.start <= coverISO &&
+            option.end >= coverISO
+        ) || null;
+};
 
 /**
  * Abre el editor de contrato con una ausencia YA AUTORIZADA por otra unidad.
