@@ -110,7 +110,7 @@ export function anexo4Data(swap = {}, context = {}) {
     const rutFor = typeof context.rutFor === "function" ? context.rutFor : () => "";
     const day = (iso, code, skipped) => skipped || !iso
         ? ""
-        : [formatAnexoDate(iso), shiftLabel(code)].filter(Boolean).join(" ");
+        : [formatAnexoDate(iso), shiftLabel(code)].filter(Boolean).join("\n");
     const schedule = (iso, code, skipped) => skipped || !iso
         ? ""
         : swapShiftSchedule(code, iso);
@@ -144,7 +144,7 @@ function escapeXml(value) {
  * formato de letra de ese parrafo (sin negrita ni subrayado: es un dato, no un
  * rotulo).
  */
-function fillCell(cellXml, text) {
+function fillCell(cellXml, text, { size = "" } = {}) {
     const paragraph = /<w:p\b[^>]*>[\s\S]*?<\/w:p>|<w:p\b[^>]*\/>/.exec(cellXml);
 
     if (!paragraph) return cellXml;
@@ -152,12 +152,25 @@ function fillCell(cellXml, text) {
     const source = paragraph[0];
     const pPr = /<w:pPr>[\s\S]*?<\/w:pPr>/.exec(source)?.[0] || "";
     const markRPr = /<w:rPr>([\s\S]*?)<\/w:rPr>/.exec(pPr)?.[1] || "";
-    const runRPr = markRPr
+    let runRPr = markRPr
         .replace(/<w:b\/>|<w:bCs\/>|<w:u\b[^>]*\/>/g, "");
+
+    if (size) {
+        runRPr = runRPr
+            .replace(/<w:sz w:val="\d+"\/>/, `<w:sz w:val="${size}"/>`)
+            .replace(/<w:szCs w:val="\d+"\/>/, `<w:szCs w:val="${size}"/>`);
+    }
+
     const open = /^<w:p\b[^>]*?(\/?)>/.exec(source);
     const openTag = open[0].replace(/\/>$/, ">");
+    // Un salto de linea en el texto es un salto de linea en la celda: asi la
+    // fecha y el tipo de turno quedan en dos lineas limpias, sin que la celda
+    // parta la fecha donde le acomode.
     const run = text
-        ? `<w:r><w:rPr>${runRPr}</w:rPr><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>`
+        ? `<w:r><w:rPr>${runRPr}</w:rPr>${String(text)
+            .split("\n")
+            .map(line => `<w:t xml:space="preserve">${escapeXml(line)}</w:t>`)
+            .join("<w:br/>")}</w:r>`
         : "";
 
     return cellXml.replace(source, `${openTag}${pPr}${run}</w:p>`);
@@ -171,16 +184,92 @@ function rowsOf(tableXml) {
     return [...tableXml.matchAll(/<w:tr[ >][\s\S]*?<\/w:tr>/g)].map(match => match[0]);
 }
 
-function fillRow(rowXml, values) {
+function fillRow(rowXml, values, options = {}) {
     let result = rowXml;
 
     cellsOf(rowXml).forEach((cell, index) => {
         if (values[index] === undefined) return;
 
-        result = result.replace(cell, fillCell(cell, values[index]));
+        result = result.replace(cell, fillCell(cell, values[index], options));
     });
 
     return result;
+}
+
+/* ---------- Ajustes de formato sobre la plantilla ----------
+
+   La plantilla original tiene la tabla del detalle al 116 % del ancho util y
+   corrida a la izquierda, margenes de ~2,8 cm y 17 parrafos vacios al final:
+   segun el visor, el RUT y las fechas se partian en dos lineas y el formulario
+   pasaba a una segunda hoja. Se corrige al generarlo; el archivo oficial no se
+   toca. Pagina oficio: 12240 de ancho, en twips (1 cm = 567). */
+
+const PAGE_MARGIN = { top: 1000, right: 850, bottom: 1000, left: 850, header: 500, footer: 500 };
+// Suma = 12240 - 850 - 850 = 10540: la tabla ocupa exacto el ancho util.
+const DETAIL_COLUMNS = [1250, 1800, 1250, 1800, 1200, 1020, 1200, 1020];
+const DETAIL_FONT_SIZE = "18"; // 9 pt, en medios puntos
+
+function withPageMargins(xml) {
+    return xml.replace(/<w:pgMar\b[^>]*\/>/, () =>
+        `<w:pgMar w:top="${PAGE_MARGIN.top}" w:right="${PAGE_MARGIN.right}" ` +
+        `w:bottom="${PAGE_MARGIN.bottom}" w:left="${PAGE_MARGIN.left}" ` +
+        `w:header="${PAGE_MARGIN.header}" w:footer="${PAGE_MARGIN.footer}" w:gutter="0"/>`
+    );
+}
+
+function withDetailColumns(tableXml) {
+    let cellIndex = 0;
+
+    return tableXml
+        .replace(/<w:tblW\b[^>]*\/>/, `<w:tblW w:w="${DETAIL_COLUMNS.reduce((a, b) => a + b, 0)}" w:type="dxa"/>`)
+        .replace(/<w:tblInd\b[^>]*\/>/, `<w:tblInd w:w="0" w:type="dxa"/><w:tblLayout w:type="fixed"/>`)
+        .replace(/<w:tblGrid>[\s\S]*?<\/w:tblGrid>/, () =>
+            `<w:tblGrid>${DETAIL_COLUMNS.map(width => `<w:gridCol w:w="${width}"/>`).join("")}</w:tblGrid>`
+        )
+        .replace(/<w:tcW\b[^>]*\/>/g, () => {
+            const width = DETAIL_COLUMNS[cellIndex % DETAIL_COLUMNS.length];
+
+            cellIndex++;
+            return `<w:tcW w:w="${width}" w:type="dxa"/><w:vAlign w:val="center"/>`;
+        })
+        // Filas mas bajas: la plantilla las fija altas para escribir a mano.
+        .replace(/<w:trHeight w:val="\d+"\/>/g, `<w:trHeight w:val="600"/>`);
+}
+
+function paragraphText(paragraphXml) {
+    return [...paragraphXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)]
+        .map(match => match[1])
+        .join("")
+        .trim();
+}
+
+// Tras la "Nota" final no queda nada que imprimir: esos parrafos vacios eran
+// los que abrian una segunda hoja. Antes de la nota se dejan dos de aire.
+function withoutTrailingBlankParagraphs(xml) {
+    const noteIndex = xml.lastIndexOf("Nota:");
+
+    if (noteIndex < 0) return xml;
+
+    const noteStart = xml.lastIndexOf("<w:p ", noteIndex);
+    const noteEnd = xml.indexOf("</w:p>", noteIndex) + "</w:p>".length;
+    const before = xml.slice(0, noteStart);
+    const note = xml.slice(noteStart, noteEnd);
+    const after = xml.slice(noteEnd).replace(
+        /<w:p\b[^>]*?(?:\/>|>[\s\S]*?<\/w:p>)/g,
+        paragraph => paragraphText(paragraph) ? paragraph : ""
+    );
+    const trimmedBefore = before.replace(
+        /((?:<w:p\b[^>]*?(?:\/>|>(?:(?!<w:p[ >])[\s\S])*?<\/w:p>))+)$/,
+        blanks => {
+            const paragraphs = blanks.match(/<w:p\b[^>]*?(?:\/>|>(?:(?!<w:p[ >])[\s\S])*?<\/w:p>)/g) || [];
+
+            if (paragraphs.some(paragraph => paragraphText(paragraph))) return blanks;
+
+            return paragraphs.slice(0, 2).join("");
+        }
+    );
+
+    return `${trimmedBefore}${note}${after}`;
 }
 
 /**
@@ -202,7 +291,7 @@ export function fillAnexo4DocumentXml(xml, data) {
         .replace(generalRows[0], fillRow(generalRows[0], [undefined, data.unit]))
         .replace(generalRows[1], fillRow(generalRows[1], [undefined, data.requestDate || "____/____/ ____"]));
     const detailRows = rowsOf(detail);
-    const filledDetail = detail.replace(
+    const filledDetail = withDetailColumns(detail.replace(
         detailRows[1],
         fillRow(detailRows[1], [
             data.rut,
@@ -213,10 +302,12 @@ export function fillAnexo4DocumentXml(xml, data) {
             data.originalSchedule,
             data.changeDay,
             data.changeSchedule
-        ])
-    );
+        ], { size: DETAIL_FONT_SIZE })
+    ));
 
-    return xml.replace(general, filledGeneral).replace(detail, filledDetail);
+    return withoutTrailingBlankParagraphs(withPageMargins(
+        xml.replace(general, filledGeneral).replace(detail, filledDetail)
+    ));
 }
 
 /**
@@ -246,7 +337,7 @@ export function anexo4FileName(data = {}) {
         .replace(/[̀-ͯ]/g, "")
         .replace(/[^A-Za-z0-9]+/g, "_")
         .replace(/^_+|_+$/g, "");
-    const day = clean(String(data.originalDay || "").split(" ")[0]);
+    const day = clean(String(data.originalDay || "").split(/\s/)[0]);
 
     return `Anexo4_cambio_turno_${clean(data.name)}${day ? `_${day}` : ""}.docx`;
 }

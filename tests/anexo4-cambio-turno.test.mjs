@@ -76,9 +76,9 @@ test("los datos salen del cambio: quien cede, su companero y los dos turnos", ()
         name: "Gabriel Rojas Bustos",
         counterpartRut: "17654321‑K",
         counterpartName: "Maria Fuentes",
-        originalDay: "02/10/2026 Larga",
+        originalDay: "02/10/2026\nLarga",
         originalSchedule: "08:00 a 20:00",
-        changeDay: "09/10/2026 Noche",
+        changeDay: "09/10/2026\nNoche",
         changeSchedule: "20:00 a 08:00"
     });
 });
@@ -107,7 +107,13 @@ test("el Word relleno conserva la plantilla y trae los datos en su lugar", async
     assert.match(xml, /<w:t xml:space="preserve">Urgencia &amp; Adulto<\/w:t>/);
     assert.match(xml, /<w:t xml:space="preserve">29\/09\/2026<\/w:t>/);
     assert.doesNotMatch(xml, /____\/____\/ ____/);
-    assert.match(xml, /<w:t xml:space="preserve">02\/10\/2026 Larga<\/w:t>/);
+    // Fecha y turno en dos lineas: la celda no parte la fecha.
+    assert.match(xml, /<w:t xml:space="preserve">02\/10\/2026<\/w:t><w:br\/><w:t xml:space="preserve">Larga<\/w:t>/);
+    // Una hoja: margenes de 1,5 cm, la tabla al ancho util con columnas fijas
+    // y sin los parrafos vacios que habia tras la nota final.
+    assert.match(xml, /<w:pgMar w:top="1000" w:right="850" w:bottom="1000" w:left="850"/);
+    assert.match(xml, /<w:tblW w:w="10540" w:type="dxa"\/><w:tblInd w:w="0" w:type="dxa"\/><w:tblLayout w:type="fixed"\/>/);
+    assert.match(xml, /Nota:[\s\S]*?<\/w:p>(<w:sectPr|<\/w:body>)/);
     assert.match(xml, /<w:t xml:space="preserve">20:00 a 08:00<\/w:t>/);
     // El motivo sigue en blanco, para escribirlo a mano.
     assert.match(xml, /III\. MOTIVO DE LA SOLICITUD[\s\S]{0,4000}_{40,}/);
