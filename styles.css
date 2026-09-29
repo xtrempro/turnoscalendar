@@ -2165,6 +2165,41 @@ body[data-active-view="home"] .secondary-grid {
     background: rgba(100, 116, 139, 0.05);
 }
 
+/* Arrastrar un apoyo extra a la columna de otro motivo. */
+.mcal-chip.is-draggable {
+    cursor: grab;
+}
+
+.mcal-chip.is-draggable:active {
+    cursor: grabbing;
+}
+
+.mcal-slot.is-drop-target {
+    outline: 2px dashed var(--accent);
+    outline-offset: -3px;
+    background: var(--accent-soft);
+}
+
+/* "Otros motivos": los de poca gente juntos, con + para abrirlos. */
+.mcal-sub-head--group {
+    color: var(--text);
+}
+
+.mcal-fold {
+    margin-left: 6px;
+    padding: 1px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--accent);
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 800;
+    font-style: normal;
+    text-transform: none;
+    cursor: pointer;
+}
+
 .mcal-slot:hover,
 .mcal-slot:focus-visible {
     outline: 2px solid var(--accent);

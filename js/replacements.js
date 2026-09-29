@@ -703,6 +703,40 @@ function removeManualExtraTurnFromCalendar(record) {
  *
  * @returns {Object|null} el reemplazo actualizado, o null si no se encontro.
  */
+/**
+ * Cambia el motivo de un turno extra respaldado a mano (manual_extra sin
+ * ausente). Lo usa el Calendario Mensual al arrastrar a alguien de un motivo a
+ * otro. Solo cambia el texto: el turno y sus horas quedan igual.
+ */
+export function setManualExtraReason(replacementId, reason) {
+    const id = String(replacementId || "");
+    const nextReason = String(reason || "").trim();
+
+    if (!id || !nextReason) return null;
+
+    let updated = null;
+    const replacements = getReplacements().map(replacement => {
+        if (
+            String(replacement?.id || "") !== id ||
+            !replacementActive(replacement) ||
+            replacement.source !== "manual_extra" ||
+            replacement.replaced
+        ) {
+            return replacement;
+        }
+
+        updated = { ...replacement, reason: nextReason };
+
+        return updated;
+    });
+
+    if (!updated) return null;
+
+    saveReplacements(replacements);
+
+    return updated;
+}
+
 export function setReplacementCoverWindow(replacementId, window = {}) {
     const id = String(replacementId || "");
 

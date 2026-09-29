@@ -125,6 +125,8 @@ test("un ausente sin cubrir es un hueco; quien lo cubre va en rojo", async () =>
         uno.slots.day.map(p => [p.initials, p.covering]),
         [["PR", true]]
     );
+    // El texto al pasar el mouse dice a quien cubre y por que permiso.
+    assert.match(uno.slots.day[0].coverDetail, /^Juan Zapata \(.+\)$/);
 });
 
 test("un apoyo extra con motivo va en la columna de su motivo, no con los titulares", async () => {
@@ -150,6 +152,49 @@ test("un apoyo extra con motivo va en la columna de su motivo, no con los titula
         uno.extras.day["Apoyo pacientes TC oncológicos"].map(p => [p.initials, p.covering]),
         [["PR", false]]
     );
+});
+
+test("los motivos con poca gente se agrupan; expandidos se ven todos", () => {
+    const model = {
+        extraColumns: { day: ["Grande", "Calidad", "Ris Pacs"], night: ["Solo"] },
+        extraCounts: { day: { Grande: 5, Calidad: 1, "Ris Pacs": 2 }, night: { Solo: 1 } }
+    };
+
+    assert.deepEqual(mensual.visibleExtraColumns(model, "day"), [
+        { kind: "reason", reason: "Grande" },
+        { kind: "group", reasons: ["Calidad", "Ris Pacs"] }
+    ]);
+    assert.equal(mensual.visibleExtraColumns(model, "day", true).length, 3);
+    // Uno solo de poca gente no se agrupa: no ahorraria nada.
+    assert.deepEqual(mensual.visibleExtraColumns(model, "night"), [
+        { kind: "reason", reason: "Solo" }
+    ]);
+});
+
+test("arrastrar a otro motivo cambia el motivo y la columna vacia desaparece", async () => {
+    const { setManualExtraReason } = await import("../js/replacements.js");
+
+    setJSON("data_Pablo Ignacio Rojas Aravena", { "2026-9-1": 1 });
+    saveReplacement({
+        worker: "Pablo Ignacio Rojas Aravena",
+        keyDay: "2026-9-1",
+        turno: 1,
+        reason: "Calidad",
+        absenceType: "Motivo manual",
+        source: "manual_extra",
+        addsShift: false
+    });
+
+    let mes = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+    const apoyo = mes.rows[0].extras.day.Calidad[0];
+
+    assert.ok(apoyo.extraId);
+    assert.ok(setManualExtraReason(apoyo.extraId, "Ris Pacs"));
+
+    mes = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+
+    assert.deepEqual(mes.extraColumns.day, ["Ris Pacs"]);
+    assert.equal(mes.rows[0].extras.day["Ris Pacs"][0].name, "Pablo Ignacio Rojas Aravena");
 });
 
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {

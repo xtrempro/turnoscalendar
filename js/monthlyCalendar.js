@@ -37,7 +37,11 @@ import {
     isHonorariaProfile,
     isReplacementProfile
 } from "./contracts.js";
-import { cancelReplacementById, replacementActive } from "./replacements.js";
+import {
+    cancelReplacementById,
+    replacementActive,
+    setManualExtraReason
+} from "./replacements.js";
 import {
     aplicarAdministrativo,
     aplicarAusenciaInjustificada,
@@ -84,7 +88,9 @@ const HALF_LABEL = {
 const ui = {
     month: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     group: "",
-    renderId: 0
+    renderId: 0,
+    // Los motivos con poca gente se ven agrupados hasta que se expanden.
+    expanded: { day: false, night: false }
 };
 
 /* =========================================================
@@ -240,8 +246,8 @@ const CODE_SLOTS = {
  * si NO cubre a nadie ("Apoyo pacientes TC oncologicos"). Esos van en su
  * propia columna; quien reemplaza a alguien sigue con los titulares, en rojo.
  */
-function extraReasonFor(name, iso, slot) {
-    const record = getReplacements().find(item =>
+function extraRecordFor(name, iso, slot) {
+    return getReplacements().find(item =>
         replacementActive(item) &&
         item.worker === name &&
         item.date === iso &&
@@ -249,9 +255,49 @@ function extraReasonFor(name, iso, slot) {
         !item.replaced &&
         String(item.reason || "").trim() &&
         (CODE_SLOTS[String(item.turno || "")] || []).includes(slot)
+    ) || null;
+}
+
+/**
+ * A quien cubre y por que permiso, para el texto al pasar el mouse:
+ * "Juan Zapata (Licencia Médica)". Sale del reemplazo del dia, o del contrato
+ * de reemplazo si cubre por contrato.
+ */
+function coverDetailFor(name, keyDay, iso, slot, byContract) {
+    if (byContract) {
+        const contract = getContractForDate(name, keyDay);
+
+        return contract?.replaces
+            ? `${contract.replaces}${contract.reason ? ` (${contract.reason})` : ""}`
+            : "";
+    }
+
+    const records = getReplacements().filter(item =>
+        replacementActive(item) &&
+        item.worker === name &&
+        item.date === iso &&
+        item.replaced &&
+        (
+            !CODE_SLOTS[String(item.turno || "")] ||
+            CODE_SLOTS[String(item.turno || "")].includes(slot)
+        )
     );
 
-    return record ? String(record.reason).trim() : "";
+    return [...new Set(records.map(item =>
+        `${item.replaced}${item.absenceType ? ` (${item.absenceType})` : ""}`
+    ))].join(", ");
+}
+
+function personTitle(person) {
+    if (person.extraReason) {
+        return `${person.name} — apoyo extra: ${person.extraReason}`;
+    }
+
+    if (!person.covering) return person.name;
+
+    return person.coverDetail
+        ? `${person.name} — cubre a ${person.coverDetail}`
+        : `${person.name} — turno agregado sin motivo registrado`;
 }
 
 function slotsOf(state) {
@@ -332,17 +378,32 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
                 };
                 // Apoyo extra con motivo (no reemplaza a nadie): a la columna
                 // de su motivo, sin rojo.
-                const reason = !byContract && !ownSlots[slot]
-                    ? extraReasonFor(name, row.iso, slot)
+                const extraRecord = !byContract && !ownSlots[slot]
+                    ? extraRecordFor(name, row.iso, slot)
+                    : null;
+                const reason = extraRecord
+                    ? String(extraRecord.reason).trim()
                     : "";
 
                 if (reason) {
                     (row.extras[slot][reason] ||= []).push({
                         ...person,
                         covering: false,
-                        extraReason: reason
+                        extraReason: reason,
+                        // Para moverlo a otro motivo arrastrandolo.
+                        extraId: String(extraRecord.id || "")
                     });
                     return;
+                }
+
+                if (person.covering) {
+                    person.coverDetail = coverDetailFor(
+                        name,
+                        keyDay,
+                        row.iso,
+                        slot,
+                        byContract
+                    );
                 }
 
                 row.slots[slot].push(person);
@@ -365,30 +426,78 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
         }
     }
 
-    // Una columna por motivo distinto del mes, en el orden en que aparecen.
+    // Una columna por motivo distinto del mes, en el orden en que aparecen, y
+    // cuantas veces aparece cada uno (para agrupar los de poca gente).
     const extraColumns = { day: [], night: [] };
+    const extraCounts = { day: {}, night: {} };
 
     rows.forEach(row => {
         ["day", "night"].forEach(slot => {
-            Object.keys(row.extras[slot]).forEach(reason => {
+            Object.entries(row.extras[slot]).forEach(([reason, people]) => {
                 if (!extraColumns[slot].includes(reason)) {
                     extraColumns[slot].push(reason);
                 }
+
+                extraCounts[slot][reason] =
+                    (extraCounts[slot][reason] || 0) + people.length;
             });
         });
     });
 
-    return { year, month: monthIndex, rows, extraColumns };
+    return { year, month: monthIndex, rows, extraColumns, extraCounts };
+}
+
+// Un motivo con menos apariciones que esto en el mes va a "Otros motivos".
+export const SMALL_EXTRA_COLUMN = 3;
+
+/**
+ * Las columnas de apoyo extra que se dibujan en un tramo: cada motivo con
+ * bastante gente en la suya, y los de poca gente juntos en una sola ("Otros
+ * motivos"), salvo que el supervisor la haya expandido. Uno solo de poca
+ * gente no se agrupa: una columna "Otros" con un motivo no ahorra nada.
+ */
+export function visibleExtraColumns(model, slot, expanded = false) {
+    const reasons = model.extraColumns[slot] || [];
+    const counts = model.extraCounts?.[slot] || {};
+    const small = reasons.filter(reason =>
+        (counts[reason] || 0) < SMALL_EXTRA_COLUMN
+    );
+
+    if (expanded || small.length < 2) {
+        return reasons.map(reason => ({ kind: "reason", reason }));
+    }
+
+    return [
+        ...reasons
+            .filter(reason => !small.includes(reason))
+            .map(reason => ({ kind: "reason", reason })),
+        { kind: "group", reasons: small }
+    ];
+}
+
+function canGroupExtras(model, slot) {
+    const counts = model.extraCounts?.[slot] || {};
+
+    return (model.extraColumns[slot] || [])
+        .filter(reason => (counts[reason] || 0) < SMALL_EXTRA_COLUMN)
+        .length >= 2;
 }
 
 /* =========================================================
    Pintado
 ========================================================= */
 
-function chipsHTML(list, gaps) {
-    const people = list.map(person => `
-        <span class="mcal-chip${person.covering ? " is-covering" : ""}" title="${escapeHTML(person.name)}${person.covering ? " (cubriendo)" : ""}">${escapeHTML(person.initials)}${person.half ? `<small>${escapeHTML(person.half)}</small>` : ""}</span>
-    `.trim()).join('<span class="mcal-sep">-</span>');
+// `drag`: los apoyos extra se pueden arrastrar a la columna de otro motivo.
+function chipsHTML(list, gaps, { drag = null } = {}) {
+    const people = list.map(person => {
+        const draggable = drag && person.extraId
+            ? ` draggable="true" data-mcal-drag="${escapeHTML(person.extraId)}" data-mcal-drag-key="${escapeHTML(drag.keyDay)}" data-mcal-drag-slot="${escapeHTML(drag.slot)}" data-mcal-drag-reason="${escapeHTML(person.extraReason)}" data-mcal-drag-name="${escapeHTML(person.name)}"`
+            : "";
+
+        return `
+            <span class="mcal-chip${person.covering ? " is-covering" : ""}${draggable ? " is-draggable" : ""}" title="${escapeHTML(personTitle(person))}"${draggable}>${escapeHTML(person.initials)}${person.half ? `<small>${escapeHTML(person.half)}</small>` : ""}</span>
+        `.trim();
+    }).join('<span class="mcal-sep">-</span>');
     const holes = gaps.map(gap => `
         <span class="mcal-gap" title="Falta cubrir el turno de ${escapeHTML(gap.name)}">+${escapeHTML(gap.initials)}</span>
     `.trim()).join("");
@@ -396,8 +505,41 @@ function chipsHTML(list, gaps) {
     return people + (people && holes ? " " : "") + holes || '<span class="mcal-empty">—</span>';
 }
 
+/**
+ * Una casilla de apoyo extra. La de un motivo recibe a quien se arrastra desde
+ * otro motivo; la agrupada ("Otros motivos") junta a todos y, al pasar el
+ * mouse, dice el motivo de cada uno.
+ */
+function extraCellHTML(row, slot, column, canEdit) {
+    const drag = canEdit ? { keyDay: row.keyDay, slot } : null;
+    const base = `class="mcal-slot mcal-slot--extra" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" tabindex="0"`;
+
+    if (column.kind === "group") {
+        const people = column.reasons.flatMap(reason => row.extras[slot][reason] || []);
+        const title = people
+            .map(person => `${person.name} — ${person.extraReason}`)
+            .join("\n");
+
+        return `<td ${base}${title ? ` title="${escapeHTML(title)}"` : ""}>${people.length
+            ? chipsHTML(people, [], { drag })
+            : ""}</td>`;
+    }
+
+    const people = row.extras[slot][column.reason] || [];
+
+    return `<td ${base} data-mcal-drop-reason="${escapeHTML(column.reason)}">${people.length
+        ? chipsHTML(people, [], { drag })
+        : ""}</td>`;
+}
+
 function panelHTML(model, groups) {
     const monthLabel = `${MONTH_NAMES[model.month]} ${model.year}`;
+    const slots = ["day", "night"];
+    const columns = {
+        day: visibleExtraColumns(model, "day", ui.expanded.day),
+        night: visibleExtraColumns(model, "night", ui.expanded.night)
+    };
+    const canEdit = canEditTarget("calendarPanel");
 
     return `
         <div class="mcal">
@@ -425,16 +567,28 @@ function panelHTML(model, groups) {
                         <tr>
                             <th rowspan="2">Fecha</th>
                             <th rowspan="2"></th>
-                            ${["day", "night"].map(slot => `
-                                <th colspan="${1 + model.extraColumns[slot].length}" class="mcal-group-head">${slot === "day" ? "Día" : "Noche"}</th>
+                            ${slots.map(slot => `
+                                <th colspan="${1 + columns[slot].length}" class="mcal-group-head">
+                                    ${slot === "day" ? "Día" : "Noche"}
+                                    ${ui.expanded[slot] && canGroupExtras(model, slot)
+                                        ? `<button type="button" class="mcal-fold" data-mcal-collapse="${slot}" title="Agrupar los motivos con poca gente">− Agrupar</button>`
+                                        : ""}
+                                </th>
                             `).join("")}
                         </tr>
                         <tr>
-                            ${["day", "night"].map(slot => `
+                            ${slots.map(slot => `
                                 <th class="mcal-sub-head">Titulares</th>
-                                ${model.extraColumns[slot].map(reason => `
-                                    <th class="mcal-sub-head mcal-sub-head--extra" title="Apoyo extra: ${escapeHTML(reason)}">${escapeHTML(reason)}</th>
-                                `).join("")}
+                                ${columns[slot].map(column => column.kind === "group"
+                                    ? `
+                                        <th class="mcal-sub-head mcal-sub-head--extra mcal-sub-head--group" title="${escapeHTML(column.reasons.join("\n"))}">
+                                            Otros motivos (${column.reasons.length})
+                                            <button type="button" class="mcal-fold" data-mcal-expand="${slot}" title="Ver cada motivo en su columna">+</button>
+                                        </th>
+                                    `
+                                    : `
+                                        <th class="mcal-sub-head mcal-sub-head--extra" title="Apoyo extra: ${escapeHTML(column.reason)}">${escapeHTML(column.reason)}</th>
+                                    `).join("")}
                             `).join("")}
                         </tr>
                     </thead>
@@ -443,13 +597,9 @@ function panelHTML(model, groups) {
                             <tr class="${row.business ? "" : "is-weekend"}">
                                 <td class="mcal-date">${row.day}</td>
                                 <td class="mcal-weekday">${row.weekday}</td>
-                                ${["day", "night"].map(slot => `
+                                ${slots.map(slot => `
                                     <td class="mcal-slot" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" tabindex="0">${chipsHTML(row.slots[slot], row.gaps[slot])}</td>
-                                    ${model.extraColumns[slot].map(reason => `
-                                        <td class="mcal-slot mcal-slot--extra" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" tabindex="0">${(row.extras[slot][reason] || []).length
-                                            ? chipsHTML(row.extras[slot][reason], [])
-                                            : ""}</td>
-                                    `).join("")}
+                                    ${columns[slot].map(column => extraCellHTML(row, slot, column, canEdit)).join("")}
                                 `).join("")}
                             </tr>
                         `).join("")}
@@ -476,6 +626,11 @@ export async function renderMonthlyCalendarPanel() {
     if (!panel.dataset.bound) {
         panel.dataset.bound = "1";
         panel.addEventListener("click", onPanelClick);
+        panel.addEventListener("dragstart", onDragStart);
+        panel.addEventListener("dragover", onDragOver);
+        panel.addEventListener("dragleave", onDragLeave);
+        panel.addEventListener("drop", onDrop);
+        panel.addEventListener("dragend", onDragEnd);
         panel.addEventListener("keydown", event => {
             if (event.key === "Enter" && event.target.closest("[data-mcal-slot]")) {
                 onPanelClick(event);
@@ -739,6 +894,101 @@ async function removeCover(person, keyDay) {
     return excluded;
 }
 
+/* ---------- Arrastrar un apoyo extra a otro motivo ----------
+
+   Solo dentro de la MISMA casilla de dia y tramo (el apoyo es de ese turno) y
+   hacia una columna de un motivo concreto: la agrupada tiene varios y no se
+   sabria cual poner. Al soltar se cambia el motivo del respaldo; si en la
+   columna de origen no queda nadie en el mes, desaparece sola al repintar. */
+
+let dragState = null;
+
+function dropTargetFor(event) {
+    const cell = event.target.closest("[data-mcal-drop-reason]");
+
+    if (
+        !cell ||
+        !dragState ||
+        cell.dataset.mcalKey !== dragState.keyDay ||
+        cell.dataset.mcalSlot !== dragState.slot ||
+        cell.dataset.mcalDropReason === dragState.reason
+    ) {
+        return null;
+    }
+
+    return cell;
+}
+
+function clearDropHighlights(panel) {
+    panel.querySelectorAll(".is-drop-target").forEach(cell =>
+        cell.classList.remove("is-drop-target")
+    );
+}
+
+function onDragStart(event) {
+    const chip = event.target.closest("[data-mcal-drag]");
+
+    if (!chip) return;
+
+    dragState = {
+        extraId: chip.dataset.mcalDrag,
+        keyDay: chip.dataset.mcalDragKey,
+        slot: chip.dataset.mcalDragSlot,
+        reason: chip.dataset.mcalDragReason,
+        name: chip.dataset.mcalDragName
+    };
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", dragState.extraId);
+}
+
+function onDragOver(event) {
+    const cell = dropTargetFor(event);
+
+    if (!cell) return;
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    cell.classList.add("is-drop-target");
+}
+
+function onDragLeave(event) {
+    event.target.closest("[data-mcal-drop-reason]")
+        ?.classList.remove("is-drop-target");
+}
+
+async function onDrop(event) {
+    const cell = dropTargetFor(event);
+    const panel = event.currentTarget;
+
+    clearDropHighlights(panel);
+
+    if (!cell) return;
+
+    event.preventDefault();
+
+    const moving = dragState;
+    const nextReason = cell.dataset.mcalDropReason;
+
+    dragState = null;
+    pushHistory();
+
+    if (setManualExtraReason(moving.extraId, nextReason)) {
+        addAuditLog(
+            AUDIT_CATEGORY.CALENDAR,
+            "Cambio el motivo de horas extras",
+            `${moving.name}: el ${moving.keyDay} pasa de "${moving.reason}" a "${nextReason}" (Calendario Mensual).`,
+            { profile: moving.name, keyDay: moving.keyDay }
+        );
+    }
+
+    await renderMonthlyCalendarPanel();
+}
+
+function onDragEnd(event) {
+    dragState = null;
+    clearDropHighlights(event.currentTarget);
+}
+
 function closeSlotDialog(backdrop, onKeydown) {
     document.removeEventListener("keydown", onKeydown);
     backdrop.remove();
@@ -769,7 +1019,11 @@ function openSlotDialog(row, slot) {
                     ${people.map((person, index) => `
                         <li>
                             <span class="mcal-chip${person.covering ? " is-covering" : ""}">${escapeHTML(person.initials)}</span>
-                            <span class="mcal-dialog-name">${escapeHTML(person.name)}${person.half ? ` <small>(${escapeHTML(person.half)})</small>` : ""}<small>${person.extraReason ? `Apoyo extra: ${escapeHTML(person.extraReason)}` : person.covering ? "Cubriendo" : "Su turno"}</small></span>
+                            <span class="mcal-dialog-name">${escapeHTML(person.name)}${person.half ? ` <small>(${escapeHTML(person.half)})</small>` : ""}<small>${person.extraReason
+                                ? `Apoyo extra: ${escapeHTML(person.extraReason)}`
+                                : person.covering
+                                    ? (person.coverDetail ? `Cubre a ${escapeHTML(person.coverDetail)}` : "Turno agregado sin motivo")
+                                    : "Su turno"}</small></span>
                             ${canEdit ? `<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button>` : ""}
                         </li>
                     `).join("")}
@@ -843,6 +1097,18 @@ function openSlotDialog(row, slot) {
 }
 
 function onPanelClick(event) {
+    const fold = event.target.closest("[data-mcal-expand], [data-mcal-collapse]");
+
+    if (fold) {
+        event.stopPropagation();
+
+        if (fold.dataset.mcalExpand) ui.expanded[fold.dataset.mcalExpand] = true;
+        if (fold.dataset.mcalCollapse) ui.expanded[fold.dataset.mcalCollapse] = false;
+
+        void renderMonthlyCalendarPanel();
+        return;
+    }
+
     // Un filtro a la vez: tocar una profesion muestra SOLO esa.
     const filter = event.target.closest("[data-mcal-group]");
 
