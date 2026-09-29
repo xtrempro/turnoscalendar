@@ -903,45 +903,55 @@ async function createWorkerAppInvite(
 }
 
 /**
- * Crea una invitacion pendiente para que Cloud Functions envie el correo.
- * No abre modales: se usa al guardar un perfil con correo nuevo o modificado.
+ * Deja sin efecto las invitaciones pendientes de un perfil, sin crear otra.
+ *
+ * Al cambiar el correo de un perfil ya no se envia una invitacion nueva (el
+ * correo sale solo con el boton Enlazar), y era esa invitacion nueva la que
+ * anulaba las anteriores. Sin esto, la invitacion al correo VIEJO -quiza
+ * equivocado- seguiria sirviendo para enlazarse al perfil.
+ *
+ * @returns {Promise<number>} cuantas se anularon
  */
-export async function sendWorkerAppInviteEmail(
-    profile,
-    {
-        ignoreExistingLink = false,
-        replaceLink = null
-    } = {}
-) {
-    try {
-        const result = await createWorkerAppInvite(
-            profile,
+export async function supersedePendingWorkerInvites(profile) {
+    const workspace = getActiveWorkspace();
+
+    if (!profile?.name || !workspace?.id) return 0;
+
+    const { db, firestoreModule } = await getFirebaseServices();
+    const pendientes = await findPendingInvitesForProfile(
+        firestoreModule,
+        db,
+        workspace.id,
+        profile
+    );
+
+    if (!pendientes.length) return 0;
+
+    const now = firestoreModule.serverTimestamp();
+    const batch = firestoreModule.writeBatch(db);
+
+    pendientes.forEach(invite => {
+        batch.update(
+            firestoreModule.doc(
+                db,
+                "workspaces",
+                workspace.id,
+                "workerAppInvites",
+                invite.id
+            ),
             {
-                requireEmail: true,
-                ignoreExistingLink,
-                replaceLink
+                status: "superseded",
+                supersededAt: now,
+                supersededReason: "email_changed",
+                updatedAt: now
             }
         );
+    });
 
-        return {
-            sent: result.status === "created",
-            status: result.status,
-            email: result.email || normalizeEmail(profile?.email),
-            inviteUrl: result.inviteUrl || ""
-        };
-    } catch (error) {
-        console.warn(
-            "No se pudo crear la invitacion automatica de la app.",
-            error
-        );
+    await batch.commit();
+    await refreshPendingWorkerInvites();
 
-        return {
-            sent: false,
-            status: "error",
-            email: normalizeEmail(profile?.email),
-            error
-        };
-    }
+    return pendientes.length;
 }
 
 export async function openWorkerAppInviteDialog(profile) {

@@ -490,7 +490,7 @@ import {
     listWorkerLinkStates,
     openWorkerAppInviteDialog,
     refreshPendingWorkerInvites,
-    sendWorkerAppInviteEmail,
+    supersedePendingWorkerInvites,
     unlinkWorkerAppForProfile
 } from "./workerAppInvites.js";
 import {
@@ -11908,13 +11908,10 @@ async function guardarPerfil() {
             nextEmailKey &&
             nextProfilePayload.active
         );
-    const shouldSendAutomaticWorkerInvite =
-        Boolean(nextEmailKey) &&
-        nextProfilePayload.active &&
-        (
-            isCreating ||
-            emailChanged
-        );
+    // Guardar el perfil ya NO envia la invitacion a la app: el correo sale solo
+    // con el boton Enlazar del perfil. Si el correo cambia, las invitaciones
+    // pendientes al anterior se anulan (ver supersedePendingWorkerInvites).
+    const shouldSupersedeWorkerInvites = emailChanged;
     const shouldApplyRotation =
         !replacementContract &&
         (
@@ -12042,11 +12039,11 @@ async function guardarPerfil() {
     if (
         shouldReplaceWorkerAppLink &&
         !await showConfirm(
-            `Al modificar el correo de ${nextName}, se desenlazará la PWA asociada a ${previousSnapshot.email || "su correo anterior"}.\n\nEl funcionario deberá volver a enlazarse con la invitación que se enviará a ${nextProfilePayload.email}.`,
+            `Al modificar el correo de ${nextName}, se desenlazará la PWA asociada a ${previousSnapshot.email || "su correo anterior"}.\n\nNo se enviará ningún correo todavía: para enlazar a ${nextProfilePayload.email}, usa el botón Enlazar del perfil.`,
             {
                 title: "Cambiar correo enlazado",
                 tone: "warning",
-                confirmText: "Cambiar y reenlazar"
+                confirmText: "Cambiar y desenlazar"
             }
         )
     ) {
@@ -12096,7 +12093,7 @@ async function guardarPerfil() {
         }
     }
 
-    let automaticInviteResult = null;
+    let previousLinkRevoked = false;
     const profileSaveSealNames = [
         nextName,
         isEditing ? profileDraft.originalName : "",
@@ -12111,18 +12108,16 @@ async function guardarPerfil() {
         snapshotCriticalProfileState(profileSaveSealNames);
 
     try {
+        // Antes de cambiar el correo: si el desenlace falla, el correo no se
+        // toca y la cuenta anterior sigue como estaba.
         if (shouldReplaceWorkerAppLink) {
-            automaticInviteResult =
-                await sendWorkerAppInviteEmail({
-                    ...nextProfilePayload,
-                    name: nextName
-                }, {
-                    replaceLink: previousWorkerAppLink
-                });
+            previousLinkRevoked = await unlinkWorkerAppForProfile(
+                profileDraft.originalName
+            );
 
-            if (!automaticInviteResult.sent) {
+            if (!previousLinkRevoked) {
                 throw new Error(
-                    "No se pudo reemplazar el enlace de la PWA. El correo no fue modificado y la cuenta anterior conserva su acceso."
+                    "No se pudo desenlazar la PWA anterior. El correo no fue modificado y la cuenta anterior conserva su acceso."
                 );
             }
         }
@@ -12262,41 +12257,25 @@ async function guardarPerfil() {
             }
         }
 
-        if (
-            shouldSendAutomaticWorkerInvite &&
-            !automaticInviteResult
-        ) {
-            automaticInviteResult =
-                await sendWorkerAppInviteEmail({
-                    ...nextProfilePayload,
-                    name: nextName
-                }, {
-                    ignoreExistingLink:
-                        shouldReplaceWorkerAppLink
-                });
-
-            if (automaticInviteResult.sent) {
-                addAuditLog(
-                    AUDIT_CATEGORY.COLLABORATOR_UPDATED,
-                    "Envio invitacion app trabajador",
-                    `${nextName}: se envio automaticamente la invitacion de enlace a ${automaticInviteResult.email}.`,
-                    {
-                        profile: nextName,
-                        email: automaticInviteResult.email,
-                        automatic: true
-                    }
+        if (shouldSupersedeWorkerInvites) {
+            // Con el perfil ya guardado: la invitacion vieja se busca por RUT,
+            // o por nombre si no tiene. Si falla, el perfil queda guardado igual.
+            await supersedePendingWorkerInvites({
+                name: profileDraft.originalName,
+                rut: previousSnapshot?.rut || nextProfilePayload.rut
+            }).catch(error => {
+                console.warn(
+                    "No se pudieron anular las invitaciones al correo anterior.",
+                    error
                 );
-            }
+            });
         }
 
-        if (
-            shouldReplaceWorkerAppLink &&
-            automaticInviteResult?.sent
-        ) {
+        if (previousLinkRevoked) {
             addAuditLog(
                 AUDIT_CATEGORY.COLLABORATOR_UPDATED,
-                "Reemplazo enlace app trabajador",
-                `${nextName}: se revoco el enlace asociado a ${previousSnapshot.email || "correo anterior"} y se envio una nueva invitacion para ${nextProfilePayload.email}.`,
+                "Desenlazo app trabajador por cambio de correo",
+                `${nextName}: se revoco el enlace asociado a ${previousSnapshot.email || "correo anterior"}. Para enlazar ${nextProfilePayload.email} se usa el boton Enlazar.`,
                 {
                     profile: nextName,
                     previousEmail:
@@ -12418,11 +12397,6 @@ async function guardarPerfil() {
         refreshAll();
         scheduleWorkerAppDataPublish(300, nextName);
 
-        if (automaticInviteResult?.status === "error") {
-            alert(
-                `El perfil de ${nextName} se guardo, pero no se pudo enviar la invitacion al correo ${nextProfilePayload.email}. Puedes reintentarlo con ENLACE APP.`
-            );
-        }
         return true;
     } catch (error) {
         alert(
