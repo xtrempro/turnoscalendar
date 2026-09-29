@@ -208,6 +208,152 @@ async function moveWorkerLinkForTransfer(db, solicitud, serverTimestamp) {
   return { moved: true, uid };
 }
 
+function addDaysISO(iso, amount) {
+  const [year, month, day] = String(iso).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + amount));
+
+  return date.toISOString().slice(0, 10);
+}
+
+// Mismo codificador que js/firebasePartialState.js (encodePartialStateItemKey).
+function encodeItemKey(itemKey) {
+  return encodeURIComponent(String(itemKey || "")).replace(/\./g, "%2E");
+}
+
+function decodeItemKey(itemKey) {
+  try {
+    return decodeURIComponent(String(itemKey || ""));
+  } catch {
+    return String(itemKey || "");
+  }
+}
+
+function parseList(raw) {
+  try {
+    const value = JSON.parse(String(raw || "[]"));
+
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+// La lista de perfiles tal como la lee la app: `value` y encima `items`
+// (applyListStateEntries en js/firebasePartialState.js).
+function profilesFromEntry(entry = {}) {
+  const list = parseList(entry.value);
+  const deleted = entry.deletedItems || {};
+
+  Object.entries(entry.items || {}).forEach(([key, raw]) => {
+    const id = decodeItemKey(key);
+    const index = list.findIndex(item => String(item?.id ?? "").trim() === id);
+
+    if (deleted[key] === true) {
+      if (index >= 0) list.splice(index, 1);
+      return;
+    }
+
+    let parsed = null;
+
+    try {
+      parsed = JSON.parse(String(raw ?? "null"));
+    } catch {
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object") return;
+
+    if (index >= 0) list[index] = parsed;
+    else list.push(parsed);
+  });
+
+  return list;
+}
+
+/**
+ * Deja INACTIVO el perfil en la unidad de origen, con su ultimo dia valido,
+ * aunque nadie de esa unidad tenga la app abierta. El motor de turnos ya da
+ * como libres los dias posteriores a `unitExitDate`, asi que desde la fecha deja
+ * de aparecer disponible y de contar como activo alla.
+ *
+ * Escribe SOLO el elemento de ese perfil en `items` -nunca `value`-, dentro de
+ * una transaccion. Si el perfil guardado no tiene `id` no se toca: el elemento
+ * se agregaria como un perfil duplicado. En ese caso lo hace el navegador de
+ * origen al abrirse, como antes. El vaciado de permisos y el ajuste de saldos
+ * siguen siendo del navegador.
+ *
+ * @returns {Promise<{marked: boolean, reason?: string}>}
+ */
+async function markSourceProfileTransferred(db, solicitud, dependencies) {
+  const { serverTimestamp } = dependencies;
+  const source = solicitud.sourceWorkspaceId;
+  const startDate = cleanText(solicitud.startDate, 10);
+
+  if (!source || !validISODate(startDate)) {
+    return { marked: false, reason: "invalid" };
+  }
+
+  const ref = db
+    .collection("workspaces").doc(source)
+    .collection("stateModules").doc("profile")
+    .collection("entries").doc("profiles");
+
+  const result = await db.runTransaction(async transaction => {
+    const snap = await transaction.get(ref);
+
+    if (!snap.exists) return { marked: false, reason: "no_entry" };
+
+    const entry = snap.data() || {};
+
+    if (entry.deleted === true) return { marked: false, reason: "deleted" };
+
+    const profile = profilesFromEntry(entry)
+      .find(item => item?.name === solicitud.profileName);
+
+    if (!profile) return { marked: false, reason: "no_profile" };
+
+    const id = String(profile.id ?? "").trim();
+
+    if (!id) return { marked: false, reason: "no_id" };
+    if (profile.active === false) return { marked: false, reason: "inactive" };
+
+    const key = encodeItemKey(id);
+
+    transaction.update(ref, {
+      items: {
+        ...(entry.items || {}),
+        [key]: JSON.stringify({
+          ...profile,
+          active: false,
+          unitExitDate: addDaysISO(startDate, -1)
+        })
+      },
+      deletedItems: { ...(entry.deletedItems || {}), [key]: false },
+      container: "array",
+      clientId: "server-worker-transfer",
+      updatedAt: serverTimestamp(),
+      updatedAtISO: new Date().toISOString()
+    });
+
+    return { marked: true };
+  });
+
+  // Su app sigue en origen hasta la fecha: que su calendario alla se publique
+  // ya con la salida. Se pide DESPUES de escribir el perfil.
+  if (result.marked) {
+    await db
+      .collection("workspaces").doc(source)
+      .collection("projectionRequests")
+      .add({
+        profiles: [solicitud.profileName],
+        requestedAt: serverTimestamp(),
+        source: "worker_transfer"
+      });
+  }
+
+  return result;
+}
+
 /**
  * Muda los enlaces de las transferencias aceptadas cuya fecha ya llego. Lo
  * llama la tarea diaria; al aceptar, si la fecha ya paso, se muda en el acto.
@@ -425,6 +571,25 @@ async function respondWorkerTransferRequestHandler(request, dependencies) {
   // El enlace de la app se muda en la fecha de inicio: antes, el trabajador
   // sigue viendo sus ultimos turnos en origen. Si la fecha ya llego, ahora.
   let linkMoved = null;
+  let sourceProfile = null;
+
+  // Primero el perfil de origen: inactivo desde la fecha, aunque esa unidad
+  // no tenga la app abierta. Si falla, lo hace su navegador al abrirse.
+  if (status === ACCEPTED) {
+    try {
+      sourceProfile = await markSourceProfileTransferred(
+        db,
+        solicitud,
+        { serverTimestamp }
+      );
+    } catch (error) {
+      sourceProfile = { marked: false, reason: "error" };
+      dependencies.logger?.warn?.("No se pudo inactivar el perfil en origen.", {
+        requestId,
+        error: error?.message || String(error)
+      });
+    }
+  }
 
   if (status === ACCEPTED && solicitud.startDate <= today) {
     try {
@@ -446,6 +611,12 @@ async function respondWorkerTransferRequestHandler(request, dependencies) {
     ...(linkMoved === null
       ? {}
       : { linkMoved, linkMovedAt: now }),
+    ...(sourceProfile
+      ? {
+        sourceProfileMarked: sourceProfile.marked,
+        sourceProfileMarkReason: sourceProfile.reason || ""
+      }
+      : {}),
     status,
     targetProfileName: status === ACCEPTED ? targetProfileName : "",
     rejectReason: status === REJECTED
@@ -695,7 +866,9 @@ module.exports = {
   claimWorkerTransferApplicationHandler,
   cleanProfile,
   createWorkerTransferRequestHandler,
+  markSourceProfileTransferred,
   moveDueWorkerLinksHandler,
+  profilesFromEntry,
   moveWorkerLinkForTransfer,
   respondWorkerTransferRequestHandler
 };

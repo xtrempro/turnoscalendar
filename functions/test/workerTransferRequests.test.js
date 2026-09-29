@@ -75,6 +75,13 @@ class FakeCol {
     return new FakeDoc(this.db, `${this.path}/${id}`);
   }
 
+  add(value) {
+    this.db.added = (this.db.added || 0) + 1;
+    const ref = new FakeDoc(this.db, `${this.path}/auto-${this.db.added}`);
+
+    return ref.set(value).then(() => ref);
+  }
+
   where(field, op, value) {
     return new FakeCol(this.db, this.path, [...this.filters, { field, value }]);
   }
@@ -512,4 +519,123 @@ test("el ajuste de saldos en destino se reclama UNA vez", async () => {
   assert.equal((await pedir("t-1")).claimed, false);
   // Sin saldos finales todavia no hay nada que ajustar.
   assert.equal((await pedir("t-2")).claimed, false);
+});
+
+/* =========================================================
+   El perfil de origen queda inactivo desde el servidor
+========================================================= */
+
+const PERFILES = "workspaces/w-origen/stateModules/profile/entries/profiles";
+
+function entradaPerfiles(perfiles, extra = {}) {
+  return {
+    moduleId: "profile",
+    storageKey: "profiles",
+    value: JSON.stringify(perfiles),
+    ...extra
+  };
+}
+
+test("aceptar deja el perfil de origen inactivo, SOLO en items", async () => {
+  const perfiles = [
+    { id: "profile_ana", name: "Ana Perez", active: true, rut: "1-9" },
+    { id: "profile_bea", name: "Bea Soto", active: true }
+  ];
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: pendiente({ startDate: "2026-10-01" }),
+    [PERFILES]: entradaPerfiles(perfiles)
+  });
+  const { deps } = dependencies(db);
+
+  await respondWorkerTransferRequestHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1", status: ACCEPTED, targetProfileName: "Ana Perez" }),
+    deps
+  );
+
+  const entrada = db.documents.get(PERFILES);
+
+  // `value` intacto: es la lista entera y pisarla es como se perdieron datos.
+  assert.equal(entrada.value, JSON.stringify(perfiles));
+  assert.deepEqual(JSON.parse(entrada.items.profile_ana), {
+    id: "profile_ana",
+    name: "Ana Perez",
+    active: false,
+    rut: "1-9",
+    unitExitDate: "2026-09-30"
+  });
+  assert.equal(entrada.deletedItems.profile_ana, false);
+  assert.equal(entrada.container, "array");
+  assert.equal(db.documents.get(`${COLLECTION}/t-1`).sourceProfileMarked, true);
+
+  // Y se pide publicar su calendario de origen con la salida ya escrita.
+  const pedidos = [...db.documents.entries()]
+    .filter(([path]) => path.startsWith("workspaces/w-origen/projectionRequests/"));
+
+  assert.equal(pedidos.length, 1);
+  assert.deepEqual(pedidos[0][1].profiles, ["Ana Perez"]);
+});
+
+test("respeta lo que ya estaba en items y lee el perfil desde ahi", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: pendiente(),
+    [PERFILES]: entradaPerfiles(
+      [{ id: "profile_ana", name: "Ana Perez", active: true }],
+      {
+        items: {
+          profile_ana: JSON.stringify({ id: "profile_ana", name: "Ana Perez", active: true, grade: "12" }),
+          profile_eva: JSON.stringify({ id: "profile_eva", name: "Eva", active: true })
+        }
+      }
+    )
+  });
+  const { deps } = dependencies(db);
+
+  await respondWorkerTransferRequestHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1", status: ACCEPTED, targetProfileName: "Ana Perez" }),
+    deps
+  );
+
+  const items = db.documents.get(PERFILES).items;
+
+  assert.equal(JSON.parse(items.profile_ana).grade, "12");
+  assert.equal(JSON.parse(items.profile_ana).active, false);
+  assert.equal(JSON.parse(items.profile_eva).active, true);
+});
+
+test("un perfil guardado SIN id no se toca: se agregaria duplicado", async () => {
+  const perfiles = [{ name: "Ana Perez", active: true }];
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: pendiente(),
+    [PERFILES]: entradaPerfiles(perfiles)
+  });
+  const { deps } = dependencies(db);
+
+  await respondWorkerTransferRequestHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1", status: ACCEPTED, targetProfileName: "Ana Perez" }),
+    deps
+  );
+
+  assert.equal(db.documents.get(PERFILES).items, undefined);
+
+  const solicitud = db.documents.get(`${COLLECTION}/t-1`);
+
+  assert.equal(solicitud.status, ACCEPTED);
+  assert.equal(solicitud.sourceProfileMarked, false);
+  assert.equal(solicitud.sourceProfileMarkReason, "no_id");
+});
+
+test("rechazar no toca el perfil de origen", async () => {
+  const perfiles = [{ id: "profile_ana", name: "Ana Perez", active: true }];
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: pendiente(),
+    [PERFILES]: entradaPerfiles(perfiles)
+  });
+  const { deps } = dependencies(db);
+
+  await respondWorkerTransferRequestHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1", status: REJECTED }),
+    deps
+  );
+
+  assert.equal(db.documents.get(PERFILES).items, undefined);
 });
