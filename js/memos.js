@@ -10,6 +10,13 @@ import {
     anexo4FileName,
     buildAnexo4Docx
 } from "./swapMemoForm.js";
+import {
+    REPLACEMENT_MEMO_TEMPLATE_URL,
+    buildReplacementMemoDocx,
+    replacementMemoData,
+    replacementMemoFileName
+} from "./replacementMemoForm.js";
+import { getContractsForProfile } from "./contracts.js";
 import { getRotativaLabel } from "./rotationUtils.js";
 import {
     ATTACHMENT_ACCEPT,
@@ -24,6 +31,7 @@ import {
     openCachedAttachment
 } from "./attachmentCache.js";
 import {
+    detailFields,
     MEMO_KINDS,
     MEMO_STATES,
     OVERDUE_DAYS,
@@ -1767,9 +1775,14 @@ function viewerHTML(memo, ctx) {
     const doc = documents[ui.docIndex] || documents[0];
     const license = leaveTypeNeedsDocument(memo.leaveType);
     const swapForm = memoKind(memo) === "swap";
+    const contractForm = memoKind(memo) === "contract";
+    // El documento que TurnoPlus deja relleno para imprimir y firmar: el Anexo 4
+    // de un cambio de turno, o el memorandum de un contrato de reemplazo.
     const anexo4Button = swapForm
         ? `<button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="download-anexo4" data-mem-id="${attr(memo.id)}">${ic("download")}Descargar formulario (Anexo 4)</button>`
-        : "";
+        : contractForm
+            ? `<button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="download-replacement-memo" data-mem-id="${attr(memo.id)}">${ic("download")}Descargar memorándum de reemplazo</button>`
+            : "";
     const state = MEMO_STATES[memoStatus(memo)];
     const year = ctx.today.slice(0, 4);
     const fromWorker = ctx.memos.filter(item =>
@@ -1810,6 +1823,8 @@ function viewerHTML(memo, ctx) {
                     ? "Escanea o fotografía la licencia médica y adjúntala aquí. Apenas se adjunta, el memorándum queda realizado."
                     : swapForm
                         ? "Descarga el formulario ya relleno, imprímelo y que lo firmen (el motivo lo escribe a mano el trabajador). Luego adjunta el escaneo o una foto aquí: apenas se adjunta, el memorándum queda realizado."
+                        : contractForm
+                            ? "Descarga el memorándum de reemplazo ya relleno, imprímelo y fírmalo. Luego adjunta el escaneo o una foto aquí: apenas se adjunta, el memorándum queda realizado."
                         : "Descárgalo del sistema de personal y adjúntalo aquí, o toma una foto del papel visado. Apenas se adjunta, el memorándum queda realizado."}</p>
                 <span class="mem-dropzone__acts">
                     ${anexo4Button}
@@ -2156,6 +2171,84 @@ async function downloadSwapForm(memo) {
     }
 }
 
+function downloadBytes(bytes, fileName) {
+    const url = URL.createObjectURL(new Blob([bytes], {
+        type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    }));
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// "18-05-2026" (como lo escribe el detalle del memorandum) -> "2026-05-18".
+function detailDateToISO(value) {
+    const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(String(value || "").trim());
+
+    return match ? `${match[3]}-${match[2]}-${match[1]}` : "";
+}
+
+/**
+ * El contrato de un memorandum de reemplazo: el vigente del perfil (por su id,
+ * que va en el sourceId), o lo que quedo escrito en el detalle si ya no esta.
+ */
+export function replacementContractForMemo(memo, contracts = null) {
+    const fields = detailFields(memo?.detail);
+    const reference = String(memo?.sourceId || "").split(":")[2] || "";
+    const list = contracts || getContractsForProfile(memo?.profile);
+    const contract = list.find(item =>
+        (item.id && String(item.id) === reference) ||
+        (!item.id && item.start === reference)
+    );
+
+    if (contract) return contract;
+
+    const start = detailDateToISO(fields.get("Inicio contrato"));
+    const end = detailDateToISO(fields.get("Término contrato"));
+    const replaces = fields.get("Reemplaza a") || "";
+
+    return start && end && replaces
+        ? { start, end, replaces, reason: fields.get("Motivo del reemplazo") || "" }
+        : null;
+}
+
+/**
+ * Descarga el memorandum de reemplazo relleno con el contrato y el perfil del
+ * reemplazante.
+ */
+async function downloadReplacementMemo(memo) {
+    const contract = replacementContractForMemo(memo);
+
+    if (!contract) {
+        toast("No se encontró el contrato de reemplazo de este memorándum.");
+        return;
+    }
+
+    try {
+        const response = await fetch(REPLACEMENT_MEMO_TEMPLATE_URL, { cache: "no-cache" });
+
+        if (!response.ok) throw new Error("No se encontró la plantilla del memorándum.");
+
+        const worker = getProfilesSafe().find(profile => profile.name === memo.profile) ||
+            { name: memo.profile };
+        const data = replacementMemoData(contract, worker, {
+            unitName: getActiveWorkspace()?.name || ""
+        });
+
+        downloadBytes(
+            await buildReplacementMemoDocx(await response.arrayBuffer(), data),
+            replacementMemoFileName(data)
+        );
+    } catch (error) {
+        console.warn("No se pudo generar el memorándum de reemplazo.", error);
+        toast(error?.message || "No se pudo generar el memorándum.");
+    }
+}
+
 /* ---------- eventos del panel ---------- */
 
 let documentBound = false;
@@ -2255,6 +2348,12 @@ async function onPanelClick(event) {
             const memo = memoById(data.memId);
 
             if (memo) await downloadSwapForm(memo);
+            return;
+        }
+        case "download-replacement-memo": {
+            const memo = memoById(data.memId);
+
+            if (memo) await downloadReplacementMemo(memo);
             return;
         }
         case "fullscreen": {
