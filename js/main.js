@@ -11808,6 +11808,10 @@ function cleanupFutureSwaps(profileName, startISO, endISO = "") {
             isoWithinScheduleWindow(swap.devolucion, startISO, endISO);
 
         if (skipFecha && skipDevolucion) {
+            // El cambio desaparece entero: su memorandum pendiente tambien.
+            window.dispatchEvent(new CustomEvent("proturnos:swapCanceled", {
+                detail: { swap }
+            }));
             return;
         }
 

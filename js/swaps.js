@@ -341,6 +341,13 @@ export function registrarCambio(data) {
     moveSwapManualExtraBackups(swaps[swaps.length - 1]);
 
     if (typeof window !== "undefined") {
+        // Cada cambio de turno origina su memorandum (Anexo 4). Va por evento:
+        // este modulo viaja al motor del servidor y no puede importar memos.js.
+        window.dispatchEvent(
+            new CustomEvent("proturnos:swapRegistered", {
+                detail: { swap: swaps[swaps.length - 1] }
+            })
+        );
         window.dispatchEvent(
             new CustomEvent("proturnos:calendarProfilesChanged", {
                 detail: {
@@ -505,6 +512,12 @@ export function deshacerCambioTurno(swap) {
     saveSwaps(swaps);
 
     if (typeof window !== "undefined") {
+        // Su memorandum pendiente se quita (con documento adjunto, no).
+        window.dispatchEvent(
+            new CustomEvent("proturnos:swapCanceled", {
+                detail: { swap }
+            })
+        );
         window.dispatchEvent(
             new CustomEvent("proturnos:calendarProfilesChanged", {
                 detail: {

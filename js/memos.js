@@ -2,7 +2,14 @@ import { escapeHTML } from "./htmlUtils.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
 import { showConfirm } from "./dialogs.js";
 import { getJSON, setJSON } from "./persistence.js";
-import { getProfiles, getRotativa } from "./storage.js";
+import { getProfiles, getRotativa, getSwaps } from "./storage.js";
+import { getActiveWorkspace } from "./workspaces.js";
+import {
+    ANEXO4_TEMPLATE_URL,
+    anexo4Data,
+    anexo4FileName,
+    buildAnexo4Docx
+} from "./swapMemoForm.js";
 import { getRotativaLabel } from "./rotationUtils.js";
 import {
     ATTACHMENT_ACCEPT,
@@ -732,11 +739,100 @@ export function removePendingMemo(memoId) {
     return true;
 }
 
+/* =========================================================
+   Cambio de turno -> memorandum (Anexo 4)
+
+   Cada cambio de turno origina un memorandum: la unidad envia a Personal el
+   "Formulario unico de solicitud de cambio de turno" firmado. El formulario se
+   descarga relleno desde el visor (swapMemoForm.js) y el memorandum queda
+   realizado al adjuntarlo, como cualquier otro.
+
+   El id del cambio va en el sourceId ("swap:<id>") y no en un campo nuevo: una
+   pestaña con la version anterior borraria un campo que no conoce al volver a
+   guardar los memorandum.
+========================================================= */
+
+export function swapIdOfMemo(memo) {
+    const [source, id] = String(memo?.sourceId || "").split(":");
+
+    return source === "swap" ? String(id || "") : "";
+}
+
+function swapDayText(iso, code) {
+    const date = formatISODate(iso);
+    const label = SWAP_CODE_LABELS[String(code || "")] || String(code || "");
+
+    return [date, label].filter(Boolean).join(" ");
+}
+
+const SWAP_CODE_LABELS = {
+    L: "Larga",
+    N: "Noche",
+    "24": "24h",
+    D: "Diurno",
+    "D+N": "D+N",
+    HM: "1/2 Mañana",
+    HT: "1/2 Tarde",
+    "18": "18 horas"
+};
+
+export function createSwapMemoTask(swap = {}) {
+    if (!swap?.id || !swap.from || !swap.to || !swap.fecha) return null;
+
+    const detail = [
+        `Nombre: ${swap.from}`,
+        `Cambia con: ${swap.to}`,
+        `Turno original: ${swapDayText(swap.fecha, swap.turno)}`,
+        swap.devolucion
+            ? `Turno cambio: ${swapDayText(swap.devolucion, swap.turnoDevuelto)}`
+            : ""
+    ].filter(Boolean).join(" | ");
+
+    return createMemoTask({
+        sourceId: `swap:${swap.id}`,
+        profile: swap.from,
+        typeLabel: "Cambio de turno",
+        detail,
+        dateKey: isoToDayKey(swap.fecha)
+    });
+}
+
+/**
+ * Anular el cambio quita su memorandum PENDIENTE. Con documento adjunto no se
+ * toca: borrarlo eliminaria el archivo (igual que un permiso anulado).
+ */
+export function cancelSwapMemo(swapId) {
+    const id = String(swapId || "");
+
+    if (!id) return false;
+
+    const memo = getMemos().find(item => swapIdOfMemo(item) === id);
+
+    if (!memo || memo.documents.length) return false;
+
+    persistMemos(getMemos().filter(item => item.id !== memo.id));
+    addAuditLog(
+        AUDIT_CATEGORY.WORKER_REQUESTS,
+        "Quito memorandum de cambio de turno anulado",
+        `${memo.profile || "Sin trabajador"}: ${memo.typeLabel}.`,
+        { profile: memo.profile, memoId: memo.id, swapId: id }
+    );
+
+    return true;
+}
+
 // La anulacion desde el LOG (auditLog.js) avisa por evento: la bitacora no
-// puede importar este modulo, porque este ya la importa a ella.
+// puede importar este modulo, porque este ya la importa a ella. Los cambios de
+// turno tambien (swaps.js viaja al motor del servidor y no puede traer esto).
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("proturnos:leaveCanceled", event => {
         cancelLeaveMemos(event?.detail || {});
+    });
+    window.addEventListener("proturnos:swapRegistered", event => {
+        createSwapMemoTask(event?.detail?.swap || {});
+    });
+    window.addEventListener("proturnos:swapCanceled", event => {
+        cancelSwapMemo(event?.detail?.swap?.id);
     });
 }
 
@@ -1027,6 +1123,7 @@ const TYPE_OPTIONS = [
     ["leave", "Permisos"],
     ["clock", "Marcajes"],
     ["contract", "Contratos"],
+    ["swap", "Cambios de turno"],
     ["manual", "Manuales"]
 ];
 
@@ -1034,6 +1131,7 @@ const VIEWER_KICKER = {
     leave: "Documento del permiso",
     clock: "Documento del marcaje",
     contract: "Documento del contrato",
+    swap: "Formulario de cambio de turno (Anexo 4)",
     manual: "Documento del memorándum"
 };
 
@@ -1041,6 +1139,7 @@ const ORIGIN_STEP = {
     leave: "Permiso aplicado en TurnoPlus",
     clock: "Marcaje incompleto detectado",
     contract: "Contrato de reemplazo registrado",
+    swap: "Cambio de turno registrado",
     manual: "Memorándum creado en TurnoPlus"
 };
 
@@ -1667,6 +1766,10 @@ function viewerHTML(memo, ctx) {
     const sourceDocuments = memo.sourceDocuments || [];
     const doc = documents[ui.docIndex] || documents[0];
     const license = leaveTypeNeedsDocument(memo.leaveType);
+    const swapForm = memoKind(memo) === "swap";
+    const anexo4Button = swapForm
+        ? `<button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="download-anexo4" data-mem-id="${attr(memo.id)}">${ic("download")}Descargar formulario (Anexo 4)</button>`
+        : "";
     const state = MEMO_STATES[memoStatus(memo)];
     const year = ctx.today.slice(0, 4);
     const fromWorker = ctx.memos.filter(item =>
@@ -1698,14 +1801,18 @@ function viewerHTML(memo, ctx) {
             </div>
             <div class="mem-viewer-stage"><div class="mem-docwrap" style="zoom:${(ui.zoom * 0.88).toFixed(2)}" data-mem-stage><div class="mem-docfile">${ic("file")}<span>Cargando el documento…</span></div></div></div>
             ${matchHTML(memo, doc)}
-            <button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="attach" data-mem-id="${attr(memo.id)}">${ic("plus")}Agregar otro documento</button>`
+            <button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="attach" data-mem-id="${attr(memo.id)}">${ic("plus")}Agregar otro documento</button>
+            ${anexo4Button}`
         : `<div class="mem-dropzone">
                 ${ic("clip")}
-                <strong>${license ? "Todavía no está la licencia" : "Todavía no está el documento"}</strong>
+                <strong>${license ? "Todavía no está la licencia" : swapForm ? "Todavía no está el formulario firmado" : "Todavía no está el documento"}</strong>
                 <p>${license
                     ? "Escanea o fotografía la licencia médica y adjúntala aquí. Apenas se adjunta, el memorándum queda realizado."
-                    : "Descárgalo del sistema de personal y adjúntalo aquí, o toma una foto del papel visado. Apenas se adjunta, el memorándum queda realizado."}</p>
+                    : swapForm
+                        ? "Descarga el formulario ya relleno, imprímelo y que lo firmen (el motivo lo escribe a mano el trabajador). Luego adjunta el escaneo o una foto aquí: apenas se adjunta, el memorándum queda realizado."
+                        : "Descárgalo del sistema de personal y adjúntalo aquí, o toma una foto del papel visado. Apenas se adjunta, el memorándum queda realizado."}</p>
                 <span class="mem-dropzone__acts">
+                    ${anexo4Button}
                     <button class="mem-btn mem-btn--primary mem-btn--sm" type="button" data-mem-act="attach" data-mem-id="${attr(memo.id)}">${ic("clip")}Adjuntar documento</button>
                     ${memoWasRequested(memo) ? "" : `<button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="request" data-mem-id="${attr(memo.id)}">${ic("send")}Marcar que se lo pedí</button>`}
                 </span>
@@ -1745,7 +1852,7 @@ function viewerHTML(memo, ctx) {
                 <strong>${esc(plural(fromWorker.length, "memorándum", "memorándums"))}</strong>
                 <span class="mem-hint">${pending ? `${pending} pendiente${pending > 1 ? "s" : ""}` : "Todos realizados"}</span>
             </div>
-            <button class="mem-link" type="button" data-mem-act="open-calendar" data-mem-id="${attr(memo.id)}">${license ? "Ver la licencia en el calendario" : "Ver el permiso en el calendario"}</button>
+            <button class="mem-link" type="button" data-mem-act="open-calendar" data-mem-id="${attr(memo.id)}">${license ? "Ver la licencia en el calendario" : swapForm ? "Ver el cambio en el calendario" : "Ver el permiso en el calendario"}</button>
             ${documents.length ? "" : `<button class="mem-link mem-link--danger" type="button" data-mem-act="remove-memo" data-mem-id="${attr(memo.id)}">Quitar memorándum</button>`}
         </div>`;
 }
@@ -2008,6 +2115,47 @@ function openInCalendar(memo) {
     }));
 }
 
+/**
+ * Descarga el Anexo 4 relleno con los datos ACTUALES del cambio de turno.
+ */
+async function downloadSwapForm(memo) {
+    const swapId = swapIdOfMemo(memo);
+    const swap = getSwaps().find(item => String(item?.id) === swapId);
+
+    if (!swap) {
+        toast("El cambio de turno de este memorándum ya no existe.");
+        return;
+    }
+
+    try {
+        const response = await fetch(ANEXO4_TEMPLATE_URL, { cache: "no-cache" });
+
+        if (!response.ok) throw new Error("No se encontró la plantilla del formulario.");
+
+        const profiles = getProfilesSafe();
+        const data = anexo4Data(swap, {
+            unitName: getActiveWorkspace()?.name || "",
+            rutFor: name => profiles.find(profile => profile.name === name)?.rut || "",
+            requestedAt: memo.createdAt
+        });
+        const bytes = await buildAnexo4Docx(await response.arrayBuffer(), data);
+        const url = URL.createObjectURL(new Blob([bytes], {
+            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        }));
+        const link = document.createElement("a");
+
+        link.href = url;
+        link.download = anexo4FileName(data);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (error) {
+        console.warn("No se pudo generar el Anexo 4.", error);
+        toast(error?.message || "No se pudo generar el formulario.");
+    }
+}
+
 /* ---------- eventos del panel ---------- */
 
 let documentBound = false;
@@ -2103,6 +2251,12 @@ async function onPanelClick(event) {
         case "new":
             newMemoDialog(ctx);
             return;
+        case "download-anexo4": {
+            const memo = memoById(data.memId);
+
+            if (memo) await downloadSwapForm(memo);
+            return;
+        }
         case "fullscreen": {
             const memo = memoById(ui.openId);
 

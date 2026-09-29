@@ -25,6 +25,7 @@ export const MEMO_KINDS = {
     leave: { label: "Permiso", icon: "cal" },
     clock: { label: "Marcaje", icon: "clock" },
     contract: { label: "Contrato", icon: "swap" },
+    swap: { label: "Cambio de turno", icon: "swap" },
     manual: { label: "Manual", icon: "memo" }
 };
 
@@ -187,6 +188,7 @@ export function memoKind(memo) {
     if (source === "leave") return "leave";
     if (source === "clock") return "clock";
     if (source === "replacement_contract") return "contract";
+    if (source === "swap") return "swap";
 
     return "manual";
 }
@@ -324,6 +326,15 @@ export function memoFacts(memo, { shift = "" } = {}) {
             { label: "Cantidad", value: memoAmountLabel(memo) },
             dates,
             { label: "Detalle", value: detail || "—" }
+        ];
+    }
+
+    // Cambio de turno: con quien, y los dos turnos que se intercambian.
+    if (kind === "swap") {
+        return [
+            { label: "Cambia con", value: fields.get("Cambia con") || "—" },
+            { label: "Turno original", value: fields.get("Turno original") || "—" },
+            { label: "Turno cambio", value: fields.get("Turno cambio") || "—" }
         ];
     }
 
