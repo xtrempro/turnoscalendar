@@ -2351,10 +2351,40 @@ body.theme-dark .mcal-chip.is-preassigned {
     background: rgba(96, 165, 250, 0.18);
 }
 
+/* Confirmar / Quitar preasignacion: en su propia fila, bajo el nombre. */
 .mcal-dialog-actions {
-    display: inline-flex;
-    gap: 6px;
-    flex-wrap: wrap;
+    grid-column: 2 / -1;
+    display: flex;
+    gap: 8px;
+}
+
+.mcal-dialog-actions > button {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+.mcal-dialog-list button {
+    min-height: 38px;
+    padding: 8px 14px;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+
+.mcal-pre-badge {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    color: #2563eb;
+    background: rgba(59, 130, 246, 0.12);
+    font-size: 0.72rem;
+    font-style: normal;
+    font-weight: 700;
+}
+
+body.theme-dark .mcal-pre-badge {
+    color: #93c5fd;
+    background: rgba(96, 165, 250, 0.16);
 }
 
 .mcal-sep {
@@ -2392,10 +2422,21 @@ body.theme-dark .mcal-chip.is-preassigned {
     list-style: none;
 }
 
+/* Cada persona: iniciales | nombre y detalle | Quitar. Los preasignados
+   llevan sus dos botones en una fila aparte, bajo el nombre. */
+.turn-change-dialog.mcal-dialog {
+    width: min(520px, calc(100vw - 32px));
+}
+
 .mcal-dialog-list li {
-    display: flex;
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
+    column-gap: 12px;
+    row-gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
 }
 
 .mcal-dialog-list .mcal-chip {

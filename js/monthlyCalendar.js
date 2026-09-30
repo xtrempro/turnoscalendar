@@ -1743,7 +1743,7 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
                                     ? (person.brecha
                                         ? `${escapeHTML(person.coverDetail)} (Brecha RRHH)`
                                         : person.coverDetail ? `Cubre a ${escapeHTML(person.coverDetail)}` : "Turno agregado sin motivo")
-                                    : "Su turno"}${person.preassigned ? " · Preasignado, pendiente de confirmar" : ""}</small></span>
+                                    : "Su turno"}</small>${person.preassigned ? `<em class="mcal-pre-badge">Preasignado · pendiente de confirmar</em>` : ""}</span>
                             ${!canEdit ? "" : person.preassigned
                                 ? `<span class="mcal-dialog-actions"><button class="primary-button" type="button" data-mcal-confirm-pre="${index}">Confirmar</button><button class="secondary-button" type="button" data-mcal-cancel-pre="${index}">Quitar preasignación</button></span>`
                                 : `<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button>`}
