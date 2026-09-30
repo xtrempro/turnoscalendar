@@ -2366,6 +2366,26 @@ body[data-active-view="home"] .secondary-grid {
     box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* Origen del turno que se mueve: la casilla a la vista y las iniciales de
+   quien se mueve en naranjo. */
+.mcal.is-moving td[data-mcal-col="titulares"].is-move-source {
+    box-shadow: inset 0 0 0 2px #f97316;
+    background: rgba(249, 115, 22, 0.08);
+}
+
+.mcal-chip.is-moving-source {
+    padding: 0 5px;
+    border-radius: 6px;
+    color: #ea580c;
+    background: rgba(249, 115, 22, 0.16);
+    font-weight: 900;
+    text-shadow: 0 0 10px rgba(249, 115, 22, 0.45);
+}
+
+body.theme-dark .mcal-chip.is-moving-source {
+    color: #fb923c;
+}
+
 /* Las columnas de motivos no reciben un turno movido. */
 .mcal.is-moving .mcal-table tbody .mcal-xwrap {
     opacity: 0.35;

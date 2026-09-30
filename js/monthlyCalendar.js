@@ -895,14 +895,15 @@ function addableHistoryReasons(model, slot) {
 ========================================================= */
 
 // `drag`: los apoyos extra se pueden arrastrar a la columna de otro motivo.
-function chipsHTML(list, gaps, { drag = null, cupos = [] } = {}) {
+// `movingName`: quien se esta moviendo desde esta casilla (va en naranjo).
+function chipsHTML(list, gaps, { drag = null, cupos = [], movingName = "" } = {}) {
     const people = list.map(person => {
         const draggable = drag && person.extraId
             ? ` draggable="true" data-mcal-drag="${escapeHTML(person.extraId)}" data-mcal-drag-key="${escapeHTML(drag.keyDay)}" data-mcal-drag-slot="${escapeHTML(drag.slot)}" data-mcal-drag-reason="${escapeHTML(person.extraReason)}" data-mcal-drag-name="${escapeHTML(person.name)}"`
             : "";
 
         return `
-            <span class="mcal-chip${person.covering ? " is-covering" : ""}${person.preassigned ? " is-preassigned" : ""}${draggable ? " is-draggable" : ""}" title="${escapeHTML(personTitle(person))}"${draggable}>${escapeHTML(person.initials)}${person.half ? `<small>${escapeHTML(person.half)}</small>` : ""}</span>
+            <span class="mcal-chip${person.covering ? " is-covering" : ""}${person.preassigned ? " is-preassigned" : ""}${movingName && person.name === movingName ? " is-moving-source" : ""}${draggable ? " is-draggable" : ""}" title="${escapeHTML(personTitle(person))}"${draggable}>${escapeHTML(person.initials)}${person.half ? `<small>${escapeHTML(person.half)}</small>` : ""}</span>
         `.trim();
     }).join('<span class="mcal-sep">-</span>');
     const holes = gaps.map(gap => `
@@ -1050,7 +1051,10 @@ function panelHTML(model, groups) {
                                 <td class="mcal-date">${row.day}</td>
                                 <td class="mcal-weekday">${row.weekday}</td>
                                 ${slots.map(slot => `
-                                    <td class="mcal-slot${moveTargetClass(row.keyDay, slot)}" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0"${moveTargetTitle(row.keyDay, slot)}>${chipsHTML(row.slots[slot], row.gaps[slot], { cupos: row.cupos?.[slot] || [] })}</td>
+                                    <td class="mcal-slot${moveTargetClass(row.keyDay, slot)}" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0"${moveTargetTitle(row.keyDay, slot)}>${chipsHTML(row.slots[slot], row.gaps[slot], {
+                                        cupos: row.cupos?.[slot] || [],
+                                        movingName: isMoveSource(row.keyDay, slot) ? ui.pendingMove.name : ""
+                                    })}</td>
                                     ${columns[slot].length
                                         ? extrasCellHTML(
                                             columns[slot].map((column, index) => extraCellHTML(row, slot, column, canEdit, index)).join(""),
@@ -2103,14 +2107,27 @@ function moveTargetReason(keyDay, slot) {
     }) || "";
 }
 
+// La casilla de ORIGEN del turno que se mueve.
+function isMoveSource(keyDay, slot) {
+    const move = ui.pendingMove;
+
+    return Boolean(move) &&
+        keyDay === move.sourceKey &&
+        slot === (Number(move.sourceTurn) === TURNO.NOCHE ? "night" : "day");
+}
+
 function moveTargetClass(keyDay, slot) {
     if (!ui.pendingMove) return "";
+    if (isMoveSource(keyDay, slot)) return " is-move-source";
 
     return moveTargetReason(keyDay, slot) ? " is-move-blocked" : " is-move-target";
 }
 
 function moveTargetTitle(keyDay, slot) {
     if (!ui.pendingMove) return "";
+    if (isMoveSource(keyDay, slot)) {
+        return ` title="${escapeHTML(`Turno que se está moviendo: ${ui.pendingMove.name}`)}"`;
+    }
 
     const reason = moveTargetReason(keyDay, slot);
 
