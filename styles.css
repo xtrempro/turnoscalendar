@@ -2100,26 +2100,57 @@ body[data-active-view="home"] .secondary-grid {
     cursor: pointer;
 }
 
+/* La tabla tiene su propio desplazamiento para que las dos filas del
+   encabezado (Dia/Noche y los motivos) queden a la vista al bajar por el mes. */
 .mcal-table-wrap {
-    overflow-x: auto;
+    --mcal-head-row: 40px;
+    overflow: auto;
+    max-height: calc(100vh - 220px);
+    min-height: 320px;
 }
 
+/* `separate` y no `collapse`: con bordes colapsados, las celdas fijas pierden
+   sus bordes al desplazar. Cada celda dibuja el derecho y el inferior. */
 .mcal-table {
     width: 100%;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
+    border-top: 1px solid rgba(100, 116, 139, 0.35);
+    border-left: 1px solid rgba(100, 116, 139, 0.35);
     font-size: 0.92rem;
 }
 
 .mcal-table th,
 .mcal-table td {
     padding: 6px 10px;
-    border: 1px solid rgba(100, 116, 139, 0.35);
+    border-right: 1px solid rgba(100, 116, 139, 0.35);
+    border-bottom: 1px solid rgba(100, 116, 139, 0.35);
     text-align: center;
 }
 
 .mcal-table th {
     font-weight: 800;
     font-style: italic;
+}
+
+.mcal-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    /* --panel es translucido: sobre el fondo solido del tema, para que las
+       filas que pasan por debajo no se trasluzcan. */
+    background:
+        linear-gradient(var(--panel), var(--panel)),
+        var(--bg-bottom, #fff);
+}
+
+.mcal-table thead tr:first-child th {
+    height: var(--mcal-head-row);
+    box-sizing: border-box;
+}
+
+.mcal-table thead tr:nth-child(2) th {
+    top: var(--mcal-head-row);
 }
 
 .mcal-table tr.is-weekend td {

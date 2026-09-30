@@ -564,16 +564,29 @@ export function getReplacementBridgeProfileForDate(
 }
 
 export function getAllReplacementContracts() {
+    return replacementContractsWhere(() => true);
+}
+
+// Lo mismo que getAllReplacementContracts, pero filtrando ANTES de preguntar a
+// cada perfil si es de reemplazo (lo caro: recorre su historial de contrato).
+// El motor de turnos busca por cada dia-persona el contrato que lo tiene de
+// puente o de reemplazado, que casi nunca existe; recorrer primero toda la
+// unidad hacia que armar un mes tardara segundos.
+function replacementContractsWhere(matches) {
     return getProfiles()
-        .filter(profile => isReplacementProfile(profile.name))
-        .flatMap(profile =>
-            getContractsForProfile(profile.name)
+        .flatMap(profile => {
+            const contracts = getContractsForProfile(profile.name)
                 .map(contract => ({
                     ...contract,
                     worker: profile.name,
                     estamento: profile.estamento
                 }))
-        )
+                .filter(matches);
+
+            return contracts.length && isReplacementProfile(profile.name)
+                ? contracts
+                : [];
+        })
         .sort((a, b) =>
             a.start.localeCompare(b.start) ||
             a.worker.localeCompare(b.worker)
@@ -637,13 +650,14 @@ export function getDiurnoBridgeContractForProfile(profileName, keyDay) {
 
     if (!worker || !keyToISO(keyDay)) return null;
 
-    return getAllReplacementContracts()
+    return replacementContractsWhere(contract =>
+        contract.bridgeProfile === worker &&
+        normalizeReplacementRotationMode(
+            contract.rotationMode,
+            REPLACEMENT_ROTATION_MODE.INHERIT
+        ) === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE
+    )
         .find(contract =>
-            contract.bridgeProfile === worker &&
-            normalizeReplacementRotationMode(
-                contract.rotationMode,
-                REPLACEMENT_ROTATION_MODE.INHERIT
-            ) === REPLACEMENT_ROTATION_MODE.DIURNO_BRIDGE &&
             replacementContractCoversCoveredShift(contract, keyDay)
         ) || null;
 }
@@ -654,9 +668,10 @@ export function getInheritedReplacementContractForCoveredShift(
 ) {
     if (!profileName || !keyToISO(keyDay)) return null;
 
-    return getAllReplacementContracts()
+    return replacementContractsWhere(contract =>
+        contract.replaces === profileName
+    )
         .find(contract =>
-            contract.replaces === profileName &&
             replacementContractCoversCoveredShift(
                 contract,
                 keyDay

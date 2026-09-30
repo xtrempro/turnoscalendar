@@ -34,6 +34,7 @@ import {
     excludeReplacementContractDate,
     getContractForDate,
     hasContractForDate,
+    getContractsForProfile,
     isHonorariaProfile,
     isReplacementProfile
 } from "./contracts.js";
@@ -205,15 +206,60 @@ function isoFor(date) {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+/**
+ * Lo que un calculo del mes lee UNA vez. Antes cada dia de cada trabajador
+ * volvia a leer del almacenamiento local sus cuatro mapas de permisos y la
+ * lista entera de reemplazos (cientos), y en un equipo del hospital el mes
+ * tardaba tanto que el navegador ofrecia "esperar o cerrar".
+ */
+function buildReadContext() {
+    const leaves = new Map();
+    const recordsByWorkerDay = new Map();
+
+    getReplacements().forEach(item => {
+        if (!replacementActive(item) || !item.worker || !item.date) return;
+
+        const key = `${item.worker}|${item.date}`;
+
+        recordsByWorkerDay.set(key, [...(recordsByWorkerDay.get(key) || []), item]);
+    });
+
+    return {
+        leavesOf(name) {
+            if (!leaves.has(name)) {
+                leaves.set(name, {
+                    admin: getJSON(`admin_${name}`, {}),
+                    legal: getJSON(`legal_${name}`, {}),
+                    comp: getJSON(`comp_${name}`, {}),
+                    absences: getJSON(`absences_${name}`, {})
+                });
+            }
+
+            return leaves.get(name);
+        },
+        recordsOf(name, iso) {
+            return recordsByWorkerDay.get(`${name}|${iso}`) || [];
+        },
+        // Solo quien tiene contratos de reemplazo puede estar cubriendo por
+        // contrato: a los demas no se les pregunta dia por dia su tipo de
+        // contrato, que es de lo mas caro del calculo.
+        withContracts: new Set(
+            getProfiles()
+                .map(profile => profile.name)
+                .filter(name => getContractsForProfile(name).length)
+        )
+    };
+}
+
 // Ausente todo el dia: no esta en el turno aunque su turno siga programado (el
 // hueco lo marca isShiftUncovered). El medio administrativo SI trabaja.
-function isAwayAllDay(name, keyDay) {
-    const admin = getJSON(`admin_${name}`, {});
+function isAwayAllDay(name, keyDay, ctx) {
+    const { admin, legal, comp, absences } = ctx.leavesOf(name);
 
     return Boolean(
-        getJSON(`legal_${name}`, {})[keyDay] ||
-        getJSON(`comp_${name}`, {})[keyDay] ||
-        getJSON(`absences_${name}`, {})[keyDay] ||
+        legal[keyDay] ||
+        comp[keyDay] ||
+        absences[keyDay] ||
         admin[keyDay] === 1 ||
         admin[keyDay] === true
     );
@@ -246,11 +292,8 @@ const CODE_SLOTS = {
  * si NO cubre a nadie ("Apoyo pacientes TC oncologicos"). Esos van en su
  * propia columna; quien reemplaza a alguien sigue con los titulares, en rojo.
  */
-function extraRecordFor(name, iso, slot) {
-    return getReplacements().find(item =>
-        replacementActive(item) &&
-        item.worker === name &&
-        item.date === iso &&
+function extraRecordFor(name, iso, slot, ctx) {
+    return ctx.recordsOf(name, iso).find(item =>
         item.source === "manual_extra" &&
         !item.replaced &&
         String(item.reason || "").trim() &&
@@ -263,7 +306,7 @@ function extraRecordFor(name, iso, slot) {
  * "Juan Zapata (Licencia Médica)". Sale del reemplazo del dia, o del contrato
  * de reemplazo si cubre por contrato.
  */
-function coverDetailFor(name, keyDay, iso, slot, byContract) {
+function coverDetailFor(name, keyDay, iso, slot, byContract, ctx) {
     if (byContract) {
         const contract = getContractForDate(name, keyDay);
 
@@ -272,10 +315,7 @@ function coverDetailFor(name, keyDay, iso, slot, byContract) {
             : "";
     }
 
-    const records = getReplacements().filter(item =>
-        replacementActive(item) &&
-        item.worker === name &&
-        item.date === iso &&
+    const records = ctx.recordsOf(name, iso).filter(item =>
         item.replaced &&
         (
             !CODE_SLOTS[String(item.turno || "")] ||
@@ -309,12 +349,45 @@ function slotsOf(state) {
     };
 }
 
+const SLICE_MS = 12;
+
+function nowMs() {
+    return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+// Devuelve el hilo al navegador (clics, pintado) y vuelve enseguida: setTimeout
+// puede tardar 4-15 ms en volver, y el mes cede decenas de veces.
+function yieldToBrowser() {
+    if (typeof globalThis.scheduler?.yield === "function") {
+        return globalThis.scheduler.yield();
+    }
+
+    if (typeof MessageChannel === "function") {
+        return new Promise(resolve => {
+            const channel = new MessageChannel();
+
+            channel.port1.onmessage = () => {
+                channel.port1.close();
+                resolve();
+            };
+            channel.port2.postMessage(null);
+        });
+    }
+
+    return new Promise(resolve => setTimeout(resolve, 0));
+}
+
 /**
  * El mes de un grupo: por dia, quienes estan de Dia y de Noche, quienes van en
  * rojo por estar cubriendo, y los huecos (turnos de alguien ausente que nadie
- * cubre todavia).
+ * cubre todavia). `shouldContinue` permite abandonar un calculo que ya no sirve (se pidio otro
+ * mes, otro filtro o llegaron datos nuevos): devuelve null en ese caso.
  */
-export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
+export async function buildMonthlyCalendar(
+    month = ui.month,
+    group = ui.group,
+    { shouldContinue = () => true } = {}
+) {
     const year = month.getFullYear();
     const monthIndex = month.getMonth();
     const days = new Date(year, monthIndex + 1, 0).getDate();
@@ -322,7 +395,9 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
     const profiles = monthProfiles(month)
         .filter(profile => !group || groupKeyFor(profile) === group);
     const initials = initialsMap(profiles.map(profile => profile.name));
+    const ctx = buildReadContext();
     const rows = [];
+    let sliceStart = nowMs();
 
     for (let dayNumber = 1; dayNumber <= days; dayNumber++) {
         const date = new Date(year, monthIndex, dayNumber);
@@ -339,12 +414,20 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
             extras: { day: {}, night: {} }
         };
 
-        profiles.forEach(profile => {
+        for (const profile of profiles) {
+            // Cede el hilo por TIEMPO, no por dias: con muchos trabajadores una
+            // sola semana ya bloqueaba la pantalla.
+            if (nowMs() - sliceStart > SLICE_MS) {
+                await yieldToBrowser();
+                if (!shouldContinue()) return null;
+                sliceStart = nowMs();
+            }
+
             const name = profile.name;
             const own = ownTurn(name, keyDay);
             const ownSlots = slotsOf(own);
 
-            if (isAwayAllDay(name, keyDay)) {
+            if (isAwayAllDay(name, keyDay, ctx)) {
                 // Su turno queda como hueco si nadie lo cubre entero.
                 if ((ownSlots.day || ownSlots.night) && isShiftUncovered(name, keyDay)) {
                     ["day", "night"].forEach(slot => {
@@ -356,7 +439,7 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
                         }
                     });
                 }
-                return;
+                continue;
             }
 
             const real = Number(getTurnoReal(name, keyDay)) || TURNO.LIBRE;
@@ -364,6 +447,7 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
             // Quien trabaja por un contrato de reemplazo esta cubriendo todos
             // sus turnos, aunque los herede como propios.
             const byContract =
+                ctx.withContracts.has(name) &&
                 isReplacementProfile(name, keyDay) &&
                 hasContractForDate(name, keyDay);
 
@@ -379,7 +463,7 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
                 // Apoyo extra con motivo (no reemplaza a nadie): a la columna
                 // de su motivo, sin rojo.
                 const extraRecord = !byContract && !ownSlots[slot]
-                    ? extraRecordFor(name, row.iso, slot)
+                    ? extraRecordFor(name, row.iso, slot, ctx)
                     : null;
                 const reason = extraRecord
                     ? String(extraRecord.reason).trim()
@@ -402,13 +486,14 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
                         keyDay,
                         row.iso,
                         slot,
-                        byContract
+                        byContract,
+                        ctx
                     );
                 }
 
                 row.slots[slot].push(person);
             });
-        });
+        }
 
         ["day", "night"].forEach(slot => {
             row.slots[slot].sort((a, b) =>
@@ -418,12 +503,6 @@ export async function buildMonthlyCalendar(month = ui.month, group = ui.group) {
         });
 
         rows.push(row);
-
-        // Cede el hilo cada semana: un mes de una unidad grande recorre miles
-        // de dias-persona.
-        if (dayNumber % 7 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0));
-        }
     }
 
     // Una columna por motivo distinto del mes, en el orden en que aparecen, y
@@ -642,12 +721,36 @@ export async function renderMonthlyCalendarPanel() {
         panel.innerHTML = `<div class="mcal"><p class="mcal-loading">Armando el mes…</p></div>`;
     }
 
-    const model = await buildMonthlyCalendar(ui.month, ui.group);
+    const model = await buildMonthlyCalendar(ui.month, ui.group, {
+        shouldContinue: () => renderId === ui.renderId
+    });
 
-    if (renderId !== ui.renderId) return;
+    if (!model || renderId !== ui.renderId) return;
 
     lastModel = model;
+
+    // La tabla se desplaza sola: al repintar tras un cambio, que no salte al
+    // principio del mes.
+    const previousWrap = panel.querySelector(".mcal-table-wrap");
+    const scroll = previousWrap
+        ? { top: previousWrap.scrollTop, left: previousWrap.scrollLeft }
+        : null;
+
     panel.innerHTML = panelHTML(model, groups);
+
+    const wrap = panel.querySelector(".mcal-table-wrap");
+    const firstHeadRow = wrap?.querySelector("thead tr");
+
+    // La segunda fila del encabezado se fija justo debajo de la primera, que
+    // puede crecer (boton "Agrupar", motivos largos).
+    if (firstHeadRow?.offsetHeight) {
+        wrap.style.setProperty("--mcal-head-row", `${firstHeadRow.offsetHeight}px`);
+    }
+
+    if (wrap && scroll) {
+        wrap.scrollTop = scroll.top;
+        wrap.scrollLeft = scroll.left;
+    }
 }
 
 /* =========================================================
@@ -1144,18 +1247,58 @@ function onPanelClick(event) {
 
 let refreshTimer = null;
 
-function scheduleRefresh() {
+// Claves que se escriben a menudo y no cambian quien esta de turno: bitacora,
+// tareas, marcas, caches de la interfaz. Antes cualquier escritura (y un cambio
+// dispara varias: la bitacora, la sincronizacion...) volvia a armar el mes
+// entero, y los calculos se encimaban hasta colgar la pagina.
+const IRRELEVANT_KEY_PREFIXES = [
+    "auditLog",
+    "proturnos_",
+    "firebase",
+    "weekly_task_assignment",
+    "home_shared_tasks",
+    "kanban",
+    "agenda_",
+    "attendanceMarks",
+    "staffing_",
+    "memos",
+    "informations",
+    "medicalEquipment",
+    "tenders",
+    "leaveAttachments",
+    "taskScheduleColorSeed",
+    "turnoColorConfig",
+    "qualifications",
+    "autoCoverageCampaigns",
+    "workerSchedules",
+    "turnoplus_"
+];
+
+function affectsMonthlyCalendar(keys) {
+    if (!Array.isArray(keys) || !keys.length) return true;
+
+    return keys.some(key =>
+        !IRRELEVANT_KEY_PREFIXES.some(prefix => String(key).startsWith(prefix))
+    );
+}
+
+function scheduleRefresh(keys) {
     if (document.body?.dataset?.activeView !== "monthly") return;
+    if (!affectsMonthlyCalendar(keys)) return;
 
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
         void renderMonthlyCalendarPanel();
-    }, 400);
+    }, 700);
 }
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-    window.addEventListener("proturnos:persistenceChanged", scheduleRefresh);
+    window.addEventListener("proturnos:persistenceChanged", event => {
+        scheduleRefresh(event.detail?.keys);
+    });
     window.addEventListener("proturnos:firebaseAppState", event => {
-        if (event.detail?.type === "app-state-entries-applied") scheduleRefresh();
+        if (event.detail?.type === "app-state-entries-applied") {
+            scheduleRefresh(event.detail.keys);
+        }
     });
 }
