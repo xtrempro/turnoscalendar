@@ -2,8 +2,12 @@ import { escapeHTML } from "./htmlUtils.js";
 import { getJSON, setJSON } from "./persistence.js";
 import {
     getProfiles,
+    getReplacements,
     isProfileActive
 } from "./storage.js";
+import { getTurnoReal } from "./turnEngine.js";
+import { TURNO_LABEL } from "./constants.js";
+import { replacementActive } from "./replacements.js";
 import {
     formatDisplayDate,
     keyToDate,
@@ -776,6 +780,52 @@ function sumLateMinutes(events = []) {
         }, 0);
 }
 
+function lateMinutesOf(event) {
+    return Number(String(event?.detail || "").match(/^(\d+)\s*min/)?.[1]) || 0;
+}
+
+/**
+ * El dia de un evento del reloj control, dicho para la apreciacion: el turno
+ * que tenia y por que estaba (a quien cubria o su motivo de HHEE).
+ * "12/09/2026, Larga, cubria a Juan Perez"
+ */
+function attendanceEventContext(profileName, iso) {
+    const [year, month, day] = String(iso || "").split("-").map(Number);
+    const keyDay = `${year}-${month - 1}-${day}`;
+    const turno = TURNO_LABEL[Number(getTurnoReal(profileName, keyDay)) || 0] || "";
+    const records = getReplacements().filter(record =>
+        record?.worker === profileName &&
+        record.date === iso &&
+        replacementActive(record)
+    );
+    const why = [
+        ...new Set(records.map(record => record.replaced
+            ? `cubria a ${record.replaced}`
+            : String(record.reason || "").trim()
+                ? `HHEE: ${String(record.reason).trim()}`
+                : ""
+        ).filter(Boolean))
+    ];
+
+    return [formatDate(iso), turno, ...why].filter(Boolean).join(", ");
+}
+
+export function attendanceEventLine(profileName, event) {
+    const context = attendanceEventContext(profileName, event.iso);
+
+    if (event.kind === "atraso") {
+        const minutes = lateMinutesOf(event);
+
+        return `${context}${minutes ? `: ${minutes} min` : ""}`;
+    }
+
+    if (event.kind === "earlyExit") {
+        return `${context}: salida temprana (${String(event.detail || "").replace(/^Sali[oó]\s*/i, "salio a las ")})`;
+    }
+
+    return `${context}: entrada tardia a un turno extra (${event.detail || ""})`;
+}
+
 function countLateEvents(events = []) {
     return events.filter(event =>
         event.kind === "atraso" ||
@@ -809,6 +859,14 @@ function buildSummary(profile, period, state, eventsByProfile) {
         incidents,
         lateCount: countLateEvents(incidents),
         lateMinutes: sumLateMinutes(incidents),
+        // Del reloj control, para Asistencia y puntualidad: los atrasos (van
+        // aparte, con sus minutos) y las entradas tardias a un turno extra y
+        // salidas tempranas. Las marcas que faltan, entrar antes o salir despues
+        // son para revisar el marcaje, no antecedentes de la calificacion.
+        lateEvents: incidents.filter(event => event.kind === "atraso"),
+        punctualityEvents: incidents.filter(event =>
+            event.kind === "lateOnExtra" || event.kind === "earlyExit"
+        ),
         clockIssueCount: incidents.length,
         // Turnos aceptados que no se cumplieron (historial del perfil): van a
         // Asistencia y puntualidad (art. 16, 3 b).
@@ -1128,19 +1186,24 @@ function evidenceByFactor(summary) {
         });
     });
 
-    if (summary.lateCount) {
-        const count = summary.lateCount;
+    const lateEvents = summary.lateEvents || [];
+
+    if (lateEvents.length) {
+        const count = lateEvents.length;
         const minutes = summary.lateMinutes || 0;
-        const minutesText = minutes ? `${minutes} min en total` : "";
+        const name = summary.profile?.name || "";
 
         buckets.comportamiento.push({
             tone: "bad",
-            title: `${count} ${count === 1 ? "atraso" : "atrasos"}${minutes ? ` · ${minutesText}` : ""}`,
-            detail: "Reloj control",
+            title: `${count} ${count === 1 ? "atraso" : "atrasos"}${minutes ? ` · ${minutes} min en total` : ""}`,
+            detail: `Reloj control: ${lateEvents.map(event => formatDate(event.iso)).join(", ")}`,
+            // Al copiarlo va con el detalle de cada uno: cuando, que turno y
+            // por que estaba (a quien cubria o su motivo de HHEE).
             text: (count === 1
                 ? "Registra un atraso en el reloj control durante el periodo"
                 : `Registra ${count} atrasos en el reloj control durante el periodo`) +
-                (minutes ? `, con un total de ${minutes} minutos.` : ".")
+                (minutes ? `, con un total de ${minutes} minutos` : "") +
+                `: ${lateEvents.map(event => attendanceEventLine(name, event)).join("; ")}.`
         });
     }
 
@@ -1155,14 +1218,23 @@ function evidenceByFactor(summary) {
         });
     });
 
-    const otherIssues = summary.clockIssueCount - summary.lateCount;
+    const punctuality = summary.punctualityEvents || [];
 
-    if (otherIssues > 0) {
+    if (punctuality.length) {
+        const late = punctuality.filter(event => event.kind === "lateOnExtra").length;
+        const early = punctuality.length - late;
+        const name = summary.profile?.name || "";
+        const parts = [
+            late ? `${late} ${late === 1 ? "entrada tardia" : "entradas tardias"}` : "",
+            early ? `${early} ${early === 1 ? "salida temprana" : "salidas tempranas"}` : ""
+        ].filter(Boolean);
+
         buckets.comportamiento.push({
             tone: "warn",
-            title: `${otherIssues} ${otherIssues === 1 ? "incidencia" : "incidencias"} de marcaje`,
-            detail: "Entradas o salidas sin registrar",
-            text: `Registra ${otherIssues} ${otherIssues === 1 ? "incidencia" : "incidencias"} de marcaje en el periodo.`
+            title: parts.join(" · "),
+            detail: `Reloj control: ${punctuality.map(event => formatDate(event.iso)).join(", ")}`,
+            text: `Registra ${parts.join(" y ")} en el periodo: ` +
+                `${punctuality.map(event => attendanceEventLine(name, event)).join("; ")}.`
         });
     }
 
