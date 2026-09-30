@@ -6990,10 +6990,15 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
 
                     addPreassignment({
                         worker: coveringWorker,
-                        replaced: profileName,
+                        // Un cupo de rotativa / motivo del Calendario Mensual
+                        // no cubre a nadie: `profileName` ahi es solo el molde
+                        // de los candidatos, y el motivo va en `reason` (al
+                        // confirmar queda como respaldo del turno).
+                        replaced: rota ? "" : profileName,
+                        reason: rota ? rota.motive : "",
                         keyDay,
                         turno: neededTurn,
-                        absenceType,
+                        absenceType: rota ? "" : absenceType,
                         ...replacementCoverageFromDataset(
                             button.dataset
                         )
@@ -7437,6 +7442,10 @@ window.openReplacementDialog = openReplacementDialog;
 // apoyo con motivo), con la misma confirmacion y el mismo guardado.
 window.offerManualExtraRemoval = (profileName, keyDay) =>
     offerManualExtraRemoval(profileName, keyDay);
+// El Calendario Mensual confirma aqui los preasignados que no cubren a nadie
+// (aplica el turno y deja el motivo como respaldo), igual que este calendario.
+window.confirmStandalonePreassignment = (preassignment, keyDay) =>
+    confirmStandalonePreassignment(preassignment, keyDay);
 
 /**
  * Un trabajador a reemplazo toma UN turno de `replaced`, que tiene mas dias en

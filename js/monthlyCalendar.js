@@ -58,6 +58,8 @@ import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { isShiftUncovered } from "./home.js";
 import { ensureRotaGapShifts } from "./staffing.js";
+import { getPreassignments, setPreassignmentReason } from "./preassignments.js";
+import { cancelPreassignment, confirmPreassignment } from "./replacements.js";
 import { canEditTarget } from "./workspacePermissions.js";
 import { showAlert, showChoice, showConfirm, showPrompt } from "./dialogs.js";
 import { pushHistory } from "./history.js";
@@ -328,6 +330,72 @@ const CODE_SLOTS = {
 // columna de un motivo (el mismo registro que usa la Brecha RRHH del inicio).
 const EXTRA_SOURCES = new Set(["manual_extra", "rota_gap"]);
 
+/**
+ * Las preasignaciones (turnos tentativos, sin horas ni proyeccion hasta que se
+ * confirman) se ven en azul donde irian al confirmarse:
+ * - cubriendo a un ausente: con los titulares, y su "+XX" deja de verse;
+ * - un cupo de la Brecha: con los titulares, en lugar de su "+Cupo";
+ * - con motivo de HHEE: en la columna de ese motivo;
+ * - sin motivo: con los titulares.
+ */
+function applyPreassignments(rowsByKey, profiles, initials) {
+    const inGroup = new Set(profiles.map(profile => profile.name));
+
+    getPreassignments().forEach(record => {
+        const [y, m, d] = String(record?.date || "").split("-").map(Number);
+        const row = rowsByKey.get(`${y}-${m - 1}-${d}`);
+        const name = String(record?.worker || "");
+
+        if (!row || !inGroup.has(name)) return;
+
+        const turnSlots = slotsOf(record.turno);
+        const reason = String(record.reason || "").trim();
+        const replaced = String(record.replaced || "");
+
+        ["day", "night"].forEach(slot => {
+            if (!turnSlots[slot]) return;
+
+            const person = {
+                name,
+                initials: initials.get(name) || workerInitials(name),
+                covering: true,
+                preassigned: true,
+                preassignment: record,
+                half: HALF_LABEL[Number(record.turno)] || ""
+            };
+
+            if (replaced) {
+                person.coverDetail = `${replaced}${record.absenceType ? ` (${record.absenceType})` : ""}`;
+                row.gaps[slot] = row.gaps[slot].filter(gap => gap.name !== replaced);
+                row.slots[slot].push(person);
+                return;
+            }
+
+            if (isBrechaMotive(reason)) {
+                person.brecha = true;
+                person.coverDetail = reason;
+                row.cupos[slot].splice(0, 1);
+                row.slots[slot].push(person);
+                return;
+            }
+
+            if (reason) {
+                (row.extras[slot][reason] ||= []).push({
+                    ...person,
+                    covering: false,
+                    extraReason: reason
+                });
+                return;
+            }
+
+            row.slots[slot].push(person);
+        });
+    });
+
+    // Las columnas de motivo y sus cuentas incluyen a los preasignados.
+    return rowsByKey;
+}
+
 // El motivo con que se guarda quien cubre un cupo de la Brecha RRHH (ver
 // weeklyRotaMotive en staffing.js).
 function isBrechaMotive(reason) {
@@ -371,6 +439,14 @@ function coverDetailFor(name, keyDay, iso, slot, byContract, ctx) {
 }
 
 function personTitle(person) {
+    if (person.preassigned) {
+        const what = person.extraReason
+            || (person.brecha ? `${person.coverDetail} (Brecha RRHH)` : "")
+            || (person.coverDetail ? `cubre a ${person.coverDetail}` : "turno sin motivo");
+
+        return `${person.name} — preasignado, pendiente de confirmar: ${what}`;
+    }
+
     if (person.extraReason) {
         return `${person.name} — apoyo extra: ${person.extraReason}`;
     }
@@ -570,24 +646,6 @@ export async function buildMonthlyCalendar(
         rows.push(row);
     }
 
-    // Una columna por motivo distinto del mes, en el orden en que aparecen, y
-    // cuantas veces aparece cada uno (para agrupar los de poca gente).
-    const extraColumns = { day: [], night: [] };
-    const extraCounts = { day: {}, night: {} };
-
-    rows.forEach(row => {
-        ["day", "night"].forEach(slot => {
-            Object.entries(row.extras[slot]).forEach(([reason, people]) => {
-                if (!extraColumns[slot].includes(reason)) {
-                    extraColumns[slot].push(reason);
-                }
-
-                extraCounts[slot][reason] =
-                    (extraCounts[slot][reason] || 0) + people.length;
-            });
-        });
-    });
-
     // Los cupos de la Brecha RRHH del mes (el mismo barrido del inicio y del
     // Calendario Semanal, que cede el hilo y queda en cache), solo de esta
     // profesion. Si los datos cambiaron a medias devuelve null: sin cupos esta
@@ -624,6 +682,26 @@ export async function buildMonthlyCalendar(
                 reference: gap.reference_profile || ""
             });
         }
+    });
+
+    applyPreassignments(rowsByKey, profiles, initials);
+
+    // Una columna por motivo distinto del mes, en el orden en que aparecen, y
+    // cuantas veces aparece cada uno (para agrupar los de poca gente).
+    const extraColumns = { day: [], night: [] };
+    const extraCounts = { day: {}, night: {} };
+
+    rows.forEach(row => {
+        ["day", "night"].forEach(slot => {
+            Object.entries(row.extras[slot]).forEach(([reason, people]) => {
+                if (!extraColumns[slot].includes(reason)) {
+                    extraColumns[slot].push(reason);
+                }
+
+                extraCounts[slot][reason] =
+                    (extraCounts[slot][reason] || 0) + people.length;
+            });
+        });
     });
 
     const historyReasons = extraHistory(year, monthIndex, group);
@@ -822,7 +900,7 @@ function chipsHTML(list, gaps, { drag = null, cupos = [] } = {}) {
             : "";
 
         return `
-            <span class="mcal-chip${person.covering ? " is-covering" : ""}${draggable ? " is-draggable" : ""}" title="${escapeHTML(personTitle(person))}"${draggable}>${escapeHTML(person.initials)}${person.half ? `<small>${escapeHTML(person.half)}</small>` : ""}</span>
+            <span class="mcal-chip${person.covering ? " is-covering" : ""}${person.preassigned ? " is-preassigned" : ""}${draggable ? " is-draggable" : ""}" title="${escapeHTML(personTitle(person))}"${draggable}>${escapeHTML(person.initials)}${person.half ? `<small>${escapeHTML(person.half)}</small>` : ""}</span>
         `.trim();
     }).join('<span class="mcal-sep">-</span>');
     const holes = gaps.map(gap => `
@@ -1658,15 +1736,17 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
                 <ul class="mcal-dialog-list">
                     ${people.map((person, index) => `
                         <li>
-                            <span class="mcal-chip${person.covering ? " is-covering" : ""}">${escapeHTML(person.initials)}</span>
+                            <span class="mcal-chip${person.covering ? " is-covering" : ""}${person.preassigned ? " is-preassigned" : ""}">${escapeHTML(person.initials)}</span>
                             <span class="mcal-dialog-name">${escapeHTML(person.name)}${person.half ? ` <small>(${escapeHTML(person.half)})</small>` : ""}<small>${person.extraReason
                                 ? `Apoyo extra: ${escapeHTML(person.extraReason)}`
                                 : person.covering
                                     ? (person.brecha
                                         ? `${escapeHTML(person.coverDetail)} (Brecha RRHH)`
                                         : person.coverDetail ? `Cubre a ${escapeHTML(person.coverDetail)}` : "Turno agregado sin motivo")
-                                    : "Su turno"}</small></span>
-                            ${canEdit ? `<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button>` : ""}
+                                    : "Su turno"}${person.preassigned ? " · Preasignado, pendiente de confirmar" : ""}</small></span>
+                            ${!canEdit ? "" : person.preassigned
+                                ? `<span class="mcal-dialog-actions"><button class="primary-button" type="button" data-mcal-confirm-pre="${index}">Confirmar</button><button class="secondary-button" type="button" data-mcal-cancel-pre="${index}">Quitar preasignación</button></span>`
+                                : `<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button>`}
                         </li>
                     `).join("")}
                 </ul>
@@ -1708,6 +1788,32 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
     backdrop.addEventListener("click", async event => {
         if (event.target === backdrop || event.target.closest("[data-mcal-close]")) {
             closeSlotDialog(backdrop, onKeydown);
+            return;
+        }
+
+        const confirmPre = event.target.closest("[data-mcal-confirm-pre]");
+        const cancelPre = event.target.closest("[data-mcal-cancel-pre]");
+
+        if (confirmPre || cancelPre) {
+            const person = people[Number((confirmPre || cancelPre).dataset[confirmPre ? "mcalConfirmPre" : "mcalCancelPre"])];
+            const record = person?.preassignment;
+
+            if (!record) return;
+
+            closeSlotDialog(backdrop, onKeydown);
+
+            if (cancelPre) {
+                cancelPreassignment(record);
+            } else if (record.replaced) {
+                // Cubre a un ausente: pasa a reemplazo real (proyecta y suma
+                // horas), igual que en el calendario y el inicio.
+                confirmPreassignment(record);
+            } else {
+                // Sin ausente: se aplica el turno y el motivo queda de respaldo.
+                await window.confirmStandalonePreassignment?.(record, row.keyDay);
+            }
+
+            await renderMonthlyCalendarPanel();
             return;
         }
 
@@ -1894,7 +2000,14 @@ async function editExtraColumn(slot, reason) {
 
         if (people.length) {
             pushHistory();
-            setManualExtraReasons(people.map(person => person.extraId), nextName);
+            setManualExtraReasons(
+                people.filter(person => !person.preassigned).map(person => person.extraId),
+                nextName
+            );
+            // Los preasignados llevan el motivo en su reserva.
+            people
+                .filter(person => person.preassigned)
+                .forEach(person => setPreassignmentReason(person.preassignment.id, nextName));
             addAuditLog(
                 AUDIT_CATEGORY.CALENDAR,
                 "Renombro un motivo de horas extras",
@@ -1930,11 +2043,13 @@ async function editExtraColumn(slot, reason) {
         if (!ok || model !== lastModel) return;
 
         pushHistory();
-        people.forEach(person => cancelReplacementById(person.extraId, {
-            reason: "extra_removed",
-            details: `El supervisor elimino el motivo de horas extras "${reason}" desde el Calendario Mensual.`,
-            canceledBy: "Calendario Mensual"
-        }));
+        people.forEach(person => person.preassigned
+            ? cancelPreassignment(person.preassignment)
+            : cancelReplacementById(person.extraId, {
+                reason: "extra_removed",
+                details: `El supervisor elimino el motivo de horas extras "${reason}" desde el Calendario Mensual.`,
+                canceledBy: "Calendario Mensual"
+            }));
     }
 
     hideColumn(model, slot, reason);

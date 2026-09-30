@@ -2338,6 +2338,25 @@ body[data-active-view="home"] .secondary-grid {
     color: var(--red);
 }
 
+/* Preasignado: turno tentativo, azulino hasta que se confirma. */
+.mcal-chip.is-preassigned {
+    padding: 0 5px;
+    border-radius: 6px;
+    color: #2563eb;
+    background: rgba(59, 130, 246, 0.14);
+}
+
+body.theme-dark .mcal-chip.is-preassigned {
+    color: #93c5fd;
+    background: rgba(96, 165, 250, 0.18);
+}
+
+.mcal-dialog-actions {
+    display: inline-flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
 .mcal-sep {
     padding: 0 1px;
     color: var(--muted);

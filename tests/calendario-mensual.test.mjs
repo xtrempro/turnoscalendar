@@ -318,6 +318,28 @@ test("se cuentan los turnos que un permiso deja sin cubrir (uno abre sugerencias
     );
 });
 
+test("los preasignados se ven (azul) donde irian: cubriendo al ausente o en su motivo", async () => {
+    const { addPreassignment } = await import("../js/preassignments.js");
+
+    // Juan con feriado el 1: Pablo preasignado a cubrirlo. Karla (libre el 3)
+    // preasignada a un motivo.
+    setJSON("legal_Juan Zapata", { "2026-9-1": true });
+    addPreassignment({ worker: "Pablo Ignacio Rojas Aravena", replaced: "Juan Zapata", keyDay: "2026-9-1", turno: 1, absenceType: "F. Legal" });
+    addPreassignment({ worker: "Karla Andrea Soto", replaced: "", reason: "Calidad", keyDay: "2026-9-3", turno: 1 });
+
+    const mes = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+    const uno = mes.rows[0];
+
+    // Ya no es un hueco: esta tentativamente cubierto.
+    assert.deepEqual(uno.gaps.day, []);
+    assert.deepEqual(
+        uno.slots.day.map(p => [p.initials, p.preassigned === true]),
+        [["PR", true]]
+    );
+    assert.deepEqual(mes.extraColumns.day, ["Calidad"]);
+    assert.equal(mes.rows[2].extras.day.Calidad[0].preassigned, true);
+});
+
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {
     const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
     const [html, navegacion, permisos, fuente] = await Promise.all([
