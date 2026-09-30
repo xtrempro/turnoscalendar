@@ -1050,7 +1050,7 @@ function panelHTML(model, groups) {
                                 <td class="mcal-date">${row.day}</td>
                                 <td class="mcal-weekday">${row.weekday}</td>
                                 ${slots.map(slot => `
-                                    <td class="mcal-slot" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0">${chipsHTML(row.slots[slot], row.gaps[slot], { cupos: row.cupos?.[slot] || [] })}</td>
+                                    <td class="mcal-slot${moveTargetClass(row.keyDay, slot)}" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0"${moveTargetTitle(row.keyDay, slot)}>${chipsHTML(row.slots[slot], row.gaps[slot], { cupos: row.cupos?.[slot] || [] })}</td>
                                     ${columns[slot].length
                                         ? extrasCellHTML(
                                             columns[slot].map((column, index) => extraCellHTML(row, slot, column, canEdit, index)).join(""),
@@ -2080,6 +2080,43 @@ async function editExtraColumn(slot, reason) {
     await renderMonthlyCalendarPanel();
 }
 
+/**
+ * Mientras se mueve un turno, que casillas pueden recibirlo: la MISMA regla
+ * que valida el movimiento (dia libre o con el complemento, y lo que la unidad
+ * permite: 24 h, 24 h invertido...). Las que no, quedan apagadas y no reciben
+ * el clic.
+ */
+function moveTargetReason(keyDay, slot) {
+    const move = ui.pendingMove;
+
+    if (!move || typeof window.shiftMoveDayBlockReason !== "function") return "";
+
+    const destinationTurn = slot === "night" ? TURNO.NOCHE : TURNO.LARGA;
+
+    if (keyDay === move.sourceKey && destinationTurn === Number(move.sourceTurn)) {
+        return "Es el turno que se esta moviendo.";
+    }
+
+    return window.shiftMoveDayBlockReason(move.name, keyDay, {
+        sourceKey: move.sourceKey,
+        destinationTurn
+    }) || "";
+}
+
+function moveTargetClass(keyDay, slot) {
+    if (!ui.pendingMove) return "";
+
+    return moveTargetReason(keyDay, slot) ? " is-move-blocked" : " is-move-target";
+}
+
+function moveTargetTitle(keyDay, slot) {
+    if (!ui.pendingMove) return "";
+
+    const reason = moveTargetReason(keyDay, slot);
+
+    return reason ? ` title="${escapeHTML(`No puede recibir el turno: ${reason}`)}"` : "";
+}
+
 function turnLabel(turn) {
     return Number(turn) === TURNO.NOCHE ? "Noche" : "Larga";
 }
@@ -2167,7 +2204,7 @@ function onPanelClick(event) {
             return;
         }
 
-        const target = event.target.closest('[data-mcal-slot][data-mcal-col="titulares"]');
+        const target = event.target.closest('[data-mcal-slot][data-mcal-col="titulares"].is-move-target');
         const targetRow = target && lastModel?.rows.find(item => item.keyDay === target.dataset.mcalKey);
 
         // Con el movimiento en curso, un clic en Titulares es el destino; el

@@ -2361,11 +2361,24 @@ body[data-active-view="home"] .secondary-grid {
     flex: 1;
 }
 
-.mcal.is-moving td[data-mcal-col="titulares"] {
+.mcal.is-moving td[data-mcal-col="titulares"].is-move-target {
     cursor: copy;
+    box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.mcal.is-moving td[data-mcal-col="titulares"]:hover {
+/* Las columnas de motivos no reciben un turno movido. */
+.mcal.is-moving .mcal-table tbody .mcal-xwrap {
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+/* Casillas que no pueden recibir el turno (reglas de la unidad, dia ocupado). */
+.mcal.is-moving td[data-mcal-col="titulares"].is-move-blocked {
+    cursor: not-allowed;
+    opacity: 0.35;
+}
+
+.mcal.is-moving td[data-mcal-col="titulares"].is-move-target:hover {
     outline: 2px dashed var(--accent);
     outline-offset: -3px;
     background: var(--accent-soft);
