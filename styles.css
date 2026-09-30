@@ -2100,13 +2100,20 @@ body[data-active-view="home"] .secondary-grid {
     cursor: pointer;
 }
 
-/* La tabla tiene su propio desplazamiento para que las dos filas del
-   encabezado (Dia/Noche y los motivos) queden a la vista al bajar por el mes. */
+/* Se desplaza la PAGINA, no la tabla: las dos filas del encabezado (Dia/Noche
+   y los motivos) quedan pegadas arriba de la ventana al bajar por el mes. Por
+   eso el contenedor no puede tener overflow (convertiria en su propio
+   desplazamiento y el encabezado se pegaria a el, no a la ventana). */
 .mcal-table-wrap {
     --mcal-head-row: 40px;
-    overflow: auto;
-    max-height: calc(100vh - 220px);
-    min-height: 320px;
+}
+
+/* En pantallas angostas la tabla no cabe: vuelve a desplazarse de lado ella
+   misma (ahi el encabezado ya no se pega a la ventana). */
+@media (max-width: 900px) {
+    .mcal-table-wrap {
+        overflow-x: auto;
+    }
 }
 
 /* `separate` y no `collapse`: con bordes colapsados, las celdas fijas pierden
