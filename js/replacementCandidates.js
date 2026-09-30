@@ -23,6 +23,7 @@ import { getJSON } from "./persistence.js";
 import {
     getProfileData,
     getProfiles,
+    getReplacementRequestConfig,
     getRotativa,
     getTurnChangeConfig,
     isProfileActive,
@@ -58,8 +59,14 @@ import { TURNO } from "./constants.js";
 
 // Tope mensual de horas extras DIURNAS. La cobertura automatica no le ofrece un
 // turno a quien quedaria por encima: seria pedirle que acepte algo que despues
-// no se le puede pagar.
+// no se le puede pagar. 40 es el de la norma; la unidad puede fijar uno menor en
+// Ajustes (replacementRequestConfig.monthlyDiurnalOvertimeLimit).
 export const MAX_MONTHLY_DIURNAL_OVERTIME = 40;
+
+export function getMonthlyDiurnalOvertimeLimit() {
+    return Number(getReplacementRequestConfig().monthlyDiurnalOvertimeLimit) ||
+        MAX_MONTHLY_DIURNAL_OVERTIME;
+}
 
 // Horas extras que le sumaria al candidato cubrir este turno. Para los casos
 // parciales -capacitacion, diurno cubriendo larga, media tarde- el candidato ya
@@ -78,7 +85,7 @@ export function exceedsDiurnalOvertimeLimit(
     date,
     neededTurn,
     holidays,
-    limit = MAX_MONTHLY_DIURNAL_OVERTIME
+    limit = getMonthlyDiurnalOvertimeLimit()
 ) {
     const accumulated = Number(candidate?.hheeDiurnas) || 0;
     const adding = Number(

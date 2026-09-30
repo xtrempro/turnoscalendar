@@ -179,7 +179,8 @@ test("el ajuste existe en Reemplazos, apagado por omision", async () => {
     assert.match(settings, /id: "settingsAllowNightTrainingReplacement"/);
     assert.match(
         settings,
-        /title: "Permitir el reemplazo de capacitaciones cuando al funcionario le corresponde turno de noche"/
+        // Desde el rediseño de Ajustes (2026-09-30) vive en Capacitaciones.
+        /title: "Capacitaciones en turno de noche"/
     );
     // Y se lee de vuelta al guardar, o la casilla no quedaria marcada.
     assert.match(

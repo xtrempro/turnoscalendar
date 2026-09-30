@@ -1234,9 +1234,16 @@ export function cancelOrphanedReplacementCoverage() {
                         )
                     );
                 })() ||
-                !workerHasAbsence(
-                    replacement.replaced,
-                    keyFromISO(replacement.date)
+                (
+                    !workerHasAbsence(
+                        replacement.replaced,
+                        keyFromISO(replacement.date)
+                    ) &&
+                    // Cubrir una devolucion de tiempo no tiene permiso detras:
+                    // la devolucion misma es la razon (js/hourReturnCoverage.js).
+                    !getJSON(`hourReturns_${replacement.replaced}`, {})[
+                        keyFromISO(replacement.date)
+                    ]
                 )
             )
         )

@@ -24,6 +24,7 @@ import {
     isNoCoverageDay,
     getRotativa,
     getShiftAssigned,
+    getReplacementRequestConfig,
     getWorkerRequests
 } from "./storage.js";
 import { getJSON } from "./persistence.js";
@@ -4780,7 +4781,7 @@ function announceAutomaticCoverage(result) {
         const motivo = result.poolSize
             ? "Los candidatos de esta etapa no tienen la app enlazada o ya tenían una solicitud pendiente."
             : result.overLimit
-                ? `Los ${result.overLimit} candidatos superarían las 40 horas extras diurnas del mes con este turno.`
+                ? `Los ${result.overLimit} candidatos superarían las ${getReplacementRequestConfig().monthlyDiurnalOvertimeLimit} horas extras diurnas del mes con este turno.`
                 : "No hay trabajadores que puedan cubrir ese turno.";
 
         toast(

@@ -1024,7 +1024,16 @@ const DEFAULT_REPLACEMENT_REQUEST_CONFIG = {
     // su turno queda pidiendo reemplazo. Arranca DESACTIVADO porque no todas
     // las unidades eximen de la noche por una capacitacion; sin esto, el modo
     // capacitacion sigue admitiendo solo Larga y Diurno, como hasta ahora.
-    allowNightTrainingReplacement: false
+    allowNightTrainingReplacement: false,
+    // Tope mensual de horas extras DIURNAS por trabajador. 40 es el de la
+    // norma; la unidad puede fijar uno menor (Ajustes > Horas extras). Lo usan
+    // las sugerencias de reemplazo, la cobertura automatica y los colores del
+    // timeline.
+    monthlyDiurnalOvertimeLimit: 40,
+    // Devolucion de tiempo: el turno del que alguien devuelve horas pide
+    // cobertura ("!") por esas horas. Arranca APAGADO: hasta ahora una
+    // devolucion no pedia a nadie.
+    allowHourReturnCoverage: false
 };
 
 const DEFAULT_REPORT_SIGNATURE_CONFIG = {
@@ -1051,6 +1060,15 @@ export const DEFAULT_TURN_CHANGE_CONFIG = {
     monthlySwapLimit: 2
 };
 
+// Horas enteras entre 1 y 200; cualquier otra cosa vuelve al tope de la norma.
+function normalizeOvertimeLimit(value) {
+    const hours = Math.round(Number(value));
+
+    return Number.isFinite(hours) && hours >= 1 && hours <= 200
+        ? hours
+        : DEFAULT_REPLACEMENT_REQUEST_CONFIG.monthlyDiurnalOvertimeLimit;
+}
+
 function normalizeReplacementRequestConfig(config = {}) {
     const expiresMinutes = Number(config.expiresMinutes);
 
@@ -1064,6 +1082,11 @@ function normalizeReplacementRequestConfig(config = {}) {
         // Por omision APAGADO: solo vale si la unidad lo pidio expresamente.
         allowNightTrainingReplacement:
             config.allowNightTrainingReplacement === true,
+        monthlyDiurnalOvertimeLimit: normalizeOvertimeLimit(
+            config.monthlyDiurnalOvertimeLimit
+        ),
+        allowHourReturnCoverage:
+            config.allowHourReturnCoverage === true,
         expiresMinutes:
             Number.isFinite(expiresMinutes) && expiresMinutes > 0
                 ? Math.round(expiresMinutes)

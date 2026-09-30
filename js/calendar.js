@@ -291,7 +291,7 @@ import {
 } from "./workerRequests.js";
 import {
     buildReplacementCandidates,
-    MAX_MONTHLY_DIURNAL_OVERTIME,
+    getMonthlyDiurnalOvertimeLimit,
     canCoverShift,
     candidatePositionLabel,
     diurnoLongCoverageHours,
@@ -317,6 +317,7 @@ import {
     addShiftAttendanceEntry,
     shiftAttendanceWindowOpen
 } from "./shiftAttendance.js";
+import { hourReturnPendingCoverage } from "./hourReturnCoverage.js";
 import { runCooperativeRange } from "./mainThreadScheduler.js";
 import {
     canEditTarget,
@@ -1259,7 +1260,8 @@ async function handleCalendarCellFallbackClick(cell, event) {
         // Cubierto ENTERO: ver js/shiftCoverage.js.
         !coveredShiftIsFullyCovered(activeProfile, keyDay) &&
         !inheritedContractCoverage &&
-        !isNoCoverageDay(activeProfile, keyDay);
+        !isNoCoverageDay(activeProfile, keyDay) ||
+        Boolean(hourReturnPendingCoverage(activeProfile, keyDay));
     const pendingManualExtra =
         getPendingManualExtraTurn(
             activeProfile,
@@ -5677,7 +5679,7 @@ function replacementDialogHTML({
             // Sin este aviso, quien mira la lista no entiende por que esa
             // persona quedo al final.
             const limitNote = candidate.exceedsDiurnalLimit
-                ? `Superaria las ${MAX_MONTHLY_DIURNAL_OVERTIME} h extras diurnas del mes.`
+                ? `Superaria las ${getMonthlyDiurnalOvertimeLimit()} h extras diurnas del mes.`
                 : "";
             // Quien quedo de llamado para este turno. Con la fecha encima va
             // primero -es a quien le toca venir-; con dias por delante aparece
@@ -6349,7 +6351,41 @@ window.openPendingRequestsDialog = openPendingRequestsDialog;
  *   reemplaza a NADIE -es un turno extra con motivo-, que es algo que el
  *   registro ya sabe guardar.
  */
+/**
+ * Sin permiso que cubrir pero con una devolucion de tiempo pendiente (y la
+ * opcion encendida): lo que se busca es quien cubra las HORAS DEVUELTAS, no el
+ * turno entero. Se resuelve aqui para que llegue igual desde el calendario, el
+ * timeline o cualquier otro punto que abra las sugerencias.
+ */
+function withHourReturnCoverage(profileName, keyDay, options = {}) {
+    if (options.rota || options.coverWindow) return options;
+
+    const leave = [
+        getJSON(`admin_${profileName}`, {}),
+        getJSON(`legal_${profileName}`, {}),
+        getJSON(`comp_${profileName}`, {}),
+        getJSON(`absences_${profileName}`, {})
+    ];
+
+    if (tieneAusencia(keyDay, ...leave)) return options;
+
+    const gap = hourReturnPendingCoverage(profileName, keyDay);
+
+    return gap
+        ? {
+            ...options,
+            coverWindow: gap.coverWindow,
+            shiftWindow: gap.shiftWindow,
+            absenceLabel: gap.record.fullTurn
+                ? "Devoluci\u00f3n de horas"
+                : "Devoluci\u00f3n parcial de horas"
+        }
+        : options;
+}
+
 async function openReplacementDialog(profileName, keyDay, options = {}) {
+    options = withHourReturnCoverage(profileName, keyDay, options);
+
     const rota = options.rota || null;
     // Tramo del turno que se busca cubrir. Al recortarle la jornada a quien
     // cubria queda una franja descubierta, no el turno entero: por eso el
@@ -6396,7 +6432,8 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
 
     const absenceType = rota
         ? rota.motive
-        : getAbsenceLabelForProfileDate(profileName, keyDay);
+        : options.absenceLabel ||
+            getAbsenceLabelForProfileDate(profileName, keyDay);
     let scope = "compatible";
     let requestMode = false;
     let selectedRequestWorkers = new Set();
@@ -10230,7 +10267,7 @@ async function clickDia(
     //
     // El traslado no queda inalcanzable: su dia de ORIGEN lleva el mismo
     // marcador y ahi no hay nada que cubrir, asi que desde alli se anula.
-    const pendingCoverage = dayNeedsReplacement(
+    const leaveCoverage = dayNeedsReplacement(
         profileName,
         keyDay,
         admin,
@@ -10238,6 +10275,11 @@ async function clickDia(
         comp,
         absences
     );
+    // Devolucion de tiempo sin cubrir (Ajustes > Reemplazos): pide cobertura
+    // por las horas devueltas.
+    const hourReturnCoverage = !leaveCoverage &&
+        Boolean(hourReturnPendingCoverage(profileName, keyDay));
+    const pendingCoverage = leaveCoverage || hourReturnCoverage;
 
     if (shiftMoveMarker && !pendingCoverage) {
         return openShiftMoveDetailDialog(shiftMoveMarker);
@@ -10280,6 +10322,11 @@ async function clickDia(
         // sugerencias si hace falta insistir.
         if (getPendingReplacementRequestsForShift(profileName, keyDay).length) {
             return openPendingRequestsDialog({ profile: profileName, keyDay });
+        }
+
+        // Las horas devueltas: el tramo lo arma openReplacementDialog.
+        if (hourReturnCoverage) {
+            return openReplacementDialog(profileName, keyDay);
         }
 
         // Cubierto a medias: lo que se busca es quien TAPA EL HUECO, no quien
@@ -11311,7 +11358,10 @@ async function renderCalendarImpl(options = {}) {
                 replacementIndex.coveredRecordsByDate.get(isoDay) || []
             ) &&
             !inheritedContractCoverage &&
-            !isNoCoverageDay(activeProfile, keyDay);
+            !isNoCoverageDay(activeProfile, keyDay) ||
+            // Devolucion de tiempo sin cubrir (si la unidad lo activo).
+            Boolean(hourReturns[keyDay]) &&
+            Boolean(hourReturnPendingCoverage(activeProfile, keyDay));
         const showExtraReason =
             !needsReplacement &&
             !turnChange &&

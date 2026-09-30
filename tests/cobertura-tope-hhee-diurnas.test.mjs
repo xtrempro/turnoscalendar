@@ -217,5 +217,6 @@ test("el filtro corre en la cobertura automatica", () => {
 test("el supervisor se entera de por que no les llego", () => {
     // "Nadie puede cubrir" y "todos pasarian el tope" se resuelven distinto:
     // el segundo se arregla repartiendo el turno, no buscando mas gente.
-    assert.match(home, /superarían las 40 horas extras diurnas del mes/);
+    // El tope es el de la unidad (Ajustes; 40 por norma), no un 40 fijo.
+    assert.match(home, /superarían las \$\{getReplacementRequestConfig\(\)\.monthlyDiurnalOvertimeLimit\} horas extras diurnas del mes/);
 });

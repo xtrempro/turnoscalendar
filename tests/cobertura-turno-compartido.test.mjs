@@ -166,7 +166,8 @@ test("y se ve en Configuracion, pestaña Turnos", async () => {
     assert.match(settings, /id: "settingsAllowSplitShiftCoverage"/);
     assert.match(
         settings,
-        /title: "Permitir cubrir un mismo turno con 2 funcionarios"/
+        // Ajustes > Reglas de turnos (rediseño 2026-09-30).
+        /title: "Cubrir un mismo turno con 2 funcionarios"/
     );
     assert.match(settings, /checked: config\.allowSplitShiftCoverage/);
     assert.match(

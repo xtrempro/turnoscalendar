@@ -161,6 +161,7 @@ test("se usa el MISMO tope que la cobertura automatica", async () => {
 });
 
 test("la tarjeta dice por que quedo al final", () => {
-    assert.match(calendar, /Superaria las \$\{MAX_MONTHLY_DIURNAL_OVERTIME\} h extras diurnas del mes/);
+    // El tope de la unidad (Ajustes; 40 por norma).
+    assert.match(calendar, /Superaria las \$\{getMonthlyDiurnalOvertimeLimit\(\)\} h extras diurnas del mes/);
     assert.match(calendar, /replacement-candidate--over-limit/);
 });

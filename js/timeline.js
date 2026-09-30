@@ -8,8 +8,10 @@ import {
     getSwaps,
     getRotativa,
     isProfileActive,
-    isNoCoverageDay
+    isNoCoverageDay,
+    getReplacementRequestConfig
 } from "./storage.js";
+import { hourReturnPendingCoverage } from "./hourReturnCoverage.js";
 
 import * as calendar from "./calendar.js";
 import {
@@ -2224,12 +2226,15 @@ function dayExtraAlertClass(nombre, value, monthDate = new Date()) {
     }
 
     const hours = Number(value) || 0;
+    // El tope de la unidad (Ajustes > Horas extras; 40 por norma). El aviso
+    // amarillo empieza en el 75 % del tope, como el 30 de 40 de siempre.
+    const limit = Number(getReplacementRequestConfig().monthlyDiurnalOvertimeLimit) || 40;
 
-    if (hours >= 40) {
+    if (hours >= limit) {
         return " hhee-alert-danger";
     }
 
-    if (hours > 30 && hours < 40) {
+    if (hours > limit * 0.75) {
         return " hhee-alert-warning";
     }
 
@@ -2397,7 +2402,9 @@ function needsReplacementMarker(nombre, key) {
         // cubre vuelve a pedir cobertura (ver js/shiftCoverage.js).
         !coveredShiftIsFullyCovered(nombre, key) &&
         !getInheritedReplacementContractForCoveredShift(nombre, key) &&
-        !isNoCoverageDay(nombre, key)
+        !isNoCoverageDay(nombre, key) ||
+        // Devolucion de tiempo sin cubrir (Ajustes > Reemplazos).
+        Boolean(hourReturnPendingCoverage(nombre, key))
     );
 }
 
@@ -2756,7 +2763,8 @@ function buildTimelineRowAuxiliaryContext(
                 rotativaType
             ) &&
             !coveredReplacementByIso.has(iso) &&
-            !isNoCoverageDay(profileName, keyDay)
+            !isNoCoverageDay(profileName, keyDay) ||
+            Boolean(hourReturnPendingCoverage(profileName, keyDay))
         );
 
         if (isReplacement) {

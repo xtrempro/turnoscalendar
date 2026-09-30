@@ -284,7 +284,7 @@ test("el checkbox solo se dibuja con los turnos 24 activos", async () => {
         source,
         /config\.allowTwentyFourHourShifts \? checkboxHTML\(\{\s*\n\s*id: "settingsAllowDiurnoAfterTwentyFour"/
     );
-    assert.match(source, /title: "Permitir agregar turno diurno post 24h"/);
+    assert.match(source, /title: "Turno diurno despues de un 24"/);
 
     // Al apagar el padre hay que reconstruir el modal, o el hijo queda en
     // pantalla.

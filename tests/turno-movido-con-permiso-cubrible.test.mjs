@@ -195,7 +195,8 @@ test("el click en un turno trasladado sin cubrir va a la cobertura", () => {
     );
 
     // Y la condicion se calcula antes de esa bifurcacion.
-    const posCoverage = calendar.indexOf("const pendingCoverage = dayNeedsReplacement(");
+    // Junta el permiso (dayNeedsReplacement) y la devolucion de tiempo.
+    const posCoverage = calendar.indexOf("const pendingCoverage = leaveCoverage || hourReturnCoverage;");
     const posDialog = calendar.indexOf("if (shiftMoveMarker && !pendingCoverage)");
 
     assert.ok(posCoverage !== -1 && posDialog !== -1);

@@ -71,7 +71,56 @@ const GROUPS = [
     }
 ];
 
-let activeTab = "grades";
+let activeTab = "users";
+// Usuarios desplegados en "Usuarios y permisos" (sobrevive a los repintados).
+const openMembers = new Set();
+// Hubo cambios desde que se abrio el modal (para el aviso del pie).
+let settingsDirty = false;
+
+// Menu lateral: areas y secciones. `keywords` alimenta el buscador.
+const SETTINGS_NAV = [
+    {
+        label: "Acceso",
+        items: [
+            { id: "users", label: "Usuarios y permisos", dot: "#10498B", keywords: "usuarios permisos invitar administrador colaborador acceso" }
+        ]
+    },
+    {
+        label: "Turnos y cobertura",
+        items: [
+            { id: "shifts", label: "Reglas de turnos", dot: "#0F766E", keywords: "24 horas invertido diurno post dos funcionarios repartir turno" },
+            { id: "swaps", label: "Cambios de turno", dot: "#0F766E", keywords: "cambios de turno cctt limite mensual tipos" },
+            { id: "requests", label: "Reemplazos", dot: "#0F766E", keywords: "reemplazos sugerencias unidades enlazadas profesiones aceptacion caducidad devolucion de tiempo horas" },
+            { id: "training", label: "Capacitaciones", dot: "#0F766E", keywords: "capacitaciones capacitacion noche" }
+        ]
+    },
+    {
+        label: "Unidad",
+        items: [
+            { id: "holidays", label: "Feriados", dot: "#B45309", keywords: "feriados inhabiles dias" },
+            { id: "signature", label: "Documentos y firma", dot: "#B45309", keywords: "pie de firma documentos jefe cargo" },
+            { id: "colors", label: "Colores", dot: "#B45309", keywords: "colores turnos permisos aplicacion" }
+        ]
+    },
+    {
+        label: "Remuneraciones",
+        items: [
+            { id: "grades", label: "Valores por grado", dot: "#7C3AED", keywords: "valores por grado valor hora periodo" },
+            { id: "overtime", label: "Horas extras", dot: "#7C3AED", keywords: "horas extras hhee diurnas tope limite 40" }
+        ]
+    }
+];
+
+const SETTINGS_TABS = SETTINGS_NAV.flatMap(group => group.items.map(item => item.id));
+
+function sectionHeadHTML(title, text) {
+    return `
+        <div class="sx-section-head">
+            <h2>${title}</h2>
+            <p>${text}</p>
+        </div>
+    `;
+}
 let manualHolidayDraft = [];
 let gradeConfigDraft = null;
 let replacementRequestConfigDraft = null;
@@ -216,6 +265,7 @@ function renderRateRows(group, config) {
 
 function renderGradesPanel(config) {
     return `
+        ${sectionHeadHTML("Valores hora por grado", "Base para calcular el costo de las horas extras. Cada per\u00edodo tiene su tabla; los meses se calculan con la que les corresponde.")}
         ${renderGradePeriodBar(config)}
         <div class="settings-grade-grid">
             ${GROUPS.map(group => `
@@ -253,46 +303,49 @@ function renderHolidayList() {
     }
 
     return manualHolidayDraft
-        .map((holiday, index) => `
-            <article class="settings-holiday-item">
-                <span>
-                    <strong>${escapeHTML(formatDate(holiday.date))}</strong>
-                    <small>${escapeHTML(holiday.name)}</small>
-                </span>
-                <button type="button" data-remove-holiday="${index}">
-                    Quitar
-                </button>
-            </article>
-        `)
+        .map((holiday, index) => {
+            const [year, month, day] = String(holiday.date || "").split("-");
+            const monthLabel = MESES_LARGOS[Number(month) - 1] || "";
+
+            return `
+                <article class="sx-row settings-holiday-item">
+                    <span class="sx-date-badge">
+                        <strong>${escapeHTML(day || "")}</strong>
+                        <small>${escapeHTML(monthLabel.slice(0, 3))} ${escapeHTML(year || "")}</small>
+                    </span>
+                    <span class="sx-row__text">
+                        <strong>${escapeHTML(holiday.name)}</strong>
+                        <small>${escapeHTML(formatDate(holiday.date))}</small>
+                    </span>
+                    <button class="sx-btn-danger-text" type="button" data-remove-holiday="${index}">
+                        Quitar
+                    </button>
+                </article>
+            `;
+        })
         .join("");
 }
 
 function renderHolidaysPanel() {
     return `
-        <section class="settings-card settings-card--wide">
-            <div class="settings-card__head">
-                <h4>Feriados manuales</h4>
-                <span>Estos d\u00edas se consideran inh\u00e1biles y se suman a los feriados oficiales.</span>
-            </div>
-
-            <div class="settings-holiday-form">
-                <label>
-                    <span>Fecha</span>
-                    <input id="settingsHolidayDate" type="date">
-                </label>
-                <label>
-                    <span>Nombre o motivo</span>
-                    <input id="settingsHolidayName" type="text" placeholder="Ej: Feriado institucional">
-                </label>
-                <button id="settingsAddHoliday" class="secondary-button" type="button">
-                    Agregar feriado
-                </button>
-            </div>
-
-            <div id="settingsHolidayList" class="settings-holiday-list">
-                ${renderHolidayList()}
-            </div>
+        ${sectionHeadHTML("Feriados de la unidad", "D\u00edas inh\u00e1biles propios de la unidad, adem\u00e1s de los feriados oficiales, que se cargan solos.")}
+        <section class="sx-card sx-card--pad settings-holiday-form">
+            <label class="sx-field">
+                <span>Fecha</span>
+                <input id="settingsHolidayDate" type="date">
+            </label>
+            <label class="sx-field">
+                <span>Motivo</span>
+                <input id="settingsHolidayName" type="text" placeholder="Ej: Aniversario del hospital">
+            </label>
+            <button id="settingsAddHoliday" class="sx-btn sx-btn--primary" type="button">
+                Agregar feriado
+            </button>
         </section>
+
+        <div id="settingsHolidayList" class="sx-stack settings-holiday-list">
+            ${renderHolidayList()}
+        </div>
     `;
 }
 
@@ -302,56 +355,104 @@ function renderRequestsPanel() {
         getReplacementRequestConfig();
 
     return `
-        <section class="settings-card settings-card--wide">
-            <div class="settings-card__head">
-                <h4>Reemplazos</h4>
-                <span>
-                    Define que opciones aparecen al cargar sugerencias de
-                    reemplazo y solicitudes al trabajador.
-                </span>
-            </div>
-
-            <div class="settings-switch-grid">
-                ${checkboxHTML({
-                    id: "settingsEnableLinkedUnitSuggestions",
-                    checked: config.enableLinkedUnitSuggestions !== false,
-                    title: "Buscar sugerencias en unidades enlazadas",
-                    description: "Habilita la busqueda bajo demanda. No se carga informacion externa hasta que el supervisor pulsa Buscar reemplazo compatible en unidades enlazadas."
-                })}
-                ${checkboxHTML({
-                    id: "settingsEnableCrossRoleSuggestions",
-                    checked: config.enableCrossRoleSuggestions !== false,
-                    title: "Mostrar personal de otras profesiones y/o estamentos",
-                    description: "En las sugerencias de reemplazo se muestran trabajadores de profesiones y/o estamentos distintos al trabajador que ocasiona la necesidad de reemplazo."
-                })}
-                ${checkboxHTML({
-                    id: "settingsEnableWorkerAcceptanceRequest",
-                    checked: config.enableWorkerAcceptanceRequest !== false,
-                    title: "Solicitar aceptacion al trabajador",
-                    description: "Al cargar las sugerencias aparece la opcion de preguntarle al trabajador si puede realizar el reemplazo antes de anadirlo al calendario."
-                })}
-                ${checkboxHTML({
-                    id: "settingsAllowNightTrainingReplacement",
-                    checked: config.allowNightTrainingReplacement === true,
-                    title: "Permitir el reemplazo de capacitaciones cuando al funcionario le corresponde turno de noche",
-                    description: "El funcionario se exime de ir a su turno de noche. La capacitacion se aplica sin pedir horario -la noche se exime completa- y el turno queda pidiendo reemplazo."
-                })}
-            </div>
+        ${sectionHeadHTML("Reemplazos y sugerencias", "Qu\u00e9 ofrece el cuadro de sugerencias al buscar qui\u00e9n cubre un turno.")}
+        <div class="sx-stack">
+            ${checkboxHTML({
+                id: "settingsEnableLinkedUnitSuggestions",
+                checked: config.enableLinkedUnitSuggestions !== false,
+                title: "Buscar en unidades enlazadas",
+                description: "Habilita la busqueda bajo demanda. No se carga informacion externa hasta que el supervisor pulsa Buscar reemplazo compatible en unidades enlazadas."
+            })}
+            ${checkboxHTML({
+                id: "settingsEnableCrossRoleSuggestions",
+                checked: config.enableCrossRoleSuggestions !== false,
+                title: "Mostrar otras profesiones y estamentos",
+                description: "En las sugerencias de reemplazo se muestran trabajadores de profesiones y/o estamentos distintos al trabajador que ocasiona la necesidad de reemplazo."
+            })}
+            ${checkboxHTML({
+                id: "settingsAllowHourReturnCoverage",
+                checked: config.allowHourReturnCoverage === true,
+                title: "Cubrir las devoluciones de tiempo",
+                description: "Cuando alguien devuelve horas, su turno muestra el signo de exclamacion y se puede agregar a otro trabajador para cubrir las horas devueltas."
+            })}
+            ${checkboxHTML({
+                id: "settingsEnableWorkerAcceptanceRequest",
+                checked: config.enableWorkerAcceptanceRequest !== false,
+                title: "Pedir aceptacion al trabajador",
+                description: "Al cargar las sugerencias aparece la opcion de preguntarle al trabajador si puede realizar el reemplazo antes de anadirlo al calendario."
+            })}
 
             ${config.enableWorkerAcceptanceRequest !== false ? `
-                <label class="settings-request-field">
-                    <span>Caducidad de solicitudes</span>
-                    <input
-                        id="settingsReplacementRequestExpires"
-                        type="number"
-                        min="5"
-                        step="5"
-                        value="${Number(config.expiresMinutes) || 24 * 60}"
-                    >
-                    <small>Tiempo en minutos. Valor recomendado: 1440 (24 horas).</small>
+                <label class="sx-row settings-request-field">
+                    <span class="sx-row__text">
+                        <strong>Caducidad de las solicitudes a trabajadores</strong>
+                        <small>Tiempo en minutos. Valor recomendado: 1440 (24 horas).</small>
+                    </span>
+                    <span class="sx-inline-field">
+                        <input
+                            id="settingsReplacementRequestExpires"
+                            type="number"
+                            min="5"
+                            step="5"
+                            value="${Number(config.expiresMinutes) || 24 * 60}"
+                        >
+                        <span>min</span>
+                    </span>
                 </label>
             ` : ""}
-        </section>
+        </div>
+    `;
+}
+
+function renderTrainingPanel() {
+    const config =
+        replacementRequestConfigDraft ||
+        getReplacementRequestConfig();
+
+    return `
+        ${sectionHeadHTML("Capacitaciones", "C\u00f3mo se tratan los turnos de quien asiste a una capacitaci\u00f3n.")}
+        <div class="sx-stack">
+            ${checkboxHTML({
+                id: "settingsAllowNightTrainingReplacement",
+                checked: config.allowNightTrainingReplacement === true,
+                title: "Capacitaciones en turno de noche",
+                description: "El funcionario se exime de ir a su turno de noche. La capacitacion se aplica sin pedir horario -la noche se exime completa- y el turno queda pidiendo reemplazo."
+            })}
+            <div class="sx-placeholder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                Aqu\u00ed se sumar\u00e1n las pr\u00f3ximas reglas de capacitaciones.
+            </div>
+        </div>
+    `;
+}
+
+function renderOvertimePanel() {
+    const config =
+        replacementRequestConfigDraft ||
+        getReplacementRequestConfig();
+    const limit = Number(config.monthlyDiurnalOvertimeLimit) || 40;
+
+    return `
+        ${sectionHeadHTML("Horas extras", "Tope mensual de horas extras diurnas por trabajador.")}
+        <div class="sx-stack">
+            <label class="sx-row">
+                <span class="sx-row__text">
+                    <strong>Tope mensual de horas extras diurnas</strong>
+                    <small>40 es el de la norma; la unidad puede fijar uno menor. La cobertura automatica y las sugerencias de reemplazo no le ofrecen un turno a quien lo pasaria, y en el timeline las horas se ponen amarillas desde el 75 % del tope y rojas al llegar a el.</small>
+                </span>
+                <span class="sx-inline-field">
+                    <input
+                        id="settingsMonthlyDiurnalOvertimeLimit"
+                        type="number"
+                        min="1"
+                        max="200"
+                        step="1"
+                        value="${limit}"
+                    >
+                    <span>horas</span>
+                </span>
+            </label>
+        </div>
     `;
 }
 
@@ -360,25 +461,18 @@ function renderSignaturePanel() {
         reportSignatureConfigDraft ||
         getReportSignatureConfig();
     const labels = [
-        "Primera l&iacute;nea:",
-        "Segunda l&iacute;nea:",
-        "Tercera l&iacute;nea:",
-        "Cuarta l&iacute;nea:"
+        "L&iacute;nea 1 &middot; nombre",
+        "L&iacute;nea 2 &middot; cargo",
+        "L&iacute;nea 3",
+        "L&iacute;nea 4"
     ];
 
     return `
-        <section class="settings-card settings-card--wide">
-            <div class="settings-card__head">
-                <h4>Pie de Firma</h4>
-                <span>
-                    Configura el pie de firma que aparecer&aacute; en los
-                    documentos imprimibles.
-                </span>
-            </div>
-
-            <div class="settings-signature-grid">
+        ${sectionHeadHTML("Documentos y firma", "El pie de firma de los documentos imprimibles. Las l\u00edneas 1 y 2 prellenan el jefe directo y su cargo en Calificaciones.")}
+        <div class="sx-signature">
+            <section class="sx-card sx-card--pad settings-signature-grid">
                 ${labels.map((label, index) => `
-                    <label class="settings-signature-field">
+                    <label class="sx-field settings-signature-field">
                         <span>${label}</span>
                         <input
                             type="text"
@@ -388,8 +482,17 @@ function renderSignaturePanel() {
                         >
                     </label>
                 `).join("")}
-            </div>
-        </section>
+            </section>
+            <figure class="sx-card sx-card--pad sx-signature__preview">
+                <figcaption>Vista previa</figcaption>
+                <div class="sx-signature__paper">
+                    <span class="sx-signature__line"></span>
+                    ${config.lines.map((line, index) => `
+                        <span class="${index === 0 ? "is-name" : ""}" data-signature-preview="${index}">${escapeHTML(line || "")}</span>
+                    `).join("")}
+                </div>
+            </figure>
+        </div>
     `;
 }
 
@@ -400,62 +503,101 @@ function checkboxHTML({
     description,
     disabled = false
 }) {
+    // Fila con interruptor a la derecha. Sigue siendo un checkbox: las
+    // funciones read* lo leen por su id.
     return `
-        <label class="settings-switch ${disabled ? "is-disabled" : ""}">
-            <input
-                id="${id}"
-                type="checkbox"
-                ${checked ? "checked" : ""}
-                ${disabled ? "disabled" : ""}
-            >
-            <span>
+        <label class="sx-row settings-switch ${disabled ? "is-disabled" : ""}">
+            <span class="sx-row__text">
                 <strong>${escapeHTML(title)}</strong>
                 <small>${escapeHTML(description)}</small>
             </span>
+            <input
+                id="${id}"
+                class="sx-switch"
+                type="checkbox"
+                role="switch"
+                ${checked ? "checked" : ""}
+                ${disabled ? "disabled" : ""}
+            >
         </label>
     `;
 }
 
-function renderTurnChangesPanel() {
+function renderShiftRulesPanel() {
     const config =
         turnChangeConfigDraft ||
         getTurnChangeConfig();
 
     return `
-        <section class="settings-card settings-card--wide">
-            <div class="settings-card__head">
-                <h4>Cambio de Turno</h4>
-                <span>
-                    Define las reglas generales para intercambios de turno
-                    y combinaciones de 24 horas.
-                </span>
-            </div>
+        ${sectionHeadHTML("Reglas de turnos", "Qu\u00e9 combinaciones de turnos permite la unidad. Rigen al asignar, mover y cubrir turnos en todo el programa.")}
+        <div class="sx-stack">
+            ${checkboxHTML({
+                id: "settingsAllowTwentyFourHourShifts",
+                checked: config.allowTwentyFourHourShifts,
+                title: "Turnos de 24 horas",
+                description: "Si se desactiva, no se podran generar turnos 24 manuales ni cambios que dejen a un trabajador con turno 24."
+            })}
 
-            <div class="settings-switch-grid">
-                ${checkboxHTML({
-                    id: "settingsAllowSwaps",
-                    checked: config.allowSwaps,
-                    title: "Permitir cambios de turno",
-                    description: "Si se desactiva, ningun trabajador podra registrar cambios y el menu quedara deshabilitado."
-                })}
+            ${config.allowTwentyFourHourShifts ? checkboxHTML({
+                id: "settingsAllowDiurnoAfterTwentyFour",
+                checked: config.allowDiurnoAfterTwentyFour,
+                title: "Turno diurno despues de un 24",
+                description: "Habilita un turno Diurno el dia siguiente a un 24h, y permite que un dia de rotativa Diurno llegue a 24h en el calendario. El reporte marca los tres turnos: Larga y Noche en la fila del 24, y el Diurno en la del dia siguiente."
+            }) : ""}
 
-                ${config.allowSwaps ? checkboxHTML({
-                    id: "settingsAllowDifferentTurnTypes",
-                    checked: config.allowDifferentTurnTypes,
-                    title: "Permitir Cambios de Turno entre diferentes tipos de turno",
-                    description: "Permite cambiar Larga por Noche o Noche por Larga. Si se desactiva, solo se permite Larga por Larga y Noche por Noche."
-                }) : ""}
+            ${checkboxHTML({
+                id: "settingsAllowInvertedTwentyFourHourShifts",
+                checked: config.allowInvertedTwentyFourHourShifts,
+                title: "Turnos de 24 horas invertidos",
+                description: "Si se desactiva, se bloquea Noche seguida de Larga, Diurno o D + N al dia siguiente y Noche el dia anterior a cualquiera de esos turnos."
+            })}
 
-                ${config.allowSwaps ? checkboxHTML({
-                    id: "settingsLimitMonthlySwaps",
-                    checked: config.limitMonthlySwaps,
-                    title: "Limitar CCTT Mensuales",
-                    description: "Define una cantidad maxima de cambios de turno que cada trabajador puede realizar por mes."
-                }) : ""}
+            ${checkboxHTML({
+                id: "settingsAllowSplitShiftCoverage",
+                checked: config.allowSplitShiftCoverage,
+                title: "Cubrir un mismo turno con 2 funcionarios",
+                description: "Al recortarle la jornada a quien cubre un permiso (por ejemplo, entra a las 08:00 y se va a las 13:00 de una Larga), el turno vuelve a pedir cobertura por las horas que quedan y se ofrece buscar a otro trabajador para ese tramo."
+            })}
+        </div>
+    `;
+}
 
-                ${config.allowSwaps && config.limitMonthlySwaps ? `
-                    <label class="settings-limit-field">
-                        <span>Cambios mensuales autorizados por trabajador</span>
+function renderSwapsPanel() {
+    const config =
+        turnChangeConfigDraft ||
+        getTurnChangeConfig();
+
+    return `
+        ${sectionHeadHTML("Cambios de turno", "C\u00f3mo pueden intercambiar turnos los trabajadores entre s\u00ed.")}
+        <div class="sx-stack">
+            ${checkboxHTML({
+                id: "settingsAllowSwaps",
+                checked: config.allowSwaps,
+                title: "Permitir cambios de turno",
+                description: "Si se desactiva, ningun trabajador podra registrar cambios y el menu quedara deshabilitado."
+            })}
+
+            ${config.allowSwaps ? checkboxHTML({
+                id: "settingsAllowDifferentTurnTypes",
+                checked: config.allowDifferentTurnTypes,
+                title: "Entre distintos tipos de turno",
+                description: "Permite cambiar Larga por Noche o Noche por Larga. Si se desactiva, solo se permite Larga por Larga y Noche por Noche."
+            }) : ""}
+
+            ${config.allowSwaps ? checkboxHTML({
+                id: "settingsLimitMonthlySwaps",
+                checked: config.limitMonthlySwaps,
+                title: "Limitar los cambios mensuales",
+                description: "Define una cantidad maxima de cambios de turno que cada trabajador puede realizar por mes."
+            }) : ""}
+
+            ${config.allowSwaps && config.limitMonthlySwaps ? `
+                <label class="sx-row settings-limit-field">
+                    <span class="sx-row__text">
+                        <strong>Cambios mensuales autorizados por trabajador</strong>
+                        <small>Cantidad maxima al mes.</small>
+                    </span>
+                    <span class="sx-inline-field">
                         <input
                             id="settingsMonthlySwapLimit"
                             type="number"
@@ -463,38 +605,11 @@ function renderTurnChangesPanel() {
                             step="1"
                             value="${Number(config.monthlySwapLimit) || 2}"
                         >
-                    </label>
-                ` : ""}
-
-                ${checkboxHTML({
-                    id: "settingsAllowTwentyFourHourShifts",
-                    checked: config.allowTwentyFourHourShifts,
-                    title: "Permitir turnos de 24 horas",
-                    description: "Si se desactiva, no se podran generar turnos 24 manuales ni cambios que dejen a un trabajador con turno 24."
-                })}
-
-                ${config.allowTwentyFourHourShifts ? checkboxHTML({
-                    id: "settingsAllowDiurnoAfterTwentyFour",
-                    checked: config.allowDiurnoAfterTwentyFour,
-                    title: "Permitir agregar turno diurno post 24h",
-                    description: "Habilita un turno Diurno el dia siguiente a un 24h, y permite que un dia de rotativa Diurno llegue a 24h en el calendario (sin esto no podria armarse la secuencia). El reporte marca los tres turnos: Larga y Noche en la fila del 24, y el Diurno en la del dia siguiente."
-                }) : ""}
-
-                ${checkboxHTML({
-                    id: "settingsAllowInvertedTwentyFourHourShifts",
-                    checked: config.allowInvertedTwentyFourHourShifts,
-                    title: "Permitir turnos de 24 horas invertidos",
-                    description: "Si se desactiva, se bloquea Noche seguida de Larga, Diurno o D + N al dia siguiente y Noche el dia anterior a cualquiera de esos turnos."
-                })}
-
-                ${checkboxHTML({
-                    id: "settingsAllowSplitShiftCoverage",
-                    checked: config.allowSplitShiftCoverage,
-                    title: "Permitir cubrir un mismo turno con 2 funcionarios",
-                    description: "Al recortarle la jornada a quien cubre un permiso (por ejemplo, entra a las 08:00 y se va a las 13:00 de una Larga), el turno vuelve a pedir cobertura por las horas que quedan y se ofrece buscar a otro trabajador para ese tramo. Si se desactiva, recortar la jornada no ofrece nada y el turno sigue dandose por cubierto."
-                })}
-            </div>
-        </section>
+                        <span>al mes</span>
+                    </span>
+                </label>
+            ` : ""}
+        </div>
     `;
 }
 
@@ -527,10 +642,10 @@ function renderSupervisorInviteBox() {
         : "";
 
     return `
-        <div class="settings-user-invite">
-            <div>
+        <div class="sx-card sx-card--pad settings-user-invite">
+            <div class="sx-invite__title">
                 <strong>Invitar administrador</strong>
-                <span>Envía una invitación segura para administrar esta unidad.</span>
+                <span>Envía una invitación segura para administrar esta unidad. Al enviarla eliges sus permisos.</span>
             </div>
             <div class="settings-user-invite__form">
                 <label class="settings-user-invite__field">
@@ -571,62 +686,140 @@ function renderSupervisorInviteBox() {
     `;
 }
 
+// Areas en que se agrupan los menus en los permisos de cada usuario.
+const PERMISSION_AREAS = [
+    { label: "Operaci\u00f3n", keys: ["turnos", "weekly", "tasks", "swap", "requests"] },
+    { label: "Personas", keys: ["profile", "clockmarks", "hours", "qualifications", "memos"] },
+    { label: "Gesti\u00f3n", keys: ["informations", "medicalEquipment", "tenders", "kanban", "agenda"] },
+    { label: "An\u00e1lisis", keys: ["reports", "dashboard", "log"] }
+];
+
+// Los menus en su area (los que no calzan con ninguna van a "Otros", para que
+// un menu nuevo no quede fuera de la pantalla).
+function permissionAreas() {
+    const placed = new Set();
+    const areas = PERMISSION_AREAS.map(area => {
+        const menus = area.keys
+            .map(key => MENU_PERMISSION_DEFS.find(menu => menu.key === key))
+            .filter(Boolean);
+
+        menus.forEach(menu => placed.add(menu.key));
+
+        return { label: area.label, menus };
+    });
+    const others = MENU_PERMISSION_DEFS.filter(menu => !placed.has(menu.key));
+
+    if (others.length) areas.push({ label: "Otros", menus: others });
+
+    return areas.filter(area => area.menus.length);
+}
+
+function permissionLevel(permission) {
+    if (permission?.edit) return "edit";
+    if (permission?.view) return "view";
+    return "none";
+}
+
+function permissionSummary(permissions) {
+    const levels = MENU_PERMISSION_DEFS.map(menu => permissionLevel(permissions[menu.key]));
+
+    return {
+        edit: levels.filter(level => level === "edit").length,
+        view: levels.filter(level => level === "view").length,
+        none: levels.filter(level => level === "none").length
+    };
+}
+
+function memberInitials(label) {
+    const words = String(label || "").trim().split(/\s+/).filter(Boolean);
+
+    if (!words.length) return "?";
+
+    return (words[0][0] + (words.length > 1 ? words[words.length - 1][0] : "")).toUpperCase();
+}
+
+function memberSinceLabel(member) {
+    const value = member.joinedAt?.toDate?.() || member.joinedAt;
+    const date = value ? new Date(value) : null;
+
+    return date && !Number.isNaN(date.getTime())
+        ? `en la unidad desde ${date.toLocaleDateString("es-CL")}`
+        : "";
+}
+
+function memberPermissionRowsHTML(member, permissions) {
+    return permissionAreas().map(area => `
+        <section class="sx-perm-area">
+            <h3>${escapeHTML(area.label)}</h3>
+            ${area.menus.map(menu => {
+                const level = permissionLevel(permissions[menu.key]);
+                const name = `perm-${member.uid}-${menu.key}`;
+
+                return `
+                    <div class="sx-perm-row">
+                        <span>${escapeHTML(menu.label)}</span>
+                        <span class="sx-seg" role="radiogroup" aria-label="${escapeHTML(menu.label)}">
+                            ${[["none", "No"], ["view", "Ver"], ["edit", "Editar"]].map(([value, label]) => `
+                                <label class="sx-seg__opt sx-seg__opt--${value}">
+                                    <input
+                                        type="radio"
+                                        name="${escapeHTML(name)}"
+                                        value="${value}"
+                                        data-member-permission="${escapeHTML(member.uid)}"
+                                        data-permission-menu="${escapeHTML(menu.key)}"
+                                        ${level === value ? "checked" : ""}
+                                    >
+                                    <span>${label}</span>
+                                </label>
+                            `).join("")}
+                        </span>
+                    </div>
+                `;
+            }).join("")}
+        </section>
+    `).join("");
+}
+
 function renderUsersPanel() {
     const state = getWorkspacePermissionState();
+    const head = sectionHeadHTML(
+        "Usuarios y permisos",
+        "Qui\u00e9n administra esta unidad y qu\u00e9 puede ver o editar en cada men\u00fa. Toca un usuario para ver sus permisos."
+    );
 
     if (!isWorkspaceOwner()) {
         return `
-            <section class="settings-card settings-card--wide">
-                <div class="settings-card__head">
-                    <h4>Usuarios y permisos</h4>
-                    <span>Solo el creador de la unidad puede administrar permisos.</span>
-                </div>
-                <div class="settings-empty">
-                    No tienes permisos para modificar accesos de otros usuarios.
-                </div>
-            </section>
+            ${head}
+            <div class="settings-empty">
+                Solo el creador de la unidad puede administrar permisos.
+            </div>
         `;
     }
 
     if (!state.workspaceId) {
         return `
-            <section class="settings-card settings-card--wide">
-                <div class="settings-card__head">
-                    <h4>Usuarios y permisos</h4>
-                    <span>Selecciona o crea una unidad para administrar usuarios.</span>
-                </div>
-                <div class="settings-empty">
-                    No hay una unidad activa.
-                </div>
-            </section>
+            ${head}
+            <div class="settings-empty">
+                No hay una unidad activa.
+            </div>
         `;
     }
 
     if (memberPermissionLoading) {
         return `
-            <section class="settings-card settings-card--wide">
-                <div class="settings-card__head">
-                    <h4>Usuarios y permisos</h4>
-                    <span>Cargando usuarios de la unidad...</span>
-                </div>
-                ${renderSupervisorInviteBox()}
-                <div class="settings-empty">Cargando permisos.</div>
-            </section>
+            ${head}
+            ${renderSupervisorInviteBox()}
+            <div class="settings-empty">Cargando usuarios de la unidad...</div>
         `;
     }
 
     if (memberPermissionError) {
         return `
-            <section class="settings-card settings-card--wide">
-                <div class="settings-card__head">
-                    <h4>Usuarios y permisos</h4>
-                    <span>No se pudo cargar la lista de usuarios.</span>
-                </div>
-                ${renderSupervisorInviteBox()}
-                <div class="settings-empty">
-                    ${escapeHTML(memberPermissionError)}
-                </div>
-            </section>
+            ${head}
+            ${renderSupervisorInviteBox()}
+            <div class="settings-empty">
+                No se pudo cargar la lista de usuarios. ${escapeHTML(memberPermissionError)}
+            </div>
         `;
     }
 
@@ -635,90 +828,77 @@ function renderUsersPanel() {
     );
 
     return `
-        <section class="settings-card settings-card--wide">
-            <div class="settings-card__head">
-                <h4>Usuarios y permisos</h4>
-                <span>
-                    Define qu\u00e9 men\u00fas puede ver cada colaborador y en cu\u00e1les
-                    puede editar informaci\u00f3n.
-                </span>
-            </div>
+        ${head}
+        ${renderSupervisorInviteBox()}
 
-            ${renderSupervisorInviteBox()}
+        ${collaborators.length ? `
+            <div class="sx-stack settings-users-list">
+                ${collaborators.map(member => {
+                    const permissions =
+                        normalizeMenuPermissions(member.permissions);
+                    const summary = permissionSummary(permissions);
+                    const label = memberLabel(member);
+                    const since = memberSinceLabel(member);
 
-            ${collaborators.length ? `
-                <div class="settings-users-list">
-                    ${collaborators.map(member => {
-                        const permissions =
-                            normalizeMenuPermissions(member.permissions);
-
-                        return `
-                            <article class="settings-user-card">
-                                <div class="settings-user-card__head">
-                                    <span class="settings-user-card__id">
+                    return `
+                        <details class="sx-user settings-user-card" data-member-card="${escapeHTML(member.uid)}" ${openMembers.has(member.uid) ? "open" : ""}>
+                            <summary class="sx-user__head">
+                                <span class="sx-avatar">${escapeHTML(memberInitials(label))}</span>
+                                <span class="sx-user__id">
+                                    <span class="sx-user__name">
+                                        <strong>${escapeHTML(label)}</strong>
+                                        <em>Colaborador</em>
+                                    </span>
+                                    <small>${escapeHTML(member.email || member.uid)}${since ? ` &middot; ${escapeHTML(since)}` : ""}</small>
+                                </span>
+                                <span class="sx-user__counts">
+                                    <span class="sx-chip sx-chip--edit">${summary.edit} editar</span>
+                                    <span class="sx-chip">${summary.view} solo ver</span>
+                                    <span class="sx-chip sx-chip--none">${summary.none} sin acceso</span>
+                                </span>
+                                <svg class="sx-user__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                            </summary>
+                            <div class="sx-user__body">
+                                <div class="sx-user__tools">
+                                    <label class="sx-field sx-field--inline">
+                                        <span>Nombre visible</span>
                                         <input
                                             class="settings-user-name"
                                             type="text"
                                             data-member-name="${escapeHTML(member.email || "")}"
-                                            value="${escapeHTML(memberLabel(member))}"
+                                            value="${escapeHTML(label)}"
                                             placeholder="Nombre de la persona"
                                             aria-label="Nombre visible de este administrador"
                                             ${member.email ? "" : "disabled"}
                                         >
-                                        <small>${escapeHTML(member.email || member.uid)}</small>
+                                    </label>
+                                    <span class="sx-user__presets">
+                                        <span>Aplicar:</span>
+                                        <button class="sx-btn sx-btn--ghost sx-btn--sm" type="button" data-member-preset="${escapeHTML(member.uid)}" data-preset="edit">Todo editar</button>
+                                        <button class="sx-btn sx-btn--ghost sx-btn--sm" type="button" data-member-preset="${escapeHTML(member.uid)}" data-preset="view">Solo ver</button>
+                                        <button class="sx-btn sx-btn--ghost sx-btn--sm" type="button" data-member-preset="${escapeHTML(member.uid)}" data-preset="ops">Coordinador</button>
                                     </span>
-                                    <div class="settings-user-card__actions">
-                                        <em>Colaborador</em>
-                                        <button
-                                            class="settings-user-delete"
-                                            type="button"
-                                            data-delete-member="${escapeHTML(member.uid)}"
-                                        >
-                                            Eliminar
-                                        </button>
-                                    </div>
+                                    <button
+                                        class="sx-btn-danger-text settings-user-delete"
+                                        type="button"
+                                        data-delete-member="${escapeHTML(member.uid)}"
+                                    >
+                                        Quitar de la unidad
+                                    </button>
                                 </div>
-
-                                <div class="settings-permission-grid">
-                                    <div class="settings-permission-row settings-permission-row--head">
-                                        <span>Men\u00fa</span>
-                                        <span>Ver</span>
-                                        <span>Editar</span>
-                                    </div>
-                                    ${MENU_PERMISSION_DEFS.map(menu => {
-                                        const permission = permissions[menu.key];
-                                        return `
-                                            <label class="settings-permission-row">
-                                                <span>${escapeHTML(menu.label)}</span>
-                                                <input
-                                                    type="checkbox"
-                                                    data-member-permission="${escapeHTML(member.uid)}"
-                                                    data-permission-menu="${escapeHTML(menu.key)}"
-                                                    data-permission-kind="view"
-                                                    ${permission.view ? "checked" : ""}
-                                                >
-                                                <input
-                                                    type="checkbox"
-                                                    data-member-permission="${escapeHTML(member.uid)}"
-                                                    data-permission-menu="${escapeHTML(menu.key)}"
-                                                    data-permission-kind="edit"
-                                                    ${permission.edit ? "checked" : ""}
-                                                    ${!permission.view ? "disabled" : ""}
-                                                >
-                                            </label>
-                                        `;
-                                    }).join("")}
+                                <div class="sx-perm-grid">
+                                    ${memberPermissionRowsHTML(member, permissions)}
                                 </div>
-                            </article>
-                        `;
-                    }).join("")}
-                </div>
-            ` : `
-                <div class="settings-empty">
-                    Aun no hay colaboradores aprobados en esta unidad.
-                </div>
-            `}
-        </section>
+                            </div>
+                        </details>
+                    `;
+                }).join("")}
+            </div>
+        ` : `
+            <div class="settings-empty">
+                Aun no hay colaboradores aprobados en esta unidad.
+            </div>
+        `}
     `;
 }
 
@@ -753,7 +933,8 @@ function renderColorsPanel() {
         config.turnChangeReturn || DEFAULT_TURN_CHANGE_RETURN_COLOR;
 
     return `
-        <div class="settings-section">
+        ${sectionHeadHTML("Colores", "Los colores de los turnos y permisos son de la unidad. El color de la aplicaci\u00f3n es solo tuyo.")}
+        <div class="settings-section sx-colors">
             <h4 class="settings-subtitle">Color de la aplicacion</h4>
             <p class="settings-hint">
                 Color principal de la interfaz (botones, pestanas y destacados).
@@ -865,69 +1046,84 @@ function renderActivePanel(config) {
     if (activeTab === "colors") return renderColorsPanel();
     if (activeTab === "holidays") return renderHolidaysPanel();
     if (activeTab === "requests") return renderRequestsPanel();
+    if (activeTab === "training") return renderTrainingPanel();
+    if (activeTab === "overtime") return renderOvertimePanel();
     if (activeTab === "signature") return renderSignaturePanel();
-    if (activeTab === "turnChanges") return renderTurnChangesPanel();
+    if (activeTab === "shifts") return renderShiftRulesPanel();
+    if (activeTab === "swaps") return renderSwapsPanel();
     if (activeTab === "users") return renderUsersPanel();
 
     return renderGradesPanel(config);
 }
 
+function collaboratorCount() {
+    return memberPermissionDraft.filter(member => member.role !== "owner").length;
+}
+
+function settingsNavHTML() {
+    return SETTINGS_NAV.map(group => `
+        <div class="sx-nav__group" data-settings-nav-group>
+            <span class="sx-nav__label">${escapeHTML(group.label)}</span>
+            ${group.items.map(item => `
+                <button
+                    class="sx-nav__item ${activeTab === item.id ? "is-active" : ""}"
+                    type="button"
+                    data-settings-tab="${item.id}"
+                    data-settings-keywords="${escapeHTML(`${item.label} ${item.keywords}`)}"
+                    ${activeTab === item.id ? 'aria-current="page"' : ""}
+                >
+                    <span class="sx-nav__dot" style="background: ${item.dot}"></span>
+                    <span>${escapeHTML(item.label)}</span>
+                    ${item.id === "users" && collaboratorCount() ? `
+                        <span class="sx-chip sx-chip--edit sx-nav__badge">${collaboratorCount()}</span>
+                    ` : ""}
+                </button>
+            `).join("")}
+        </div>
+    `).join("");
+}
+
 function modalHTML() {
     const config = gradeConfigDraft || getGradeHourConfig();
+    const workspaceName = getActiveWorkspace()?.name || "";
 
     return `
-        <div class="turn-change-dialog system-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="systemSettingsTitle">
-            <div class="settings-dialog-head">
-                <span>
+        <div class="turn-change-dialog system-settings-dialog sx-dialog" role="dialog" aria-modal="true" aria-labelledby="systemSettingsTitle">
+            <header class="sx-header settings-dialog-head">
+                <span class="sx-header__title">
                     <strong id="systemSettingsTitle">Ajustes del sistema</strong>
-                    <p>Configura valores transversales para c\u00e1lculos y calendario.</p>
+                    <p>${workspaceName ? `${escapeHTML(workspaceName)} &middot; ` : ""}los cambios se aplican a todos los supervisores de la unidad</p>
                 </span>
-                <button class="icon-button" type="button" data-settings-close aria-label="Cerrar ajustes">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M18 6 6 18"></path>
-                        <path d="m6 6 12 12"></path>
-                    </svg>
+                <label class="sx-search">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
+                    <input type="search" data-settings-search placeholder="Buscar un ajuste (ej. 24 horas, feriado)" aria-label="Buscar un ajuste">
+                </label>
+                <button class="sx-icon-btn" type="button" data-settings-close aria-label="Cerrar ajustes">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
                 </button>
+            </header>
+
+            <div class="sx-body">
+                <nav class="sx-nav" aria-label="Secciones de ajustes">
+                    ${settingsNavHTML()}
+                    <p class="sx-nav__empty" data-settings-search-empty hidden>Ning\u00fan ajuste coincide.</p>
+                </nav>
+                <main class="sx-main settings-panel">
+                    ${renderActivePanel(config)}
+                </main>
             </div>
 
-            <div class="settings-tabs" role="tablist">
-                <button class="${activeTab === "grades" ? "is-active" : ""}" type="button" data-settings-tab="grades">
-                    Valores por grado
+            <footer class="sx-footer settings-actions">
+                <span class="sx-dirty ${settingsDirty ? "is-dirty" : ""}" data-settings-dirty>
+                    ${settingsDirty ? "Hay cambios sin guardar" : "Sin cambios"}
+                </span>
+                <button class="sx-btn sx-btn--ghost" type="button" data-settings-discard>
+                    Descartar
                 </button>
-                <button class="${activeTab === "holidays" ? "is-active" : ""}" type="button" data-settings-tab="holidays">
-                    Feriados manuales
+                <button class="sx-btn sx-btn--primary sx-btn--wide" type="button" data-settings-save>
+                    Guardar cambios
                 </button>
-                <button class="${activeTab === "requests" ? "is-active" : ""}" type="button" data-settings-tab="requests">
-                    Reemplazos
-                </button>
-                <button class="${activeTab === "signature" ? "is-active" : ""}" type="button" data-settings-tab="signature">
-                    Pie de Firma
-                </button>
-                <button class="${activeTab === "turnChanges" ? "is-active" : ""}" type="button" data-settings-tab="turnChanges">
-                    Turnos
-                </button>
-                <button class="${activeTab === "colors" ? "is-active" : ""}" type="button" data-settings-tab="colors">
-                    Colores
-                </button>
-                ${isWorkspaceOwner() ? `
-                    <button class="${activeTab === "users" ? "is-active" : ""}" type="button" data-settings-tab="users">
-                        Usuarios
-                    </button>
-                ` : ""}
-            </div>
-
-            <div class="settings-panel">
-                ${renderActivePanel(config)}
-            </div>
-
-            <div class="turn-change-dialog__actions settings-actions">
-                <button class="secondary-button" type="button" data-settings-close>
-                    Cancelar
-                </button>
-                <button class="primary-button" type="button" data-settings-save>
-                    Guardar ajustes
-                </button>
-            </div>
+            </footer>
         </div>
     `;
 }
@@ -994,6 +1190,15 @@ function readRequestConfig(backdrop) {
             hasInput("settingsAllowNightTrainingReplacement")
                 ? checked("settingsAllowNightTrainingReplacement")
                 : fallback.allowNightTrainingReplacement,
+        allowHourReturnCoverage:
+            hasInput("settingsAllowHourReturnCoverage")
+                ? checked("settingsAllowHourReturnCoverage")
+                : fallback.allowHourReturnCoverage,
+        monthlyDiurnalOvertimeLimit:
+            hasInput("settingsMonthlyDiurnalOvertimeLimit")
+                ? Number(backdrop.querySelector("#settingsMonthlyDiurnalOvertimeLimit")?.value) ||
+                    fallback.monthlyDiurnalOvertimeLimit
+                : fallback.monthlyDiurnalOvertimeLimit,
         expiresMinutes:
             Number.isFinite(expiresMinutes) && expiresMinutes > 0
                 ? Math.round(expiresMinutes)
@@ -1087,31 +1292,19 @@ function readMemberPermissionDraft(backdrop) {
         ])
     );
 
+    // Un grupo de radios por menu: No / Ver / Editar.
     backdrop
-        .querySelectorAll("[data-member-permission][data-permission-menu][data-permission-kind]")
+        .querySelectorAll("[data-member-permission][data-permission-menu]:checked")
         .forEach(input => {
             const member = byUid.get(input.dataset.memberPermission);
             if (!member || member.role === "owner") return;
 
-            const menuKey = input.dataset.permissionMenu;
-            const kind = input.dataset.permissionKind;
+            const level = input.value;
 
-            if (!member.permissions[menuKey]) {
-                member.permissions[menuKey] = {
-                    view: true,
-                    edit: true
-                };
-            }
-
-            member.permissions[menuKey][kind] = input.checked;
-
-            if (kind === "view" && !input.checked) {
-                member.permissions[menuKey].edit = false;
-            }
-
-            if (kind === "edit" && input.checked) {
-                member.permissions[menuKey].view = true;
-            }
+            member.permissions[input.dataset.permissionMenu] = {
+                view: level === "view" || level === "edit",
+                edit: level === "edit"
+            };
         });
 
     memberPermissionDraft = Array.from(byUid.values());
@@ -1122,7 +1315,7 @@ function preserveActiveDraft(backdrop) {
         gradeConfigDraft = readRateConfig(backdrop);
     }
 
-    if (activeTab === "requests") {
+    if (["requests", "training", "overtime"].includes(activeTab)) {
         replacementRequestConfigDraft =
             readRequestConfig(backdrop);
     }
@@ -1132,7 +1325,7 @@ function preserveActiveDraft(backdrop) {
             readSignatureConfig(backdrop);
     }
 
-    if (activeTab === "turnChanges") {
+    if (activeTab === "shifts" || activeTab === "swaps") {
         turnChangeConfigDraft =
             readTurnChangeConfig(backdrop);
     }
@@ -1309,7 +1502,149 @@ function rerenderHolidayList(backdrop) {
     list.innerHTML = renderHolidayList();
 }
 
+// Aviso del pie: hubo cambios desde que se abrio el modal.
+function markSettingsDirty(backdrop) {
+    settingsDirty = true;
+
+    const indicator = backdrop.querySelector("[data-settings-dirty]");
+
+    if (indicator) {
+        indicator.classList.add("is-dirty");
+        indicator.textContent = "Hay cambios sin guardar";
+    }
+}
+
+// Contadores del encabezado de un usuario, sin repintar el modal (repintar
+// cerraria los usuarios abiertos y moveria el scroll).
+function refreshMemberSummary(backdrop, uid) {
+    const card = [...backdrop.querySelectorAll("[data-member-card]")]
+        .find(item => item.dataset.memberCard === uid);
+
+    if (!card) return;
+
+    const counts = { edit: 0, view: 0, none: 0 };
+
+    card.querySelectorAll("[data-member-permission]:checked").forEach(input => {
+        counts[input.value] = (counts[input.value] || 0) + 1;
+    });
+
+    const chips = card.querySelectorAll(".sx-user__counts .sx-chip");
+
+    if (chips[0]) chips[0].textContent = `${counts.edit} editar`;
+    if (chips[1]) chips[1].textContent = `${counts.view} solo ver`;
+    if (chips[2]) chips[2].textContent = `${counts.none} sin acceso`;
+}
+
+// Perfiles rapidos de permisos de un usuario.
+function applyMemberPreset(backdrop, uid, preset) {
+    const area = key => PERMISSION_AREAS.find(item => item.keys.includes(key))?.label || "";
+    const levelFor = key => {
+        if (preset === "edit") return "edit";
+        if (preset === "view") return "view";
+        // Coordinador: edita la operacion, mira personas y analisis.
+        const label = area(key);
+
+        if (label === "Operaci\u00f3n") return "edit";
+        if (label === "Personas" || label === "An\u00e1lisis") return "view";
+        return "none";
+    };
+
+    backdrop
+        .querySelectorAll("[data-member-permission][data-permission-menu]")
+        .forEach(input => {
+            if (input.dataset.memberPermission !== uid) return;
+
+            input.checked = input.value === levelFor(input.dataset.permissionMenu);
+        });
+
+    refreshMemberSummary(backdrop, uid);
+    markSettingsDirty(backdrop);
+}
+
+// Buscador: deja en el menu lateral solo las secciones que calzan.
+function filterSettingsNav(backdrop, query) {
+    const words = String(query || "")
+        .toLocaleLowerCase("es")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .split(/\s+/)
+        .filter(Boolean);
+    let visible = 0;
+
+    backdrop.querySelectorAll("[data-settings-nav-group]").forEach(group => {
+        let groupVisible = 0;
+
+        group.querySelectorAll("[data-settings-keywords]").forEach(item => {
+            const text = item.dataset.settingsKeywords
+                .toLocaleLowerCase("es")
+                .normalize("NFD")
+                .replace(/[\u0300-\u036f]/g, "");
+            const match = words.every(word => text.includes(word));
+
+            item.hidden = !match;
+            if (match) groupVisible++;
+        });
+
+        group.hidden = !groupVisible;
+        visible += groupVisible;
+    });
+
+    const empty = backdrop.querySelector("[data-settings-search-empty]");
+
+    if (empty) empty.hidden = visible > 0;
+}
+
+async function confirmDiscardSettings() {
+    if (!settingsDirty) return true;
+
+    return showConfirm(
+        "Hay cambios sin guardar en los ajustes. Si sales ahora, se pierden.",
+        {
+            title: "Descartar cambios",
+            tone: "warning",
+            confirmText: "Descartar",
+            cancelText: "Seguir editando"
+        }
+    );
+}
+
 function bindBackdrop(backdrop) {
+    // Usuarios abiertos: se recuerdan para el proximo repintado. `toggle` no
+    // burbujea, por eso se escucha en captura.
+    backdrop.addEventListener("toggle", event => {
+        const card = event.target?.closest?.("[data-member-card]");
+
+        if (!card) return;
+
+        if (card.open) openMembers.add(card.dataset.memberCard);
+        else openMembers.delete(card.dataset.memberCard);
+    }, true);
+
+    backdrop.addEventListener("input", event => {
+        if (event.target?.matches?.("[data-settings-search]")) {
+            filterSettingsNav(backdrop, event.target.value);
+            return;
+        }
+
+        // Vista previa del pie de firma, en vivo.
+        const signatureLine = event.target?.closest?.("[data-signature-line]");
+
+        if (signatureLine) {
+            const preview = backdrop.querySelector(
+                `[data-signature-preview="${signatureLine.dataset.signatureLine}"]`
+            );
+
+            if (preview) preview.textContent = signatureLine.value;
+        }
+
+        if (
+            event.target?.closest?.(".sx-main") &&
+            !event.target.matches("[data-settings-invite-email], [data-settings-invite-name]")
+        ) {
+            markSettingsDirty(backdrop);
+        }
+    });
+
     backdrop.addEventListener("change", event => {
         // Nombre visible de un administrador. Se guarda al salir del campo (o
         // al presionar Enter), no en cada tecla: escribir "Patricia" no puede
@@ -1327,9 +1662,13 @@ function bindBackdrop(backdrop) {
         if (
             event.target?.matches?.("[data-member-permission]")
         ) {
-            preserveActiveDraft(backdrop);
-            backdrop.innerHTML = modalHTML();
+            refreshMemberSummary(backdrop, event.target.dataset.memberPermission);
+            markSettingsDirty(backdrop);
             return;
+        }
+
+        if (event.target?.closest?.(".sx-main")) {
+            markSettingsDirty(backdrop);
         }
 
         if (
@@ -1357,9 +1696,15 @@ function bindBackdrop(backdrop) {
     backdrop.addEventListener("click", async event => {
         if (
             event.target === backdrop ||
-            event.target.closest("[data-settings-close]")
+            event.target.closest("[data-settings-close], [data-settings-discard]")
         ) {
-            backdrop.remove();
+            if (await confirmDiscardSettings()) backdrop.remove();
+            return;
+        }
+
+        const preset = event.target.closest("[data-member-preset]");
+        if (preset) {
+            applyMemberPreset(backdrop, preset.dataset.memberPreset, preset.dataset.preset);
             return;
         }
 
@@ -1391,6 +1736,7 @@ function bindBackdrop(backdrop) {
             // El periodo nuevo arranca copiando los valores del ultimo: casi
             // siempre es un reajuste sobre la tabla vigente, no una tabla desde
             // cero.
+            settingsDirty = true;
             config.periods.push({
                 from: "",
                 to: "",
@@ -1421,6 +1767,7 @@ function bindBackdrop(backdrop) {
 
         const resetColors = event.target.closest("[data-settings-reset-colors]");
         if (resetColors) {
+            settingsDirty = true;
             colorConfigDraft = getDefaultTurnoColorConfig();
             backdrop.innerHTML = modalHTML();
             return;
@@ -1449,6 +1796,7 @@ function bindBackdrop(backdrop) {
                 return;
             }
 
+            settingsDirty = true;
             manualHolidayDraft = manualHolidayDraft
                 .filter(item => item.date !== date)
                 .concat({
@@ -1467,6 +1815,7 @@ function bindBackdrop(backdrop) {
         const removeHoliday = event.target.closest("[data-remove-holiday]");
         if (removeHoliday) {
             const index = Number(removeHoliday.dataset.removeHoliday);
+            settingsDirty = true;
             manualHolidayDraft = manualHolidayDraft.filter((_, itemIndex) =>
                 itemIndex !== index
             );
@@ -1560,6 +1909,7 @@ function bindBackdrop(backdrop) {
                     "Actualizo valores por grado, feriados manuales, opciones de reemplazos, pie de firma, reglas de cambios de turno, colores y/o permisos de usuarios.",
                     { scope: "system_settings" }
                 );
+                settingsDirty = false;
                 backdrop.remove();
                 onSettingsSaved?.();
             } catch (error) {
@@ -1575,19 +1925,14 @@ function bindBackdrop(backdrop) {
 export function openSystemSettings(initialTab = activeTab) {
     const nextTab = String(initialTab || activeTab);
 
-    if (
-        nextTab === "users" ||
-        [
-            "grades",
-            "holidays",
-            "requests",
-            "signature",
-            "turnChanges",
-            "colors"
-        ].includes(nextTab)
-    ) {
-        activeTab = nextTab;
+    // "turnChanges" era la pestaña de antes: hoy son dos secciones.
+    const requested = nextTab === "turnChanges" ? "shifts" : nextTab;
+
+    if (SETTINGS_TABS.includes(requested)) {
+        activeTab = requested;
     }
+
+    settingsDirty = false;
 
     document
         .querySelector(".turn-change-dialog-backdrop[data-system-settings]")
@@ -1617,23 +1962,7 @@ export function openSystemSettings(initialTab = activeTab) {
     bindBackdrop(backdrop);
     document.body.appendChild(backdrop);
 
-    backdrop
-        .querySelector(
-            activeTab === "grades"
-                ? "[data-rate-group]"
-                : activeTab === "holidays"
-                    ? "#settingsHolidayDate"
-                    : activeTab === "requests"
-                        ? "#settingsReplacementRequestExpires"
-                        : activeTab === "signature"
-                            ? "[data-signature-line]"
-                            : activeTab === "turnChanges"
-                                ? "#settingsAllowSwaps"
-                                : activeTab === "users"
-                                    ? "[data-settings-invite-email], [data-member-permission]"
-                                    : ".settings-panel input"
-        )
-        ?.focus();
+    backdrop.querySelector("[data-settings-search]")?.focus();
 
     if (isWorkspaceOwner()) {
         memberPermissionLoading = true;
