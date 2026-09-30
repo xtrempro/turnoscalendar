@@ -692,7 +692,7 @@ function syncProfileProfessionField(data, editing) {
     );
     replaceProfessionOptions(
         DOM.profileProfessionOptions,
-        getProfessionOptionsForEstamento("Administrativo")
+        options
     );
 
     DOM.profileProfessionSelect.classList.toggle(

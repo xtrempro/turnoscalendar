@@ -76,11 +76,16 @@ export const ADMINISTRATIVE_PROFESSIONS = [
     "Ingenier\u00eda en RRHH"
 ];
 
+export const AUXILIARY_PROFESSIONS = [
+    "Conductor"
+];
+
 export const PROFESSIONS = [
     ...new Set([
         ...PROFESSIONAL_PROFESSIONS,
         ...TECHNICAL_PROFESSIONS,
-        ...ADMINISTRATIVE_PROFESSIONS
+        ...ADMINISTRATIVE_PROFESSIONS,
+        ...AUXILIARY_PROFESSIONS
     ])
 ];
 
@@ -133,7 +138,11 @@ export function getProfessionOptionsForEstamento(estamento) {
         return TECHNICAL_PROFESSIONS;
     }
 
-    if (estamentoAllowsCustomProfession(normalized)) {
+    if (normalized === "Auxiliar") {
+        return AUXILIARY_PROFESSIONS;
+    }
+
+    if (normalized === "Administrativo") {
         return ADMINISTRATIVE_PROFESSIONS;
     }
 
