@@ -45,7 +45,10 @@ test("el '!' se suprime con isNoCoverageDay en calendario, timeline y staffing",
 
     assert.ok(calls(calendar) >= 3, "calendar debe suprimir en 3 sitios");
     assert.ok(calls(timeline) >= 2, "timeline debe suprimir en 2 sitios");
-    assert.ok(calls(staffing) >= 2, "staffing debe suprimir en 2 sitios");
+    // El calendario semanal lo consulta directo; los "turnos sin cubrir" del
+    // mes salen de isShiftUncovered, que ya respeta la marca (home.js).
+    assert.ok(calls(staffing) >= 1, "staffing debe suprimir en el calendario semanal");
+    assert.match(staffing, /if \(!isShiftUncovered\(profile\.name, keyDay\)\) return;/);
     // Se sincroniza entre dispositivos como el resto de datos de turnos.
     assert.match(modules, /\["noCoverage_", "turnos"\]/);
 });

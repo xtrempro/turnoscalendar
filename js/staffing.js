@@ -1,5 +1,6 @@
-import { isoFromKey, parseKeyParts as parseKey } from "./dateUtils.js";
+import { parseKeyParts as parseKey } from "./dateUtils.js";
 import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
+import { isShiftUncovered } from "./home.js";
 import { normalizeText } from "./stringUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
 import {
@@ -24,9 +25,8 @@ import {
     getTurnoBase,
     getTurnoProgramado
 } from "./turnEngine.js";
-import { ESTAMENTO, TURNO } from "./constants.js";
+import { TURNO } from "./constants.js";
 import { currentDate } from "./calendar.js";
-import { cededSwapTurnBlocks } from "./swaps.js";
 import {
     getJSON,
     getRaw,
@@ -35,13 +35,10 @@ import {
     setJSON,
     setRaw
 } from "./persistence.js";
-import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { showConfirm } from "./dialogs.js";
 import {
-    formatContractDate,
-    getAllReplacementContracts,
     getDiurnoBridgeContractForProfile,
     getInheritedReplacementContractForCoveredShift,
     getReplacementRotationModeForDate,
@@ -71,55 +68,20 @@ import {
     stageLabel
 } from "./autoCoveragePlan.js";
 import { runCooperativeRange } from "./mainThreadScheduler.js";
-import {
-    measurePerformance,
-    startPerformanceSpan
-} from "./performanceMonitor.js";
+import { measurePerformance } from "./performanceMonitor.js";
 
-const KEY = "staffing_config";
 const APPLICANTS_KEY = "staffing_applicants";
-const REMINDERS_KEY = "staffing_custom_reminders";
 const STAFFING_WEEKLY_CACHE_VERSION = 1;
 const STAFFING_WEEKLY_CACHE_PREFIX = "proturnos_ui_cache_staffing_weekly_";
 const STAFFING_WEEKLY_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const STAFFING_WEEKLY_CACHE_MAX_ENTRIES = 24;
 const STAFFING_WEEKLY_PRELOAD_OFFSETS = [0, 1, -1, 2, 3];
 
-let staffingViewBound = false;
 let staffingWeekDate = null;
-let staffingAnalysisRequest = 0;
 let staffingWeeklyRenderRequest = 0;
 let staffingWeeklyPreloadTimer = 0;
 let staffingWeeklyPreloadRequest = 0;
 let staffingWeeklyStickyCleanup = null;
-
-function staffingMonthKey(year, month) {
-    return `${Number(year)}-${Number(month)}`;
-}
-
-function staffingMonthIndex(year, month) {
-    return (Number(year) * 12) + Number(month);
-}
-
-function parseStaffingMonthKey(value) {
-    const [year, month] = String(value || "")
-        .split("-")
-        .map(Number);
-
-    if (!Number.isFinite(year) || !Number.isFinite(month)) {
-        return null;
-    }
-
-    return { year, month };
-}
-
-function addStaffingMonths(date, offset) {
-    return new Date(
-        date.getFullYear(),
-        date.getMonth() + Number(offset || 0),
-        1
-    );
-}
 
 function localDateISO(date) {
     return [
@@ -275,49 +237,6 @@ function clearStaffingWeeklyCache() {
     listKeys(STAFFING_WEEKLY_CACHE_PREFIX).forEach(removeKey);
 }
 
-function staffingMonthLabel(year, month) {
-    return new Date(Number(year), Number(month), 1)
-        .toLocaleString("es-CL", {
-            month: "long",
-            year: "numeric"
-        });
-}
-
-const STAFFING_DATE_REMINDERS = [
-    { month: 4, day: 12, label: "D\u00eda de la Enfermera(o)" },
-    { month: 4, day: 6, label: "D\u00eda del Nutricionista" },
-    { month: 4, day: 6, label: "D\u00eda del Kinesi\u00f3logo" },
-    { month: 11, day: 3, label: "D\u00eda del M\u00e9dico" },
-    { month: 11, day: 3, label: "D\u00eda de la Secretaria" },
-    { month: 2, day: 19, label: "D\u00eda del Auxiliar de Servicio" },
-    { month: 9, day: 2, label: "D\u00eda del Tecn\u00f3logo M\u00e9dico" },
-    { month: 8, day: 25, label: "D\u00eda del Qu\u00edmico Farmac\u00e9utico" },
-    { month: 3, day: 5, label: "D\u00eda del Terapeuta Ocupacional" },
-    { month: 11, day: 9, label: "D\u00eda del Psic\u00f3logo" },
-    { month: 10, day: 8, label: "D\u00eda del Radi\u00f3logo" },
-    { month: 2, day: 26, label: "D\u00eda del TENS" },
-    { month: 10, day: 25, label: "D\u00eda del Param\u00e9dico" },
-    { month: 8, day: 12, label: "D\u00eda del Contador" },
-    { month: 5, day: 21, label: "D\u00eda del Padre" },
-    { month: 4, day: 10, label: "D\u00eda de la Madre" },
-    { month: 2, day: 8, label: "D\u00eda de la Mujer" },
-    { month: 10, day: 19, label: "D\u00eda del Hombre" },
-    { month: 4, day: 14, label: "D\u00eda del Ingeniero" },
-    { month: 4, day: 21, label: "D\u00eda del Abogado" },
-    { month: 5, day: 11, label: "D\u00eda del Periodista" },
-    { month: 5, day: 30, label: "D\u00eda del Bombero" },
-    { month: 9, day: 16, label: "D\u00eda del Profesor" },
-    { month: 9, day: 27, label: "D\u00eda del Odont\u00f3logo" }
-];
-
-export function getStaffingConfig() {
-    return normalizeStaffingConfig(getJSON(KEY, {}));
-}
-
-export function saveStaffingConfig(cfg) {
-    setJSON(KEY, normalizeStaffingConfig(cfg));
-}
-
 const STAFFING_ESTAMENTOS = [
     "Profesional",
     "Técnico",
@@ -328,39 +247,6 @@ const PROFESSION_BASED_ESTAMENTOS = new Set([
     "Profesional",
     "Técnico"
 ]);
-const STAFFING_MODALITIES = [
-    {
-        key: "diurno",
-        label: "Turno Diurno",
-        dayLabel: "Diurno",
-        checksNight: false
-    },
-    {
-        key: "4turno",
-        label: "4° Turno",
-        dayLabel: "Larga",
-        nightLabel: "Noche",
-        checksNight: true
-    },
-    {
-        key: "3turno",
-        label: "3er Turno",
-        dayLabel: "Larga",
-        nightLabel: "Noche",
-        checksNight: true
-    }
-];
-
-function emptyStaffingConfig() {
-    return STAFFING_MODALITIES.reduce((config, modality) => {
-        config[modality.key] = {};
-        STAFFING_ESTAMENTOS.forEach(estamento => {
-            config[modality.key][estamento] = {};
-        });
-        return config;
-    }, {});
-}
-
 function normalizeStaffingEstamento(value) {
     const clean = String(value || "").trim();
 
@@ -410,46 +296,6 @@ function normalizeStaffingRotativa(type) {
     if (value === "diurno") return "diurno";
 
     return value;
-}
-
-function isStaffingModality(type) {
-    return STAFFING_MODALITIES.some(modality =>
-        modality.key === normalizeStaffingRotativa(type)
-    );
-}
-
-function sanitizeStaffingAmount(value) {
-    const number = Number(value);
-
-    return Number.isFinite(number) && number > 0
-        ? Math.round(number)
-        : 0;
-}
-
-function normalizeStaffingConfig(config = {}) {
-    const normalized = emptyStaffingConfig();
-
-    STAFFING_MODALITIES.forEach(modality => {
-        const modalityValues = config?.[modality.key] || {};
-
-        STAFFING_ESTAMENTOS.forEach(estamento => {
-            const values = modalityValues[estamento] || {};
-
-            Object.entries(values).forEach(([group, value]) => {
-                const groupKey = isProfessionBasedStaffing(estamento)
-                    ? normalizeStaffingProfession(group, estamento)
-                    : "total";
-                const amount = sanitizeStaffingAmount(value);
-
-                if (amount > 0) {
-                    normalized[modality.key][estamento][groupKey] =
-                        amount;
-                }
-            });
-        });
-    });
-
-    return normalized;
 }
 
 function getStaffingProfileModality(profile, keyDay = "") {
@@ -506,172 +352,6 @@ function getStaffingGroupLabel(estamento, groupKey) {
     return isProfessionBasedStaffing(estamento)
         ? normalizeStaffingProfession(groupKey, estamento)
         : estamento;
-}
-
-function profileMatchesStaffingGroup(profile, {
-    modality,
-    estamento,
-    groupKey
-}) {
-    const profileEstamento =
-        normalizeStaffingEstamento(profile.estamento);
-
-    if (profileEstamento !== estamento) return false;
-    if (getStaffingProfileModality(profile) !== modality) return false;
-
-    return isProfessionBasedStaffing(estamento)
-        ? getStaffingProfileGroupKey(profile) === groupKey
-        : true;
-}
-
-function ensureStaffingConfigBucket(config, modality, estamento) {
-    if (!config[modality]) config[modality] = {};
-    if (!config[modality][estamento]) {
-        config[modality][estamento] = {};
-    }
-}
-
-export function syncStaffingConfigForProfileChange(
-    previousProfile = {},
-    nextProfile = {}
-) {
-    const previousModality =
-        normalizeStaffingRotativa(previousProfile.rotativa?.type);
-    const nextModality =
-        normalizeStaffingRotativa(nextProfile.rotativa?.type);
-    const previousEstamento =
-        normalizeStaffingEstamento(previousProfile.estamento);
-    const nextEstamento =
-        normalizeStaffingEstamento(nextProfile.estamento);
-
-    if (
-        !previousModality ||
-        !nextModality ||
-        !isStaffingModality(previousModality) ||
-        !isStaffingModality(nextModality) ||
-        !isProfessionBasedStaffing(previousEstamento) ||
-        !isProfessionBasedStaffing(nextEstamento)
-    ) {
-        return false;
-    }
-
-    const previousGroup = normalizeStaffingProfession(
-        previousProfile.profession,
-        previousEstamento
-    );
-    const nextGroup = normalizeStaffingProfession(
-        nextProfile.profession,
-        nextEstamento
-    );
-
-    if (
-        previousModality === nextModality &&
-        previousEstamento === nextEstamento &&
-        previousGroup === nextGroup
-    ) {
-        return false;
-    }
-
-    const config = getStaffingConfig();
-    const previousAmount = Number(
-        config[previousModality]?.[previousEstamento]?.[previousGroup]
-    ) || 0;
-
-    if (!previousAmount) return false;
-
-    ensureStaffingConfigBucket(
-        config,
-        nextModality,
-        nextEstamento
-    );
-
-    if (
-        !Number(
-            config[nextModality]?.[nextEstamento]?.[nextGroup]
-        )
-    ) {
-        config[nextModality][nextEstamento][nextGroup] =
-            previousAmount;
-    }
-
-    const stillHasPreviousGroup = getProfiles()
-        .filter(isProfileActive)
-        .some(profile =>
-            profileMatchesStaffingGroup(profile, {
-                modality: previousModality,
-                estamento: previousEstamento,
-                groupKey: previousGroup
-            })
-        );
-
-    if (!stillHasPreviousGroup) {
-        delete config[previousModality][previousEstamento][previousGroup];
-    }
-
-    saveStaffingConfig(config);
-
-    return true;
-}
-
-export function buildStaffingRequirementRows(
-    config = getStaffingConfig()
-) {
-    const normalized = normalizeStaffingConfig(config);
-    const profiles = getProfiles()
-        .filter(isProfileActive)
-        .filter(profile =>
-            STAFFING_ESTAMENTOS.includes(
-                normalizeStaffingEstamento(profile.estamento)
-            )
-        );
-    const rows = [];
-
-    STAFFING_MODALITIES.forEach(modality => {
-        STAFFING_ESTAMENTOS.forEach(estamento => {
-            const profilesForGroup = profiles.filter(profile =>
-                normalizeStaffingEstamento(profile.estamento) === estamento &&
-                getStaffingProfileModality(profile) === modality.key
-            );
-
-            if (!profilesForGroup.length) return;
-
-            const groups = isProfessionBasedStaffing(estamento)
-                ? [...new Set(
-                    profilesForGroup.map(getStaffingProfileGroupKey)
-                )].sort((a, b) => a.localeCompare(b, "es"))
-                : ["total"];
-
-            groups.forEach(groupKey => {
-                rows.push({
-                    modality: modality.key,
-                    modalityLabel: modality.label,
-                    sectionLabel: `${estamento} en ${modality.label}`,
-                    estamento,
-                    groupKey,
-                    groupLabel:
-                        getStaffingGroupLabel(estamento, groupKey),
-                    required:
-                        normalized[modality.key]?.[estamento]?.[groupKey] ||
-                        0
-                });
-            });
-        });
-    });
-
-    return rows;
-}
-
-export function staffingConfigSummary(config = getStaffingConfig()) {
-    const rows = buildStaffingRequirementRows(config)
-        .filter(row => row.required > 0);
-
-    if (!rows.length) return "Sin dotacion requerida configurada.";
-
-    return rows
-        .map(row =>
-            `${row.sectionLabel} / ${row.groupLabel}: ${row.required}`
-        )
-        .join("; ");
 }
 
 function worksStaffingLong(turno) {
@@ -731,29 +411,6 @@ function turnSegmentsForStaffing(row, turno) {
     return segments;
 }
 
-function checkSegmentsForShift(shiftKind) {
-    if (shiftKind === "night") {
-        return [STAFFING_SEGMENT.NIGHT];
-    }
-
-    return [
-        STAFFING_SEGMENT.DAY_MORNING,
-        STAFFING_SEGMENT.DAY_AFTERNOON
-    ];
-}
-
-function segmentLabel(segments) {
-    const hasMorning =
-        segments.includes(STAFFING_SEGMENT.DAY_MORNING);
-    const hasAfternoon =
-        segments.includes(STAFFING_SEGMENT.DAY_AFTERNOON);
-
-    if (hasMorning && !hasAfternoon) return "manana";
-    if (!hasMorning && hasAfternoon) return "tarde";
-
-    return "";
-}
-
 function removeSegmentsByAbsence(absence, currentSegments) {
     const removed = new Set();
 
@@ -788,231 +445,6 @@ function normalizeSearch(value) {
     return normalizeText(value);
 }
 
-const STAFFING_REMINDER_RECURRENCES = new Set([
-    "once",
-    "yearly",
-    "monthly"
-]);
-
-const STAFFING_REMINDER_ESTAMENTO_PREFIX = "estamento:";
-
-// Visibilidad de un recordatorio del supervisor:
-//   "all"             -> usuarios administradores del entorno (web supervisor)
-//   "private"         -> solo quien lo crea
-//   "workers"         -> todos los trabajadores (app TurnoPlus)
-//   "estamento:<X>"   -> trabajadores de ese estamento
-function isValidStaffingReminderVisibility(value) {
-    if (value === "all" || value === "private" || value === "workers") {
-        return true;
-    }
-
-    if (
-        typeof value === "string" &&
-        value.startsWith(STAFFING_REMINDER_ESTAMENTO_PREFIX)
-    ) {
-        return STAFFING_ESTAMENTOS.includes(
-            value.slice(STAFFING_REMINDER_ESTAMENTO_PREFIX.length)
-        );
-    }
-
-    return false;
-}
-
-function staffingReminderVisibilityLabel(visibility) {
-    if (visibility === "private") return "Sólo quien lo crea";
-    if (visibility === "workers") return "Todos los trabajadores";
-
-    if (
-        typeof visibility === "string" &&
-        visibility.startsWith(STAFFING_REMINDER_ESTAMENTO_PREFIX)
-    ) {
-        return `Trabajadores: ${visibility.slice(STAFFING_REMINDER_ESTAMENTO_PREFIX.length)}`;
-    }
-
-    return "Todos los usuarios administradores de la unidad";
-}
-
-const STAFFING_REMINDER_RECURRENCE_LABELS = {
-    once: "Una sola vez",
-    yearly: "Anual en la misma fecha",
-    monthly: "Mensual"
-};
-
-function reminderDateParts(value) {
-    const match = String(value || "")
-        .match(/^(\d{4})-(\d{2})-(\d{2})$/);
-
-    if (!match) return null;
-
-    const year = Number(match[1]);
-    const month = Number(match[2]) - 1;
-    const day = Number(match[3]);
-    const date = new Date(year, month, day);
-
-    if (
-        date.getFullYear() !== year ||
-        date.getMonth() !== month ||
-        date.getDate() !== day
-    ) {
-        return null;
-    }
-
-    return { year, month, day };
-}
-
-function normalizeReminderDateISO(value) {
-    const parts = reminderDateParts(value);
-
-    if (!parts) return "";
-
-    return [
-        parts.year,
-        String(parts.month + 1).padStart(2, "0"),
-        String(parts.day).padStart(2, "0")
-    ].join("-");
-}
-
-function currentReminderOwner() {
-    const user = getCurrentFirebaseUser();
-    const fallbackName =
-        typeof document !== "undefined"
-            ? document.getElementById("authUserName")?.textContent?.trim()
-            : "";
-    const uid = user?.uid || "";
-    const email = user?.email || "";
-
-    return {
-        uid,
-        email,
-        name:
-            user?.displayName ||
-            email ||
-            fallbackName ||
-            "Usuario local",
-        key: uid
-            ? `uid:${uid}`
-            : email
-                ? `email:${email.toLowerCase()}`
-                : "local_user"
-    };
-}
-
-function normalizeStaffingReminder(reminder, index = 0) {
-    const recurrence = STAFFING_REMINDER_RECURRENCES.has(
-        reminder?.recurrence
-    )
-        ? reminder.recurrence
-        : "once";
-    const visibility = isValidStaffingReminderVisibility(
-        reminder?.visibility
-    )
-        ? reminder.visibility
-        : "all";
-    const description = String(
-        reminder?.description || reminder?.label || ""
-    ).trim();
-    const owner = currentReminderOwner();
-    const createdByKey =
-        String(reminder?.createdByKey || "").trim() ||
-        (
-            reminder?.createdByUid
-                ? `uid:${reminder.createdByUid}`
-                : (
-                    reminder?.createdByEmail
-                        ? `email:${String(reminder.createdByEmail).toLowerCase()}`
-                        : owner.key
-                )
-        );
-
-    return {
-        id: String(
-            reminder?.id ||
-            `staffing_reminder_${Date.now()}_${index}`
-        ),
-        dateISO: normalizeReminderDateISO(
-            reminder?.dateISO || reminder?.date || ""
-        ),
-        description,
-        visibility,
-        recurrence,
-        createdByKey,
-        createdByUid: String(reminder?.createdByUid || ""),
-        createdByEmail: String(reminder?.createdByEmail || ""),
-        createdByName: String(reminder?.createdByName || ""),
-        createdAt: reminder?.createdAt || new Date().toISOString(),
-        updatedAt: reminder?.updatedAt || reminder?.createdAt || ""
-    };
-}
-
-function getStaffingCustomReminders() {
-    const reminders = getJSON(REMINDERS_KEY, []);
-
-    if (!Array.isArray(reminders)) return [];
-
-    return reminders
-        .map(normalizeStaffingReminder)
-        .filter(reminder => reminder.dateISO && reminder.description);
-}
-
-function isStaffingReminderVisible(reminder) {
-    if (reminder.visibility !== "private") return true;
-
-    const owner = currentReminderOwner();
-
-    if (reminder.createdByKey) {
-        return reminder.createdByKey === owner.key;
-    }
-
-    if (reminder.createdByUid && owner.uid) {
-        return reminder.createdByUid === owner.uid;
-    }
-
-    if (reminder.createdByEmail && owner.email) {
-        return (
-            reminder.createdByEmail.toLowerCase() ===
-            owner.email.toLowerCase()
-        );
-    }
-
-    return owner.key === "local_user";
-}
-
-function getVisibleStaffingCustomReminders() {
-    return getStaffingCustomReminders()
-        .filter(isStaffingReminderVisible);
-}
-
-function reportDateIsBeforeReminderStart(year, month, day, parts) {
-    if (year !== parts.year) return year < parts.year;
-    if (month !== parts.month) return month < parts.month;
-
-    return day < parts.day;
-}
-
-function staffingReminderMatchesDate(reminder, year, month, day) {
-    const parts = reminderDateParts(reminder.dateISO);
-
-    if (!parts) return false;
-
-    if (reportDateIsBeforeReminderStart(year, month, day, parts)) {
-        return false;
-    }
-
-    if (reminder.recurrence === "monthly") {
-        return parts.day === day;
-    }
-
-    if (reminder.recurrence === "yearly") {
-        return parts.month === month && parts.day === day;
-    }
-
-    return (
-        parts.year === year &&
-        parts.month === month &&
-        parts.day === day
-    );
-}
-
 async function readApplicantDocuments(files, applicantId) {
     return readAttachmentFiles(files, {
         moduleId: "weekly",
@@ -1041,12 +473,6 @@ function formatFileSize(size) {
     return `${Math.round(bytes / 1024 / 102.4) / 10} MB`;
 }
 
-function firstName(name) {
-    return String(name || "")
-        .trim()
-        .split(/\s+/)[0] || "colaborador";
-}
-
 // Acepta las dos formas guardadas: YYYY-MM-DD y DD-MM-YYYY.
 export function birthDateParts(value) {
     const source = String(value || "").trim();
@@ -1069,74 +495,6 @@ export function birthDateParts(value) {
     }
 
     return null;
-}
-
-function birthdayDetailsForDay(month, day) {
-    return getProfiles()
-        .filter(isProfileActive)
-        .filter(profile => {
-            const parts = birthDateParts(profile.birthDate);
-
-            return parts &&
-                parts.month === month &&
-                parts.day === day;
-        })
-        .map(profile => ({
-            tipo: "birthday",
-            name: firstName(profile.name)
-        }));
-}
-
-function reminderDetailsForDay(
-    year,
-    month,
-    day,
-    customReminders = getVisibleStaffingCustomReminders()
-) {
-    const fixedReminders = STAFFING_DATE_REMINDERS
-        .filter(reminder =>
-            reminder.month === month &&
-            reminder.day === day
-        )
-        .map(reminder => ({
-            tipo: "reminder",
-            label: reminder.label
-        }));
-
-    const userReminders = customReminders
-        .filter(reminder =>
-            staffingReminderMatchesDate(reminder, year, month, day)
-        )
-        .map(reminder => ({
-            tipo: "reminder",
-            label: reminder.description,
-            custom: true,
-            visibility: reminder.visibility,
-            recurrence: reminder.recurrence
-        }));
-
-    return [
-        ...fixedReminders,
-        ...userReminders
-    ];
-}
-
-function withBirthdayDetails(data, year, month) {
-    const customReminders = getVisibleStaffingCustomReminders();
-
-    return data.map(item => ({
-        ...item,
-        detalle: [
-            ...item.detalle,
-            ...birthdayDetailsForDay(month, item.dia),
-            ...reminderDetailsForDay(
-                year,
-                month,
-                item.dia,
-                customReminders
-            )
-        ]
-    }));
 }
 
 function formatMonth(year, month) {
@@ -1929,29 +1287,6 @@ function renderStaffingProfiles() {
     });
 }
 
-function bindStaffingView() {
-    if (staffingViewBound) return;
-
-    staffingViewBound = true;
-
-    const search = document.getElementById("staffingProfileSearch");
-    const role = document.getElementById("staffingFilterRole");
-    const showInactive =
-        document.getElementById("staffingShowInactiveProfiles");
-
-    if (search) {
-        search.oninput = renderStaffingProfiles;
-    }
-
-    if (role) {
-        role.onchange = renderStaffingProfiles;
-    }
-
-    if (showInactive) {
-        showInactive.onchange = renderStaffingProfiles;
-    }
-}
-
 function absenceCacheKey(profileName, keyDay) {
     return `${profileName}::${keyDay}`;
 }
@@ -2035,77 +1370,6 @@ function getProfileStaffingAbsence(profileName, keyDay, cache) {
     return absence;
 }
 
-function replacementCodeToTurno(code) {
-    if (code === "L") return TURNO.LARGA;
-    if (code === "N") return TURNO.NOCHE;
-    if (code === "24" || code === "24h" || code === "24H") {
-        return TURNO.TURNO24;
-    }
-    if (code === "D") return TURNO.DIURNO;
-    if (code === "D+N") return TURNO.DIURNO_NOCHE;
-    if (code === "HM") return TURNO.MEDIA_MANANA;
-    if (code === "HT") return TURNO.MEDIA_TARDE;
-    if (code === "18") return TURNO.TURNO18;
-
-    return TURNO.LIBRE;
-}
-
-function replacementAddsStaffingCoverage(replacement) {
-    return Boolean(replacement) &&
-        !replacement.canceled &&
-        replacement.addsShift !== false &&
-        replacement.source !== "clock_extra" &&
-        Boolean(replacement.replaced);
-}
-
-function staffingGroupMatches(profile, row, keyDay = "") {
-    const estamento = normalizeStaffingEstamento(profile.estamento);
-
-    if (estamento !== row.estamento) return false;
-    if (getStaffingProfileModality(profile, keyDay) !== row.modality) {
-        return false;
-    }
-
-    return isProfessionBasedStaffing(estamento)
-        ? getStaffingProfileGroupKey(profile) === row.groupKey
-        : true;
-}
-
-function replacementTargetsStaffingRow(replacement, row) {
-    const target = getProfiles().find(profile =>
-        profile.name === replacement.replaced
-    );
-
-    return target
-        ? profileMatchesStaffingGroup(target, row)
-        : false;
-}
-
-function getReplacementSegmentsForStaffingRow(
-    profile,
-    row,
-    keyDay
-) {
-    const iso = isoFromKey(keyDay);
-    const segments = new Set();
-
-    getReplacements()
-        .filter(replacement =>
-            replacementAddsStaffingCoverage(replacement) &&
-            replacement.worker === profile.name &&
-            replacement.date === iso &&
-            replacementTargetsStaffingRow(replacement, row)
-        )
-        .forEach(replacement => {
-            turnSegmentsForStaffing(
-                row,
-                replacementCodeToTurno(replacement.turno)
-            ).forEach(segment => segments.add(segment));
-        });
-
-    return segments;
-}
-
 function getStaffingTurno(profile, y, m, d, options = {}) {
     const dayKey = key(y, m, d);
 
@@ -2115,53 +1379,6 @@ function getStaffingTurno(profile, y, m, d, options = {}) {
         getTurnoProgramado(profile.name, dayKey),
         options
     );
-}
-
-function getProfileStaffingCoverage(
-    profile,
-    row,
-    y,
-    m,
-    d,
-    absenceCache
-) {
-    const dayKey = key(y, m, d);
-    const beforeSegments = new Set();
-    const ownCoverage =
-        staffingGroupMatches(profile, row, dayKey);
-
-    if (ownCoverage) {
-        turnSegmentsForStaffing(
-            row,
-            getStaffingTurno(profile, y, m, d)
-        ).forEach(segment => beforeSegments.add(segment));
-    }
-
-    getReplacementSegmentsForStaffingRow(
-        profile,
-        row,
-        dayKey
-    ).forEach(segment => beforeSegments.add(segment));
-
-    const absence = getProfileStaffingAbsence(
-        profile.name,
-        dayKey,
-        absenceCache
-    );
-    const removedSegments =
-        removeSegmentsByAbsence(absence, beforeSegments);
-    const activeSegments = new Set(
-        [...beforeSegments].filter(segment =>
-            !removedSegments.has(segment)
-        )
-    );
-
-    return {
-        activeSegments,
-        beforeSegments,
-        removedSegments,
-        absence
-    };
 }
 
 function weekStartMonday(date) {
@@ -4097,150 +3314,6 @@ export function scheduleStaffingWeeklyPreload(options = {}) {
     }, Math.max(0, delay));
 }
 
-function uniqueAbsences(absences) {
-    const seen = new Set();
-
-    return absences.filter(item => {
-        const key = `${item.profile}|${item.label}`;
-
-        if (seen.has(key)) return false;
-
-        seen.add(key);
-        return true;
-    });
-}
-
-function getPendingReplacementTarget(profile, keyDay) {
-    const admin = getJSON(`admin_${profile.name}`, {});
-    const legal = getJSON(`legal_${profile.name}`, {});
-    const comp = getJSON(`comp_${profile.name}`, {});
-    const absences = getJSON(`absences_${profile.name}`, {});
-    const baseTurn = getTurnoBase(profile.name, keyDay);
-
-    if (
-        !requiereReemplazoTurnoBase(
-            keyDay,
-            baseTurn,
-            admin,
-            legal,
-            comp,
-            absences,
-            getRotativa(profile.name).type
-        ) ||
-        isNoCoverageDay(profile.name, keyDay)
-    ) {
-        return null;
-    }
-
-    if (getReplacementForCoveredShift(profile.name, keyDay)) {
-        return null;
-    }
-
-    return {
-        profile: profile.name,
-        keyDay
-    };
-}
-
-function contarRequerimiento(
-    profiles,
-    row,
-    y,
-    m,
-    d,
-    shiftKind,
-    absenceCache
-) {
-    const dayKey = key(y, m, d);
-    const checkSegments = checkSegmentsForShift(shiftKind);
-    const segmentCounts = new Map(
-        checkSegments.map(segment => [segment, 0])
-    );
-    const absences = [];
-
-    profiles
-        .forEach(profile => {
-            const coverage = getProfileStaffingCoverage(
-                profile,
-                row,
-                y,
-                m,
-                d,
-                absenceCache
-            );
-
-            checkSegments.forEach(segment => {
-                if (coverage.activeSegments.has(segment)) {
-                    segmentCounts.set(
-                        segment,
-                        (segmentCounts.get(segment) || 0) + 1
-                    );
-                }
-            });
-
-            const absenceAffectsShift = Boolean(coverage.absence) &&
-                checkSegments.some(segment =>
-                    coverage.beforeSegments.has(segment) &&
-                    coverage.removedSegments.has(segment)
-                );
-
-            if (absenceAffectsShift) {
-                absences.push({
-                    profile: profile.name,
-                    label: coverage.absence.label,
-                    replacementTarget:
-                        getPendingReplacementTarget(profile, dayKey)
-                });
-            }
-        });
-
-    const counts = checkSegments.map(segment =>
-        segmentCounts.get(segment) || 0
-    );
-    const real = counts.length
-        ? Math.min(...counts)
-        : 0;
-    const missingSegments = checkSegments.filter(segment =>
-        (segmentCounts.get(segment) || 0) < row.required
-    );
-
-    return {
-        real,
-        missingSegments,
-        absences: uniqueAbsences(absences)
-    };
-}
-
-function sugerirReemplazo(profiles, row, y, m, d, absenceCache, shiftKind){
-    const dayKey = key(y, m, d);
-    const neededTurn = shiftKind === "night"
-        ? TURNO.NOCHE
-        : shiftKind === "diurno"
-            ? TURNO.DIURNO
-            : TURNO.LARGA;
-    const libres = profiles
-        .filter(profile => staffingGroupMatches(profile, row, dayKey))
-        .filter(profile =>
-            !getProfileStaffingAbsence(
-                profile.name,
-                dayKey,
-                absenceCache
-            )
-        )
-        .filter(profile => {
-            return getStaffingTurno(profile, y, m, d) === 0;
-        })
-        .filter(profile =>
-            !cededSwapTurnBlocks(profile.name, dayKey, neededTurn)
-        );
-
-    if (!libres.length) return null;
-
-    libres.sort((a, b) => a.name.localeCompare(b.name));
-
-    return libres[0].name;
-}
-
 // Cache de analizarMes: el calculo de dotacion (dias x requerimientos x
 // perfiles) es pesado. Se memoiza por mes + firma de feriados y se invalida
 // ante cualquier cambio de datos local o aplicacion de estado remoto.
@@ -4269,16 +3342,6 @@ function clearAnalizarMesCache(event = null) {
     staffingWeeklyPreloadTimer = 0;
     clearStaffingWeeklyCache();
     return true;
-}
-
-function parseStaffingCollectionChange(value) {
-    try {
-        const result = JSON.parse(value || "[]");
-
-        return Array.isArray(result) ? result : [];
-    } catch {
-        return [];
-    }
 }
 
 if (typeof window !== "undefined") {
@@ -4315,129 +3378,61 @@ if (typeof window !== "undefined") {
     });
 }
 
-function buildStaffingAnalysisContext(year, month, holidays) {
-    const profiles = getProfiles().filter(isProfileActive);
-    const requirements = buildStaffingRequirementRows()
-        .filter(row => row.required > 0);
-    const diasMes =
-        new Date(year, month + 1, 0).getDate();
-    const absenceCache = new Map();
-
-    return {
-        profiles,
-        requirements,
-        diasMes,
-        absenceCache,
-        year,
-        month,
-        holidays
-    };
-}
-
-function analizarDiaStaffing(context, d) {
-    const finishDay = startPerformanceSpan(
-        "staffing:analizar-dia",
-        {
-            year: context?.year,
-            month: context?.month,
-            day: d,
-            profileCount: context?.profiles?.length || 0,
-            requirementCount: context?.requirements?.length || 0
-        }
-    );
-    const {
-        profiles,
-        requirements,
-        absenceCache,
-        year,
-        month,
-        holidays
-    } = context;
+/**
+ * "Turnos sin cubrir" de un dia: los turnos de trabajadores ausentes que siguen
+ * sin cubrir, con la MISMA regla del "+XX" del inicio y del Calendario Mensual
+ * (isShiftUncovered). Antes se media contra una dotacion minima que el
+ * supervisor escribia a mano en Ajustes (Dotacion RRHH); ya no existe: las
+ * ausencias, la Brecha y los cupos los detecta la app sola.
+ *
+ * Conserva la forma de siempre ({ dia, detalle: [{ tipo, cantidad, ... }] }) que
+ * leen las estadisticas (dashboard.js) y el publicador del Dashboard RRHH:
+ * `faltante` es el tramo de dia (Larga) y `noche` el de noche.
+ */
+function analizarDiaStaffing(profiles, year, month, d) {
+    const keyDay = key(year, month, d);
     const detalle = [];
-    const date = new Date(year, month, d);
-    const isHab = isBusinessDay(date, holidays);
 
-    requirements.forEach(row => {
-        if (row.modality === "diurno" && !isHab) {
+    profiles.forEach(profile => {
+        if (!isShiftUncovered(profile.name, keyDay)) return;
+
+        const turno = Number(getTurnoBase(profile.name, keyDay)) || TURNO.LIBRE;
+        const push = (tipo, shiftLabel, cantidad) => detalle.push({
+            tipo,
+            estamento: normalizeStaffingEstamento(profile.estamento),
+            profile: profile.name,
+            shiftLabel,
+            cantidad
+        });
+
+        if (
+            turno === TURNO.TURNO24 ||
+            turno === TURNO.DIURNO_NOCHE ||
+            turno === TURNO.TURNO18
+        ) {
+            push("faltante", "Larga", 1);
+            push("noche", "Noche", 1);
             return;
         }
 
-        const checks = row.modality === "diurno"
-            ? [{
-                kind: "diurno",
-                label: "Diurno",
-                badgeType: "faltante"
-            }]
-            : [
-                {
-                    kind: "day",
-                    label: "Larga",
-                    badgeType: "faltante"
-                },
-                {
-                    kind: "night",
-                    label: "Noche",
-                    badgeType: "noche"
-                }
-        ];
+        if (turno === TURNO.NOCHE) {
+            push("noche", "Noche", 1);
+            return;
+        }
 
-        checks.forEach(check => {
-            const coverage = contarRequerimiento(
-                profiles,
-                row,
-                year,
-                month,
-                d,
-                check.kind,
-                absenceCache
-            );
-            const real = coverage.real;
+        if (turno === TURNO.MEDIA_MANANA || turno === TURNO.MEDIA_TARDE) {
+            push("faltante", "Medio turno", 0.5);
+            return;
+        }
 
-            if (real < row.required) {
-                detalle.push({
-                    tipo: check.badgeType,
-                    estamento: row.estamento,
-                    groupLabel: row.groupLabel,
-                    shiftLabel: check.label,
-                    segmentLabel: segmentLabel(
-                        coverage.missingSegments
-                    ),
-                    absences: coverage.absences,
-                    replacementTargets: coverage.absences
-                        .map(item => item.replacementTarget)
-                        .filter(Boolean),
-                    cantidad: row.required - real,
-                    sugerencia: sugerirReemplazo(
-                        profiles,
-                        row,
-                        year,
-                        month,
-                        d,
-                        absenceCache,
-                        check.kind
-                    )
-                });
-            }
-
-            if (real > row.required) {
-                detalle.push({
-                    tipo: "exceso",
-                    estamento: row.estamento,
-                    groupLabel: row.groupLabel,
-                    shiftLabel: check.label,
-                    cantidad: real - row.required
-                });
-            }
-        });
+        push("faltante", turno === TURNO.DIURNO ? "Diurno" : "Larga", 1);
     });
 
-    const result = { dia: d, detalle };
+    return { dia: d, detalle };
+}
 
-    finishDay({
-        issueCount: detalle.length
-    });
-
-    return result;
+function staffingAnalysisProfiles() {
+    return getProfiles().filter(isProfileActive);
 }
 
 export function analizarMes(year, month, holidays = {}){
@@ -4449,11 +3444,12 @@ export function analizarMes(year, month, holidays = {}){
 
             if (cachedResult) return cachedResult;
 
-            const context = buildStaffingAnalysisContext(year, month, holidays);
+            const profiles = staffingAnalysisProfiles();
+            const diasMes = new Date(year, month + 1, 0).getDate();
             const salida = [];
 
-            for (let d = 1; d <= context.diasMes; d++) {
-                salida.push(analizarDiaStaffing(context, d));
+            for (let d = 1; d <= diasMes; d++) {
+                salida.push(analizarDiaStaffing(profiles, year, month, d));
             }
 
             ANALIZAR_MES_CACHE.set(cacheKey, salida);
@@ -4485,16 +3481,17 @@ export async function analizarMesCooperative(
             if (cachedResult) return cachedResult;
 
             const cacheVersion = analizarMesCacheVersion;
-            const context = buildStaffingAnalysisContext(year, month, holidays);
+            const profiles = staffingAnalysisProfiles();
+            const diasMes = new Date(year, month + 1, 0).getDate();
             const salida = [];
             const isCurrent = () =>
                 cacheVersion === analizarMesCacheVersion && shouldContinue();
 
             const result = await runCooperativeRange(
                 1,
-                context.diasMes,
+                diasMes,
                 d => {
-                    salida.push(analizarDiaStaffing(context, d));
+                    salida.push(analizarDiaStaffing(profiles, year, month, d));
                 },
                 { shouldContinue: isCurrent }
             );
@@ -4515,273 +3512,6 @@ export async function analizarMesCooperative(
     );
 }
 
-export function renderStaffingPanel(){
-    bindStaffingView();
-    renderApplicantsPanel();
-    renderStaffingAnalysis();
-}
-
-function formatShiftLabel(detail, fallback) {
-    const base = detail.shiftLabel || fallback;
-
-    return detail.segmentLabel
-        ? `${base} (${detail.segmentLabel})`
-        : base;
-}
-
-function formatAbsenceReason(detail) {
-    const absences = detail.absences || [];
-
-    if (!absences.length) return "";
-
-    const summary = absences
-        .slice(0, 3)
-        .map(item =>
-            `${item.profile} (${item.label})`
-        )
-        .join(", ");
-    const extra = absences.length > 3
-        ? ` y ${absences.length - 3} mas`
-        : "";
-
-    return ` por ausencia: ${summary}${extra}`;
-}
-
-function detailReplacementTarget(detail) {
-    return (detail.replacementTargets || [])[0] || null;
-}
-
-function renderStaffingPill(detail, className, content) {
-    const target = detailReplacementTarget(detail);
-
-    if (!target) {
-        return `
-            <span class="staffing-pill ${className}">
-                ${content}
-            </span>
-        `;
-    }
-
-    return `
-        <button class="staffing-pill ${className} staffing-pill--action" type="button" data-staffing-replacement-profile="${escapeHTML(target.profile)}" data-staffing-replacement-key="${escapeHTML(target.keyDay)}" title="Buscar reemplazo">
-            ${content}
-        </button>
-    `;
-}
-
-function renderDetailBadge(detail){
-    if (detail.tipo === "birthday") {
-        return `
-            <span class="staffing-pill staffing-pill--birthday">
-                Cumplea&ntilde;os de ${escapeHTML(detail.name)}
-            </span>
-        `;
-    }
-
-    if (detail.tipo === "reminder") {
-        const meta = detail.custom
-            ? [
-                staffingReminderVisibilityLabel(detail.visibility),
-                STAFFING_REMINDER_RECURRENCE_LABELS[detail.recurrence]
-            ]
-                .filter(Boolean)
-                .join(" | ")
-            : "";
-        const title = meta
-            ? ` title="${escapeHTML(meta)}"`
-            : "";
-
-        return `
-            <span class="staffing-pill staffing-pill--reminder"${title}>
-                Recordatorio: ${escapeHTML(detail.label)}
-            </span>
-        `;
-    }
-
-    if (detail.tipo === "faltante") {
-        return renderStaffingPill(
-            detail,
-            "staffing-pill--bad",
-            `
-            Falta ${detail.cantidad} ${escapeHTML(detail.groupLabel || detail.estamento)}
-            en turno ${escapeHTML(formatShiftLabel(detail, "Diurno"))}
-            ${escapeHTML(formatAbsenceReason(detail))}
-            ${detail.sugerencia ? ` - Sugerido: ${escapeHTML(detail.sugerencia)}` : ""}
-            `
-        );
-    }
-
-    if (detail.tipo === "exceso") {
-        return `
-            <span class="staffing-pill staffing-pill--warn">
-                Exceso ${detail.cantidad} ${escapeHTML(detail.groupLabel || detail.estamento)}
-                en turno ${escapeHTML(detail.shiftLabel || "Diurno")}
-            </span>
-        `;
-    }
-
-    return renderStaffingPill(
-        detail,
-        "staffing-pill--night",
-        `
-        Falta ${detail.cantidad} ${escapeHTML(detail.groupLabel || detail.estamento)}
-        en turno ${escapeHTML(formatShiftLabel(detail, "Noche"))}
-        ${escapeHTML(formatAbsenceReason(detail))}
-        `
-    );
-}
-
-function bindStaffingReplacementAlerts(container) {
-    if (!container) return;
-
-    container
-        .querySelectorAll("[data-staffing-replacement-profile][data-staffing-replacement-key]")
-        .forEach(button => {
-            button.onclick = async event => {
-                event.preventDefault();
-                event.stopPropagation();
-
-                if (typeof window.openReplacementDialog !== "function") {
-                    alert("No se pudo abrir el cuadro de reemplazos.");
-                    return;
-                }
-
-                await window.openReplacementDialog(
-                    button.dataset.staffingReplacementProfile,
-                    button.dataset.staffingReplacementKey
-                );
-            };
-        });
-}
-
-function mostrarResultado(
-    data,
-    year = currentDate.getFullYear(),
-    month = currentDate.getMonth()
-){
-    const div = document.getElementById("staffingResult");
-    if (!div) return;
-
-    const reportData = withBirthdayDetails(data, year, month);
-    const issues = reportData.filter(item => item.detalle.length);
-
-    if (!issues.length) {
-        div.innerHTML = `
-            <div class="staffing-summary staffing-summary--ok">
-                Cobertura completa para el mes visible.
-            </div>
-        `;
-        bindStaffingReplacementAlerts(div);
-        return;
-    }
-
-    div.innerHTML = issues
-        .map(item => `
-            <article class="staffing-entry">
-                <div class="staffing-entry__day">Día ${item.dia}</div>
-                <div class="staffing-entry__list">
-                    ${item.detalle.map(renderDetailBadge).join("")}
-                </div>
-            </article>
-        `)
-        .join("");
-
-    bindStaffingReplacementAlerts(div);
-}
-
-export function renderReplacementContractsLog(){
-    const div = document.getElementById("replacementContractsLog");
-    if (!div) return;
-
-    const contracts = getAllReplacementContracts();
-
-    if (!contracts.length) {
-        div.innerHTML = `
-            <div class="staffing-contract-log staffing-contract-log--empty">
-                Sin contratos de reemplazo registrados.
-            </div>
-        `;
-        return;
-    }
-
-    div.innerHTML = `
-        <section class="staffing-contract-log">
-            <h4>Contratos personal Reemplazo</h4>
-            ${contracts.map(contract => `
-                <article class="staffing-contract-item">
-                    <strong>${escapeHTML(contract.worker)}</strong>
-                    <span>${escapeHTML(contract.estamento)}</span>
-                    <small>
-                        ${escapeHTML(formatContractDate(contract.start))} - ${escapeHTML(formatContractDate(contract.end))}
-                        | Reemplaza a: ${escapeHTML(contract.replaces)}
-                    </small>
-                </article>
-            `).join("")}
-        </section>
-    `;
-}
-
-export async function analizarStaffingMes(
-    year = currentDate.getFullYear(),
-    month = currentDate.getMonth(),
-    options = {}
-){
-    const requestId = options.latestOnly
-        ? ++staffingAnalysisRequest
-        : 0;
-    const holidays = await fetchHolidays(year);
-    const shouldContinue = () => {
-        if (
-            options.latestOnly &&
-            requestId !== staffingAnalysisRequest
-        ) {
-            return false;
-        }
-
-        return !options.activeView ||
-            document.body.dataset.activeView === options.activeView;
-    };
-
-    if (!shouldContinue()) return [];
-
-    const data = await analizarMesCooperative(
-        year,
-        month,
-        holidays,
-        shouldContinue
-    );
-
-    if (!data || !shouldContinue()) return [];
-
-    if (options.renderPanel !== false) {
-        mostrarResultado(data, year, month);
-    }
-
-    return data;
-}
-
-export async function renderStaffingAnalysis(){
-    bindStaffingView();
-    renderStaffingProfiles();
-    renderStaffingWeeklyCalendar();
-    renderReplacementContractsLog();
-    renderStaffingMedicalChart();
-    scheduleStaffingWeeklyPreload({ delay: 900 });
-
-    const result = await analizarStaffingMes(
-        currentDate.getFullYear(),
-        currentDate.getMonth(),
-        {
-            latestOnly: true,
-            activeView: "staffing"
-        }
-    );
-
-    return result;
-}
-
-window.renderStaffingAnalysis = renderStaffingAnalysis;
 window.scheduleStaffingWeeklyPreload =
     scheduleStaffingWeeklyPreload;
-window.renderStaffingPanel = renderStaffingPanel;
 window.renderStaffingMedicalChart = renderStaffingMedicalChart;

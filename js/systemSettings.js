@@ -28,12 +28,6 @@ import {
     AUDIT_CATEGORY
 } from "./auditLog.js";
 import {
-    buildStaffingRequirementRows,
-    getStaffingConfig,
-    saveStaffingConfig,
-    staffingConfigSummary
-} from "./staffing.js";
-import {
     MENU_PERMISSION_DEFS,
     deleteWorkspaceMember,
     getWorkspacePermissionState,
@@ -83,7 +77,6 @@ let gradeConfigDraft = null;
 let replacementRequestConfigDraft = null;
 let reportSignatureConfigDraft = null;
 let turnChangeConfigDraft = null;
-let staffingConfigDraft = null;
 let colorConfigDraft = null;
 let memberPermissionDraft = [];
 let memberPermissionLoading = false;
@@ -505,59 +498,6 @@ function renderTurnChangesPanel() {
     `;
 }
 
-function renderStaffingRows(config) {
-    const rows = buildStaffingRequirementRows(config);
-
-    if (!rows.length) {
-        return `
-            <div class="settings-empty">
-                Aun no hay trabajadores activos con rotativa Diurno,
-                4° Turno o 3er Turno para configurar dotacion.
-            </div>
-        `;
-    }
-
-    return rows
-        .map(row => `
-            <label class="settings-staffing-row">
-                <span>
-                    <strong>${escapeHTML(row.groupLabel)}</strong>
-                    <small>${escapeHTML(row.sectionLabel)}</small>
-                </span>
-                <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    data-staffing-modality="${escapeHTML(row.modality)}"
-                    data-staffing-estamento="${escapeHTML(row.estamento)}"
-                    data-staffing-group="${escapeHTML(row.groupKey)}"
-                    value="${Number(row.required) || 0}"
-                >
-            </label>
-        `)
-        .join("");
-}
-
-function renderStaffingPanel() {
-    const config = staffingConfigDraft || getStaffingConfig();
-
-    return `
-        <section class="settings-card settings-card--wide">
-            <div class="settings-card__head">
-                <h4>Dotacion requerida</h4>
-                <span>
-                    Se muestran solo las profesiones y rotativas que existen
-                    actualmente en la unidad.
-                </span>
-            </div>
-
-            <div class="settings-staffing-grid">
-                ${renderStaffingRows(config)}
-            </div>
-        </section>
-    `;
-}
-
 function memberLabel(member) {
     return (
         // El que puso el supervisor gana: el de la cuenta de Google suele ser
@@ -927,7 +867,6 @@ function renderActivePanel(config) {
     if (activeTab === "requests") return renderRequestsPanel();
     if (activeTab === "signature") return renderSignaturePanel();
     if (activeTab === "turnChanges") return renderTurnChangesPanel();
-    if (activeTab === "staffing") return renderStaffingPanel();
     if (activeTab === "users") return renderUsersPanel();
 
     return renderGradesPanel(config);
@@ -969,9 +908,6 @@ function modalHTML() {
                 </button>
                 <button class="${activeTab === "colors" ? "is-active" : ""}" type="button" data-settings-tab="colors">
                     Colores
-                </button>
-                <button class="${activeTab === "staffing" ? "is-active" : ""}" type="button" data-settings-tab="staffing">
-                    Dotacion RRHH
                 </button>
                 ${isWorkspaceOwner() ? `
                     <button class="${activeTab === "users" ? "is-active" : ""}" type="button" data-settings-tab="users">
@@ -1140,31 +1076,6 @@ function readTurnChangeConfig(backdrop) {
     };
 }
 
-function readStaffingConfig(backdrop) {
-    const config = {};
-
-    backdrop
-        .querySelectorAll("[data-staffing-modality][data-staffing-estamento][data-staffing-group]")
-        .forEach(input => {
-            const modality = input.dataset.staffingModality;
-            const estamento = input.dataset.staffingEstamento;
-            const group = input.dataset.staffingGroup;
-            const value = Number(input.value);
-
-            if (!config[modality]) config[modality] = {};
-            if (!config[modality][estamento]) {
-                config[modality][estamento] = {};
-            }
-
-            config[modality][estamento][group] =
-                Number.isFinite(value) && value > 0
-                    ? Math.round(value)
-                    : 0;
-        });
-
-    return config;
-}
-
 function readMemberPermissionDraft(backdrop) {
     const byUid = new Map(
         memberPermissionDraft.map(member => [
@@ -1224,10 +1135,6 @@ function preserveActiveDraft(backdrop) {
     if (activeTab === "turnChanges") {
         turnChangeConfigDraft =
             readTurnChangeConfig(backdrop);
-    }
-
-    if (activeTab === "staffing") {
-        staffingConfigDraft = readStaffingConfig(backdrop);
     }
 
     if (activeTab === "colors") {
@@ -1627,10 +1534,6 @@ function bindBackdrop(backdrop) {
         if (event.target.closest("[data-settings-save]")) {
             try {
                 preserveActiveDraft(backdrop);
-                const previousStaffingConfig = getStaffingConfig();
-                const nextStaffingConfig =
-                    staffingConfigDraft ||
-                    getStaffingConfig();
                 saveGradeHourConfig(gradeConfigDraft);
                 saveManualHolidays(manualHolidayDraft);
                 saveReplacementRequestConfig(
@@ -1645,29 +1548,16 @@ function bindBackdrop(backdrop) {
                     turnChangeConfigDraft ||
                     getTurnChangeConfig()
                 );
-                saveStaffingConfig(nextStaffingConfig);
                 saveTurnoColorConfig(
                     colorConfigDraft || getTurnoColorConfig()
                 );
                 applyTurnoColors();
                 await saveMemberPermissionDrafts();
 
-                if (
-                    staffingConfigSummary(previousStaffingConfig) !==
-                    staffingConfigSummary(nextStaffingConfig)
-                ) {
-                    addAuditLog(
-                        AUDIT_CATEGORY.STAFFING,
-                        "Modifico dotacion requerida",
-                        `Antes: ${staffingConfigSummary(previousStaffingConfig)}. Ahora: ${staffingConfigSummary(nextStaffingConfig)}.`,
-                        { scope: "staffing_settings" }
-                    );
-                }
-
                 addAuditLog(
                     AUDIT_CATEGORY.SYSTEM_SETTINGS,
                     "Modifico ajustes del sistema",
-                    "Actualizo valores por grado, feriados manuales, opciones de reemplazos, pie de firma, reglas de cambios de turno, dotacion requerida y/o permisos de usuarios.",
+                    "Actualizo valores por grado, feriados manuales, opciones de reemplazos, pie de firma, reglas de cambios de turno, colores y/o permisos de usuarios.",
                     { scope: "system_settings" }
                 );
                 backdrop.remove();
@@ -1693,8 +1583,7 @@ export function openSystemSettings(initialTab = activeTab) {
             "requests",
             "signature",
             "turnChanges",
-            "colors",
-            "staffing"
+            "colors"
         ].includes(nextTab)
     ) {
         activeTab = nextTab;
@@ -1711,7 +1600,6 @@ export function openSystemSettings(initialTab = activeTab) {
     reportSignatureConfigDraft =
         getReportSignatureConfig();
     turnChangeConfigDraft = getTurnChangeConfig();
-    staffingConfigDraft = getStaffingConfig();
     colorConfigDraft = getTurnoColorConfig();
     memberPermissionDraft = [];
     memberPermissionLoading = false;
@@ -1743,7 +1631,7 @@ export function openSystemSettings(initialTab = activeTab) {
                                 ? "#settingsAllowSwaps"
                                 : activeTab === "users"
                                     ? "[data-settings-invite-email], [data-member-permission]"
-                                    : "[data-staffing-modality]"
+                                    : ".settings-panel input"
         )
         ?.focus();
 

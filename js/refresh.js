@@ -64,13 +64,6 @@ export function refreshAll(){
     }
 
     if (
-        activeView === "staffing" &&
-        typeof window.renderStaffingAnalysis === "function"
-    ) {
-        window.renderStaffingAnalysis();
-    }
-
-    if (
         activeView === "swap" &&
         typeof window.renderSwapPanel === "function"
     ) {

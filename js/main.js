@@ -238,10 +238,7 @@ import {
 } from "./performanceMonitor.js";
 import { DOM } from "./dom.js";
 import { renderSwapPanel } from "./swapUI.js";
-import {
-    renderStaffingWeeklyCalendar,
-    syncStaffingConfigForProfileChange
-} from "./staffing.js";
+import { renderStaffingWeeklyCalendar } from "./staffing.js";
 import { renderTaskAssignmentsPanel } from "./taskAssignments.js";
 import { renderKanbanBoard } from "./kanban.js";
 import {
@@ -11066,7 +11063,6 @@ async function applyWorkerTransferAtSource(solicitud, profile) {
             active: false,
             unitExitDate: lastActiveDate
         });
-        syncStaffingConfigForProfileChange(antes, auditProfileSnapshot(name));
     }
 
     addContractHistoryEntry(name, {
@@ -13007,13 +13003,6 @@ async function guardarPerfil() {
             start: effectiveRotationStart,
             firstTurn: effectiveRotationFirstTurn
         });
-
-        if (isEditing) {
-            syncStaffingConfigForProfileChange(
-                previousSnapshot,
-                nextSnapshot
-            );
-        }
 
         if (shouldSaveReplacementContract) {
             await saveReplacementContractFromDraft(nextName, {

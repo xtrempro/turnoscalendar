@@ -4076,13 +4076,6 @@ body[data-active-view="log"] .secondary-grid {
     color: var(--text);
 }
 
-.staffing-view {
-    display: grid;
-    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
-    gap: 18px;
-    align-items: start;
-}
-
 .reports-view {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -4108,12 +4101,6 @@ body[data-active-view="log"] .secondary-grid {
 }
 
 .hhee-sidebar .profile-list {
-    max-height: none;
-    overflow-y: auto;
-    padding-right: 2px;
-}
-
-.staffing-sidebar .profile-list {
     max-height: none;
     overflow-y: auto;
     padding-right: 2px;
@@ -7462,7 +7449,6 @@ body.theme-dark .history-action-toast span {
 .hhee-records-panel,
 .turnos-side-panel,
 .timeline-panel,
-.staffing-panel,
 .swap-panel,
 .clockmarks-panel,
 .audit-log-panel {
@@ -12136,50 +12122,6 @@ body.theme-dark .overtime-backup-subsection {
     line-height: 1.35;
 }
 
-.settings-staffing-grid {
-    display: grid;
-    gap: 10px;
-}
-
-.settings-staffing-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 96px;
-    align-items: center;
-    gap: 12px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    background: var(--field);
-}
-
-.settings-staffing-row span {
-    display: grid;
-    gap: 3px;
-}
-
-.settings-staffing-row strong {
-    color: var(--text-strong);
-    font-size: 0.92rem;
-}
-
-.settings-staffing-row small {
-    color: var(--text-muted);
-    font-size: 0.8rem;
-    font-weight: 700;
-}
-
-.settings-staffing-row input {
-    min-height: 40px;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--panel);
-    color: var(--text);
-    font: inherit;
-    font-weight: 800;
-    text-align: center;
-}
-
 .settings-users-list {
     display: grid;
     gap: 14px;
@@ -12431,7 +12373,6 @@ body.theme-dark .overtime-backup-subsection {
     .settings-grade-grid,
     .settings-holiday-form,
     .settings-signature-field,
-    .settings-staffing-row,
     .firebase-dialog-grid,
     .firebase-linked-request,
     .firebase-workspace-email,
@@ -13780,32 +13721,6 @@ body[data-active-view="turnos"] .add-turn-panel .legend-action span:last-child {
     display: none;
 }
 
-.staffing-config-summary {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-    margin-bottom: 12px;
-}
-
-.staffing-config-card {
-    display: grid;
-    gap: 4px;
-    padding: 12px 14px;
-    border-radius: 14px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
-}
-
-.staffing-config-card strong {
-    font-size: 0.9rem;
-    color: var(--text);
-}
-
-.staffing-config-card span {
-    color: var(--text-muted);
-    font-size: 0.8rem;
-}
-
 .staff-grid > div {
     padding: 14px;
     border-radius: 16px;
@@ -13829,16 +13744,6 @@ body[data-active-view="turnos"] .add-turn-panel .legend-action span:last-child {
 .timeline-hhee.honoraria-hhee-excess {
     color: #ef4444;
     font-weight: 900;
-}
-
-.staffing-applicants-panel {
-    display: grid;
-    gap: 16px;
-    margin-bottom: 18px;
-    padding: 16px;
-    border-radius: 18px;
-    background: var(--panel-alt);
-    border: 1px solid var(--border);
 }
 
 .staffing-weekly-calendar {
@@ -17743,97 +17648,6 @@ body.theme-dark .kanban-empty {
     gap: 12px;
 }
 
-.staffing-summary {
-    padding: 16px;
-    border-radius: 16px;
-    border: 1px solid var(--border);
-    background: var(--panel-alt);
-}
-
-.staffing-summary--ok {
-    color: #34d399;
-}
-
-.staffing-entry {
-    padding: 14px;
-    border-radius: 16px;
-    background: rgba(255, 255, 255, 0.72);
-    border: 1px solid rgba(17, 32, 56, 0.1);
-}
-
-.staffing-entry__day {
-    margin-bottom: 10px;
-    color: var(--text);
-    font-size: 1.02rem;
-    font-weight: 800;
-}
-
-.staffing-entry__list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
-.staffing-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 100%;
-    padding: 8px 12px;
-    border-radius: 999px;
-    color: var(--text);
-    font-size: 0.96rem;
-    font-weight: 800;
-    line-height: 1.25;
-    white-space: normal;
-}
-
-button.staffing-pill {
-    border: 0;
-    font-family: var(--font-ui);
-    text-align: left;
-}
-
-.staffing-pill--action {
-    cursor: pointer;
-    box-shadow: inset 0 0 0 1px rgba(17, 32, 56, 0.08);
-    transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
-}
-
-.staffing-pill--action:hover,
-.staffing-pill--action:focus-visible {
-    transform: translateY(-1px);
-    filter: saturate(1.04);
-    box-shadow:
-        inset 0 0 0 1px rgba(17, 32, 56, 0.14),
-        0 10px 18px rgba(17, 32, 56, 0.12);
-}
-
-.staffing-pill--bad {
-    background: #ffe8ec;
-    color: #9f1239;
-}
-
-.staffing-pill--warn {
-    background: #fff4cc;
-    color: #854d0e;
-}
-
-.staffing-pill--night {
-    background: #f5edff;
-    color: #581c87;
-}
-
-.staffing-pill--birthday {
-    background: #e4f0ff;
-    color: #1e3a8a;
-}
-
-.staffing-pill--reminder {
-    background: #e8fff7;
-    color: #0f766e;
-}
-
 /* Espacio reservado del menu Turnos: la columna donde vivia el recuadro
    "Resumen RRHH". Se conserva para lo que lo reemplace; mientras este vacio no
    pinta nada, asi no queda una tarjeta en blanco a la vista. */
@@ -17980,43 +17794,6 @@ body.theme-light .day-badge--contingency {
     font-weight: 700;
     line-height: 1.35;
     white-space: normal;
-}
-
-.staffing-contract-log {
-    display: grid;
-    gap: 10px;
-    margin-top: 16px;
-}
-
-.staffing-contract-log h4 {
-    margin: 0;
-    color: var(--text-strong);
-}
-
-.staffing-contract-log--empty {
-    padding: 12px 14px;
-    border-radius: 14px;
-    color: var(--text-muted);
-    background: var(--panel-alt);
-    border: 1px dashed var(--border);
-}
-
-.staffing-contract-item {
-    display: grid;
-    gap: 4px;
-    padding: 12px 14px;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--field);
-}
-
-.staffing-contract-item strong {
-    color: var(--text-strong);
-}
-
-.staffing-contract-item span,
-.staffing-contract-item small {
-    color: var(--text-muted);
 }
 
 .audit-log-panel {
@@ -21901,9 +21678,6 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
     font-weight: 850;
 }
 
-@media (max-width: 1050px) {
-}
-
 @media (max-width: 720px) {
     .qual-cyclebar {
         grid-template-columns: auto minmax(0, 1fr) auto;
@@ -24152,40 +23926,6 @@ body.theme-light .mini-off {
     background: rgba(17, 32, 56, 0.04);
 }
 
-body.theme-dark .staffing-entry{
-    background: rgba(15, 23, 42, 0.9);
-    border-color: rgba(148, 163, 184, 0.24);
-    color: #fff;
-}
-
-body.theme-dark .staffing-entry__day{
-    color: #fff;
-}
-body.theme-dark .staffing-entry__list .staffing-pill {
-    color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-body.theme-dark .staffing-pill--bad {
-    background: rgba(127, 29, 29, 0.78);
-}
-
-body.theme-dark .staffing-pill--warn {
-    background: rgba(146, 64, 14, 0.78);
-}
-
-body.theme-dark .staffing-pill--night {
-    background: rgba(88, 28, 135, 0.78);
-}
-
-body.theme-dark .staffing-pill--birthday {
-    background: rgba(30, 58, 138, 0.78);
-}
-
-body.theme-dark .staffing-pill--reminder {
-    background: rgba(15, 118, 110, 0.78);
-}
-
 .mini-selected {
     background: linear-gradient(135deg, var(--accent), var(--accent-2));
     color: #fff;
@@ -24490,22 +24230,21 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     }
 
     .calendar-panel,
-    .leave-panel,
-    .availability-panel,
-    .hours-panel,
-    .hours-charts-panel,
-    .hhee-records-panel,
-    .turnos-side-panel,
-    .timeline-panel,
-    .staffing-panel,
-    .swap-panel,
-    .worker-requests-panel,
-    .memos-panel,
-    .informations-panel,
-    .medical-equipment-panel,
-    .qualifications-panel,
-    .agenda-panel,
-    .audit-log-panel {
+.leave-panel,
+.availability-panel,
+.hours-panel,
+.hours-charts-panel,
+.hhee-records-panel,
+.turnos-side-panel,
+.timeline-panel,
+.swap-panel,
+.worker-requests-panel,
+.memos-panel,
+.informations-panel,
+.medical-equipment-panel,
+.qualifications-panel,
+.agenda-panel,
+.audit-log-panel {
         padding: 10px;
         border-radius: 16px;
     }
@@ -24715,12 +24454,11 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     }
 
     .turn-changes-view,
-    .staffing-view,
-    .hours-view,
-    .reports-view,
-    .agenda-view,
-    .clockmarks-view,
-    .hhee-overview-grid {
+.hours-view,
+.reports-view,
+.agenda-view,
+.clockmarks-view,
+.hhee-overview-grid {
         grid-template-columns: 1fr;
     }
 
@@ -24801,34 +24539,33 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     }
 
     .medical-chart-head,
-    .clockmarks-header,
-    .clockmark-record__main,
-    .applicant-toolbar,
-    .staffing-weekly-filters,
-    .task-assignment-view-filters,
-    .task-assignment-dialog__filters,
-    .kanban-board,
-    .agenda-form-grid,
-    .report-preview-heading,
-    .report-worker-data-grid,
-    .overview-card__grid,
-    .contract-history-grid,
-    .profile-form-grid,
-    .record-form,
-    .profile-editor__grid,
-    .hhee-chart-controls,
-    .medical-chart-summary,
-    .audit-summary-grid,
-    .staffing-config-summary,
-    .staff-grid,
-    .actionbar,
-    .summary-grid,
-    body[data-active-view="profile"] .stacked-panels,
-    body[data-active-view="turnos"] .stacked-panels,
-    .applicant-form,
-    .applicant-card__meta,
-    .applicant-card__notes,
-    .swap-row {
+.clockmarks-header,
+.clockmark-record__main,
+.applicant-toolbar,
+.staffing-weekly-filters,
+.task-assignment-view-filters,
+.task-assignment-dialog__filters,
+.kanban-board,
+.agenda-form-grid,
+.report-preview-heading,
+.report-worker-data-grid,
+.overview-card__grid,
+.contract-history-grid,
+.profile-form-grid,
+.record-form,
+.profile-editor__grid,
+.hhee-chart-controls,
+.medical-chart-summary,
+.audit-summary-grid,
+.staff-grid,
+.actionbar,
+.summary-grid,
+body[data-active-view="profile"] .stacked-panels,
+body[data-active-view="turnos"] .stacked-panels,
+.applicant-form,
+.applicant-card__meta,
+.applicant-card__notes,
+.swap-row {
         grid-template-columns: 1fr;
     }
 
@@ -24905,17 +24642,16 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     }
 
     .panel,
-    .card,
-    .sidebar,
-    .calendar-panel,
-    .leave-panel,
-    .availability-panel,
-    .hours-panel,
-    .timeline-panel,
-    .staffing-panel,
-    .task-assignment-panel,
-    .swap-panel,
-    .overview-card {
+.card,
+.sidebar,
+.calendar-panel,
+.leave-panel,
+.availability-panel,
+.hours-panel,
+.timeline-panel,
+.task-assignment-panel,
+.swap-panel,
+.overview-card {
         border-radius: 20px;
     }
 
@@ -25250,14 +24986,13 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     }
 
     .overview-card,
-    .calendar-panel,
-    .leave-panel,
-    .availability-panel,
-    .hours-panel,
-    .hhee-records-panel,
-    .timeline-panel,
-    .staffing-panel,
-    .swap-panel {
+.calendar-panel,
+.leave-panel,
+.availability-panel,
+.hours-panel,
+.hhee-records-panel,
+.timeline-panel,
+.swap-panel {
         padding: 14px;
     }
 
@@ -25397,18 +25132,16 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     }
 
     .summary-card,
-    .availability-item,
-    .staff-grid > div,
-    .staffing-entry,
-    .mini-wrap,
-    .swap-item {
+.availability-item,
+.staff-grid > div,
+.mini-wrap,
+.swap-item {
         border-radius: 14px;
     }
 
     .timeline-shell,
-    .hours-charts-panel,
-    .staffing-panel,
-    .swap-panel {
+.hours-charts-panel,
+.swap-panel {
         overflow-x: auto;
     }
 
@@ -25502,19 +25235,18 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     }
 
     .calendar-panel,
-    .leave-panel,
-    .availability-panel,
-    .hours-panel,
-    .hhee-records-panel,
-    .timeline-panel,
-    .staffing-panel,
-    .swap-panel,
-    .worker-requests-panel,
-    .memos-panel,
-    .agenda-panel,
-    .task-assignment-panel,
-    .overview-card,
-    .sidebar {
+.leave-panel,
+.availability-panel,
+.hours-panel,
+.hhee-records-panel,
+.timeline-panel,
+.swap-panel,
+.worker-requests-panel,
+.memos-panel,
+.agenda-panel,
+.task-assignment-panel,
+.overview-card,
+.sidebar {
         padding: 12px;
     }
 

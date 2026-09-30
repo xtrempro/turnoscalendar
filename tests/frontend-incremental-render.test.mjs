@@ -276,7 +276,9 @@ test("el calendario usa delegación y una ruta de render parcial", async () => {
     assert.match(timelineSource, /DocumentFragment/);
     assert.match(timelineSource, /readTimelineCache/);
     assert.match(timelineSource, /writeTimelineCache/);
-    assert.match(staffingSource, /\+\+staffingAnalysisRequest/);
+    // La vista de analisis de dotacion (y su contador de "solo el ultimo") se
+    // retiro con la Dotacion RRHH (2026-09-30).
+    assert.doesNotMatch(staffingSource, /staffingAnalysisRequest/);
     // El recuadro Resumen RRHH del menu Turnos se retiro (2026-09-03) con su
     // cache en disco y su precargado de meses: lo unico que se precalienta
     // ahora es el Calendario Semanal.
