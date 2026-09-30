@@ -340,6 +340,59 @@ test("los preasignados se ven (azul) donde irian: cubriendo al ausente o en su m
     assert.equal(mes.rows[2].extras.day.Calidad[0].preassigned, true);
 });
 
+test("confirmar una preasignacion deja al que cubre en rojo (no la hace desaparecer)", async () => {
+    const { addPreassignment } = await import("../js/preassignments.js");
+    const { confirmPreassignment, preassignmentTurn } = await import("../js/replacements.js");
+
+    // La reserva guarda el turno como numero; antes se leia como codigo y
+    // quedaba Libre: el reemplazo confirmado no cubria nada.
+    assert.equal(preassignmentTurn(2), 2);
+    assert.equal(preassignmentTurn("N"), 2);
+    assert.equal(preassignmentTurn("24"), 3);
+
+    setJSON("legal_Juan Zapata", { "2026-9-1": true });
+    const reserva = addPreassignment({
+        worker: "Pablo Ignacio Rojas Aravena",
+        replaced: "Juan Zapata",
+        keyDay: "2026-9-1",
+        turno: 1,
+        absenceType: "F. Legal"
+    });
+
+    assert.ok(confirmPreassignment(reserva));
+
+    const uno = (await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM)).rows[0];
+
+    assert.deepEqual(uno.gaps.day, []);
+    assert.deepEqual(
+        uno.slots.day.map(p => [p.initials, p.covering, Boolean(p.preassigned)]),
+        [["PR", true, false]]
+    );
+});
+
+test("los ya confirmados sin turno se reparan con el turno del ausente", async () => {
+    const { repairEmptyTurnReplacements } = await import("../js/preassignmentRepair.js");
+    const { getJSON } = await import("../js/persistence.js");
+
+    setJSON("legal_Juan Zapata", { "2026-9-1": true });
+    // Como quedaron: turno vacio.
+    setJSON("replacements", [{
+        id: "roto",
+        worker: "Pablo Ignacio Rojas Aravena",
+        replaced: "Juan Zapata",
+        date: "2026-10-01",
+        turno: "",
+        source: "replacement",
+        createdAt: "2026-09-30T12:00:00.000Z",
+        canceled: false
+    }]);
+
+    assert.equal(repairEmptyTurnReplacements().length, 1);
+    assert.equal(getJSON("replacements", [])[0].turno, "L");
+    // Idempotente: la segunda vez no hay nada que hacer.
+    assert.equal(repairEmptyTurnReplacements().length, 0);
+});
+
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {
     const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
     const [html, navegacion, permisos, fuente] = await Promise.all([

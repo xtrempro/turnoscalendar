@@ -588,6 +588,7 @@ import {
     workspaceLinkDisplayName
 } from "./firebaseLinkedUnits.js";
 import { renderMonthlyCalendarPanel } from "./monthlyCalendar.js";
+import { repairEmptyTurnReplacements } from "./preassignmentRepair.js";
 import {
     claimWorkerTransferApplication,
     claimWorkerTransferBalances,
@@ -17066,6 +17067,21 @@ initFirebaseShell({
                 if (typeof changeOptions.afterStateHydrated === "function") {
                     changeOptions.afterStateHydrated();
                     scheduleHomePanelRender();
+                }
+
+                // Preasignaciones confirmadas que quedaron sin turno (ver
+                // js/preassignmentRepair.js). Despues de hidratar -escrito antes,
+                // la hidratacion lo pisaria- y solo quien puede editar Turnos.
+                if (canEditTarget("calendarPanel")) {
+                    try {
+                        const repaired = repairEmptyTurnReplacements();
+
+                        if (repaired.length) {
+                            console.info(`Turno repuesto a ${repaired.length} preasignacion(es) confirmada(s).`);
+                        }
+                    } catch (error) {
+                        console.warn("No se pudo reparar las preasignaciones confirmadas.", error);
+                    }
                 }
 
                 if (changeOptions.skipViewRefresh !== true) {

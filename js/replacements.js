@@ -1083,6 +1083,20 @@ export function getReplacementRecordHours(
  * trabajador acepto)" del calendario, compartida con la tarjeta de cobertura del
  * inicio para que las dos entradas hagan exactamente lo mismo.
  */
+// Turno de una preasignacion, venga como numero (lo normal) o como codigo.
+// Primero el codigo: "24" y "18" son codigos, no los numeros 24 y 18.
+export function preassignmentTurn(turno) {
+    const fromCode = codeToTurno(String(turno ?? "").trim());
+
+    if (fromCode !== TURNO.LIBRE) return fromCode;
+
+    const numeric = Number(turno);
+
+    return Number.isInteger(numeric) && Object.values(TURNO).includes(numeric)
+        ? numeric
+        : TURNO.LIBRE;
+}
+
 export function confirmPreassignment(preassignment) {
     const record = preassignment || {};
     const keyDay = keyFromISO(record.date);
@@ -1094,11 +1108,14 @@ export function confirmPreassignment(preassignment) {
         window.pushUndoState("Confirmar preasignacion");
     }
 
+    // La reserva guarda el turno como NUMERO (addPreassignment). Pasarlo por
+    // codeToTurno, que solo entiende "L"/"N"/..., lo volvia Libre: el
+    // reemplazo confirmado no cubria nada y el turno desaparecia del mes.
     saveReplacement({
         worker: record.worker,
         replaced: record.replaced || "",
         keyDay,
-        turno: codeToTurno(record.turno),
+        turno: preassignmentTurn(record.turno),
         absenceType: record.absenceType || "",
         source: "replacement",
         overtimeHours: record.overtimeHours || null,
