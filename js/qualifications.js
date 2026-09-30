@@ -3,6 +3,7 @@ import { getJSON, setJSON } from "./persistence.js";
 import {
     getProfiles,
     getReplacements,
+    getReportSignatureConfig,
     isProfileActive
 } from "./storage.js";
 import { getTurnoReal } from "./turnEngine.js";
@@ -1855,7 +1856,21 @@ function ledgerStripHTML(summary, period) {
     `;
 }
 
+// Jefe directo y cargo: lo escrito en la calificacion y, si no hay nada, la
+// primera y la segunda linea del pie de firma de la unidad (Configuracion).
+// Sin pie de firma, quedan vacios.
+function supervisorDefaults(record) {
+    const lines = getReportSignatureConfig().lines || [];
+
+    return {
+        name: String(record?.supervisorName || "").trim() || lines[0] || "",
+        cargo: String(record?.supervisorCargo || "").trim() || lines[1] || ""
+    };
+}
+
 function supervisorFieldsHTML(record, editable) {
+    const supervisor = supervisorDefaults(record);
+
     return `
         <div class="qual-form-grid">
             <label>
@@ -1863,7 +1878,7 @@ function supervisorFieldsHTML(record, editable) {
                 <input name="supervisorName"
                     type="text"
                     maxlength="${MAX_TEXT_LENGTH}"
-                    value="${escapeAttribute(record?.supervisorName || "")}"
+                    value="${escapeAttribute(supervisor.name)}"
                     ${editable ? "" : "disabled"}>
             </label>
             <label>
@@ -1871,7 +1886,7 @@ function supervisorFieldsHTML(record, editable) {
                 <input name="supervisorCargo"
                     type="text"
                     maxlength="${MAX_TEXT_LENGTH}"
-                    value="${escapeAttribute(record?.supervisorCargo || "")}"
+                    value="${escapeAttribute(supervisor.cargo)}"
                     ${editable ? "" : "disabled"}>
             </label>
         </div>
@@ -2213,10 +2228,7 @@ function buildFormDocument(summary, period) {
             planta: profile.estamento || "",
             unidad: profile.profession || getActiveWorkspaceName()
         },
-        supervisor: {
-            name: record.supervisorName || "",
-            cargo: record.supervisorCargo || ""
-        },
+        supervisor: supervisorDefaults(record),
         factors: QUALIFICATION_FACTORS.map(factor => ({
             title: factor.formTitle,
             formText: factor.formText,
