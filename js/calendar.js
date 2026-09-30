@@ -362,11 +362,13 @@ const DEFAULT_NO_COVERAGE_REASON_PRESETS = [
     "Cobertura resuelta con otra unidad"
 ];
 const SHIFT_ATTENDANCE_PRESETS_KEY = "shiftAttendanceCommentPresets";
+// Solo casos en que el turno NO se hizo: llegar atrasado o retirarse antes no
+// es motivo para quitarlo (el turno se trabajo; eso lo mide el reloj control).
 const DEFAULT_SHIFT_ATTENDANCE_PRESETS = [
     "El funcionario no se presenta a trabajar",
+    "No se presenta y no da aviso",
     "Avisa que no se presentará con menos de 6 horas de anticipación",
-    "Se retira antes del término del turno",
-    "Llega atrasado al turno"
+    "Cancela el turno aceptado por motivos personales"
 ];
 const calendarAuditTimers = new Map();
 const calendarAuditDrafts = new Map();
