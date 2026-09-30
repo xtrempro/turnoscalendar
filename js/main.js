@@ -9651,7 +9651,41 @@ function handleMoveShiftTargetSelection(fecha) {
         return;
     }
 
-    const targetKey = keyFromDate(fecha);
+    const result = applyShiftMove({
+        ...move,
+        targetKey: keyFromDate(fecha)
+    });
+
+    if (!result.ok) {
+        alert(result.reason);
+
+        // Si el ORIGEN dejo de valer no tiene sentido seguir eligiendo destino.
+        if (result.sourceGone) clearSelectionMode();
+        return;
+    }
+
+    clearSelectionMode();
+    updateHistoryNavState();
+}
+
+/**
+ * Mueve el turno base Larga/Noche de un trabajador a otro dia (o a otro horario
+ * el mismo dia). Es el "Mover Turno" del calendario, sacado de su manejador
+ * para que tambien lo use el Calendario Mensual con CUALQUIER trabajador, no
+ * solo con el perfil abierto: mismas validaciones, mismo guardado, mismo
+ * registro en `shiftMoves` (de ahi sale el detalle de los reportes) y misma
+ * bitacora.
+ *
+ * @returns {{ok: true, combina24: boolean} | {ok: false, reason: string, sourceGone?: boolean}}
+ */
+function applyShiftMove({
+    profile,
+    sourceKey,
+    sourceTurn,
+    destinationTurn,
+    targetKey
+}) {
+    const move = { profile, sourceKey, sourceTurn, destinationTurn };
     const sourceReason = shiftMoveDayBlockReason(
         profile,
         move.sourceKey,
@@ -9659,9 +9693,11 @@ function handleMoveShiftTargetSelection(fecha) {
     );
 
     if (sourceReason) {
-        alert(`El turno de origen ya no esta disponible: ${sourceReason}`);
-        clearSelectionMode();
-        return;
+        return {
+            ok: false,
+            reason: `El turno de origen ya no esta disponible: ${sourceReason}`,
+            sourceGone: true
+        };
     }
 
     const targetReason = shiftMoveDayBlockReason(
@@ -9674,16 +9710,14 @@ function handleMoveShiftTargetSelection(fecha) {
     );
 
     if (targetReason) {
-        alert(targetReason);
-        return;
+        return { ok: false, reason: targetReason };
     }
 
     if (
         targetKey === move.sourceKey &&
         Number(move.destinationTurn) === Number(move.sourceTurn)
     ) {
-        alert("Selecciona otro dia o cambia el horario del turno.");
-        return;
+        return { ok: false, reason: "Selecciona otro dia o cambia el horario del turno." };
     }
 
     pushHistory();
@@ -9801,9 +9835,11 @@ function handleMoveShiftTargetSelection(fecha) {
         }
     );
 
-    clearSelectionMode();
-    updateHistoryNavState();
+    return { ok: true, combina24 };
 }
+
+window.applyShiftMove = applyShiftMove;
+window.shiftMoveDayBlockReason = shiftMoveDayBlockReason;
 
 function startCreateMode() {
     if (!canEditCurrentProfileMenu()) return;

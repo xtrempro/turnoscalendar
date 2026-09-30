@@ -142,9 +142,16 @@ test("mover turno habilita deshacer al terminar la accion", () => {
         "function startCreateMode"
     );
 
+    // El movimiento vive en applyShiftMove (tambien lo usa el Calendario
+    // Mensual) y guarda el deshacer; el manejador del calendario, al
+    // terminar, actualiza el boton.
     assert.match(
         moveShiftTarget,
-        /pushHistory\(\)[\s\S]*clearSelectionMode\(\);\s*updateHistoryNavState\(\);/
+        /function applyShiftMove\([\s\S]*pushHistory\(\);/
+    );
+    assert.match(
+        moveShiftTarget,
+        /applyShiftMove\(\{[\s\S]*clearSelectionMode\(\);\s*updateHistoryNavState\(\);/
     );
 });
 

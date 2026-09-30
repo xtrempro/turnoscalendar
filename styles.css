@@ -2338,6 +2338,39 @@ body[data-active-view="home"] .secondary-grid {
     color: var(--red);
 }
 
+/* Mover turno: aviso fijo abajo mientras se elige la casilla de destino. */
+.mcal-move-banner {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: min(760px, calc(100vw - 32px));
+    padding: 12px 16px;
+    border: 1px solid var(--accent);
+    border-radius: 14px;
+    background: var(--panel);
+    box-shadow: var(--shadow-panel);
+    transform: translateX(-50%);
+    font-size: 0.92rem;
+}
+
+.mcal-move-banner span {
+    flex: 1;
+}
+
+.mcal.is-moving td[data-mcal-col="titulares"] {
+    cursor: copy;
+}
+
+.mcal.is-moving td[data-mcal-col="titulares"]:hover {
+    outline: 2px dashed var(--accent);
+    outline-offset: -3px;
+    background: var(--accent-soft);
+}
+
 /* Preasignado: turno tentativo, azulino hasta que se confirma. */
 .mcal-chip.is-preassigned {
     padding: 0 5px;

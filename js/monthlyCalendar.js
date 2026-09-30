@@ -104,7 +104,9 @@ const ui = {
     hiddenColumns: {},
     // Desplazamiento horizontal de los motivos de cada tramo (sobrevive al
     // repintado).
-    xscroll: { day: 0, night: 0 }
+    xscroll: { day: 0, night: 0 },
+    // Turno que se esta moviendo: se espera el clic en la casilla de destino.
+    pendingMove: null
 };
 
 /* =========================================================
@@ -978,7 +980,13 @@ function panelHTML(model, groups) {
     const canEdit = canEditTarget("calendarPanel");
 
     return `
-        <div class="mcal">
+        <div class="mcal${ui.pendingMove ? " is-moving" : ""}">
+            ${ui.pendingMove ? `
+                <div class="mcal-move-banner" role="status">
+                    <span>Mover el turno de <b>${escapeHTML(turnLabel(ui.pendingMove.sourceTurn))}</b> de <b>${escapeHTML(ui.pendingMove.name)}</b> del ${escapeHTML(slotDateLabel(ui.pendingMove.sourceKey))}: haz clic en la casilla de <b>Titulares</b> (Día o Noche) del día de destino.</span>
+                    <button type="button" class="secondary-button" data-mcal-move-cancel>Cancelar</button>
+                </div>
+            ` : ""}
             <header class="mcal-head">
                 <div class="mcal-title">
                     <h2>Calendario Mensual</h2>
@@ -1339,7 +1347,13 @@ async function removeWithLeave(person, keyDay) {
     }
 
     const options = await allowedLeaveOptions(name, keyDay);
-    const value = await showChoice(
+    // "Mover turno" solo si ese turno se puede mover (la misma regla del
+    // "Mover Turno" del calendario: Larga o Noche base, sin permisos, marcajes
+    // ni cambios).
+    const canMove = typeof window.shiftMoveDayBlockReason === "function" &&
+        !window.shiftMoveDayBlockReason(name, keyDay, { source: true });
+    // Con un boton extra el dialogo responde { action, value }.
+    const decision = await showChoice(
         `¿Qué permiso se le da a ${name}? Solo aparecen los que admite este día.`,
         {
             title: "Quitar del turno",
@@ -1347,9 +1361,20 @@ async function removeWithLeave(person, keyDay) {
             choices: options.map(option => ({
                 value: option.value,
                 label: option.label
-            }))
+            })),
+            extraActions: canMove
+                ? [{ text: "Mover turno", value: "move" }]
+                : []
         }
     );
+    const value = canMove
+        ? (decision?.action === "confirm" ? decision.value : "")
+        : decision;
+
+    if (canMove && decision?.action === "move") {
+        startShiftMove(person, keyDay);
+        return false;
+    }
 
     if (!value) return false;
 
@@ -2055,7 +2080,106 @@ async function editExtraColumn(slot, reason) {
     await renderMonthlyCalendarPanel();
 }
 
+function turnLabel(turn) {
+    return Number(turn) === TURNO.NOCHE ? "Noche" : "Larga";
+}
+
+function repaintPanel() {
+    const panel = document.getElementById(PANEL_ID);
+
+    if (panel && lastModel) paintModel(panel, lastModel, monthlyGroups(ui.month));
+}
+
+function onMoveKeydown(event) {
+    if (event.key === "Escape" && ui.pendingMove) cancelShiftMove();
+}
+
+function cancelShiftMove() {
+    ui.pendingMove = null;
+    document.removeEventListener("keydown", onMoveKeydown);
+    repaintPanel();
+}
+
+/**
+ * "Mover turno": el mismo movimiento del calendario principal (queda en
+ * `shiftMoves` y en el detalle de los reportes), eligiendo el destino con un
+ * clic en la casilla de Titulares del dia y tramo al que va. Si el grupo que
+ * pierde a la persona queda corto, la Brecha muestra su +Cupo solo.
+ */
+function startShiftMove(person, keyDay) {
+    if (typeof window.applyShiftMove !== "function") return;
+
+    ui.pendingMove = {
+        name: person.name,
+        sourceKey: keyDay,
+        sourceTurn: Number(getTurnoBase(person.name, keyDay)) || TURNO.LARGA
+    };
+    document.addEventListener("keydown", onMoveKeydown);
+    repaintPanel();
+}
+
+async function pickShiftMoveTarget(row, slot) {
+    const move = ui.pendingMove;
+    const destinationTurn = slot === "night" ? TURNO.NOCHE : TURNO.LARGA;
+    const blockReason = window.shiftMoveDayBlockReason?.(move.name, row.keyDay, {
+        sourceKey: move.sourceKey,
+        destinationTurn
+    });
+
+    if (blockReason) {
+        await showAlert(blockReason, { title: "No se puede mover ahí", tone: "warning" });
+        return;
+    }
+
+    const ok = await showConfirm(
+        `¿Deseas mover el turno de ${turnLabel(move.sourceTurn)} de ${move.name} del ${slotDateLabel(move.sourceKey)} al ${slot === "night" ? "Noche" : "Día (Larga)"} del ${slotDateLabel(row.keyDay)}?`,
+        { title: "Mover turno", confirmText: "Mover", cancelText: "Volver" }
+    );
+
+    if (!ok || ui.pendingMove !== move) return;
+
+    const result = window.applyShiftMove({
+        profile: move.name,
+        sourceKey: move.sourceKey,
+        sourceTurn: move.sourceTurn,
+        destinationTurn,
+        targetKey: row.keyDay
+    });
+
+    if (!result?.ok) {
+        await showAlert(result?.reason || "No se pudo mover el turno.", {
+            title: "No se movió el turno",
+            tone: "warning"
+        });
+        if (result?.sourceGone) cancelShiftMove();
+        return;
+    }
+
+    ui.pendingMove = null;
+    document.removeEventListener("keydown", onMoveKeydown);
+    await renderMonthlyCalendarPanel();
+}
+
 function onPanelClick(event) {
+    if (ui.pendingMove) {
+        if (event.target.closest("[data-mcal-move-cancel]")) {
+            cancelShiftMove();
+            return;
+        }
+
+        const target = event.target.closest('[data-mcal-slot][data-mcal-col="titulares"]');
+        const targetRow = target && lastModel?.rows.find(item => item.keyDay === target.dataset.mcalKey);
+
+        // Con el movimiento en curso, un clic en Titulares es el destino; el
+        // resto de la tabla no abre nada (si se puede cambiar de mes).
+        if (targetRow) {
+            void pickShiftMoveTarget(targetRow, target.dataset.mcalSlot);
+            return;
+        }
+
+        if (!event.target.closest("[data-mcal='prev'], [data-mcal='next']")) return;
+    }
+
     const head = event.target.closest("[data-mcal-head-reason]");
 
     if (head) {
