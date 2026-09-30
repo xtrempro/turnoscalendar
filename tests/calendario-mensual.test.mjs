@@ -224,6 +224,63 @@ test("agregado desde las sugerencias en la columna de un motivo: queda ahi y se 
     assert.deepEqual(mes.extraColumns.day, ["Ris Pacs"]);
 });
 
+test("primero los profesionales, y entre ellos la profesion con mas gente", () => {
+    // Dos kinesiologos no le ganan a tres TM; la TENS (tecnico) va al final
+    // aunque se sumen mas.
+    const kine = "Kinesiología";
+    const perfiles = JSON.parse(localStorage.getItem("profiles"));
+
+    setJSON("profiles", [
+        ...perfiles,
+        { name: "Kine Uno", estamento: "Profesional", profession: kine, active: true },
+        { name: "Kine Dos", estamento: "Profesional", profession: kine, active: true },
+        ...["Tens Uno", "Tens Dos", "Tens Tres", "Tens Cuatro"].map(name => ({
+            name, estamento: "Técnico", profession: TENS, active: true
+        }))
+    ]);
+    ["Kine Uno", "Kine Dos", "Tens Uno", "Tens Dos", "Tens Tres", "Tens Cuatro"].forEach(name => {
+        setJSON("rotativa_" + name, { type: "4turno", start: "2026-10-01", firstTurn: "larga" });
+    });
+
+    const grupos = mensual.monthlyGroups(new Date(2026, 9, 1));
+
+    assert.equal(grupos[0], TM);
+    assert.equal(grupos.at(-1), TENS);
+});
+
+test("el mes que viene trae las tareas recurrentes aunque esten vacias", async () => {
+    const hoy = new Date();
+    const mes = offset => new Date(hoy.getFullYear(), hoy.getMonth() + offset, 1);
+    const clave = fecha => `${fecha.getFullYear()}-${fecha.getMonth()}-10`;
+    const apoyo = (fecha, reason) => saveReplacement({
+        worker: "Pablo Ignacio Rojas Aravena",
+        replaced: "",
+        reason,
+        keyDay: clave(fecha),
+        turno: 1,
+        absenceType: "",
+        source: "rota_gap"
+    });
+
+    // "Calidad" en los dos meses anteriores: recurrente. "Ris Pacs" una vez
+    // hace dos meses: no, pero se ofrece con el "+".
+    apoyo(mes(-1), "Calidad");
+    apoyo(mes(-2), "Calidad");
+    apoyo(mes(-2), "Ris Pacs");
+
+    const siguiente = await mensual.buildMonthlyCalendar(mes(1), TM);
+
+    assert.deepEqual(siguiente.extraColumns.day, ["Calidad"]);
+    // Vacia pero fijada: no se esconde en "Otros motivos".
+    assert.deepEqual(mensual.visibleExtraColumns(siguiente, "day"), [
+        { kind: "reason", reason: "Calidad" }
+    ]);
+    assert.deepEqual(
+        siguiente.historyReasons.day.map(item => [item.reason, item.recurrent]),
+        [["Calidad", true], ["Ris Pacs", false]]
+    );
+});
+
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {
     const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
     const [html, navegacion, permisos, fuente] = await Promise.all([

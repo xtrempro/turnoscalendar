@@ -91,7 +91,9 @@ const ui = {
     group: "",
     renderId: 0,
     // Los motivos con poca gente se ven agrupados hasta que se expanden.
-    expanded: { day: false, night: false }
+    expanded: { day: false, night: false },
+    // "mes|grupo" -> { day: [motivo], night: [motivo] } agregados con el "+".
+    addedColumns: {}
 };
 
 /* =========================================================
@@ -184,14 +186,36 @@ function monthProfiles(month) {
 }
 
 /** Los grupos que tienen gente de 3er o 4to turno (los que tiene sentido ver). */
+/**
+ * Los filtros, en el orden en que se muestran: primero los profesionales y,
+ * entre ellos, la profesion con mas trabajadores (es la que se abre al entrar);
+ * despues el resto, tambien de mas a menos.
+ */
 export function monthlyGroups(month = ui.month) {
-    const groups = new Set();
+    const groups = new Map();
 
     monthProfiles(month)
         .filter(isShiftRotation)
-        .forEach(profile => groups.add(groupKeyFor(profile)));
+        .forEach(profile => {
+            const key = groupKeyFor(profile);
+            const group = groups.get(key) || { key, count: 0, professionals: 0 };
 
-    return [...groups].sort((a, b) => a.localeCompare(b, "es"));
+            group.count += 1;
+            if (/^profesional/i.test(String(profile.estamento || "").trim())) {
+                group.professionals += 1;
+            }
+            groups.set(key, group);
+        });
+
+    const isProfessional = group => group.professionals * 2 > group.count;
+
+    return [...groups.values()]
+        .sort((a, b) =>
+            Number(isProfessional(b)) - Number(isProfessional(a)) ||
+            b.count - a.count ||
+            a.key.localeCompare(b.key, "es")
+        )
+        .map(group => group.key);
 }
 
 /* =========================================================
@@ -530,7 +554,125 @@ export async function buildMonthlyCalendar(
         });
     });
 
-    return { year, month: monthIndex, rows, extraColumns, extraCounts };
+    const historyReasons = extraHistory(year, monthIndex, group);
+    // Las tareas recurrentes de los meses anteriores se ven aunque este mes
+    // todavia no tengan a nadie: asi se puede ir llenando el mes que viene.
+    // Solo del mes en curso en adelante (el pasado queda como fue).
+    const now = new Date();
+    const upcoming = year * 12 + monthIndex >= now.getFullYear() * 12 + now.getMonth();
+    const pinnedColumns = { day: [], night: [] };
+
+    if (upcoming) {
+        ["day", "night"].forEach(slot => {
+            historyReasons[slot]
+                .filter(item => item.recurrent)
+                .forEach(({ reason }) => {
+                    if (!extraColumns[slot].includes(reason)) extraColumns[slot].push(reason);
+                    pinnedColumns[slot].push(reason);
+                });
+        });
+    }
+
+    return applyAddedColumns({
+        year,
+        month: monthIndex,
+        group,
+        rows,
+        extraColumns,
+        extraCounts,
+        pinnedColumns,
+        historyReasons
+    });
+}
+
+const HISTORY_MONTHS = 12;
+const RECENT_MONTHS = 3;
+
+/**
+ * Los motivos de apoyo extra del grupo en los meses anteriores, por tramo: en
+ * cuantos meses aparecio cada uno, y si es RECURRENTE (en al menos dos de los
+ * ultimos tres meses con apoyos; si solo uno los tuvo, basta ese).
+ */
+export function extraHistory(year, monthIndex, group) {
+    const names = new Set(
+        getProfiles()
+            .filter(profile => !group || groupKeyFor(profile) === group)
+            .map(profile => profile.name)
+    );
+    const current = year * 12 + monthIndex;
+    const bySlot = { day: new Map(), night: new Map() };
+
+    getReplacements().forEach(item => {
+        const reason = String(item?.reason || "").trim();
+
+        if (
+            !reason ||
+            item.replaced ||
+            !EXTRA_SOURCES.has(item.source) ||
+            !replacementActive(item) ||
+            !names.has(item.worker)
+        ) {
+            return;
+        }
+
+        const [y, m] = String(item.date || "").split("-").map(Number);
+        const abs = y * 12 + m - 1;
+
+        if (!Number.isFinite(abs) || abs >= current || abs < current - HISTORY_MONTHS) return;
+
+        (CODE_SLOTS[String(item.turno || "")] || []).forEach(slot => {
+            const months = bySlot[slot].get(reason) || new Set();
+
+            months.add(abs);
+            bySlot[slot].set(reason, months);
+        });
+    });
+
+    const result = {};
+
+    ["day", "night"].forEach(slot => {
+        const isRecent = abs => abs >= current - RECENT_MONTHS;
+        const recentWithData = new Set(
+            [...bySlot[slot].values()].flatMap(months => [...months].filter(isRecent))
+        ).size;
+
+        result[slot] = [...bySlot[slot].entries()]
+            .map(([reason, months]) => {
+                const recent = [...months].filter(isRecent).length;
+
+                return {
+                    reason,
+                    months: months.size,
+                    recurrent: recent > 0 && recent >= Math.min(2, recentWithData)
+                };
+            })
+            .sort((a, b) =>
+                b.months - a.months ||
+                a.reason.localeCompare(b.reason, "es")
+            );
+    });
+
+    return result;
+}
+
+// Tareas que el supervisor agrego a mano con el "+" (no recurrentes). Viven
+// mientras la pagina esta abierta: en cuanto alguien queda en ellas, la
+// columna se sostiene sola.
+function addedColumnsKey(model) {
+    return `${model.year}-${model.month}|${model.group}`;
+}
+
+function applyAddedColumns(model) {
+    const added = ui.addedColumns[addedColumnsKey(model)] || {};
+
+    ["day", "night"].forEach(slot => {
+        (added[slot] || []).forEach(reason => {
+            if (!model.extraColumns[slot].includes(reason)) model.extraColumns[slot].push(reason);
+            if (!model.pinnedColumns[slot].includes(reason)) model.pinnedColumns[slot].push(reason);
+        });
+    });
+
+    return model;
 }
 
 // Un motivo con menos apariciones que esto en el mes va a "Otros motivos".
@@ -542,12 +684,16 @@ export const SMALL_EXTRA_COLUMN = 3;
  * motivos"), salvo que el supervisor la haya expandido. Uno solo de poca
  * gente no se agrupa: una columna "Otros" con un motivo no ahorra nada.
  */
+// Poca gente este mes, y no es una tarea fijada (recurrente o agregada con el
+// "+", que se ven aunque esten vacias).
+function isSmallColumn(model, slot, reason) {
+    return (model.extraCounts?.[slot]?.[reason] || 0) < SMALL_EXTRA_COLUMN &&
+        !(model.pinnedColumns?.[slot] || []).includes(reason);
+}
+
 export function visibleExtraColumns(model, slot, expanded = false) {
     const reasons = model.extraColumns[slot] || [];
-    const counts = model.extraCounts?.[slot] || {};
-    const small = reasons.filter(reason =>
-        (counts[reason] || 0) < SMALL_EXTRA_COLUMN
-    );
+    const small = reasons.filter(reason => isSmallColumn(model, slot, reason));
 
     if (expanded || small.length < 2) {
         return reasons.map(reason => ({ kind: "reason", reason }));
@@ -562,11 +708,15 @@ export function visibleExtraColumns(model, slot, expanded = false) {
 }
 
 function canGroupExtras(model, slot) {
-    const counts = model.extraCounts?.[slot] || {};
-
     return (model.extraColumns[slot] || [])
-        .filter(reason => (counts[reason] || 0) < SMALL_EXTRA_COLUMN)
+        .filter(reason => isSmallColumn(model, slot, reason))
         .length >= 2;
+}
+
+// Tareas de meses anteriores que no estan en el mes: las que ofrece el "+".
+function addableHistoryReasons(model, slot) {
+    return (model.historyReasons?.[slot] || [])
+        .filter(item => !model.extraColumns[slot].includes(item.reason));
 }
 
 /* =========================================================
@@ -661,6 +811,9 @@ function panelHTML(model, groups) {
                                     ${ui.expanded[slot] && canGroupExtras(model, slot)
                                         ? `<button type="button" class="mcal-fold" data-mcal-collapse="${slot}" title="Agrupar los motivos con poca gente">− Agrupar</button>`
                                         : ""}
+                                    ${canEdit && addableHistoryReasons(model, slot).length
+                                        ? `<button type="button" class="mcal-fold" data-mcal-add-column="${slot}" title="Agregar una tarea de meses anteriores">+ Tarea</button>`
+                                        : ""}
                                 </th>
                             `).join("")}
                         </tr>
@@ -737,7 +890,10 @@ export async function renderMonthlyCalendarPanel() {
     if (!model || renderId !== ui.renderId) return;
 
     lastModel = model;
+    paintModel(panel, model, groups);
+}
 
+function paintModel(panel, model, groups) {
     // La tabla se desplaza sola: al repintar tras un cambio, que no salte al
     // principio del mes.
     const previousWrap = panel.querySelector(".mcal-table-wrap");
@@ -1324,8 +1480,52 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
     document.body.appendChild(backdrop);
 }
 
+// "+ Tarea": una tarea de meses anteriores que no es de las recurrentes.
+async function addHistoricalColumn(slot) {
+    const model = lastModel;
+
+    if (!model) return;
+
+    const options = addableHistoryReasons(model, slot);
+
+    if (!options.length) return;
+
+    const reason = await showChoice(
+        `¿Qué tarea agregar a ${slot === "day" ? "Día" : "Noche"}?`,
+        {
+            title: "Agregar tarea",
+            confirmText: "Agregar",
+            choices: options.map(item => ({
+                value: item.reason,
+                label: `${item.reason} (${item.months} ${item.months === 1 ? "mes" : "meses"})`
+            }))
+        }
+    );
+
+    if (!reason || model !== lastModel) return;
+
+    const key = addedColumnsKey(model);
+    const added = ui.addedColumns[key] ||= { day: [], night: [] };
+
+    if (!added[slot].includes(reason)) added[slot].push(reason);
+
+    applyAddedColumns(model);
+
+    const panel = document.getElementById(PANEL_ID);
+
+    if (panel) paintModel(panel, model, monthlyGroups(ui.month));
+}
+
 function onPanelClick(event) {
-    const fold = event.target.closest("[data-mcal-expand], [data-mcal-collapse]");
+    const addColumn = event.target.closest("[data-mcal-add-column]");
+
+    if (addColumn) {
+        event.stopPropagation();
+        void addHistoricalColumn(addColumn.dataset.mcalAddColumn);
+        return;
+    }
+
+    const fold =event.target.closest("[data-mcal-expand], [data-mcal-collapse]");
 
     if (fold) {
         event.stopPropagation();
