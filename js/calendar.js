@@ -310,8 +310,13 @@ import {
 } from "./replacementCandidates.js";
 import {
     setAutoCoverageCandidateProvider,
+    shiftStartInstant,
     startAutoCoverage
 } from "./autoCoverage.js";
+import {
+    addShiftAttendanceEntry,
+    shiftAttendanceWindowOpen
+} from "./shiftAttendance.js";
 import { runCooperativeRange } from "./mainThreadScheduler.js";
 import {
     canEditTarget,
@@ -355,6 +360,13 @@ const DEFAULT_NO_COVERAGE_REASON_PRESETS = [
     "Dotaci\u00f3n cubierta por funcionario de 3er turno",
     "Turno sin demanda asistencial",
     "Cobertura resuelta con otra unidad"
+];
+const SHIFT_ATTENDANCE_PRESETS_KEY = "shiftAttendanceCommentPresets";
+const DEFAULT_SHIFT_ATTENDANCE_PRESETS = [
+    "El funcionario no se presenta a trabajar",
+    "Avisa que no se presentará con menos de 6 horas de anticipación",
+    "Se retira antes del término del turno",
+    "Llega atrasado al turno"
 ];
 const calendarAuditTimers = new Map();
 const calendarAuditDrafts = new Map();
@@ -3572,6 +3584,8 @@ async function openReplacementDetailDialog(
 
                 if (!confirmed) return;
 
+                let quitado = null;
+
                 await withBusyState(async () => {
                     if (typeof window.pushUndoState === "function") {
                         window.pushUndoState("Anular reemplazo");
@@ -3597,6 +3611,7 @@ async function openReplacementDetailDialog(
                         return;
                     }
 
+                    quitado = canceled;
                     close();
 
                     await updateDayCell(
@@ -3635,6 +3650,10 @@ async function openReplacementDetailDialog(
                 }, {
                     label: "Anulando reemplazo..."
                 });
+
+                // Fuera de la espera: si el turno ya estaba por empezar, se
+                // ofrece anotarlo en el historial del trabajador.
+                if (quitado) await offerShiftAttendanceNote([quitado]);
             };
         });
 
@@ -4978,6 +4997,21 @@ function openLeaveDetailDialog({
                 }
 
                 await updateVisibleCalendarDays({ updateSummary: true });
+
+                // Si el turno ya estaba por empezar, se ofrece anotarlo en el
+                // historial de quien lo cubria (tambien al del contrato).
+                await offerShiftAttendanceNote([
+                    ...quitados,
+                    ...(excluido
+                        ? [{
+                            worker: contractWorker,
+                            replaced: profile,
+                            date: isoFromKeyDay(keyDay),
+                            turno: turnoToCode(getReplacementNeededTurn(profile, keyDay)),
+                            source: "replacement_contract"
+                        }]
+                        : [])
+                ]);
             } catch (error) {
                 console.error(error);
                 button.disabled = false;
@@ -7891,6 +7925,218 @@ function openNoCoverageReasonDialog(profileName, keyDay) {
         textarea?.focus();
     });
 }
+
+function getShiftAttendancePresets() {
+    return getReasonPresets(
+        SHIFT_ATTENDANCE_PRESETS_KEY,
+        DEFAULT_SHIFT_ATTENDANCE_PRESETS
+    );
+}
+
+/**
+ * Comentario para el historial de turnos aceptados del trabajador. Resuelve con
+ * el texto al guardar, o null con "No registrar". Los comentarios predefinidos
+ * se editan con el lapiz, igual que los motivos de HHEE.
+ */
+function openShiftAttendanceDialog({ worker, keyDay, turnoLabel, replaced }) {
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+        const previousFocus =
+            document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : null;
+        let settled = false;
+
+        const presetsHTML = () => {
+            const presets = getShiftAttendancePresets();
+
+            if (!presets.length) {
+                return `<small>Sin comentarios predefinidos.</small>`;
+            }
+
+            return presets.map(preset => `
+                <button
+                    class="ghost-button"
+                    type="button"
+                    data-shift-attendance-preset="${escapeHTML(preset)}"
+                >
+                    ${escapeHTML(preset)}
+                </button>
+            `).join("");
+        };
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.innerHTML = `
+            <section class="turn-change-dialog replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="shiftAttendanceTitle">
+                <strong id="shiftAttendanceTitle">Turno aceptado que no se cumplió</strong>
+                <p>
+                    Se quitó a <b>${escapeHTML(worker)}</b> del turno
+                    <b>${escapeHTML(turnoLabel)}</b> del ${escapeHTML(formatDisplayDate(isoFromKeyDay(keyDay)))}${replaced ? `, en que cubría a ${escapeHTML(replaced)}` : ""},
+                    cuando el turno ya estaba por empezar o había empezado.
+                    Puedes dejarlo anotado en su historial de turnos aceptados:
+                    se considera en su calificación (Asistencia y puntualidad).
+                </p>
+                <div class="extra-reason-field">
+                    <div class="overtime-backup-subsection__head">
+                        <span>Comentario</span>
+                        <button
+                            class="icon-button icon-button--small"
+                            type="button"
+                            data-action="edit-shift-attendance-presets"
+                            title="Editar comentarios predefinidos"
+                            aria-label="Editar comentarios predefinidos"
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <textarea
+                        rows="3"
+                        data-shift-attendance-comment
+                        placeholder="Ej: El funcionario no se presenta a trabajar"
+                    ></textarea>
+                    <div class="replacement-dialog-toolbar" data-shift-attendance-preset-list>
+                        ${presetsHTML()}
+                    </div>
+                </div>
+                <div class="turn-change-dialog__actions">
+                    <button class="secondary-button" type="button" data-action="skip">
+                        No registrar
+                    </button>
+                    <button class="primary-button" type="button" data-action="save">
+                        Guardar en historial
+                    </button>
+                </div>
+            </section>
+        `;
+
+        const textarea = backdrop.querySelector("[data-shift-attendance-comment]");
+        const finish = result => {
+            if (settled) return;
+
+            settled = true;
+            document.removeEventListener("keydown", onKeydown, true);
+            backdrop.remove();
+
+            if (previousFocus?.isConnected) previousFocus.focus();
+
+            resolve(result);
+        };
+
+        function onKeydown(event) {
+            if (event.key !== "Escape") return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            finish(null);
+        }
+
+        backdrop
+            .querySelector("[data-action='skip']")
+            ?.addEventListener("click", () => finish(null));
+        backdrop
+            .querySelector("[data-action='save']")
+            ?.addEventListener("click", () => {
+                const comment = String(textarea?.value || "").trim();
+
+                if (!comment) {
+                    textarea?.focus();
+                    textarea?.classList.add("is-invalid");
+                    return;
+                }
+
+                finish(comment);
+            });
+        backdrop
+            .querySelector("[data-action='edit-shift-attendance-presets']")
+            ?.addEventListener("click", async () => {
+                const saved = await openManualExtraReasonPresetsDialog(
+                    SHIFT_ATTENDANCE_PRESETS_KEY,
+                    getShiftAttendancePresets()
+                );
+
+                if (!saved) return;
+
+                const host = backdrop.querySelector("[data-shift-attendance-preset-list]");
+
+                if (host) host.innerHTML = presetsHTML();
+            });
+        backdrop.addEventListener("click", event => {
+            const preset = event.target.closest("[data-shift-attendance-preset]");
+
+            if (!preset) return;
+
+            appendManualExtraReasonPreset(
+                textarea,
+                preset.dataset.shiftAttendancePreset
+            );
+            textarea?.classList.remove("is-invalid");
+        });
+
+        document.addEventListener("keydown", onKeydown, true);
+        document.body.appendChild(backdrop);
+        textarea?.focus();
+    });
+}
+
+/**
+ * Tras QUITAR a alguien de un turno que habia aceptado (reemplazo o apoyo
+ * extra): si el turno empieza en menos de 6 horas, esta en curso o ya paso, se
+ * ofrece dejar un comentario en su historial de turnos aceptados. Recibe los
+ * registros quitados ({ worker, date (ISO), turno (codigo), replaced }).
+ */
+export async function offerShiftAttendanceNote(records = []) {
+    const seen = new Set();
+
+    for (const record of records) {
+        const worker = String(record?.worker || "");
+        const iso = String(record?.date || "");
+        const turno = codeToTurno(String(record?.turno || ""));
+        const dedupe = `${worker}|${iso}`;
+
+        if (!worker || !iso || !turno || seen.has(dedupe)) continue;
+
+        seen.add(dedupe);
+
+        const [year, month, day] = iso.split("-").map(Number);
+        const keyDay = `${year}-${month - 1}-${day}`;
+
+        if (!shiftAttendanceWindowOpen(shiftStartInstant(keyDay, turno))) continue;
+
+        const turnoLabel = TURNO_LABEL[turno] || "";
+        const comment = await openShiftAttendanceDialog({
+            worker,
+            keyDay,
+            turnoLabel,
+            replaced: record.replaced || ""
+        });
+
+        if (!comment) continue;
+
+        const entry = addShiftAttendanceEntry(worker, {
+            date: iso,
+            turno: record.turno,
+            turnoLabel,
+            comment,
+            replaced: record.replaced || "",
+            reason: record.reason || "",
+            source: record.source || ""
+        });
+
+        if (entry) {
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Anoto un turno aceptado que no se cumplio",
+                `${worker}: turno ${turnoLabel} del ${iso}${record.replaced ? ` (cubria a ${record.replaced})` : ""}. "${comment}"`,
+                { profile: worker, keyDay }
+            );
+        }
+    }
+}
+
+window.offerShiftAttendanceNote = offerShiftAttendanceNote;
 
 function extraReasonDialogHTML({
     profileName,

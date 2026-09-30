@@ -44,7 +44,8 @@ import {
     cancelReplacementById,
     replacementActive,
     setManualExtraReason,
-    setManualExtraReasons
+    setManualExtraReasons,
+    turnoToCode
 } from "./replacements.js";
 import {
     aplicarAdministrativo,
@@ -1475,7 +1476,7 @@ async function removeCover(person, keyDay) {
     // Turno agregado a mano (no reemplaza a nadie): se quita como en su
     // calendario, devolviendo el dia a su turno base.
     if (!records.length && !contract) {
-        return Boolean(await window.offerManualExtraRemoval?.(name, keyDay));
+        return removeManualTurn(name, keyDay);
     }
 
     const covered = records.map(record => record.replaced).filter(Boolean);
@@ -1497,13 +1498,18 @@ async function removeCover(person, keyDay) {
     pushHistory();
 
     if (records.length) {
-        records.forEach(record => cancelReplacementById(record.id, {
-            reason: "coverage_removed",
-            details: `El supervisor quito la cobertura del ${keyDay} desde el Calendario Mensual.`
-        }));
+        const canceled = records
+            .map(record => cancelReplacementById(record.id, {
+                reason: "coverage_removed",
+                details: `El supervisor quito la cobertura del ${keyDay} desde el Calendario Mensual.`
+            }))
+            .filter(Boolean);
+
+        await window.offerShiftAttendanceNote?.(canceled);
         return true;
     }
 
+    const turnBefore = turnoToCode(getTurnoReal(name, keyDay));
     const excluded = excludeReplacementContractDate({ ...contract, worker: name }, iso);
 
     if (excluded) {
@@ -1525,6 +1531,13 @@ async function removeCover(person, keyDay) {
                 }
             }
         }));
+        await window.offerShiftAttendanceNote?.([{
+            worker: name,
+            replaced: contract.replaces,
+            date: iso,
+            turno: turnBefore,
+            source: "replacement_contract"
+        }]);
     }
 
     return excluded;
@@ -1734,14 +1747,36 @@ async function removeExtra(person, keyDay) {
 
         pushHistory();
 
-        return Boolean(cancelReplacementById(person.extraId, {
+        const canceled = cancelReplacementById(person.extraId, {
             reason: "extra_removed",
             details: `El supervisor quito el apoyo extra (${person.extraReason || person.coverDetail}) desde el Calendario Mensual.`,
             canceledBy: "Calendario Mensual"
-        }));
+        });
+
+        if (canceled) await window.offerShiftAttendanceNote?.([canceled]);
+
+        return Boolean(canceled);
     }
 
-    return Boolean(await window.offerManualExtraRemoval?.(person.name, keyDay));
+    return removeManualTurn(person.name, keyDay);
+}
+
+// Turno escrito a mano en el dia: se quita como en su calendario. Si ya estaba
+// por empezar, se ofrece anotarlo en su historial de turnos aceptados.
+async function removeManualTurn(name, keyDay) {
+    const turnBefore = turnoToCode(getTurnoReal(name, keyDay));
+    const removed = Boolean(await window.offerManualExtraRemoval?.(name, keyDay));
+
+    if (removed) {
+        await window.offerShiftAttendanceNote?.([{
+            worker: name,
+            date: isoFor(dateFromKey(keyDay)),
+            turno: turnBefore,
+            source: "manual_extra"
+        }]);
+    }
+
+    return removed;
 }
 
 function openSlotDialog(row, slot, column = TITULARES_COLUMN) {

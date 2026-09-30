@@ -28362,6 +28362,7 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 .pf-v2 .pf-card-ico.green { background: rgba(34, 197, 94, 0.16); color: var(--green); }
 .pf-v2 .pf-card-ico.purple { background: rgba(143, 44, 201, 0.16); color: var(--purple); }
 .pf-v2 .pf-card-ico.teal { background: rgba(20, 184, 166, 0.16); color: var(--teal); }
+.pf-v2 .pf-card-ico.orange { background: rgba(249, 115, 22, 0.16); color: var(--orange); }
 .pf-v2 .pf-card-head h3 { margin: 0; flex: 0 0 auto; }
 .pf-v2 .pf-card-spacer { flex: 1; }
 .pf-v2 .pf-edit-link {
@@ -28448,6 +28449,19 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 .pf-v2 .pf-tl-top b { font-size: 0.86rem; color: var(--text); }
 .pf-v2 .pf-tl-badge { font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--panel-alt); color: var(--text-soft); border: 1px solid var(--border); }
 .pf-v2 .pf-tl-top time { font-size: 0.72rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* Eliminar un registro del historial de turnos aceptados. */
+.pf-v2 .pf-tl-remove {
+    margin-left: auto;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1.2;
+    cursor: pointer;
+}
+.pf-v2 .pf-tl-remove:hover { color: var(--red); background: rgba(239, 68, 68, 0.1); }
 .pf-v2 .pf-tl-body p { margin: 3px 0 0; font-size: 0.8rem; color: var(--text-soft); }
 /* Quien hizo el cambio y cuando quedo registrado. Va mas apagado que la linea
    de cambios: es el respaldo, no lo que se viene a leer. */
@@ -28899,4 +28913,11 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
     .app-startup-loader__track span {
         animation-duration: 2.2s;
     }
+}
+
+
+/* Comentario obligatorio al guardar un turno aceptado que no se cumplio. */
+[data-shift-attendance-comment].is-invalid {
+    border-color: var(--red);
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
 }

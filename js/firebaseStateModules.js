@@ -35,6 +35,8 @@ const EXACT_KEY_MODULES = new Map([
     ["manualHolidays", "turnos"],
     ["manualExtraReasonPresets", "turnos"],
     ["noCoverageReasonPresets", "turnos"],
+    // Comentarios predefinidos al quitar a alguien de un turno aceptado.
+    ["shiftAttendanceCommentPresets", "turnos"],
     ["turnoColorConfig", "turnos"],
     // La tanda de colores de la programacion. Se comparte porque la
     // programacion se imprime y se reparte: los colores son una decision de la
@@ -89,6 +91,8 @@ const PREFIX_KEY_MODULES = [
     ["replacementContracts_", "profile"],
     ["honorariaContracts_", "profile"],
     ["hrLogs_", "profile"],
+    // Historial de turnos aceptados (js/shiftAttendance.js).
+    ["shiftAttendance_", "profile"],
     ["data_", "turnos"],
     ["admin_", "turnos"],
     ["legal_", "turnos"],

@@ -590,6 +590,10 @@ import {
 import { renderMonthlyCalendarPanel } from "./monthlyCalendar.js";
 import { repairEmptyTurnReplacements } from "./preassignmentRepair.js";
 import {
+    getShiftAttendance,
+    removeShiftAttendanceEntry
+} from "./shiftAttendance.js";
+import {
     claimWorkerTransferApplication,
     claimWorkerTransferBalances,
     reportWorkerTransferBalances,
@@ -1487,7 +1491,8 @@ const CRITICAL_PROFILE_STATE_PREFIXES = [
     "contractHistory_",
     "replacementContracts_",
     "clockMarks_",
-    "hrLogs_"
+    "hrLogs_",
+    "shiftAttendance_"
 ];
 
 const CRITICAL_PROFILE_GLOBAL_KEYS = [
@@ -1704,6 +1709,77 @@ function renderContractHistory(profile) {
             `).join("")}
         </div>
     `;
+}
+
+/**
+ * Historial de turnos aceptados: turnos de los que se quito al trabajador ya
+ * por empezar, en curso o terminados, con el comentario del supervisor (ver
+ * js/shiftAttendance.js). Tambien entran a su calificacion.
+ */
+function renderShiftAttendanceHistory(profile) {
+    const host = DOM.profileShiftAttendance;
+
+    if (!host) return;
+
+    if (!profile || profileDraft.mode === PROFILE_MODE.CREATE) {
+        host.innerHTML = `<div class="contract-history-empty">Guarda el perfil para ver su historial de turnos aceptados.</div>`;
+        return;
+    }
+
+    const entries = getShiftAttendance(profile.name)
+        .slice()
+        .sort((a, b) =>
+            String(b.date).localeCompare(String(a.date)) ||
+            String(b.createdAt).localeCompare(String(a.createdAt))
+        );
+
+    if (!entries.length) {
+        host.innerHTML = `<div class="contract-history-empty">Sin registros. Aparecen al quitar al trabajador de un turno que había aceptado, ya por empezar o en curso.</div>`;
+        return;
+    }
+
+    const canEdit = canEditTarget("profileSection") || canEditTarget("calendarPanel");
+
+    host.innerHTML = `
+        <div class="pf-tl">
+            ${entries.map(entry => `
+                <div class="pf-tl-item">
+                    <span class="pf-tl-dot a"></span>
+                    <div class="pf-tl-body">
+                        <div class="pf-tl-top">
+                            <b>${escapeHTML(entry.turnoLabel ? `Turno ${entry.turnoLabel}` : "Turno")}${entry.replaced ? ` · cubría a ${escapeHTML(entry.replaced)}` : ""}</b>
+                            <span class="pf-tl-badge">Asistencia</span>
+                            <time>${escapeHTML(formatDisplayDate(entry.date))}</time>
+                            ${canEdit ? `<button class="pf-tl-remove" type="button" data-shift-attendance-remove="${escapeHTML(entry.id)}" title="Eliminar este registro" aria-label="Eliminar este registro">×</button>` : ""}
+                        </div>
+                        <p>${escapeHTML(profile.name)}: “${escapeHTML(entry.comment)}”</p>
+                        <p class="pf-tl-meta">Registrado el ${escapeHTML(formatHistoryDateTime(entry.createdAt))}</p>
+                    </div>
+                </div>
+            `).join("")}
+        </div>
+    `;
+
+    host.querySelectorAll("[data-shift-attendance-remove]").forEach(button => {
+        button.onclick = async () => {
+            const ok = await showConfirm(
+                "Se eliminará este registro del historial de turnos aceptados. Dejará de considerarse en su calificación.",
+                { title: "Eliminar registro", tone: "danger", confirmText: "Eliminar", destructive: true }
+            );
+
+            if (!ok) return;
+
+            if (removeShiftAttendanceEntry(profile.name, button.dataset.shiftAttendanceRemove)) {
+                addAuditLog(
+                    AUDIT_CATEGORY.CALENDAR,
+                    "Elimino un registro de turno aceptado",
+                    `${profile.name}: se elimino un registro del historial de turnos aceptados.`,
+                    { profile: profile.name }
+                );
+                renderShiftAttendanceHistory(profile);
+            }
+        };
+    });
 }
 
 function getProfileRotationState(profileName, key) {
@@ -6093,6 +6169,7 @@ function scheduleProfileSecondarySections(profile, data, editing) {
             openRotationConfigModal
         );
         renderContractHistory(profile);
+        renderShiftAttendanceHistory(profile);
         renderProfileRecords(profile, editing);
         renderDisponibilidadVacaciones();
         renderProfileKpis(profile, dataSnapshot);

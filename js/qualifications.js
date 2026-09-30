@@ -11,6 +11,7 @@ import {
     toISODate
 } from "./dateUtils.js";
 import { buildAttendanceIncidents } from "./hoursReport.js";
+import { getShiftAttendance } from "./shiftAttendance.js";
 import { canEditMenu } from "./workspacePermissions.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import {
@@ -784,7 +785,12 @@ function buildSummary(profile, period, state, eventsByProfile) {
         calendarTraining: calendar.filter(item => item.kind === "training"),
         incidents,
         lateCount: countLateEvents(incidents),
-        clockIssueCount: incidents.length
+        clockIssueCount: incidents.length,
+        // Turnos aceptados que no se cumplieron (historial del perfil): van a
+        // Asistencia y puntualidad (art. 16, 3 b).
+        shiftAttendance: getShiftAttendance(profile.name)
+            .filter(entry => isISODateInPeriod(entry.date, period))
+            .sort((a, b) => String(a.date).localeCompare(String(b.date)))
     };
 }
 
@@ -970,6 +976,7 @@ function workerTagsHTML(summary) {
     const training = summary.training.length + summary.calendarTraining.length;
     const tags = [
         ["bad", summary.lateCount, "atraso", "atrasos"],
+        ["bad", (summary.shiftAttendance || []).length, "turno no cumplido", "turnos no cumplidos"],
         ["warn", summary.demerits.length, "demerito", "demeritos"],
         ["ok", summary.merits.length, "merito", "meritos"],
         ["ok", training, "capacitacion", "capacitaciones"]
@@ -1107,6 +1114,17 @@ function evidenceByFactor(summary) {
                 : `Registra ${summary.lateCount} atrasos en el reloj control durante el periodo.`
         });
     }
+
+    (summary.shiftAttendance || []).forEach(entry => {
+        const turno = entry.turnoLabel ? `turno ${entry.turnoLabel}` : "turno";
+
+        buckets.comportamiento.push({
+            tone: "bad",
+            title: `No cumple ${turno} aceptado`,
+            detail: `${formatDate(entry.date)} - ${entry.comment}`,
+            text: `El ${formatDate(entry.date)} no cumple el ${turno} que habia aceptado${entry.replaced ? ` (cubria a ${entry.replaced})` : ""}: ${entry.comment}.`
+        });
+    });
 
     const otherIssues = summary.clockIssueCount - summary.lateCount;
 
@@ -2857,6 +2875,7 @@ function qualificationDataChanged(keys = []) {
             clean === "attendanceMarks" ||
             clean === "attendanceMarksImportedAt" ||
             clean.startsWith("hrLogs_") ||
+            clean.startsWith("shiftAttendance_") ||
             clean.startsWith("admin_") ||
             clean.startsWith("legal_") ||
             clean.startsWith("comp_") ||

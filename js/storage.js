@@ -2073,6 +2073,7 @@ export function updateProfile(oldName, nextProfile){
         "honorariaContracts_",
         "clockMarks_",
         "hrLogs_",
+        "shiftAttendance_",
         "gradeHistory_",
         "contractHistory_"
     ];

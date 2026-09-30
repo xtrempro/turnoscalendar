@@ -48,6 +48,7 @@ export const DOM = {
     honorariaContractList: document.getElementById("honorariaContractList"),
     honorariaAddContractBtn: document.getElementById("honorariaAddContractBtn"),
     profileContractHistory: document.getElementById("profileContractHistory"),
+    profileShiftAttendance: document.getElementById("profileShiftAttendance"),
     profileEditorHint: document.getElementById("profileEditorHint"),
     profileRecordsPanel: document.getElementById("profileRecordsPanel"),
 
