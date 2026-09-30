@@ -1,4 +1,5 @@
-// Calendario Mensual y Brecha RRHH: los cupos van en Titulares. Va en su propio
+// Calendario Mensual y Brecha RRHH: los cupos van en Titulares, y alguien
+// agregado a un motivo de HHEE no los cierra. Va en su propio
 // archivo porque staffing.js guarda en memoria perfiles y el barrido de la
 // Brecha, y solo los vacia con eventos que las pruebas no reenvian: junto a las
 // demas pruebas del mes calcularia con los perfiles de otra prueba.
@@ -23,16 +24,16 @@ const noopEl = {
 };
 
 globalThis.localStorage = new MemoryStorage();
-globalThis.window = {
-    dispatchEvent: () => true,
-    addEventListener() {},
-    removeEventListener() {},
+// Con eventos DE VERDAD (EventTarget de Node): un cambio de datos vacia el
+// barrido de la Brecha en staffing.js, como en la app. Sin eso, la segunda
+// consulta del mes devolveria el calculo viejo.
+globalThis.window = Object.assign(new EventTarget(), {
     location: { hostname: "localhost", href: "http://localhost/" },
-    matchMedia: () => ({ matches: false, addEventListener() {} })
-};
-globalThis.CustomEvent = class {
-    constructor(type, init = {}) { this.type = type; this.detail = init.detail; }
-};
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    setTimeout: (...args) => setTimeout(...args),
+    clearTimeout: id => clearTimeout(id),
+    requestAnimationFrame: callback => setTimeout(callback, 0)
+});
 globalThis.document = {
     addEventListener() {}, removeEventListener() {},
     visibilityState: "hidden", hidden: true,
@@ -79,6 +80,22 @@ test("los cupos de la Brecha RRHH van en Titulares; quien lo cubre, en rojo con 
     assert.equal(dia.cupos.day[0].group, "D");
     assert.equal(dia.cupos.day[0].reference, "Tm30 Apellido");
 
+    // Alguien de otro grupo agregado ese dia a un motivo de HHEE: viene a otra
+    // tarea, asi que el cupo del grupo D sigue abierto.
+    saveReplacement({
+        worker: "Tm10 Apellido",
+        replaced: "",
+        reason: "Apoyo Clínico TC",
+        keyDay: "2026-10-3",
+        turno: 1,
+        absenceType: "",
+        source: "rota_gap"
+    });
+    mes = await mensual.buildMonthlyCalendar(new Date(2026, 10, 1), TM);
+
+    assert.equal(mes.rows[2].extras.day["Apoyo Clínico TC"][0].name, "Tm10 Apellido");
+    assert.equal(mes.rows[2].cupos.day.length, 1);
+
     // Lo que guarda el CUBRIR del cupo (modo rota del modal de sugerencias).
     saveReplacement({
         worker: "Tm00 Apellido",
@@ -94,6 +111,8 @@ test("los cupos de la Brecha RRHH van en Titulares; quien lo cubre, en rojo con 
     const cubre = mes.rows[2].slots.day.find(p => p.name === "Tm00 Apellido");
 
     assert.ok(cubre?.covering && cubre.brecha);
-    assert.deepEqual(mes.extraColumns.day, []);
+    // Ese si completa el grupo: el cupo se cierra.
+    assert.equal(mes.rows[2].cupos.day.length, 0);
+    assert.deepEqual(mes.extraColumns.day, ["Apoyo Clínico TC"]);
 });
 

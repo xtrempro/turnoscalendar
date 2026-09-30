@@ -228,7 +228,10 @@ test("se sabe a quien cubre cada quien", async () => {
         /const coveredByWorker = getReplacementsByWorkerForDay\(shiftKeyDay\);/
     );
     assert.match(source, /covers: coveredByWorker\.get\(profile\.name\) \|\| \[\]/);
-    assert.match(source, /getReplacementsByWorkerForDay\n\} from "\.\/replacements\.js"/);
+    assert.match(
+        source,
+        /getReplacementsByWorkerForDay,?\n(?:\s+\w+,?\n)*\} from "\.\/replacements\.js"/
+    );
 
     const replacements = await readFile(
         new URL("../js/replacements.js", import.meta.url),

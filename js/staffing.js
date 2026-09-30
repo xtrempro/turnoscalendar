@@ -55,7 +55,8 @@ import {
 } from "./rulesEngine.js";
 import {
     getReplacementForCoveredShift,
-    getReplacementsByWorkerForDay
+    getReplacementsByWorkerForDay,
+    replacementActive
 } from "./replacements.js";
 import {
     addAuditLog,
@@ -2841,6 +2842,60 @@ function weeklyRotaMotive(estamento, group) {
  * DESAPAREZCA al cubrirla: el padron no cambia porque alguien tome un turno
  * extra, pero el turno si queda completo.
  */
+// Codigos de turno de un registro de reemplazo que caen en cada turno del
+// grupo (24 y 18 ocupan los dos).
+const ROTA_SHIFT_CODES = {
+    larga: new Set(["L", "24", "HM", "HT", "18"]),
+    noche: new Set(["N", "24", "D+N", "18"])
+};
+
+/**
+ * Quienes estan en ese turno SOLO por un turno extra con motivo de horas
+ * extras ("Apoyo Clinico TC", "Calidad"...): vienen a otra tarea, asi que no
+ * completan el grupo y el cupo de la Brecha sigue abierto. Quien vino a cubrir
+ * el cupo (motivo "Completar rotativa de ...") si cuenta.
+ */
+function hheeMotiveWorkers(keyDay, shiftKey) {
+    const codes = ROTA_SHIFT_CODES[shiftKey];
+    const workers = new Set();
+
+    if (!keyDay || !codes) return workers;
+
+    const [year, month, day] = String(keyDay).split("-").map(Number);
+    const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+    getReplacements().forEach(record => {
+        const reason = String(record?.reason || "").trim();
+
+        if (
+            record?.date === iso &&
+            record.worker &&
+            !record.replaced &&
+            reason &&
+            !/^Completar rotativa de /i.test(reason) &&
+            codes.has(String(record.turno || "")) &&
+            replacementActive(record)
+        ) {
+            workers.add(record.worker);
+        }
+    });
+
+    return workers;
+}
+
+// El turno para medir la Brecha: sin quienes vinieron solo por un motivo de
+// HHEE (ver hheeMotiveWorkers).
+function rotaRoster(people, date, shiftKey) {
+    const hheeOnly = hheeMotiveWorkers(
+        key(date.getFullYear(), date.getMonth(), date.getDate()),
+        shiftKey
+    );
+
+    return hheeOnly.size
+        ? people.filter(item => !hheeOnly.has(item.profile?.name))
+        : people;
+}
+
 function weeklyRotaGapsForCell(group, people) {
     if (!group) return [];
 
@@ -2979,7 +3034,10 @@ function rotaGapRowsForDate(date, absenceCache) {
                 );
                 const group = weeklyCellGroup(people);
 
-                weeklyRotaGapsForCell(group, people).forEach(gap => {
+                weeklyRotaGapsForCell(
+                    group,
+                    rotaRoster(people, date, shift.key)
+                ).forEach(gap => {
                     rows.push({
                         date,
                         keyDay: key(
@@ -3150,7 +3208,10 @@ function renderStaffingWeeklyCell(
     // Se cuentan sobre el turno entero, pero solo se muestran las del
     // estamento que se esta mirando: con el chip de Profesional puesto, lo
     // que le falte al de tecnicos es ruido de otra columna.
-    const rotaGaps = weeklyRotaGapsForCell(cellGroup, roster)
+    const rotaGaps = weeklyRotaGapsForCell(
+        cellGroup,
+        rotaRoster(roster, date, shift.key)
+    )
         .filter(gap => weeklyRoleFilterAllows(gap.estamento, roleFilter));
     const rotaMissing = rotaGaps.reduce(
         (total, gap) => total + gap.missing,

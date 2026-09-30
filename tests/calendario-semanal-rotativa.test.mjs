@@ -282,7 +282,9 @@ test("mirar solo un estamento NO deja al turno corto de los otros", () => {
     );
     assert.match(
         grab(staffing, "renderStaffingWeeklyCell"),
-        /weeklyRotaGapsForCell\(cellGroup, roster\)/
+        // Sobre el turno entero; rotaRoster solo aparta a quien vino por un
+        // motivo de HHEE (no completa el grupo).
+        /weeklyRotaGapsForCell\(\s*cellGroup,\s*rotaRoster\(roster, date, shift\.key\)\s*\)/
     );
 });
 
