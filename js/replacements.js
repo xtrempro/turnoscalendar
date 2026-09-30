@@ -442,6 +442,58 @@ export function getActiveReplacementsForWorkerKeys(
     );
 }
 
+/**
+ * Quienes CUBREN a `profile` en esos dias (el reverso de
+ * getActiveReplacementsForWorkerKeys): al pisar un permiso con una licencia,
+ * el supervisor decide si esas coberturas siguen.
+ */
+export function getActiveReplacementsCoveringKeys(profile, keys = []) {
+    const dates = new Set(keys.map(isoFromKey));
+
+    if (!profile || !dates.size) return [];
+
+    return getReplacements().filter(replacement =>
+        replacementActive(replacement) &&
+        replacement.replaced === profile &&
+        dates.has(replacement.date)
+    );
+}
+
+/**
+ * Cambia la ausencia que cubren esos reemplazos (p. ej. de "F. Legal" a
+ * "Licencia Médica" cuando la licencia pisa el feriado y la cobertura sigue).
+ * Una sola escritura.
+ */
+export function setReplacementsAbsenceType(replacementIds, absenceType) {
+    const ids = new Set(
+        (Array.isArray(replacementIds) ? replacementIds : [])
+            .map(id => String(id || ""))
+            .filter(Boolean)
+    );
+    const label = String(absenceType || "").trim();
+
+    if (!ids.size || !label) return 0;
+
+    let changed = 0;
+    const replacements = getReplacements().map(replacement => {
+        if (
+            !ids.has(String(replacement?.id || "")) ||
+            !replacementActive(replacement) ||
+            replacement.absenceType === label
+        ) {
+            return replacement;
+        }
+
+        changed++;
+
+        return { ...replacement, absenceType: label };
+    });
+
+    if (changed) saveReplacements(replacements);
+
+    return changed;
+}
+
 function cancelLinkedRequestsForReplacements(
     replacements,
     {
@@ -709,15 +761,29 @@ function removeManualExtraTurnFromCalendar(record) {
  * otro. Solo cambia el texto: el turno y sus horas quedan igual.
  */
 export function setManualExtraReason(replacementId, reason) {
-    const id = String(replacementId || "");
+    return setManualExtraReasons([replacementId], reason)[0] || null;
+}
+
+/**
+ * Lo mismo para varios a la vez (renombrar el motivo de una columna entera del
+ * Calendario Mensual): UNA sola escritura de la lista, no una por trabajador.
+ *
+ * @returns {Object[]} los reemplazos actualizados.
+ */
+export function setManualExtraReasons(replacementIds, reason) {
+    const ids = new Set(
+        (Array.isArray(replacementIds) ? replacementIds : [])
+            .map(id => String(id || ""))
+            .filter(Boolean)
+    );
     const nextReason = String(reason || "").trim();
 
-    if (!id || !nextReason) return null;
+    if (!ids.size || !nextReason) return [];
 
-    let updated = null;
+    const updated = [];
     const replacements = getReplacements().map(replacement => {
         if (
-            String(replacement?.id || "") !== id ||
+            !ids.has(String(replacement?.id || "")) ||
             !replacementActive(replacement) ||
             // rota_gap: el extra con motivo que se agrega desde el modal de
             // sugerencias (Brecha RRHH, columna de motivo del mes).
@@ -727,12 +793,14 @@ export function setManualExtraReason(replacementId, reason) {
             return replacement;
         }
 
-        updated = { ...replacement, reason: nextReason };
+        const next = { ...replacement, reason: nextReason };
 
-        return updated;
+        updated.push(next);
+
+        return next;
     });
 
-    if (!updated) return null;
+    if (!updated.length) return [];
 
     saveReplacements(replacements);
 

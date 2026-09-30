@@ -47,8 +47,11 @@ import {
     getActiveSwapsForProfileKeys
 } from "./swaps.js";
 import {
+    cancelReplacementById,
     cancelReplacementsForWorkerKeys,
-    getActiveReplacementsForWorkerKeys
+    getActiveReplacementsCoveringKeys,
+    getActiveReplacementsForWorkerKeys,
+    setReplacementsAbsenceType
 } from "./replacements.js";
 import {
     esAusenciaInjustificada,
@@ -1109,14 +1112,92 @@ function blockKeys(map, key) {
     return keys;
 }
 
-function shouldCancelMappedBlock(map, startKey, key) {
-    const blockStart = blockStartKey(map, key);
+const OVERWRITE_LABELS = {
+    legal: "Feriado legal",
+    comp: "Feriado compensatorio",
+    admin: "P. administrativo",
+    halfAdmin: "1/2 administrativo"
+};
 
-    return Boolean(blockStart) && isBeforeKey(startKey, blockStart);
+/**
+ * Que permisos pisa una licencia que cubre `keys` (dias corridos desde
+ * `startKey`). Antes solo se anulaban los bloques que partian DESPUES del
+ * inicio de la licencia: uno que partia el mismo dia o antes quedaba encimado
+ * con ella (feriado y licencia a la vez, y su cobertura como si nada).
+ *
+ * - Feriado legal / compensatorio que parte dentro de la licencia: el bloque
+ *   entero (sus dias posteriores tambien, como antes).
+ * - El que partio antes: solo los dias que se cruzan con la licencia.
+ * - Administrativo o medio: el de cada dia de la licencia.
+ * - Otra ausencia que la licencia puede reemplazar (injustificada, otra
+ *   licencia): se informa.
+ *
+ * @returns {{ legalKeys: Set, compKeys: Set, adminKeys: Set,
+ *   entries: Array<{label: string, keys: string[]}> }}
+ */
+export function planLeaveOverwrite(keys, startKey, { legal = {}, comp = {}, admin = {}, abs = {}, type = "" } = {}) {
+    const licenseKeys = new Set(keys);
+    const entries = [];
+    const collect = (map, label) => {
+        const removed = new Set();
+        const seenBlocks = new Set();
+
+        keys.forEach(key => {
+            if (!map[key]) return;
+
+            const start = blockStartKey(map, key);
+            const block = blockKeys(map, key);
+
+            if (seenBlocks.has(start)) return;
+            seenBlocks.add(start);
+
+            const taken = isBeforeKey(start, startKey)
+                ? block.filter(blockKey => licenseKeys.has(blockKey))
+                : block;
+
+            taken.forEach(blockKey => removed.add(blockKey));
+            entries.push({ label, keys: taken });
+        });
+
+        return removed;
+    };
+    const legalKeys = collect(legal, OVERWRITE_LABELS.legal);
+    const compKeys = collect(comp, OVERWRITE_LABELS.comp);
+    const adminKeys = new Set(keys.filter(key => admin[key]));
+
+    adminKeys.forEach(key => entries.push({
+        label: admin[key] === 1 ? OVERWRITE_LABELS.admin : OVERWRITE_LABELS.halfAdmin,
+        keys: [key]
+    }));
+
+    // Otra ausencia distinta que la licencia reemplaza (dias seguidos juntos).
+    let run = null;
+
+    keys.forEach(key => {
+        const current = abs[key] ? getAbsenceType(abs[key]) : "";
+        const replaced = current && current !== type
+            ? (esAusenciaInjustificada(abs[key]) ? "Ausencia injustificada" : absenceLabel(current))
+            : "";
+
+        if (replaced && run?.label === replaced) {
+            run.keys.push(key);
+            return;
+        }
+
+        run = replaced ? { label: replaced, keys: [key] } : null;
+        if (run) entries.push(run);
+    });
+
+    return { legalKeys, compKeys, adminKeys, entries };
 }
 
-function shouldCancelAdmin(admin, startKey, key) {
-    return Boolean(admin[key]) && isBeforeKey(startKey, key);
+function formatKeyRange(keys = []) {
+    const sorted = [...keys].sort((a, b) => parseKey(a) - parseKey(b));
+
+    if (!sorted.length) return "";
+    if (sorted.length === 1) return formatKey(sorted[0]);
+
+    return `${formatKey(sorted[0])} al ${formatKey(sorted.at(-1))}`;
 }
 
 function addManualBalance(
@@ -1225,6 +1306,65 @@ export async function aplicarLicencia(
 
     const profile = getCurrentProfile();
     const label = absenceLabel(type);
+    // Lo que la licencia pisa, calculado ANTES de tocar nada: sobre los mapas
+    // originales (al borrar un bloque, el siguiente dia pareceria empezar uno
+    // nuevo) y para poder avisarlo.
+    const overwrite = planLeaveOverwrite(keys, startKey, {
+        legal,
+        comp,
+        admin,
+        abs,
+        type
+    });
+    const interactive = typeof window !== "undefined";
+
+    if (overwrite.entries.length && interactive) {
+        const count = overwrite.entries.length;
+        const accepted = await (options.confirmConflicts || showConfirm)(
+            `Se ${count === 1 ? "quitará 1 permiso" : `quitarán ${count} permisos`} de ${profile} para reemplazarlos por ${label}:\n\n` +
+            overwrite.entries.map(entry => `• ${entry.label}: ${formatKeyRange(entry.keys)}`).join("\n") +
+            `\n\nLos días de feriado y administrativos que se quiten vuelven a su saldo.`,
+            {
+                title: "Permisos que serán reemplazados",
+                tone: "warning",
+                confirmText: `Aplicar ${label}`
+            }
+        );
+
+        if (!accepted) return null;
+    }
+
+    // Turnos suyos que alguien ya estaba cubriendo (p. ej. por el feriado que
+    // la licencia pisa): mantener esas coberturas o quitarlas todas.
+    const coveredShifts = getActiveReplacementsCoveringKeys(profile, keys);
+    let coverageAction = "keep";
+
+    if (coveredShifts.length && interactive) {
+        const decision = await (options.confirmCoverage || showConfirm)(
+            `${coveredShifts.length === 1 ? "Hay 1 turno" : `Hay ${coveredShifts.length} turnos`} de ${profile} ya ${coveredShifts.length === 1 ? "cubierto" : "cubiertos"} en esas fechas:\n\n` +
+            coveredShifts
+                .slice()
+                .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+                .map(record => `• ${formatKey(keyFromISO(record.date))}: ${record.worker}`)
+                .join("\n") +
+            `\n\n¿Mantener esas coberturas con los mismos trabajadores (ahora por ${label}) o quitar todos los reemplazos programados?`,
+            {
+                title: "Turnos ya cubiertos",
+                tone: "warning",
+                confirmText: "Mantener cobertura",
+                cancelText: "Volver",
+                extraActions: [
+                    { text: "Quitar todos los reemplazos", value: "remove", tone: "danger" }
+                ]
+            }
+        );
+        const action = decision?.action || "";
+
+        if (action !== "confirm" && action !== "remove") return null;
+
+        coverageAction = action === "remove" ? "remove" : "keep";
+    }
+
     let mutationPrepared = false;
     const prepareMutation = async () => {
         if (mutationPrepared) return;
@@ -1258,75 +1398,49 @@ export async function aplicarLicencia(
     const returnedLegal = {};
     const returnedComp = {};
     const returnedAdmin = {};
-    const canceledLegalBlocks = new Set();
-    const canceledCompBlocks = new Set();
     const licenseKeys = new Set(keys);
 
-    keys.forEach(key => {
+    // Se quita lo que el plan dijo (y el supervisor acepto): los bloques que
+    // parten dentro de la licencia enteros, y de los que partieron antes solo
+    // los dias que se cruzan con ella.
+    overwrite.legalKeys.forEach(key => {
+        delete legal[key];
+        pushKeyByYear(returnedLegal, key);
+        if (!licenseKeys.has(key)) delete blocked[key];
+    });
+    overwrite.compKeys.forEach(key => {
+        delete comp[key];
+        pushKeyByYear(returnedComp, key);
+        if (!licenseKeys.has(key)) delete blocked[key];
+    });
+    overwrite.adminKeys.forEach(key => {
         const year = Number(key.split("-")[0]);
+        const amount = admin[key] === 1 ? 1 : 0.5;
 
-        if (
-            legal[key] &&
-            shouldCancelMappedBlock(legal, startKey, key)
-        ) {
-            const legalStart = blockStartKey(legal, key);
+        delete admin[key];
+        returnedAdmin[year] = (returnedAdmin[year] || 0) + amount;
+    });
 
-            if (!canceledLegalBlocks.has(legalStart)) {
-                canceledLegalBlocks.add(legalStart);
-
-                blockKeys(legal, key).forEach(blockKey => {
-                    delete legal[blockKey];
-                    pushKeyByYear(returnedLegal, blockKey);
-
-                    if (!licenseKeys.has(blockKey)) {
-                        delete blocked[blockKey];
-                    }
-                });
-            }
-        }
-
-        if (
-            comp[key] &&
-            shouldCancelMappedBlock(comp, startKey, key)
-        ) {
-            const compStart = blockStartKey(comp, key);
-
-            if (!canceledCompBlocks.has(compStart)) {
-                canceledCompBlocks.add(compStart);
-
-                blockKeys(comp, key).forEach(blockKey => {
-                    delete comp[blockKey];
-                    pushKeyByYear(returnedComp, blockKey);
-
-                    if (!licenseKeys.has(blockKey)) {
-                        delete blocked[blockKey];
-                    }
-                });
-            }
-        }
-
-        if (
-            admin[key] &&
-            shouldCancelAdmin(admin, startKey, key)
-        ) {
-            const value = admin[key];
-            const amount = value === 1 ? 1 : 0.5;
-
-            delete admin[key];
-            if (!licenseKeys.has(key)) {
-                delete blocked[key];
-            }
-
-            returnedAdmin[year] =
-                (returnedAdmin[year] || 0) + amount;
-        }
-
+    keys.forEach(key => {
         abs[key] = {
             type,
             previousType: getAbsenceType(abs[key]) || ""
         };
         blocked[key] = true;
     });
+
+    // Las coberturas de sus turnos: siguen (ahora por la licencia) o se quitan.
+    if (coveredShifts.length) {
+        if (coverageAction === "remove") {
+            coveredShifts.forEach(record => cancelReplacementById(record.id, {
+                reason: "leave_replaced",
+                details: `${label} aplicada a ${profile}: el supervisor quito los reemplazos programados.`,
+                canceledBy: "Calendario"
+            }));
+        } else {
+            setReplacementsAbsenceType(coveredShifts.map(record => record.id), label);
+        }
+    }
 
     await returnLegalBalance(returnedLegal);
     await returnCompBalance(returnedComp);

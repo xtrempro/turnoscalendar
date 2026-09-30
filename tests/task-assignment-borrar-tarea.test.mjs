@@ -193,7 +193,12 @@ test("el dialogo admite salidas ademas de aceptar y cancelar", () => {
     // Con extraActions el resultado pasa a ser un objeto { action, value }: sin
     // eso no se puede distinguir "borrar igual" de "renombrar".
     assert.match(dialogs, /extraActions = \[\]/);
-    assert.match(dialogs, /finish\(\{ action, value: input \? input\.value : undefined \}\)/);
+    // En un "choice" con extras, `value` es la opcion marcada (el "+ Motivos
+    // HHEE" del Calendario Mensual la necesita para "Agregar").
+    assert.match(
+        dialogs,
+        /finish\(\{\s*action,\s*value: input\s*\? input\.value\s*: type === "choice"\s*\? choiceValue\s*: undefined\s*\}\)/
+    );
 });
 
 test("con tres salidas, el boton de aceptar NO se tine de rojo", () => {

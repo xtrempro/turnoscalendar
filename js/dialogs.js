@@ -312,7 +312,16 @@ function createDialog({
 
         const settle = action => {
             if (hasExtras) {
-                finish({ action, value: input ? input.value : undefined });
+                // En un "choice" con botones extra, `value` es la opcion
+                // marcada (antes quedaba undefined y se perdia).
+                finish({
+                    action,
+                    value: input
+                        ? input.value
+                        : type === "choice"
+                            ? choiceValue
+                            : undefined
+                });
                 return;
             }
 

@@ -43,7 +43,8 @@ import {
 import {
     cancelReplacementById,
     replacementActive,
-    setManualExtraReason
+    setManualExtraReason,
+    setManualExtraReasons
 } from "./replacements.js";
 import {
     aplicarAdministrativo,
@@ -56,6 +57,7 @@ import {
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { isShiftUncovered } from "./home.js";
+import { ensureRotaGapShifts } from "./staffing.js";
 import { canEditTarget } from "./workspacePermissions.js";
 import { showAlert, showChoice, showConfirm, showPrompt } from "./dialogs.js";
 import { pushHistory } from "./history.js";
@@ -95,7 +97,12 @@ const ui = {
     // Los motivos con poca gente se ven agrupados hasta que se expanden.
     expanded: { day: false, night: false },
     // "mes|grupo" -> { day: [motivo], night: [motivo] } agregados con el "+".
-    addedColumns: {}
+    addedColumns: {},
+    // "mes|grupo" -> { day: [motivo], night: [motivo] } eliminados o renombrados.
+    hiddenColumns: {},
+    // Desplazamiento horizontal de los motivos de cada tramo (sobrevive al
+    // repintado).
+    xscroll: { day: 0, night: 0 }
 };
 
 /* =========================================================
@@ -321,6 +328,12 @@ const CODE_SLOTS = {
 // columna de un motivo (el mismo registro que usa la Brecha RRHH del inicio).
 const EXTRA_SOURCES = new Set(["manual_extra", "rota_gap"]);
 
+// El motivo con que se guarda quien cubre un cupo de la Brecha RRHH (ver
+// weeklyRotaMotive en staffing.js).
+function isBrechaMotive(reason) {
+    return /^Completar rotativa de /i.test(String(reason || ""));
+}
+
 function extraRecordFor(name, iso, slot, ctx) {
     return ctx.recordsOf(name, iso).find(item =>
         EXTRA_SOURCES.has(item.source) &&
@@ -363,6 +376,8 @@ function personTitle(person) {
     }
 
     if (!person.covering) return person.name;
+
+    if (person.brecha) return `${person.name} — ${person.coverDetail} (Brecha RRHH)`;
 
     return person.coverDetail
         ? `${person.name} — cubre a ${person.coverDetail}`
@@ -439,6 +454,9 @@ export async function buildMonthlyCalendar(
             business: isBusinessDay(date, holidays),
             slots: { day: [], night: [] },
             gaps: { day: [], night: [] },
+            // Cupos de la Brecha RRHH: a un grupo le falta alguien de esta
+            // profesion en ese turno (no hay ausente, falta gente).
+            cupos: { day: [], night: [] },
             // Motivo de horas extras -> quienes vienen por el (su columna).
             extras: { day: {}, night: {} }
         };
@@ -494,9 +512,24 @@ export async function buildMonthlyCalendar(
                 const extraRecord = !byContract && !ownSlots[slot]
                     ? extraRecordFor(name, row.iso, slot, ctx)
                     : null;
-                const reason = extraRecord
+                const recordReason = extraRecord
                     ? String(extraRecord.reason).trim()
                     : "";
+
+                // Quien cubre un cupo de la Brecha RRHH completa la rotativa:
+                // va con los titulares, en rojo, no en una columna de motivo.
+                if (isBrechaMotive(recordReason)) {
+                    person.covering = true;
+                    person.brecha = true;
+                    person.coverDetail = recordReason;
+                    // Para quitarlo: se anula su registro.
+                    person.extraId = String(extraRecord.id || "");
+                    person.extraSource = String(extraRecord.source || "");
+                    row.slots[slot].push(person);
+                    return;
+                }
+
+                const reason = recordReason;
 
                 if (reason) {
                     (row.extras[slot][reason] ||= []).push({
@@ -555,6 +588,44 @@ export async function buildMonthlyCalendar(
         });
     });
 
+    // Los cupos de la Brecha RRHH del mes (el mismo barrido del inicio y del
+    // Calendario Semanal, que cede el hilo y queda en cache), solo de esta
+    // profesion. Si los datos cambiaron a medias devuelve null: sin cupos esta
+    // vez, y el repintado que sigue al cambio los trae.
+    const gapRequest = { days, today: new Date(year, monthIndex, 1) };
+    let gapRows = await ensureRotaGapShifts(gapRequest).catch(() => null);
+
+    // Un cambio a medias lo anula (devuelve null): un reintento con la foto
+    // nueva, para no pintar el mes sin cupos.
+    if (!gapRows && shouldContinue()) {
+        gapRows = await ensureRotaGapShifts(gapRequest).catch(() => null);
+    }
+
+    if (!shouldContinue()) return null;
+
+    const rowsByKey = new Map(rows.map(row => [row.keyDay, row]));
+
+    (gapRows || []).forEach(gap => {
+        const row = rowsByKey.get(gap.keyDay);
+        const slot = gap.shiftKey === "noche" ? "night" : "day";
+        const gapGroup = gap.profession && !/^sin informaci/i.test(gap.profession)
+            ? gap.profession
+            : gap.estamento;
+
+        if (!row || (group && gapGroup !== group)) return;
+
+        for (let index = 0; index < Math.max(1, Number(gap.missing) || 1); index++) {
+            row.cupos[slot].push({
+                group: gap.group,
+                estamento: gap.estamento,
+                label: gap.label,
+                turno: gap.turno,
+                motive: gap.motive,
+                reference: gap.reference_profile || ""
+            });
+        }
+    });
+
     const historyReasons = extraHistory(year, monthIndex, group);
     // Las tareas recurrentes de los meses anteriores se ven aunque este mes
     // todavia no tengan a nadie: asi se puede ir llenando el mes que viene.
@@ -567,6 +638,9 @@ export async function buildMonthlyCalendar(
         ["day", "night"].forEach(slot => {
             historyReasons[slot]
                 .filter(item => item.recurrent)
+                .filter(({ reason }) =>
+                    !(ui.hiddenColumns[`${year}-${monthIndex}|${group}`]?.[slot] || []).includes(reason)
+                )
                 .forEach(({ reason }) => {
                     if (!extraColumns[slot].includes(reason)) extraColumns[slot].push(reason);
                     pinnedColumns[slot].push(reason);
@@ -607,6 +681,9 @@ export function extraHistory(year, monthIndex, group) {
 
     getReplacements().forEach(item => {
         const reason = String(item?.reason || "").trim();
+
+        // Los de la Brecha van con los titulares: no son un motivo de columna.
+        if (isBrechaMotive(reason)) return;
 
         if (
             !reason ||
@@ -666,12 +743,23 @@ function addedColumnsKey(model) {
 }
 
 function applyAddedColumns(model) {
-    const added = ui.addedColumns[addedColumnsKey(model)] || {};
+    const key = addedColumnsKey(model);
+    const added = ui.addedColumns[key] || {};
+    const hidden = ui.hiddenColumns[key] || {};
 
     ["day", "night"].forEach(slot => {
         (added[slot] || []).forEach(reason => {
             if (!model.extraColumns[slot].includes(reason)) model.extraColumns[slot].push(reason);
             if (!model.pinnedColumns[slot].includes(reason)) model.pinnedColumns[slot].push(reason);
+        });
+
+        // Eliminadas o renombradas por el supervisor: la recurrente vacia no
+        // vuelve a aparecer (si alguien queda con ese motivo, se ve igual).
+        (hidden[slot] || []).forEach(reason => {
+            if (model.extraCounts[slot][reason]) return;
+
+            model.extraColumns[slot] = model.extraColumns[slot].filter(item => item !== reason);
+            model.pinnedColumns[slot] = model.pinnedColumns[slot].filter(item => item !== reason);
         });
     });
 
@@ -727,7 +815,7 @@ function addableHistoryReasons(model, slot) {
 ========================================================= */
 
 // `drag`: los apoyos extra se pueden arrastrar a la columna de otro motivo.
-function chipsHTML(list, gaps, { drag = null } = {}) {
+function chipsHTML(list, gaps, { drag = null, cupos = [] } = {}) {
     const people = list.map(person => {
         const draggable = drag && person.extraId
             ? ` draggable="true" data-mcal-drag="${escapeHTML(person.extraId)}" data-mcal-drag-key="${escapeHTML(drag.keyDay)}" data-mcal-drag-slot="${escapeHTML(drag.slot)}" data-mcal-drag-reason="${escapeHTML(person.extraReason)}" data-mcal-drag-name="${escapeHTML(person.name)}"`
@@ -739,6 +827,8 @@ function chipsHTML(list, gaps, { drag = null } = {}) {
     }).join('<span class="mcal-sep">-</span>');
     const holes = gaps.map(gap => `
         <span class="mcal-gap" title="Falta cubrir el turno de ${escapeHTML(gap.name)}">+${escapeHTML(gap.initials)}</span>
+    `.trim()).join("") + cupos.map(cupo => `
+        <span class="mcal-gap mcal-gap--cupo" title="Cupo disponible: el grupo ${escapeHTML(cupo.group)} requiere 1 ${escapeHTML(cupo.label)}">+Cupo</span>
     `.trim()).join("");
 
     return people + (people && holes ? " " : "") + holes || '<span class="mcal-empty">—</span>';
@@ -753,7 +843,9 @@ function extraCellHTML(row, slot, column, canEdit, index) {
     const drag = canEdit ? { keyDay: row.keyDay, slot } : null;
     // `data-mcal-col`: la columna (su posicion entre las de motivo), para que
     // el clic muestre solo a los de esa casilla y agregue con ESE motivo.
-    const base = `class="mcal-slot mcal-slot--extra" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="${index}" tabindex="0"`;
+    // Es un <div> dentro de la franja desplazable del tramo (ver
+    // extrasCellHTML), no una columna de la tabla.
+    const base = `class="mcal-slot mcal-slot--extra mcal-xcell" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="${index}" tabindex="0"`;
 
     if (column.kind === "group") {
         const people = column.reasons.flatMap(reason => row.extras[slot][reason] || []);
@@ -761,16 +853,41 @@ function extraCellHTML(row, slot, column, canEdit, index) {
             .map(person => `${person.name} — ${person.extraReason}`)
             .join("\n");
 
-        return `<td ${base}${title ? ` title="${escapeHTML(title)}"` : ""}>${people.length
+        return `<div ${base}${title ? ` title="${escapeHTML(title)}"` : ""}>${people.length
             ? chipsHTML(people, [], { drag })
-            : ""}</td>`;
+            : ""}</div>`;
     }
 
     const people = row.extras[slot][column.reason] || [];
 
-    return `<td ${base} data-mcal-drop-reason="${escapeHTML(column.reason)}">${people.length
+    return `<div ${base} data-mcal-drop-reason="${escapeHTML(column.reason)}">${people.length
         ? chipsHTML(people, [], { drag })
-        : ""}</td>`;
+        : ""}</div>`;
+}
+
+/**
+ * Los motivos de HHEE de un tramo van juntos en UNA celda con desplazamiento
+ * horizontal propio: con muchos motivos la tabla ya no desborda la pagina.
+ * Todas las filas y el encabezado se desplazan a la vez (ver syncExtraScroll).
+ */
+function extrasCellHTML(content, slot, tag = "td", className = "") {
+    return `<${tag} class="mcal-xwrap${className ? ` ${className}` : ""}"><div class="mcal-xscroll" data-mcal-xscroll="${slot}"><div class="mcal-xrow">${content}</div></div></${tag}>`;
+}
+
+function extraHeadHTML(slot, column, canEdit) {
+    if (column.kind === "group") {
+        return `
+            <div class="mcal-xcell mcal-sub-head mcal-sub-head--extra mcal-sub-head--group" title="${escapeHTML(column.reasons.join("\n"))}">
+                Otros motivos (${column.reasons.length})
+                <button type="button" class="mcal-fold" data-mcal-expand="${slot}" title="Ver cada motivo en su columna">+</button>
+            </div>
+        `;
+    }
+
+    // Clic en el titulo: editar el nombre o eliminar el motivo.
+    return canEdit
+        ? `<div class="mcal-xcell mcal-sub-head mcal-sub-head--extra is-editable" role="button" tabindex="0" data-mcal-head-slot="${slot}" data-mcal-head-reason="${escapeHTML(column.reason)}" title="Motivo HHEE: ${escapeHTML(column.reason)}. Clic para editar el nombre o eliminarlo.">${escapeHTML(column.reason)}</div>`
+        : `<div class="mcal-xcell mcal-sub-head mcal-sub-head--extra" title="Motivo HHEE: ${escapeHTML(column.reason)}">${escapeHTML(column.reason)}</div>`;
 }
 
 function panelHTML(model, groups) {
@@ -787,7 +904,7 @@ function panelHTML(model, groups) {
             <header class="mcal-head">
                 <div class="mcal-title">
                     <h2>Calendario Mensual</h2>
-                    <p>Quién está de día y de noche. En <span class="mcal-chip is-covering">rojo</span> quien está cubriendo; <span class="mcal-gap">+XX</span> es un turno sin cubrir. Toca una casilla para quitar a alguien o cubrir el hueco.</p>
+                    <p>Quién está de día y de noche. En <span class="mcal-chip is-covering">rojo</span> quien está cubriendo; <span class="mcal-gap">+XX</span> es un turno sin cubrir y <span class="mcal-gap mcal-gap--cupo">+Cupo</span> un cupo de la Brecha RRHH. Toca una casilla para quitar a alguien o cubrir el hueco.</p>
                 </div>
                 <div class="mcal-controls">
                     <div class="mcal-filters" role="group" aria-label="Profesión">
@@ -804,12 +921,20 @@ function panelHTML(model, groups) {
             </header>
             <div class="mcal-table-wrap">
                 <table class="mcal-table">
+                    <colgroup>
+                        <col class="mcal-col-date">
+                        <col class="mcal-col-weekday">
+                        ${slots.map(slot => `
+                            <col class="mcal-col-titulares">
+                            ${columns[slot].length ? `<col data-mcal-xcol="${columns[slot].length}">` : ""}
+                        `).join("")}
+                    </colgroup>
                     <thead>
                         <tr>
                             <th rowspan="2">Fecha</th>
                             <th rowspan="2"></th>
                             ${slots.map(slot => `
-                                <th colspan="${1 + columns[slot].length}" class="mcal-group-head">
+                                <th colspan="${columns[slot].length ? 2 : 1}" class="mcal-group-head">
                                     ${slot === "day" ? "Día" : "Noche"}
                                     ${ui.expanded[slot] && canGroupExtras(model, slot)
                                         ? `<button type="button" class="mcal-fold" data-mcal-collapse="${slot}" title="Agrupar los motivos con poca gente">− Agrupar</button>`
@@ -823,16 +948,14 @@ function panelHTML(model, groups) {
                         <tr>
                             ${slots.map(slot => `
                                 <th class="mcal-sub-head">Titulares</th>
-                                ${columns[slot].map(column => column.kind === "group"
-                                    ? `
-                                        <th class="mcal-sub-head mcal-sub-head--extra mcal-sub-head--group" title="${escapeHTML(column.reasons.join("\n"))}">
-                                            Otros motivos (${column.reasons.length})
-                                            <button type="button" class="mcal-fold" data-mcal-expand="${slot}" title="Ver cada motivo en su columna">+</button>
-                                        </th>
-                                    `
-                                    : `
-                                        <th class="mcal-sub-head mcal-sub-head--extra" title="Apoyo extra: ${escapeHTML(column.reason)}">${escapeHTML(column.reason)}</th>
-                                    `).join("")}
+                                ${columns[slot].length
+                                    ? extrasCellHTML(
+                                        columns[slot].map(column => extraHeadHTML(slot, column, canEdit)).join(""),
+                                        slot,
+                                        "th",
+                                        "mcal-xwrap--head"
+                                    )
+                                    : ""}
                             `).join("")}
                         </tr>
                     </thead>
@@ -842,8 +965,13 @@ function panelHTML(model, groups) {
                                 <td class="mcal-date">${row.day}</td>
                                 <td class="mcal-weekday">${row.weekday}</td>
                                 ${slots.map(slot => `
-                                    <td class="mcal-slot" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0">${chipsHTML(row.slots[slot], row.gaps[slot])}</td>
-                                    ${columns[slot].map((column, index) => extraCellHTML(row, slot, column, canEdit, index)).join("")}
+                                    <td class="mcal-slot" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0">${chipsHTML(row.slots[slot], row.gaps[slot], { cupos: row.cupos?.[slot] || [] })}</td>
+                                    ${columns[slot].length
+                                        ? extrasCellHTML(
+                                            columns[slot].map((column, index) => extraCellHTML(row, slot, column, canEdit, index)).join(""),
+                                            slot
+                                        )
+                                        : ""}
                                 `).join("")}
                             </tr>
                         `).join("")}
@@ -875,8 +1003,11 @@ export async function renderMonthlyCalendarPanel() {
         panel.addEventListener("dragleave", onDragLeave);
         panel.addEventListener("drop", onDrop);
         panel.addEventListener("dragend", onDragEnd);
+        // `scroll` no burbujea: se escucha en captura.
+        panel.addEventListener("scroll", syncExtraScroll, true);
+        window.addEventListener("resize", onWindowResize);
         panel.addEventListener("keydown", event => {
-            if (event.key === "Enter" && event.target.closest("[data-mcal-slot]")) {
+            if (event.key === "Enter" && event.target.closest("[data-mcal-slot], [data-mcal-head-reason]")) {
                 onPanelClick(event);
             }
         });
@@ -919,6 +1050,68 @@ function paintModel(panel, model, groups) {
         wrap.scrollTop = scroll.top;
         wrap.scrollLeft = scroll.left;
     }
+
+    if (wrap) layoutExtraColumns(wrap);
+
+    panel.querySelectorAll("[data-mcal-xscroll]").forEach(scroller => {
+        scroller.scrollLeft = ui.xscroll[scroller.dataset.mcalXscroll] || 0;
+    });
+}
+
+const XCELL_WIDTH = 112;
+const TITULARES_MIN_WIDTH = 190;
+
+/**
+ * Reparte el ancho: Fecha, dia y Titulares tienen lo suyo, y la franja de
+ * motivos de cada tramo se queda con el resto, en proporcion a cuantos motivos
+ * tiene. Si no caben, cada franja se desplaza por dentro (no la pagina).
+ */
+function layoutExtraColumns(wrap) {
+    const table = wrap.querySelector(".mcal-table");
+    const extraCols = [...wrap.querySelectorAll("col[data-mcal-xcol]")];
+
+    if (!table || !extraCols.length || !wrap.clientWidth) return;
+
+    const fixed = [...wrap.querySelectorAll("col.mcal-col-date, col.mcal-col-weekday")]
+        .reduce((sum, col) => sum + (parseFloat(getComputedStyle(col).width) || 0), 0);
+    const titulares = wrap.querySelectorAll("col.mcal-col-titulares").length;
+    const available = Math.max(0, wrap.clientWidth - fixed - titulares * TITULARES_MIN_WIDTH);
+    // +2: el borde de la celda, o una franja justa mostraria barra igual.
+    const desired = extraCols.map(col => Number(col.dataset.mcalXcol) * XCELL_WIDTH + 2);
+    const total = desired.reduce((sum, value) => sum + value, 0);
+    const scale = total > available ? available / total : 1;
+
+    extraCols.forEach((col, index) => {
+        col.style.width = `${Math.max(XCELL_WIDTH + 2, Math.floor(desired[index] * scale))}px`;
+    });
+}
+
+// Todas las filas (y el encabezado) de un tramo se desplazan juntas.
+function syncExtraScroll(event) {
+    const scroller = event.target;
+
+    if (!scroller?.dataset?.mcalXscroll) return;
+
+    const slot = scroller.dataset.mcalXscroll;
+    const left = scroller.scrollLeft;
+
+    ui.xscroll[slot] = left;
+    event.currentTarget
+        .querySelectorAll(`[data-mcal-xscroll="${slot}"]`)
+        .forEach(other => {
+            if (other !== scroller && other.scrollLeft !== left) other.scrollLeft = left;
+        });
+}
+
+let resizeTimer = null;
+
+function onWindowResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+        const wrap = document.getElementById(PANEL_ID)?.querySelector(".mcal-table-wrap");
+
+        if (wrap) layoutExtraColumns(wrap);
+    }, 150);
 }
 
 /* =========================================================
@@ -1109,6 +1302,11 @@ async function removeWithLeave(person, keyDay) {
 
     pushHistory();
 
+    // Los turnos del trabajador que ya estaban sin cubrir en el tramo que puede
+    // tocar el permiso (los dias habiles de un feriado saltan fines de semana:
+    // de ahi el margen).
+    const span = option.days ? Math.ceil(amount) * 3 + 7 : 1;
+    const uncoveredBefore = uncoveredDaysFrom(name, date, span);
     const applied = await applyLeave(name, option, date, amount);
 
     if (!applied) {
@@ -1123,7 +1321,30 @@ async function removeWithLeave(person, keyDay) {
         decrementBalance(name, option.balance, amount, date.getFullYear());
     }
 
+    // Un solo turno por cubrir: directo a las sugerencias de reemplazo. Si el
+    // permiso dejo varios (un rango), se cubren despues, dia por dia.
+    const newlyUncovered = uncoveredDaysFrom(name, date, span)
+        .filter(key => !uncoveredBefore.includes(key));
+
+    if (newlyUncovered.length === 1) {
+        void window.openReplacementDialog?.(name, newlyUncovered[0]);
+    }
+
     return true;
+}
+
+// Los dias (keyDay) de un trabajador con turno sin cubrir, desde `date` y por
+// `span` dias. Misma regla que el "+XX" del mes y el inicio.
+export function uncoveredDaysFrom(name, date, span) {
+    const keys = [];
+
+    for (let offset = 0; offset < span; offset++) {
+        const key = keyFor(new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset));
+
+        if (isShiftUncovered(name, key)) keys.push(key);
+    }
+
+    return keys;
 }
 
 /**
@@ -1393,7 +1614,7 @@ async function removeExtra(person, keyDay) {
     // anula su registro.
     if (person.extraSource === "rota_gap") {
         const ok = await showConfirm(
-            `Se quitará a ${person.name} del apoyo "${person.extraReason}" el ${slotDateLabel(keyDay)}.`,
+            `Se quitará a ${person.name} del ${person.brecha ? "cupo de la Brecha RRHH" : "apoyo"} "${person.extraReason || person.coverDetail}" el ${slotDateLabel(keyDay)}.`,
             {
                 title: "Quitar apoyo extra",
                 tone: "danger",
@@ -1409,7 +1630,7 @@ async function removeExtra(person, keyDay) {
 
         return Boolean(cancelReplacementById(person.extraId, {
             reason: "extra_removed",
-            details: `El supervisor quito el apoyo extra (${person.extraReason}) desde el Calendario Mensual.`,
+            details: `El supervisor quito el apoyo extra (${person.extraReason || person.coverDetail}) desde el Calendario Mensual.`,
             canceledBy: "Calendario Mensual"
         }));
     }
@@ -1423,6 +1644,7 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
     // Los huecos son de los titulares: en una columna de motivo no se cubre a
     // nadie, se agrega.
     const gaps = isTitulares ? row.gaps[slot] : [];
+    const cupos = isTitulares ? (row.cupos?.[slot] || []) : [];
     const title = `${slot === "day" ? "Día" : "Noche"} · ${slotDateLabel(row.keyDay)}`;
     const canEdit = canEditTarget("calendarPanel");
     const backdrop = document.createElement("div");
@@ -1440,7 +1662,9 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
                             <span class="mcal-dialog-name">${escapeHTML(person.name)}${person.half ? ` <small>(${escapeHTML(person.half)})</small>` : ""}<small>${person.extraReason
                                 ? `Apoyo extra: ${escapeHTML(person.extraReason)}`
                                 : person.covering
-                                    ? (person.coverDetail ? `Cubre a ${escapeHTML(person.coverDetail)}` : "Turno agregado sin motivo")
+                                    ? (person.brecha
+                                        ? `${escapeHTML(person.coverDetail)} (Brecha RRHH)`
+                                        : person.coverDetail ? `Cubre a ${escapeHTML(person.coverDetail)}` : "Turno agregado sin motivo")
                                     : "Su turno"}</small></span>
                             ${canEdit ? `<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button>` : ""}
                         </li>
@@ -1454,6 +1678,17 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
                             <span class="mcal-gap">+${escapeHTML(gap.initials)}</span>
                             <span class="mcal-dialog-name">Falta cubrir el turno de ${escapeHTML(gap.name)}<small>Está con permiso o ausencia</small></span>
                             ${canEdit ? `<button class="primary-button" type="button" data-mcal-cover="${index}">Cubrir</button>` : ""}
+                        </li>
+                    `).join("")}
+                </ul>
+            ` : ""}
+            ${cupos.length ? `
+                <ul class="mcal-dialog-list mcal-dialog-list--gaps">
+                    ${cupos.map((cupo, index) => `
+                        <li>
+                            <span class="mcal-gap mcal-gap--cupo">+Cupo</span>
+                            <span class="mcal-dialog-name">Cupo disponible<small>El grupo ${escapeHTML(cupo.group)} requiere 1 ${escapeHTML(cupo.label)} (Brecha RRHH)</small></span>
+                            ${canEdit ? `<button class="primary-button" type="button" data-mcal-cupo="${index}" ${cupo.reference ? "" : "disabled title=\"No hay a quién parecerse: la unidad no tiene a nadie de esa profesión.\""}>Cubrir</button>` : ""}
                         </li>
                     `).join("")}
                 </ul>
@@ -1494,13 +1729,35 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
 
             // Apoyo extra: se quita el turno agregado, sin permiso. Quien
             // cubre: se anula su cobertura. Su propio turno: con un permiso.
-            const changed = person.extraReason
+            const changed = person.extraReason || person.brecha
                 ? await removeExtra(person, row.keyDay)
                 : person.covering
                 ? await removeCover(person, row.keyDay)
                 : await removeWithLeave(person, row.keyDay);
 
             if (changed) await renderMonthlyCalendarPanel();
+            return;
+        }
+
+        const cupoButton = event.target.closest("[data-mcal-cupo]");
+
+        if (cupoButton) {
+            const cupo = cupos[Number(cupoButton.dataset.mcalCupo)];
+
+            if (!cupo?.reference) return;
+
+            closeSlotDialog(backdrop, onKeydown);
+            // El mismo modal que el CUBRIR de la Brecha RRHH del inicio: un
+            // turno extra con motivo, no el reemplazo de un ausente.
+            await window.openReplacementDialog?.(cupo.reference, row.keyDay, {
+                rota: {
+                    group: cupo.group,
+                    estamento: cupo.estamento,
+                    label: cupo.label,
+                    turno: cupo.turno,
+                    motive: cupo.motive
+                }
+            });
             return;
         }
 
@@ -1531,7 +1788,9 @@ async function addHistoricalColumn(slot) {
     const slotLabel = slot === "day" ? "Día" : "Noche";
     const NEW_TASK = "__mcal_new_task__";
     // Sin motivos recientes que ofrecer, directo a escribir uno nuevo.
-    let reason = options.length
+    // Con un boton extra, el dialogo responde { action, value }: "confirm"
+    // trae el motivo marcado, NEW_TASK pide escribir uno.
+    const decision = options.length
         ? await showChoice(
             `¿Qué motivo de horas extras agregar a ${slotLabel}? Son los de los últimos 3 meses.`,
             {
@@ -1544,9 +1803,12 @@ async function addHistoricalColumn(slot) {
                 extraActions: [{ text: "Crear motivo nuevo", value: NEW_TASK }]
             }
         )
-        : NEW_TASK;
+        : { action: NEW_TASK };
+    let reason = decision?.action === "confirm"
+        ? String(decision.value || "")
+        : "";
 
-    if (reason === NEW_TASK) {
+    if (decision?.action === NEW_TASK) {
         reason = String(await showPrompt(
             `Nombre del motivo de horas extras nuevo para ${slotLabel} (justifica las horas extras de quien agregues en él).`,
             {
@@ -1580,7 +1842,114 @@ async function addHistoricalColumn(slot) {
     if (panel) paintModel(panel, model, monthlyGroups(ui.month));
 }
 
+function hideColumn(model, slot, reason) {
+    const key = addedColumnsKey(model);
+    const hidden = ui.hiddenColumns[key] ||= { day: [], night: [] };
+    const added = ui.addedColumns[key];
+
+    if (!hidden[slot].includes(reason)) hidden[slot].push(reason);
+    if (added) added[slot] = added[slot].filter(item => item !== reason);
+}
+
+/**
+ * Clic en el titulo de un motivo HHEE: editar su nombre (para todos los de esa
+ * columna en el mes) o eliminarlo. Vacio se elimina en el acto; con gente,
+ * se avisa a cuantos se les quitan las horas extras y se anulan esos turnos.
+ */
+async function editExtraColumn(slot, reason) {
+    const model = lastModel;
+
+    if (!model || !canEditTarget("calendarPanel")) return;
+
+    const slotLabel = slot === "day" ? "Día" : "Noche";
+    const people = model.rows.flatMap(row =>
+        (row.extras[slot][reason] || []).map(person => ({ ...person, keyDay: row.keyDay }))
+    );
+    const workers = new Set(people.map(person => person.name));
+    const decision = await showConfirm(
+        `Motivo de horas extras de ${slotLabel}: "${reason}".${people.length
+            ? ` Este mes lo tienen ${workers.size} ${workers.size === 1 ? "trabajador" : "trabajadores"} (${people.length} ${people.length === 1 ? "turno" : "turnos"}).`
+            : " Este mes no tiene a nadie."}`,
+        {
+            title: "Motivo HHEE",
+            confirmText: "Editar nombre",
+            cancelText: "Cerrar",
+            extraActions: [{ text: "Eliminar", value: "delete", tone: "danger" }]
+        }
+    );
+    const action = decision?.action || "";
+
+    if (action === "confirm") {
+        let nextName = String(await showPrompt(
+            `Nuevo nombre para "${reason}". Cambia el motivo de ${people.length ? "todos los de esta columna en el mes" : "la columna"}.`,
+            { title: "Editar motivo HHEE", value: reason, confirmText: "Guardar" }
+        ) || "").trim();
+
+        if (!nextName || nextName === reason || model !== lastModel) return;
+
+        // Si ya existe con otras mayusculas, se junta con ese.
+        nextName = model.extraColumns[slot].find(item =>
+            item.toLocaleLowerCase("es") === nextName.toLocaleLowerCase("es")
+        ) || nextName;
+
+        if (people.length) {
+            pushHistory();
+            setManualExtraReasons(people.map(person => person.extraId), nextName);
+            addAuditLog(
+                AUDIT_CATEGORY.CALENDAR,
+                "Renombro un motivo de horas extras",
+                `"${reason}" pasa a "${nextName}" en ${people.length} turnos de ${slotLabel} (Calendario Mensual, ${MONTH_NAMES[model.month]} ${model.year}).`,
+                {}
+            );
+        }
+
+        hideColumn(model, slot, reason);
+
+        const added = ui.addedColumns[addedColumnsKey(model)] ||= { day: [], night: [] };
+
+        if (!added[slot].includes(nextName)) added[slot].push(nextName);
+
+        await renderMonthlyCalendarPanel();
+        return;
+    }
+
+    if (action !== "delete") return;
+
+    if (people.length) {
+        const ok = await showConfirm(
+            `A ${workers.size} ${workers.size === 1 ? "trabajador" : "trabajadores"} se ${workers.size === 1 ? "le quitarán sus" : "les quitarán sus"} horas extras de "${reason}" porque ${workers.size === 1 ? "está" : "están"} en esa tarea: se anulan ${people.length} ${people.length === 1 ? "turno" : "turnos"} de ${slotLabel} de este mes.`,
+            {
+                title: "Eliminar motivo HHEE",
+                tone: "danger",
+                confirmText: "Quitar horas extras y eliminar",
+                cancelText: "Volver",
+                destructive: true
+            }
+        );
+
+        if (!ok || model !== lastModel) return;
+
+        pushHistory();
+        people.forEach(person => cancelReplacementById(person.extraId, {
+            reason: "extra_removed",
+            details: `El supervisor elimino el motivo de horas extras "${reason}" desde el Calendario Mensual.`,
+            canceledBy: "Calendario Mensual"
+        }));
+    }
+
+    hideColumn(model, slot, reason);
+    await renderMonthlyCalendarPanel();
+}
+
 function onPanelClick(event) {
+    const head = event.target.closest("[data-mcal-head-reason]");
+
+    if (head) {
+        event.stopPropagation();
+        void editExtraColumn(head.dataset.mcalHeadSlot, head.dataset.mcalHeadReason);
+        return;
+    }
+
     const addColumn = event.target.closest("[data-mcal-add-column]");
 
     if (addColumn) {

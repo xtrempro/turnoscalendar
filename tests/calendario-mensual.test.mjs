@@ -303,6 +303,21 @@ test("al quitar, solo los permisos que admite ese dia", async () => {
     assert.ok(sabado.includes("license"));
 });
 
+test("se cuentan los turnos que un permiso deja sin cubrir (uno abre sugerencias)", () => {
+    // Juan (4to turno): Larga el 1, Noche el 2, Larga el 5. Un feriado del 1 al
+    // 5 deja tres turnos sin cubrir -un rango-; solo el 1, uno.
+    setJSON("legal_Juan Zapata", { "2026-9-1": true });
+    assert.deepEqual(mensual.uncoveredDaysFrom("Juan Zapata", new Date(2026, 9, 1), 7), ["2026-9-1"]);
+
+    setJSON("legal_Juan Zapata", {
+        "2026-9-1": true, "2026-9-2": true, "2026-9-3": true, "2026-9-4": true, "2026-9-5": true
+    });
+    assert.deepEqual(
+        mensual.uncoveredDaysFrom("Juan Zapata", new Date(2026, 9, 1), 7),
+        ["2026-9-1", "2026-9-2", "2026-9-5"]
+    );
+});
+
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {
     const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
     const [html, navegacion, permisos, fuente] = await Promise.all([

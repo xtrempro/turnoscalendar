@@ -214,6 +214,9 @@ test("si el supervisor rechaza el modal no cambia reemplazos, cambios ni licenci
             1,
             "license",
             {
+                // Ana tiene un turno cubierto ese dia: se mantiene la
+                // cobertura y se rechaza el aviso de conflictos.
+                confirmCoverage: async () => ({ action: "confirm" }),
                 confirmConflicts: async message => {
                     warning = message;
                     return false;
@@ -277,4 +280,75 @@ test("al aceptar anula reemplazos y cambios antes de aplicar la licencia", async
         false
     );
     assert.equal(swaps[0].canceled, true);
+});
+
+// Licencia sobre un feriado legal ya cubierto (caso de test del 29-09): el
+// feriado partio ANTES de la licencia, asi que antes quedaba encimado con ella.
+async function licenciaSobreFeriado(coverageAction) {
+    const realFetch = globalThis.fetch;
+    const warnings = [];
+
+    globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
+    globalThis.window = { dispatchEvent: () => true };
+    setJSON("legal_Ana", {
+        "2026-5-8": true, "2026-5-9": true, "2026-5-10": true,
+        "2026-5-11": true, "2026-5-12": true
+    });
+
+    try {
+        const applied = await aplicarLicencia(new Date(2026, 5, 10), 2, "license", {
+            confirmConflicts: async message => {
+                warnings.push(message);
+                return true;
+            },
+            confirmCoverage: async message => {
+                warnings.push(message);
+                return { action: coverageAction };
+            }
+        });
+
+        return { applied, warnings };
+    } finally {
+        globalThis.fetch = realFetch;
+        delete globalThis.window;
+    }
+}
+
+test("la licencia pisa el feriado que se cruza, avisando cuantos permisos quita", async () => {
+    const { applied, warnings } = await licenciaSobreFeriado("confirm");
+    const legal = getJSON("legal_Ana", {});
+
+    assert.equal(applied, true);
+    assert.match(warnings[0], /Se quitará 1 permiso de Ana para reemplazarlos por Licencia Médica/);
+    assert.match(warnings[0], /Feriado legal: 10\/06\/2026 al 11\/06\/2026/);
+    // Solo los dias cruzados: lo de antes y despues del feriado sigue.
+    assert.deepEqual(Object.keys(legal).sort(), ["2026-5-12", "2026-5-8", "2026-5-9"]);
+    assert.equal(getJSON("absences_Ana", {})["2026-5-10"].type, "license");
+});
+
+test("turno ya cubierto: mantener la cobertura la deja por la licencia", async () => {
+    const { warnings } = await licenciaSobreFeriado("confirm");
+    const cubre = getJSON("replacements", []).find(item => item.id === "covers-ana");
+
+    assert.match(warnings[1], /Hay 1 turno de Ana ya cubierto/);
+    assert.match(warnings[1], /Bruno/);
+    assert.equal(cubre.canceled, false);
+    assert.equal(cubre.absenceType, "Licencia Médica");
+});
+
+test("turno ya cubierto: quitar todos los reemplazos programados", async () => {
+    await licenciaSobreFeriado("remove");
+
+    assert.equal(
+        getJSON("replacements", []).find(item => item.id === "covers-ana").canceled,
+        true
+    );
+});
+
+test("volver en la pregunta de cobertura no aplica nada", async () => {
+    const { applied } = await licenciaSobreFeriado("cancel");
+
+    assert.equal(applied, null);
+    assert.deepEqual(getJSON("absences_Ana", {}), {});
+    assert.equal(Object.keys(getJSON("legal_Ana", {})).length, 5);
 });

@@ -2203,6 +2203,86 @@ body[data-active-view="home"] .secondary-grid {
     background: rgba(100, 116, 139, 0.05);
 }
 
+/* Franja de motivos HHEE de un tramo: una celda con desplazamiento horizontal
+   propio. Todas las filas se mueven juntas (JS); la barra se ve solo en el
+   encabezado. */
+.mcal-col-date {
+    width: 56px;
+}
+
+.mcal-col-weekday {
+    width: 36px;
+}
+
+.mcal-table .mcal-xwrap {
+    padding: 0;
+    height: 1px;
+}
+
+.mcal-xscroll {
+    width: 0;
+    min-width: 100%;
+    height: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+
+.mcal-xscroll::-webkit-scrollbar {
+    display: none;
+}
+
+.mcal-xwrap--head .mcal-xscroll {
+    scrollbar-width: thin;
+}
+
+.mcal-xwrap--head .mcal-xscroll::-webkit-scrollbar {
+    display: block;
+    height: 6px;
+}
+
+.mcal-xwrap--head .mcal-xscroll::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(100, 116, 139, 0.45);
+}
+
+.mcal-xrow {
+    display: flex;
+    min-width: 100%;
+    height: 100%;
+}
+
+.mcal-table .mcal-xcell {
+    flex: 1 0 112px;
+    min-width: 0;
+    max-width: none;
+    box-sizing: border-box;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 6px 8px;
+    border-right: 1px solid rgba(100, 116, 139, 0.35);
+    text-align: center;
+}
+
+.mcal-table .mcal-xcell:last-child {
+    border-right: 0;
+}
+
+/* Titulo de un motivo: clic para editarlo o eliminarlo. */
+.mcal-sub-head--extra.is-editable {
+    cursor: pointer;
+}
+
+.mcal-sub-head--extra.is-editable:hover,
+.mcal-sub-head--extra.is-editable:focus-visible {
+    color: var(--accent);
+    text-decoration: underline;
+    outline: none;
+}
+
 /* Arrastrar un apoyo extra a la columna de otro motivo. */
 .mcal-chip.is-draggable {
     cursor: grab;
@@ -2271,6 +2351,12 @@ body[data-active-view="home"] .secondary-grid {
     border-radius: 999px;
     color: var(--red);
     font-weight: 800;
+}
+
+/* Cupo de la Brecha RRHH: falta gente en el grupo, no hay un ausente. */
+.mcal-gap--cupo {
+    background: rgba(239, 68, 68, 0.1);
+    font-size: 0.8em;
 }
 
 .mcal-empty,
