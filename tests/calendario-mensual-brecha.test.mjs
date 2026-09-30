@@ -114,5 +114,20 @@ test("los cupos de la Brecha RRHH van en Titulares; quien lo cubre, en rojo con 
     // Ese si completa el grupo: el cupo se cierra.
     assert.equal(mes.rows[2].cupos.day.length, 0);
     assert.deepEqual(mes.extraColumns.day, ["Apoyo Clínico TC"]);
+
+    // Un TM nuevo entra al grupo A el 18-11: el mejor dotado pasa de 2 a 3.
+    // El grupo B (2 TM) queda corto DESDE esa fecha, no desde el 1 del mes:
+    // antes se media todo el mes con la foto de hoy.
+    setJSON("profiles", [
+        ...personas.map(({ start, ...perfil }) => ({ ...perfil, active: true })),
+        { name: "Tm0N Nuevo", estamento: "Profesional", profession: TM, active: true }
+    ]);
+    setJSON("rotativa_Tm0N Nuevo", { type: "4turno", start: "2026-11-18", firstTurn: "larga" });
+    mes = await mensual.buildMonthlyCalendar(new Date(2026, 10, 1), TM);
+
+    // B esta de Larga el 5 y el 25 de noviembre.
+    assert.equal(mes.rows[4].cupos.day.length, 0);
+    assert.equal(mes.rows[24].cupos.day.length, 1);
+    assert.equal(mes.rows[24].cupos.day[0].group, "B");
 });
 

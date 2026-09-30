@@ -284,7 +284,7 @@ test("mirar solo un estamento NO deja al turno corto de los otros", () => {
         grab(staffing, "renderStaffingWeeklyCell"),
         // Sobre el turno entero; rotaRoster solo aparta a quien vino por un
         // motivo de HHEE (no completa el grupo).
-        /weeklyRotaGapsForCell\(\s*cellGroup,\s*rotaRoster\(roster, date, shift\.key\)\s*\)/
+        /weeklyRotaGapsForCell\(\s*cellGroup,\s*rotaRoster\(roster, date, shift\.key\),\s*date\s*\)/
     );
 });
 
@@ -375,14 +375,17 @@ test("va en ambar y el hueco por ausencia en rojo", async () => {
    ====================================================================== */
 
 test("es la misma comparacion del tablero, no una copia", () => {
-    assert.match(holders, /export function getShiftGroupGaps\(today = new Date\(\)\)/);
-    assert.match(grab(holders, "getShiftGroupGaps"), /buildEstamentoGaps\(columns\)/);
+    // Por fecha: los grupos como eran ESE dia (groupMapAt), con la misma
+    // comparacion del tablero.
+    assert.match(holders, /export function getShiftGroupGaps\(date = new Date\(\)\)/);
+    assert.match(grab(holders, "getShiftGroupGaps"), /groupGapsFromMap\(groupMapAt\(map, date\)\)/);
+    assert.match(grab(holders, "groupGapsFromMap"), /buildEstamentoGaps\(columns\)/);
 });
 
 test("se guarda junto al mapa de grupos", () => {
     // Sale de el y se invalida con lo mismo.
-    assert.match(grab(holders, "getShiftGroupGaps"), /if \(groupMapMemo\.gaps\) return groupMapMemo\.gaps;/);
-    assert.match(holders, /groupMapMemo = \{ key: memoKey, map, gaps: null \}/);
+    assert.match(grab(holders, "getShiftGroupGaps"), /groupMapMemo\.gapsByDate\.has\(dateKey\)/);
+    assert.match(holders, /groupMapMemo = \{ key: memoKey, map, gapsByDate: new Map\(\) \}/);
 });
 
 /* ======================================================================

@@ -440,7 +440,7 @@ export function getShiftGroupMap(today = new Date()) {
             if (placement) map.set(profile.name, placement.letter);
         });
 
-    groupMapMemo = { key: memoKey, map, gaps: null };
+    groupMapMemo = { key: memoKey, map, gapsByDate: new Map() };
 
     return map;
 }
@@ -452,11 +452,57 @@ export function getShiftGroupMap(today = new Date()) {
  * pantallas. Se guarda junto al mapa de grupos porque sale de el y se invalida
  * con lo mismo.
  */
-export function getShiftGroupGaps(today = new Date()) {
-    const map = getShiftGroupMap(today);
+export function getShiftGroupGaps(date = new Date()) {
+    // El mapa en cache (anclado a su dia) es la base; pedir uno por fecha lo
+    // rehacia entero en cada casilla.
+    const map = groupMapMemo.map || getShiftGroupMap(new Date());
+    const dateKey = keyFromDate(date);
 
-    if (groupMapMemo.gaps) return groupMapMemo.gaps;
+    groupMapMemo.gapsByDate ||= new Map();
 
+    if (groupMapMemo.gapsByDate.has(dateKey)) {
+        return groupMapMemo.gapsByDate.get(dateKey);
+    }
+
+    const gaps = groupGapsFromMap(groupMapAt(map, date));
+
+    groupMapMemo.gapsByDate.set(dateKey, gaps);
+
+    return gaps;
+}
+
+/**
+ * Los grupos TAL COMO ERAN ese dia. El mapa base es de un dia fijo: quien
+ * empezo su rotativa despues (entro a la unidad, se cambio de grupo) cae ahi en
+ * su grupo de HOY, y la Brecha proyectaba esa foto sobre fechas anteriores. En
+ * Imagenologia un tecnico paso a otro grupo cerca del 20-09 y los demas grupos
+ * aparecian cortos desde el 1-09. Solo se recalcula a esos pocos: su grupo de
+ * ese dia (o ninguno, si todavia no hacia el ciclo).
+ */
+function groupMapAt(baseMap, date) {
+    const anchor = groupMapMemo.key ? keyToDate(groupMapMemo.key) : new Date();
+    const limit = toISODate(date < anchor ? date : anchor);
+    let adjusted = null;
+
+    getProfiles()
+        .filter(isProfileActive)
+        .forEach(profile => {
+            const rotativa = getRotativa(profile.name);
+
+            if (rotativa.type !== "4turno" || !rotativa.start || rotativa.start <= limit) return;
+
+            adjusted ||= new Map(baseMap);
+
+            const placement = detectHolderPlacement(profile.name, date);
+
+            if (placement) adjusted.set(profile.name, placement.letter);
+            else adjusted.delete(profile.name);
+        });
+
+    return adjusted || baseMap;
+}
+
+function groupGapsFromMap(map) {
     const byName = new Map(
         getProfiles().map(profile => [profile.name, profile])
     );
@@ -472,8 +518,6 @@ export function getShiftGroupGaps(today = new Date()) {
     buildEstamentoGaps(columns).forEach((columnGaps, index) => {
         if (columnGaps.length) gaps.set(COLUMN_LETTERS[index], columnGaps);
     });
-
-    groupMapMemo.gaps = gaps;
 
     return gaps;
 }

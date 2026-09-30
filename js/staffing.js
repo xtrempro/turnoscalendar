@@ -2896,10 +2896,12 @@ function rotaRoster(people, date, shiftKey) {
         : people;
 }
 
-function weeklyRotaGapsForCell(group, people) {
+// `date`: el dia de la casilla. Los grupos se comparan como eran ESE dia (ver
+// getShiftGroupGaps), no como son hoy.
+function weeklyRotaGapsForCell(group, people, date = currentDate) {
     if (!group) return [];
 
-    return (getShiftGroupGaps(currentDate).get(group) || [])
+    return (getShiftGroupGaps(date).get(group) || [])
         .map(gap => {
             // La profesion viaja EN el cupo: en Profesional y Tecnico viene
             // cargada y hay que cruzarla tambien, porque tres enfermeras no
@@ -3036,7 +3038,8 @@ function rotaGapRowsForDate(date, absenceCache) {
 
                 weeklyRotaGapsForCell(
                     group,
-                    rotaRoster(people, date, shift.key)
+                    rotaRoster(people, date, shift.key),
+                    date
                 ).forEach(gap => {
                     rows.push({
                         date,
@@ -3210,7 +3213,8 @@ function renderStaffingWeeklyCell(
     // que le falte al de tecnicos es ruido de otra columna.
     const rotaGaps = weeklyRotaGapsForCell(
         cellGroup,
-        rotaRoster(roster, date, shift.key)
+        rotaRoster(roster, date, shift.key),
+        date
     )
         .filter(gap => weeklyRoleFilterAllows(gap.estamento, roleFilter));
     const rotaMissing = rotaGaps.reduce(
