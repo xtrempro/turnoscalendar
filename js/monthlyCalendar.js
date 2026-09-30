@@ -185,7 +185,6 @@ function monthProfiles(month) {
     );
 }
 
-/** Los grupos que tienen gente de 3er o 4to turno (los que tiene sentido ver). */
 /**
  * Los filtros, en el orden en que se muestran: primero los profesionales y,
  * entre ellos, la profesion con mas trabajadores (es la que se abre al entrar);
@@ -585,7 +584,9 @@ export async function buildMonthlyCalendar(
     });
 }
 
-const HISTORY_MONTHS = 12;
+// El "+" ofrece los motivos de los ultimos tres meses; uno que no este ahi se
+// crea desde el mismo modal.
+const HISTORY_MONTHS = 3;
 const RECENT_MONTHS = 3;
 
 /**
@@ -811,8 +812,8 @@ function panelHTML(model, groups) {
                                     ${ui.expanded[slot] && canGroupExtras(model, slot)
                                         ? `<button type="button" class="mcal-fold" data-mcal-collapse="${slot}" title="Agrupar los motivos con poca gente">− Agrupar</button>`
                                         : ""}
-                                    ${canEdit && addableHistoryReasons(model, slot).length
-                                        ? `<button type="button" class="mcal-fold" data-mcal-add-column="${slot}" title="Agregar una tarea de meses anteriores">+ Tarea</button>`
+                                    ${canEdit
+                                        ? `<button type="button" class="mcal-fold" data-mcal-add-column="${slot}" title="Agregar una tarea de los ultimos meses o crear una nueva">+ Tarea</button>`
                                         : ""}
                                 </th>
                             `).join("")}
@@ -1487,20 +1488,43 @@ async function addHistoricalColumn(slot) {
     if (!model) return;
 
     const options = addableHistoryReasons(model, slot);
+    const slotLabel = slot === "day" ? "Día" : "Noche";
+    const NEW_TASK = "__mcal_new_task__";
+    // Sin motivos recientes que ofrecer, directo a escribir uno nuevo.
+    let reason = options.length
+        ? await showChoice(
+            `¿Qué tarea agregar a ${slotLabel}? Son los motivos de los últimos 3 meses.`,
+            {
+                title: "Agregar tarea",
+                confirmText: "Agregar",
+                choices: options.map(item => ({
+                    value: item.reason,
+                    label: `${item.reason} (${item.months} ${item.months === 1 ? "mes" : "meses"})`
+                })),
+                extraActions: [{ text: "Crear tarea nueva", value: NEW_TASK }]
+            }
+        )
+        : NEW_TASK;
 
-    if (!options.length) return;
+    if (reason === NEW_TASK) {
+        reason = String(await showPrompt(
+            `Nombre de la tarea nueva para ${slotLabel} (queda como motivo de horas extras de quien agregues en ella).`,
+            {
+                title: "Crear tarea nueva",
+                placeholder: "Ej.: Apoyo Clínico TC",
+                confirmText: "Crear"
+            }
+        ) || "").trim();
 
-    const reason = await showChoice(
-        `¿Qué tarea agregar a ${slot === "day" ? "Día" : "Noche"}?`,
-        {
-            title: "Agregar tarea",
-            confirmText: "Agregar",
-            choices: options.map(item => ({
-                value: item.reason,
-                label: `${item.reason} (${item.months} ${item.months === 1 ? "mes" : "meses"})`
-            }))
-        }
-    );
+        // Si ya existe con otras mayusculas, se usa la que hay: dos columnas
+        // "Calidad" y "calidad" partirian las horas extras en dos motivos.
+        const known = [
+            ...model.extraColumns[slot],
+            ...(model.historyReasons?.[slot] || []).map(item => item.reason)
+        ].find(item => item.toLocaleLowerCase("es") === reason.toLocaleLowerCase("es"));
+
+        if (known) reason = known;
+    }
 
     if (!reason || model !== lastModel) return;
 
