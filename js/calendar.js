@@ -5987,7 +5987,9 @@ function replacementDialogHTML({
             </div>
             <p>
                 ${
-                    rota
+                    rota?.description
+                        ? escapeHTML(rota.description)
+                        : rota
                         ? `El grupo ${escapeHTML(rota.group)} requiere 1 ${escapeHTML(rota.label || rota.estamento)} para ${escapeHTML(turnoReplacementLabel(neededTurn))}: su rotativa está incompleta frente a los demás grupos.`
                         : `${escapeHTML(profileName)} requiere cobertura para ${escapeHTML(turnoReplacementLabel(neededTurn))} por ${escapeHTML(absenceType)}.${coverWindow ? ` Se cubrirá solo el tramo ${escapeHTML(coverWindowLabel(coverWindow))}, que es lo que quedó sin cubrir.` : ""}`
                 }
@@ -6305,7 +6307,9 @@ window.openPendingRequestsDialog = openPendingRequestsDialog;
  *   ROTATIVA nadie falta, asi que aqui viaja un integrante del grupo que
  *   sirve de molde para los candidatos: "otro como este".
  * @param {object} [options.rota] Cupo por rotativa incompleta:
- *   { group, estamento, turno, motive }. El reemplazo que salga de aqui no
+ *   { group, estamento, turno, motive, description? }. `description`
+ *   reemplaza el texto del encabezado (el Calendario Mensual agrega a alguien a
+ *   la columna de un motivo, no completa una rotativa). El reemplazo que salga de aqui no
  *   reemplaza a NADIE -es un turno extra con motivo-, que es algo que el
  *   registro ya sabe guardar.
  */

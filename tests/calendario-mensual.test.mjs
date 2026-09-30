@@ -197,6 +197,33 @@ test("arrastrar a otro motivo cambia el motivo y la columna vacia desaparece", a
     assert.equal(mes.rows[0].extras.day["Ris Pacs"][0].name, "Pablo Ignacio Rojas Aravena");
 });
 
+test("agregado desde las sugerencias en la columna de un motivo: queda ahi y se puede mover", async () => {
+    const { setManualExtraReason } = await import("../js/replacements.js");
+
+    // Lo que guarda el modal de sugerencias en su modo de turno extra con
+    // motivo: no reemplaza a nadie, el motivo es el de la columna.
+    saveReplacement({
+        worker: "Pablo Ignacio Rojas Aravena",
+        replaced: "",
+        reason: "Calidad",
+        keyDay: "2026-9-1",
+        turno: 1,
+        absenceType: "",
+        source: "rota_gap"
+    });
+
+    let mes = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+    const apoyo = mes.rows[0].extras.day.Calidad?.[0];
+
+    assert.equal(apoyo?.name, "Pablo Ignacio Rojas Aravena");
+    assert.equal(apoyo.extraSource, "rota_gap");
+    assert.ok(mes.rows[0].slots.day.every(p => p.name !== apoyo.name));
+
+    assert.ok(setManualExtraReason(apoyo.extraId, "Ris Pacs"));
+    mes = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+    assert.deepEqual(mes.extraColumns.day, ["Ris Pacs"]);
+});
+
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {
     const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
     const [html, navegacion, permisos, fuente] = await Promise.all([

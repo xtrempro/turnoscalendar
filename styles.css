@@ -2316,6 +2316,16 @@ body[data-active-view="home"] .secondary-grid {
     color: var(--muted);
 }
 
+/* La columna de la casilla (Titulares o el motivo) bajo la fecha. */
+.mcal-dialog-column {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
 @media (max-width: 640px) {
     .mcal-slot {
         min-width: 120px;

@@ -704,7 +704,7 @@ function removeManualExtraTurnFromCalendar(record) {
  * @returns {Object|null} el reemplazo actualizado, o null si no se encontro.
  */
 /**
- * Cambia el motivo de un turno extra respaldado a mano (manual_extra sin
+ * Cambia el motivo de un turno extra con motivo (manual_extra o rota_gap, sin
  * ausente). Lo usa el Calendario Mensual al arrastrar a alguien de un motivo a
  * otro. Solo cambia el texto: el turno y sus horas quedan igual.
  */
@@ -719,7 +719,9 @@ export function setManualExtraReason(replacementId, reason) {
         if (
             String(replacement?.id || "") !== id ||
             !replacementActive(replacement) ||
-            replacement.source !== "manual_extra" ||
+            // rota_gap: el extra con motivo que se agrega desde el modal de
+            // sugerencias (Brecha RRHH, columna de motivo del mes).
+            !["manual_extra", "rota_gap"].includes(replacement.source) ||
             replacement.replaced
         ) {
             return replacement;
