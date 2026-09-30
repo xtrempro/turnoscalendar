@@ -982,7 +982,6 @@ function panelHTML(model, groups) {
             <header class="mcal-head">
                 <div class="mcal-title">
                     <h2>Calendario Mensual</h2>
-                    <p>Quién está de día y de noche. En <span class="mcal-chip is-covering">rojo</span> quien está cubriendo; <span class="mcal-gap">+XX</span> es un turno sin cubrir y <span class="mcal-gap mcal-gap--cupo">+Cupo</span> un cupo de la Brecha RRHH. Toca una casilla para quitar a alguien o cubrir el hueco.</p>
                 </div>
                 <div class="mcal-controls">
                     <div class="mcal-filters" role="group" aria-label="Profesión">
