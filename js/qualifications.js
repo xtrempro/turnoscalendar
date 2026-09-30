@@ -12,6 +12,7 @@ import {
 } from "./dateUtils.js";
 import { buildAttendanceIncidents } from "./hoursReport.js";
 import { getShiftAttendance } from "./shiftAttendance.js";
+import { esAusenciaInjustificada } from "./rulesEngine.js";
 import { canEditMenu } from "./workspacePermissions.js";
 import { getActiveWorkspace } from "./workspaces.js";
 import {
@@ -717,11 +718,18 @@ function calendarEntriesInPeriod(profileName, period) {
                 ? absenceType(value)
                 : kind;
 
+            // La injustificada va a Asistencia y puntualidad; el resto de
+            // las ausencias y los permisos son derechos, no antecedentes.
+            const unjustified = kind === "absence" && esAusenciaInjustificada(value);
+
             result.push({
                 kind: type,
+                unjustified,
                 label: type === "training"
                     ? "Capacitacion"
-                    : label,
+                    : unjustified
+                        ? "Ausencia injustificada"
+                        : label,
                 iso: toISODate(date),
                 detail: calendarEntryDetail(type, value)
             });
@@ -751,6 +759,21 @@ function calendarEntryDetail(type, value) {
     if (type === "training") return "Capacitacion registrada en calendario";
 
     return "";
+}
+
+// Minutos de atraso del periodo. El evento del reloj control los trae al
+// comienzo de su texto ("12 min (entro 08:12, le tocaba 08:00)"); no se
+// agrega un campo al evento para no tocar el motor protegido de horas.
+function sumLateMinutes(events = []) {
+    return events
+        .filter(event => event.kind === "atraso")
+        .reduce((total, event) => {
+            const minutes = Number(event.minutes) ||
+                Number(String(event.detail || "").match(/^(\d+)\s*min/)?.[1]) ||
+                0;
+
+            return total + minutes;
+        }, 0);
 }
 
 function countLateEvents(events = []) {
@@ -785,6 +808,7 @@ function buildSummary(profile, period, state, eventsByProfile) {
         calendarTraining: calendar.filter(item => item.kind === "training"),
         incidents,
         lateCount: countLateEvents(incidents),
+        lateMinutes: sumLateMinutes(incidents),
         clockIssueCount: incidents.length,
         // Turnos aceptados que no se cumplieron (historial del perfil): van a
         // Asistencia y puntualidad (art. 16, 3 b).
@@ -1105,13 +1129,18 @@ function evidenceByFactor(summary) {
     });
 
     if (summary.lateCount) {
+        const count = summary.lateCount;
+        const minutes = summary.lateMinutes || 0;
+        const minutesText = minutes ? `${minutes} min en total` : "";
+
         buckets.comportamiento.push({
             tone: "bad",
-            title: `${summary.lateCount} ${summary.lateCount === 1 ? "atraso" : "atrasos"}`,
+            title: `${count} ${count === 1 ? "atraso" : "atrasos"}${minutes ? ` · ${minutesText}` : ""}`,
             detail: "Reloj control",
-            text: summary.lateCount === 1
-                ? "Registra un atraso en el reloj control durante el periodo."
-                : `Registra ${summary.lateCount} atrasos en el reloj control durante el periodo.`
+            text: (count === 1
+                ? "Registra un atraso en el reloj control durante el periodo"
+                : `Registra ${count} atrasos en el reloj control durante el periodo`) +
+                (minutes ? `, con un total de ${minutes} minutos.` : ".")
         });
     }
 
@@ -1137,11 +1166,13 @@ function evidenceByFactor(summary) {
         });
     }
 
+    // Solo las ausencias injustificadas: los permisos (administrativo,
+    // feriados, licencias) son derechos del funcionario y no califican.
     summary.calendar
-        .filter(item => item.kind !== "training")
+        .filter(item => item.unjustified)
         .forEach(item => {
             buckets.comportamiento.push({
-                tone: "mute",
+                tone: "bad",
                 title: item.label,
                 detail: formatDate(item.iso),
                 text: `${item.label} el ${formatDate(item.iso)}.`
