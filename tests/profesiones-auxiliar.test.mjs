@@ -26,3 +26,23 @@ test("Conductor no aparece en el catalogo Administrativo", () => {
         false
     );
 });
+
+test("Administrativo ofrece Radioperadora como profesion disponible", () => {
+    assert.equal(
+        getProfessionOptionsForEstamento("Administrativo")
+            .includes("Radioperadora"),
+        true
+    );
+    assert.equal(
+        normalizeProfession("radioperadora", "Administrativo"),
+        "Radioperadora"
+    );
+});
+
+test("Radioperadora no aparece en el catalogo Auxiliar", () => {
+    assert.equal(
+        getProfessionOptionsForEstamento("Auxiliar")
+            .includes("Radioperadora"),
+        false
+    );
+});

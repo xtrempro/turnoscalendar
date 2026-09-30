@@ -67,6 +67,7 @@ export const TECHNICAL_PROFESSIONS = [
 ];
 
 export const ADMINISTRATIVE_PROFESSIONS = [
+    "Radioperadora",
     "T\u00e9cnico en Administraci\u00f3n de Empresas",
     "T\u00e9cnico en Contabilidad",
     "T\u00e9cnico en Log\u00edstica",
