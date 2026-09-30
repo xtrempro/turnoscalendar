@@ -5647,6 +5647,12 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     order: 10;
 }
 
+/* Mismo orden que el Semanal: empata y decide el HTML, donde va justo despues.
+   Sin esto quedaba en 0 y aparecia entre los primeros del menu. */
+.actionbar .nav-tile[data-target="monthlyCalendarPanel"] {
+    order: 10;
+}
+
 .actionbar .nav-tile[data-target="taskAssignmentsPanel"] {
     order: 11;
 }
@@ -5741,6 +5747,7 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
 }
 
 .actionbar .nav-tile[data-target="staffingWeeklyCalendar"] span,
+.actionbar .nav-tile[data-target="monthlyCalendarPanel"] span,
 .actionbar .nav-tile[data-target="taskAssignmentsPanel"] span {
     white-space: normal;
 }

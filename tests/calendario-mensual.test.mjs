@@ -281,6 +281,28 @@ test("el mes que viene trae las tareas recurrentes aunque esten vacias", async (
     );
 });
 
+test("al quitar, solo los permisos que admite ese dia", async () => {
+    const valores = async keyDay =>
+        (await mensual.allowedLeaveOptions("Juan Zapata", keyDay)).map(o => o.value);
+
+    // Jueves 1 de octubre, Larga, dia habil: todos.
+    const habil = await valores("2026-9-1");
+
+    assert.ok(habil.includes("admin"));
+    assert.ok(habil.includes("half_admin_morning"));
+    assert.ok(habil.includes("legal"));
+
+    // Sabado 17, Larga, sin asignacion de turno: ni administrativo ni medio,
+    // ni feriados (parten en dia habil). Las licencias si.
+    const sabado = await valores("2026-9-17");
+
+    assert.ok(!sabado.includes("admin"));
+    assert.ok(!sabado.includes("half_admin_morning"));
+    assert.ok(!sabado.includes("half_admin_afternoon"));
+    assert.ok(!sabado.includes("legal"));
+    assert.ok(sabado.includes("license"));
+});
+
 test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", async () => {
     const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
     const [html, navegacion, permisos, fuente] = await Promise.all([

@@ -22,8 +22,10 @@ import {
     saveManualLeaveBalances,
     isProfileActive,
     setCurrentProfile,
-    getCurrentProfile
+    getCurrentProfile,
+    getShiftAssigned
 } from "./storage.js";
+import { puedeAplicarAdministrativo } from "./rulesEngine.js";
 import { getJSON } from "./persistence.js";
 import {
     aplicarCambiosTurno,
@@ -813,7 +815,7 @@ function panelHTML(model, groups) {
                                         ? `<button type="button" class="mcal-fold" data-mcal-collapse="${slot}" title="Agrupar los motivos con poca gente">− Agrupar</button>`
                                         : ""}
                                     ${canEdit
-                                        ? `<button type="button" class="mcal-fold" data-mcal-add-column="${slot}" title="Agregar una tarea de los ultimos meses o crear una nueva">+ Tarea</button>`
+                                        ? `<button type="button" class="mcal-fold" data-mcal-add-column="${slot}" title="Agregar un motivo de horas extras de los últimos 3 meses o crear uno nuevo">+ Motivos HHEE</button>`
                                         : ""}
                                 </th>
                             `).join("")}
@@ -935,6 +937,43 @@ const LEAVE_OPTIONS = [
     { value: "unjustified", label: "Ausencia injustificada" }
 ];
 
+/**
+ * Los permisos que admite ESE dia para ese trabajador, con las mismas reglas
+ * que el calendario aplica al guardarlos: antes se ofrecian todos y el que no
+ * cabia fallaba recien al aplicarlo.
+ * - Administrativo: la regla del calendario (turno Larga/Noche, o Diurno en
+ *   rotativa diurna; sin asignacion de turno, solo en dia habil).
+ * - Medio administrativo: solo dia habil y sin otro administrativo ese dia.
+ * - Feriado legal y compensatorio: parten en dia habil.
+ */
+export async function allowedLeaveOptions(name, keyDay) {
+    const date = dateFromKey(keyDay);
+    const holidays = await fetchHolidays(date.getFullYear());
+    const isHab = isBusinessDay(date, holidays);
+    const admin = getJSON(`admin_${name}`, {});
+    const legal = getJSON(`legal_${name}`, {});
+    const comp = getJSON(`comp_${name}`, {});
+    const absences = getJSON(`absences_${name}`, {});
+    const adminAllowed = puedeAplicarAdministrativo(
+        keyDay,
+        getTurnoBase(name, keyDay),
+        isHab,
+        admin,
+        legal,
+        comp,
+        absences,
+        getShiftAssigned(name, date),
+        getRotativa(name)
+    );
+
+    return LEAVE_OPTIONS.filter(option => {
+        if (option.value === "admin") return adminAllowed;
+        if (option.value.startsWith("half_admin")) return isHab && !admin[keyDay];
+        if (option.value === "legal" || option.value === "comp") return isHab;
+        return true;
+    });
+}
+
 // Mismo recurso que Solicitudes y el calendario: el permiso se aplica sobre el
 // perfil ABIERTO, asi que se abre el del trabajador y se restaura siempre.
 async function withProfile(profileName, task) {
@@ -1029,12 +1068,13 @@ async function removeWithLeave(person, keyDay) {
         return true;
     }
 
+    const options = await allowedLeaveOptions(name, keyDay);
     const value = await showChoice(
-        `¿Qué permiso se le da a ${name}?`,
+        `¿Qué permiso se le da a ${name}? Solo aparecen los que admite este día.`,
         {
             title: "Quitar del turno",
             confirmText: "Continuar",
-            choices: LEAVE_OPTIONS.map(option => ({
+            choices: options.map(option => ({
                 value: option.value,
                 label: option.label
             }))
@@ -1481,7 +1521,7 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
     document.body.appendChild(backdrop);
 }
 
-// "+ Tarea": una tarea de meses anteriores que no es de las recurrentes.
+// "+ Motivos HHEE": un motivo de horas extras de los ultimos meses, o uno nuevo.
 async function addHistoricalColumn(slot) {
     const model = lastModel;
 
@@ -1493,24 +1533,24 @@ async function addHistoricalColumn(slot) {
     // Sin motivos recientes que ofrecer, directo a escribir uno nuevo.
     let reason = options.length
         ? await showChoice(
-            `¿Qué tarea agregar a ${slotLabel}? Son los motivos de los últimos 3 meses.`,
+            `¿Qué motivo de horas extras agregar a ${slotLabel}? Son los de los últimos 3 meses.`,
             {
-                title: "Agregar tarea",
+                title: "Agregar motivo HHEE",
                 confirmText: "Agregar",
                 choices: options.map(item => ({
                     value: item.reason,
                     label: `${item.reason} (${item.months} ${item.months === 1 ? "mes" : "meses"})`
                 })),
-                extraActions: [{ text: "Crear tarea nueva", value: NEW_TASK }]
+                extraActions: [{ text: "Crear motivo nuevo", value: NEW_TASK }]
             }
         )
         : NEW_TASK;
 
     if (reason === NEW_TASK) {
         reason = String(await showPrompt(
-            `Nombre de la tarea nueva para ${slotLabel} (queda como motivo de horas extras de quien agregues en ella).`,
+            `Nombre del motivo de horas extras nuevo para ${slotLabel} (justifica las horas extras de quien agregues en él).`,
             {
-                title: "Crear tarea nueva",
+                title: "Crear motivo HHEE nuevo",
                 placeholder: "Ej.: Apoyo Clínico TC",
                 confirmText: "Crear"
             }
