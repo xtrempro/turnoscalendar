@@ -139,6 +139,21 @@ test("una Larga y una Noche realizadas suman 12 horas cada una", () => {
     assert.equal(summary.assignedHours, 24);
 });
 
+test("un D+N realizado en viernes suma 20 horas", () => {
+    seedHonoraria({
+        [key(10)]: TURNO.DIURNO_NOCHE
+    });
+
+    const summary = getHonorariaMonthlySummary(
+        PROFILE,
+        YEAR,
+        MONTH,
+        {}
+    );
+
+    assert.equal(summary.assignedHours, 20);
+});
+
 test("caso Mathias septiembre: el total correcto es 179 y excede 3 horas", () => {
     localStorage.clear();
     setJSON("profiles", [
