@@ -1,6 +1,7 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
-import { showConfirm } from "./dialogs.js";
+import { showChoice, showConfirm } from "./dialogs.js";
+import { recordBaseShiftRemoval } from "./baseShiftRemovals.js";
 import {
     LEAVE_ATTACHMENT_ACCEPT,
     addLeaveAttachment,
@@ -158,6 +159,7 @@ import {
     getInheritedReplacementContractForCoveredShift,
     getReplacementContractCoverageWorker,
     getReplacementContractsForDate,
+    getReplacedProfileForDate,
     hasContractForDate,
     isHonorariaProfile,
     isReplacementProfile
@@ -10671,6 +10673,288 @@ function removeManualExtraTurn(profileName, keyDay, options = {}) {
     return true;
 }
 
+/* ======================================================
+   Boton QUITAR TURNO del menu Turnos
+
+   El supervisor apreta el boton y marca un turno del calendario. Si es un turno
+   EXTRA, se le cuenta de donde salio (a quien cubre y por que permiso, o el
+   motivo de horas extras) y que ese requerimiento queda sin cubrir. Si es un
+   turno de la ROTATIVA BASE, se le pregunta si de verdad lo quiere quitar: sus
+   horas se descuentan de las horas extras del mes (js/baseShiftRemovals.js, que
+   lee el motor de horas).
+====================================================== */
+
+// Lo que un dia tiene para quitar: la parte extra (con los registros que la
+// originaron) y la parte que viene de la rotativa base.
+function removableShiftParts(profileName, keyDay) {
+    const { effectiveBaseTurn, actual, extra } =
+        manualExtraForDay(profileName, keyDay);
+    // Los respaldos de marcaje no ponen turno: sus horas vienen del reloj.
+    const records = getReplacementsForWorkerShift(profileName, keyDay)
+        .filter(record => record?.source !== "clock_extra");
+    const programmed = getTurnoProgramado(profileName, keyDay);
+    const baseTurn = Number(effectiveBaseTurn) || TURNO.LIBRE;
+    const baseIncluded = Boolean(
+        baseTurn &&
+        Number(actual) &&
+        Number(restarTurnoCubierto(actual, baseTurn)) !== Number(actual)
+    );
+
+    return {
+        actual: Number(actual) || TURNO.LIBRE,
+        programmed: Number(programmed) || TURNO.LIBRE,
+        baseTurn,
+        baseIncluded,
+        extra: Number(extra) || TURNO.LIBRE,
+        records,
+        hasExtra: Boolean(Number(extra) || records.length)
+    };
+}
+
+/**
+ * Si la casilla tiene un turno que se pueda quitar con el boton. La usa el
+ * calendario para iluminar solo esas casillas.
+ */
+export function canRemoveShiftFromDay(profileName, keyDay, context = {}) {
+    if (!profileName || !keyDay) return false;
+
+    const {
+        admin = {},
+        legal = {},
+        comp = {},
+        absences = {}
+    } = context;
+
+    // Un dia con permiso o ausencia se maneja en su propio cuadro.
+    if (tieneAusencia(keyDay, admin, legal, comp, absences)) return false;
+
+    const parts = removableShiftParts(profileName, keyDay);
+
+    return parts.hasExtra || parts.baseIncluded;
+}
+
+function removalTurnLabel(turno) {
+    return TURNO_LABEL[Number(turno) || 0] || "Libre";
+}
+
+function formatRemovalHours(value) {
+    const rounded = Math.round((Number(value) || 0) * 100) / 100;
+
+    return String(rounded).replace(".", ",");
+}
+
+// De donde salio el turno extra, una linea por registro.
+function extraShiftOriginLines(profileName, keyDay, records) {
+    if (!records.length) {
+        // El turno de un reemplazo sale de su contrato: cubre a quien el
+        // contrato reemplaza.
+        const contractReplaced = isReplacementProfile(profileName, keyDay)
+            ? getReplacedProfileForDate(profileName, keyDay)
+            : "";
+
+        return [
+            contractReplaced
+                ? `Origen: contrato de reemplazo de ${contractReplaced}.`
+                : "Origen: turno agregado a mano, sin motivo registrado."
+        ];
+    }
+
+    return records.map(record => {
+        const turno = removalTurnLabel(codeToTurno(record.turno));
+
+        if (record.replaced) {
+            const leave =
+                record.absenceType ||
+                getAbsenceLabelForProfileDate(record.replaced, keyDay);
+
+            return `Origen: cubre el turno ${turno} de ${record.replaced}` +
+                (leave ? ` (${leave})` : "") +
+                ".";
+        }
+
+        const reason = String(record.reason || "").trim();
+
+        return reason
+            ? `Origen: turno ${turno} por el motivo de horas extras "${reason}".`
+            : `Origen: turno ${turno} agregado a mano, sin motivo registrado.`;
+    });
+}
+
+async function confirmExtraShiftRemoval(profileName, keyDay, parts) {
+    const covered = [
+        ...new Set([
+            ...parts.records.map(record => record.replaced),
+            parts.records.length || !isReplacementProfile(profileName, keyDay)
+                ? ""
+                : getReplacedProfileForDate(profileName, keyDay)
+        ].filter(Boolean))
+    ];
+    const uncovered = covered.length
+        ? `El turno de ${covered.join(" y ")} quedara SIN CUBRIR y volvera a pedir reemplazo.`
+        : "El requerimiento que lo origino quedara SIN CUBRIR.";
+    const extraTurn = parts.extra || parts.actual;
+
+    return showConfirm(
+        `Se quitara el turno extra ${removalTurnLabel(extraTurn)} de ${profileName} ` +
+            `el ${leaveDateLabelFromKey(keyDay)}.\n\n` +
+            `${extraShiftOriginLines(profileName, keyDay, parts.records).join("\n")}\n\n` +
+            uncovered,
+        {
+            title: "Quitar turno extra",
+            tone: "danger",
+            confirmText: "Quitar turno",
+            cancelText: "Volver",
+            destructive: true
+        }
+    );
+}
+
+async function confirmBaseShiftRemoval(profileName, keyDay, parts) {
+    const date = dateFromKeyDay(keyDay);
+    const holidays = await fetchHolidays(date.getFullYear());
+    const hours = calcExtraHours(date, parts.baseTurn, holidays);
+    const total = (Number(hours?.d) || 0) + (Number(hours?.n) || 0);
+    const detail = [
+        hours?.d ? `${formatRemovalHours(hours.d)} diurnas` : "",
+        hours?.n ? `${formatRemovalHours(hours.n)} nocturnas` : ""
+    ].filter(Boolean).join(" y ");
+
+    return showConfirm(
+        `¿Seguro que deseas quitar un turno de la ROTATIVA BASE de ${profileName}?\n\n` +
+            `Turno: ${removalTurnLabel(parts.baseTurn)}, ${leaveDateLabelFromKey(keyDay)}.\n\n` +
+            `Sus ${formatRemovalHours(total)} horas` +
+            (detail ? ` (${detail})` : "") +
+            " se restaran de las horas extras que tenga este mes.",
+        {
+            title: "Quitar turno de la rotativa base",
+            tone: "danger",
+            confirmText: "Quitar turno base",
+            cancelText: "Volver",
+            destructive: true
+        }
+    );
+}
+
+function removeExtraShift(profileName, keyDay, parts, options = {}) {
+    parts.records.forEach(record => {
+        cancelReplacementById(record.id, {
+            reason: "supervisor_removed_shift",
+            details: "Turno quitado con el boton Quitar turno.",
+            canceledBy: "Quitar turno"
+        });
+    });
+
+    // Lo que siga puesto a mano por sobre la base (o el turno entero de un
+    // reemplazo) se quita igual que desde el cuadro de la casilla.
+    if (manualExtraForDay(profileName, keyDay).extra) {
+        removeManualExtraTurn(profileName, keyDay, options);
+    } else {
+        scheduleCalendarDirectEditRefresh(keyDay);
+    }
+
+    return true;
+}
+
+async function removeBaseShift(profileName, keyDay, parts, options = {}) {
+    const date = options.date || dateFromKeyDay(keyDay);
+    const holidays = options.holidays ||
+        await fetchHolidays(date.getFullYear());
+    // Se guarda el dia SIN la base: si tenia un extra encima (p. ej. una Noche
+    // sobre su Larga) el extra se queda.
+    const nextProgrammed =
+        Number(restarTurnoCubierto(parts.programmed, parts.baseTurn)) ||
+        TURNO.LIBRE;
+    const nextActual =
+        Number(restarTurnoCubierto(parts.actual, parts.baseTurn)) ||
+        TURNO.LIBRE;
+
+    recordBaseShiftRemoval(profileName, keyDay, parts.baseTurn);
+    commitCalendarTurnChange({
+        profileName,
+        keyDay,
+        currentState: parts.actual,
+        nextTurn: nextActual,
+        turnToStore: nextProgrammed,
+        baseTurn: parts.baseTurn,
+        cell: options.cell,
+        date,
+        holidays,
+        historyLabel: `Turno base quitado en ${keyDay}`
+    });
+    addAuditLog(
+        AUDIT_CATEGORY.CALENDAR,
+        "Quito turno de la rotativa base",
+        `${profileName}: se quito el turno ${removalTurnLabel(parts.baseTurn)} del ${keyDay}; sus horas se descuentan de las horas extras del mes.`,
+        {
+            profile: profileName,
+            keyDay,
+            turno: parts.baseTurn
+        }
+    );
+
+    return true;
+}
+
+/**
+ * El clic del boton QUITAR TURNO sobre una casilla. Devuelve true si se quito
+ * algo.
+ */
+export async function offerShiftRemoval(profileName, keyDay, options = {}) {
+    const parts = removableShiftParts(profileName, keyDay);
+
+    if (!parts.hasExtra && !parts.baseIncluded) {
+        alert("Este dia no tiene un turno que quitar.");
+        return false;
+    }
+
+    let target = parts.hasExtra ? "extra" : "base";
+
+    // Un dia con base y extra a la vez (p. ej. un 24 armado con una Noche
+    // extra sobre su Larga): se pregunta cual de los dos se quita.
+    if (parts.hasExtra && parts.baseIncluded) {
+        const choice = await showChoice(
+            `El ${leaveDateLabelFromKey(keyDay)} ${profileName} tiene un turno de su rotativa base y uno extra. ¿Cual quieres quitar?`,
+            {
+                title: "Quitar turno",
+                confirmText: "Continuar",
+                cancelText: "Volver",
+                choices: [
+                    {
+                        value: "extra",
+                        label: `Turno extra: ${removalTurnLabel(parts.extra || parts.actual)}`,
+                        hint: "Lo que origino el extra queda sin cubrir."
+                    },
+                    {
+                        value: "base",
+                        label: `Turno base: ${removalTurnLabel(parts.baseTurn)}`,
+                        hint: "Sus horas se restan de las horas extras del mes."
+                    }
+                ]
+            }
+        );
+
+        if (!choice) return false;
+
+        target = choice;
+    }
+
+    if (target === "extra") {
+        if (!await confirmExtraShiftRemoval(profileName, keyDay, parts)) {
+            return false;
+        }
+
+        options.beforeChange?.();
+        return removeExtraShift(profileName, keyDay, parts, options);
+    }
+
+    if (!await confirmBaseShiftRemoval(profileName, keyDay, parts)) {
+        return false;
+    }
+
+    options.beforeChange?.();
+    return removeBaseShift(profileName, keyDay, parts, options);
+}
+
 /**
  * Abre el modal de respaldo del turno extra de un dia, si lo tiene pendiente.
  * Se usa al agregar un turno con los botones: el motivo se pide en el momento,
@@ -11851,11 +12135,22 @@ async function renderCalendarImpl(options = {}) {
                 }
             );
 
+        // QUITAR TURNO: solo se iluminan las casillas con un turno que quitar.
+        const removeTurnBlocked =
+            window.selectionMode === "removeturn" &&
+            !canRemoveShiftFromDay(activeProfile, keyDay, {
+                admin,
+                legal,
+                comp,
+                absences
+            });
+
         if (window.selectionMode || !activeProfileEnabled) {
             div.classList.add(
                 bloqueado ||
                 addTurnBlocked ||
                 contingencyBlocked ||
+                removeTurnBlocked ||
                 !activeProfileEnabled
                     ? "mpa-disabled"
                     : "mpa-enabled"

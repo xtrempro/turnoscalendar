@@ -168,6 +168,7 @@ const PROFILE_KEY_PREFIXES = [
     "leaveBalances_",
     "hourReturns_",
     "hheeReturnTransfers_",
+    "baseShiftRemovals_",
     "clockMarks_",
     "gradeHistory_",
     "contractHistory_",
@@ -862,6 +863,7 @@ function buildOvertimeSummarySignature(profile, schedule) {
         `leaveBalances_${profileName}`,
         `hourReturns_${profileName}`,
         `hheeReturnTransfers_${profileName}`,
+        `baseShiftRemovals_${profileName}`,
         `clockMarks_${profileName}`,
         `gradeHistory_${profileName}`,
         `contractHistory_${profileName}`

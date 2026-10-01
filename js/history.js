@@ -17,6 +17,7 @@ const PROFILE_BUCKET_LABELS = {
     leaveBalances: "saldos de vacaciones",
     hourReturns: "devolucion de horas",
     hheeReturnTransfers: "horas extras a devolucion",
+    baseShiftRemovals: "turnos base quitados",
     abs: "permisos o ausencias",
     blocked: "bloqueos del calendario",
     shift: "asignacion de turno",
@@ -278,6 +279,9 @@ function snapshotProfile(p){
         hheeReturnTransfers: getRaw(
             key(p,"hheeReturnTransfers")
         ),
+        baseShiftRemovals: getRaw(
+            key(p,"baseShiftRemovals")
+        ),
         abs: getRaw(key(p,"absences")),
         blocked: getRaw(key(p,"blocked")),
         shift: getRaw(key(p,"shift")),
@@ -308,6 +312,10 @@ function restoreProfile(p, state){
     setRaw(
         key(p,"hheeReturnTransfers"),
         state.hheeReturnTransfers || "{}"
+    );
+    setRaw(
+        key(p,"baseShiftRemovals"),
+        state.baseShiftRemovals || "{}"
     );
     setRaw(key(p,"absences"), state.abs || "{}");
     setRaw(key(p,"blocked"), state.blocked || "{}");
@@ -353,7 +361,7 @@ function snapshot(){
 // le notifica al trabajador un "cambio" inexistente en su calendario.
 const PROFILE_SNAPSHOT_KEYS = [
     "data", "baseData", "admin", "legal", "comp", "leaveBalances",
-    "hourReturns", "hheeReturnTransfers", "abs", "blocked", "shift",
+    "hourReturns", "hheeReturnTransfers", "baseShiftRemovals", "abs", "blocked", "shift",
     "shiftAssignmentHistory", "clockMarks", "replacementContracts",
     "gradeHistory", "contractHistory"
 ];

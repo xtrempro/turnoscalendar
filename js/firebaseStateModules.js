@@ -111,7 +111,10 @@ const PREFIX_KEY_MODULES = [
     ["clockMarks_", "clockmarks"],
     ["carry_", "hours"],
     ["hourReturns_", "hours"],
-    ["hheeReturnTransfers_", "hours"]
+    ["hheeReturnTransfers_", "hours"],
+    // Turnos base quitados con QUITAR TURNO (js/baseShiftRemovals.js): el motor
+    // de horas los descuenta de las extras, en el navegador y en el servidor.
+    ["baseShiftRemovals_", "hours"]
 ];
 
 export function stateModuleForKey(key) {

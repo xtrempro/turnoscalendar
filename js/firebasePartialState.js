@@ -11,7 +11,8 @@ const PARTIAL_MAP_PREFIXES = [
     "clockMarks_",
     "shiftAssignmentHistory_",
     "leaveBalances_",
-    "hheeReturnTransfers_"
+    "hheeReturnTransfers_",
+    "baseShiftRemovals_"
 ];
 
 // Listas compartidas de toda la unidad -reemplazos, cambios de turno,

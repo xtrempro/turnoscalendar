@@ -1056,6 +1056,10 @@ export const DEFAULT_TURN_CHANGE_CONFIG = {
     // esto, recortar la jornada no ofrece nada y el turno sigue dandose por
     // cubierto, como hasta ahora.
     allowSplitShiftCoverage: false,
+    // Boton "Quitar turno" del menu Turnos para planta y contrata. Para
+    // reemplazos y honorarios esta siempre; para el resto lo habilita la unidad,
+    // porque quitar un turno de la rotativa base descuenta horas extras.
+    allowRemoveShiftButton: false,
     limitMonthlySwaps: false,
     monthlySwapLimit: 2
 };
@@ -1114,6 +1118,8 @@ function normalizeTurnChangeConfig(config = {}) {
             config.allowTwentyFourHourShifts !== false,
         allowSplitShiftCoverage:
             config.allowSplitShiftCoverage === true,
+        allowRemoveShiftButton:
+            config.allowRemoveShiftButton === true,
         limitMonthlySwaps:
             config.limitMonthlySwaps === true,
         monthlySwapLimit:
@@ -2092,6 +2098,7 @@ export function updateProfile(oldName, nextProfile){
         "leaveBalances_",
         "hourReturns_",
         "hheeReturnTransfers_",
+        "baseShiftRemovals_",
         "replacementContracts_",
         "honorariaContracts_",
         "clockMarks_",

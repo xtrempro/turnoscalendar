@@ -234,7 +234,9 @@ function getMaps(nombre) {
         admin: readProfileMap("admin", nombre),
         legal: readProfileMap("legal", nombre),
         comp: readProfileMap("comp", nombre),
-        absences: readProfileMap("absences", nombre)
+        absences: readProfileMap("absences", nombre),
+        // Turnos base quitados con QUITAR TURNO (js/baseShiftRemovals.js).
+        baseShiftRemovals: readProfileMap("baseShiftRemovals", nombre)
     };
 }
 
@@ -1177,6 +1179,10 @@ function calculateClockAbsenceAdjustments(
             continue;
         }
 
+        if (maps.baseShiftRemovals?.[keyDay]) {
+            continue;
+        }
+
         const halfAdminState =
             halfAdminWorkState(keyDay, maps);
 
@@ -1239,6 +1245,106 @@ function calculateClockAbsenceAdjustments(
     }
 
     return total;
+}
+
+// Horas de los turnos de la rotativa base que el supervisor QUITO (boton
+// QUITAR TURNO), por dia. Se restan de las horas extras del mes.
+//
+// En el modo "aggregate" no hay nada que restar aca: las extras salen de lo
+// trabajado contra las horas habiles, y el dia quitado ya no suma trabajado.
+// En "assigned" y "diurno" las extras se miden contra la rotativa base, y un
+// dia base que no se trabaja simplemente no aporta: por eso el descuento es
+// explicito, con la misma forma que la ausencia de reloj (base menos lo que se
+// trabajo ese dia). Si el turno se vuelve a poner, lo trabajado lo cubre y el
+// descuento queda en cero sin tocar la anotacion.
+function baseShiftRemovalHoursByDay(
+    mode,
+    nombre,
+    y,
+    m,
+    days,
+    holidays,
+    data,
+    maps
+) {
+    const byDay = [];
+
+    if (mode === "aggregate") return byDay;
+
+    const removals = maps.baseShiftRemovals || {};
+    const rangeStart = new Date(y, m, 1);
+    const rangeEnd = new Date(y, m + 1, 1);
+
+    for (let d = 1; d <= days; d++) {
+        const keyDay = key(y, m, d);
+
+        if (!removals[keyDay]) continue;
+
+        if (!includesContractDay(nombre, keyDay)) continue;
+
+        // Un permiso o una ausencia ese dia ya se lleva el turno: no hay horas
+        // que descontar por haberlo quitado.
+        if (
+            getApprovedCoverage(keyDay, maps) > 0 ||
+            hasUnjustifiedAbsence(keyDay, maps)
+        ) {
+            continue;
+        }
+
+        const date = new Date(y, m, d);
+        const baseIntervals = mode === "diurno"
+            ? normalDiurnoInterval(date, holidays)
+            : intervalsForState(
+                date,
+                baseStateForExtraComparison(nombre, keyDay),
+                holidays
+            );
+
+        if (!baseIntervals.length) continue;
+
+        const actualIntervals = getWorkedIntervalsForState(
+            nombre,
+            keyDay,
+            date,
+            actualStateForDay(nombre, data, keyDay),
+            holidays
+        );
+        const removed = classifyIntervals(
+            subtractIntervals(baseIntervals, actualIntervals),
+            holidays,
+            rangeStart,
+            rangeEnd
+        );
+
+        if (removed.d || removed.n) {
+            byDay.push({ keyDay, hours: removed });
+        }
+    }
+
+    return byDay;
+}
+
+function calculateBaseShiftRemovalAdjustments(...args) {
+    const total = { d: 0, n: 0 };
+
+    baseShiftRemovalHoursByDay(...args).forEach(({ hours }) => {
+        addHours(total, hours);
+    });
+
+    return total;
+}
+
+function calculateBaseShiftRemovalSegments(...args) {
+    const segments = [];
+
+    baseShiftRemovalHoursByDay(...args).forEach(({ keyDay, hours }) => {
+        pushPaymentSegment(segments, keyDay, {
+            d: -hours.d,
+            n: -hours.n
+        });
+    });
+
+    return segments;
 }
 
 function pushPaymentSegment(segments, keyDay, hours) {
@@ -1550,6 +1656,10 @@ function calculateClockAbsenceSegments(
             continue;
         }
 
+        if (maps.baseShiftRemovals?.[keyDay]) {
+            continue;
+        }
+
         const halfAdminState =
             halfAdminWorkState(keyDay, maps);
 
@@ -1720,6 +1830,16 @@ function calculatePaymentSegments({
             holidays,
             data,
             maps
+        ),
+        ...calculateBaseShiftRemovalSegments(
+            mode,
+            nombre,
+            y,
+            m,
+            days,
+            holidays,
+            data,
+            maps
         )
     ];
 }
@@ -1832,11 +1952,22 @@ function buildStats({
         maps
     );
 
+    const baseShiftRemovals = calculateBaseShiftRemovalAdjustments(
+        mode,
+        nombre,
+        y,
+        m,
+        days,
+        holidays,
+        data,
+        maps
+    );
+
     hheeDiurnas = roundSignedExtra(
-        hheeDiurnas - clockAbsences.d
+        hheeDiurnas - clockAbsences.d - baseShiftRemovals.d
     );
     hheeNocturnas = roundSignedExtra(
-        hheeNocturnas - clockAbsences.n
+        hheeNocturnas - clockAbsences.n - baseShiftRemovals.n
     );
 
     const returnTransferEnabled =

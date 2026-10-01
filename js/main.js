@@ -208,6 +208,7 @@ import {
     toggleContingencyForDay,
     offerSplitShiftCoverage,
     openManualExtraReasonForDay,
+    offerShiftRemoval,
     openPreassignmentReasonForDay,
     openReplacementSuggestionsForLeaveBlock,
     updateDayCell,
@@ -525,7 +526,8 @@ import {
     isHonorariaContractType,
     isHonorariaProfile,
     isOtherContractType,
-    isReplacementContractType
+    isReplacementContractType,
+    isReplacementProfile
 } from "./contracts.js";
 import {
     REPLACEMENT_ROTATION_MODE,
@@ -1480,6 +1482,7 @@ const CRITICAL_PROFILE_STATE_PREFIXES = [
     "absences_",
     "hourReturns_",
     "hheeReturnTransfers_",
+    "baseShiftRemovals_",
     "leaveBalances_",
     "rotativa_",
     "shift_",
@@ -7014,6 +7017,7 @@ function renderBotones() {
         !hasProfile || !activeProfile || !shiftAssigned
     );
     syncMoveShiftAvailability();
+    syncRemoveTurnButton();
 
     updateHistoryNavState();
     updateTurnChangesNavState();
@@ -14490,6 +14494,15 @@ function syncAddTurnButtons() {
 
     // Los de contingencia comparten caja y armado con los de turno, pero no
     // arman un turno: se marcan por su propia clave.
+    const quitarArmado = window.selectionMode === "removeturn";
+
+    document
+        .querySelectorAll("[data-remove-turn]")
+        .forEach(button => {
+            button.classList.toggle("is-armed", quitarArmado);
+            button.setAttribute("aria-pressed", quitarArmado ? "true" : "false");
+        });
+
     const contingenciaArmada = window.selectionMode === "contingency"
         ? String(window.pendingContingency || "")
         : "";
@@ -14621,6 +14634,80 @@ function activarModoMarcarContingencia(clave) {
     }
 
     syncAddTurnButtons();
+}
+
+/* ======================================================
+   QUITAR TURNO
+
+   Siempre disponible para reemplazos y honorarios. Para planta y contrata solo
+   si la unidad lo habilito en Ajustes > Reglas de turnos: ahi el turno quitado
+   suele ser de la rotativa base, y sus horas se descuentan de las extras.
+====================================================== */
+function isRemoveTurnAvailable(profile = getCurrentProfile()) {
+    if (!profile || !isProfileActive(profile)) return false;
+
+    if (isReplacementProfile(profile) || isHonorariaProfile(profile)) {
+        return true;
+    }
+
+    return getTurnChangeConfig().allowRemoveShiftButton === true;
+}
+
+function syncRemoveTurnButton() {
+    const available = isRemoveTurnAvailable();
+
+    document
+        .querySelectorAll("[data-remove-turn]")
+        .forEach(button => {
+            button.classList.toggle("hidden", !available);
+            button.setAttribute("aria-hidden", available ? "false" : "true");
+        });
+
+    // Si el boton se va (otro perfil, ajuste apagado) no puede quedar armado.
+    if (!available && window.selectionMode === "removeturn") {
+        clearSelectionMode();
+    }
+}
+
+function activarModoQuitarTurno() {
+    // Apretar el boton otra vez apaga el modo, igual que los de turno.
+    if (window.selectionMode === "removeturn") {
+        clearSelectionMode();
+        return;
+    }
+
+    if (!isRemoveTurnAvailable()) return;
+
+    activarModo("removeturn", "Quitar turno: marca el turno que quieres quitar");
+    syncAddTurnButtons();
+}
+
+async function handleRemoveTurnSelection(fecha, celda) {
+    const profile = getCurrentProfile();
+    const keyDay = keyFromDate(fecha);
+
+    // Un boton, un turno: el modo se apaga antes del modal.
+    clearSelectionMode();
+
+    if (!profile) return;
+
+    const holidays = await fetchHolidays(fecha.getFullYear());
+    let historyPushed = false;
+    const removed = await offerShiftRemoval(profile, keyDay, {
+        date: fecha,
+        holidays,
+        cell: celda,
+        beforeChange: () => {
+            if (historyPushed) return;
+            historyPushed = true;
+            pushHistory();
+        }
+    });
+
+    if (!removed) return;
+
+    await updateDayCell(profile, keyDay);
+    await updateVisibleCalendarDays({ updateSummary: true });
 }
 
 async function handleContingencySelection(fecha) {
@@ -15997,6 +16084,14 @@ document
         };
     });
 
+document
+    .querySelectorAll("[data-remove-turn]")
+    .forEach(button => {
+        button.onclick = () => {
+            activarModoQuitarTurno();
+        };
+    });
+
 if (DOM.undoBtn) {
     DOM.undoBtn.onclick = () => {
         const result = undo();
@@ -16070,6 +16165,11 @@ setCalendarSelectionHandler(async ({ cell: celda, date: fecha }) => {
 
     if (selectionMode === "contingency") {
         await handleContingencySelection(fecha);
+        return;
+    }
+
+    if (selectionMode === "removeturn") {
+        await handleRemoveTurnSelection(fecha, celda);
         return;
     }
 
@@ -16814,6 +16914,8 @@ initSystemSettings({
     button: DOM.systemSettingsBtn,
     onSaved: () => {
         refreshAll();
+        // El boton QUITAR TURNO depende de un ajuste de la unidad.
+        syncRemoveTurnButton();
     }
 });
 initPlansUI({ button: DOM.plansBtn });

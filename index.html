@@ -936,6 +936,14 @@
                                 <span class="legend-dot add-turn-button__dot"></span>
                                 <span>N CONTINGENCIA</span>
                             </button>
+
+                            <!-- Siempre para reemplazos y honorarios; para planta y
+                                 contrata solo si Ajustes > Reglas de turnos lo
+                                 habilita (main.js syncRemoveTurnButton). -->
+                            <button id="removeTurnBtn" class="legend-action add-turn-button add-turn-button--remove hidden" type="button" data-remove-turn aria-hidden="true">
+                                <span class="legend-dot add-turn-button__dot"></span>
+                                <span>QUITAR TURNO</span>
+                            </button>
                         </div>
                     </section>
 

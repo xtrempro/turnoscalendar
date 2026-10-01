@@ -88,7 +88,7 @@ const SETTINGS_NAV = [
     {
         label: "Turnos y cobertura",
         items: [
-            { id: "shifts", label: "Reglas de turnos", dot: "#0F766E", keywords: "24 horas invertido diurno post dos funcionarios repartir turno" },
+            { id: "shifts", label: "Reglas de turnos", dot: "#0F766E", keywords: "24 horas invertido diurno post dos funcionarios repartir turno quitar turno boton planta contrata" },
             { id: "swaps", label: "Cambios de turno", dot: "#0F766E", keywords: "cambios de turno cctt limite mensual tipos" },
             { id: "requests", label: "Reemplazos", dot: "#0F766E", keywords: "reemplazos sugerencias unidades enlazadas profesiones aceptacion caducidad devolucion de tiempo horas" },
             { id: "training", label: "Capacitaciones", dot: "#0F766E", keywords: "capacitaciones capacitacion noche" }
@@ -563,6 +563,13 @@ function renderShiftRulesPanel() {
                 checked: config.allowSplitShiftCoverage,
                 title: "Cubrir un mismo turno con 2 funcionarios",
                 description: "Al recortarle la jornada a quien cubre un permiso (por ejemplo, entra a las 08:00 y se va a las 13:00 de una Larga), el turno vuelve a pedir cobertura por las horas que quedan y se ofrece buscar a otro trabajador para ese tramo."
+            })}
+
+            ${checkboxHTML({
+                id: "settingsAllowRemoveShiftButton",
+                checked: config.allowRemoveShiftButton,
+                title: "Botón Quitar turno para planta y contrata",
+                description: "Muestra el botón QUITAR TURNO en el menú Turnos también para planta y contrata (para reemplazos y honorarios está siempre). Quitar un turno de la rotativa base descuenta sus horas de las horas extras del mes."
             })}
         </div>
     `;
@@ -1264,6 +1271,10 @@ function readTurnChangeConfig(backdrop) {
             hasInput("settingsAllowSplitShiftCoverage")
                 ? checked("settingsAllowSplitShiftCoverage")
                 : fallback.allowSplitShiftCoverage,
+        allowRemoveShiftButton:
+            hasInput("settingsAllowRemoveShiftButton")
+                ? checked("settingsAllowRemoveShiftButton")
+                : fallback.allowRemoveShiftButton,
         // El checkbox solo existe en el DOM con los turnos 24 activos. Al
         // desactivarlos desaparece, y sin este `false` explicito el fallback
         // conservaria la excepcion encendida de forma invisible.

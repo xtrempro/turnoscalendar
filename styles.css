@@ -17722,6 +17722,25 @@ body.theme-dark .kanban-empty {
     box-shadow: inset 0 0 0 1px var(--add-turn-color, var(--accent));
 }
 
+/* QUITAR TURNO: en vez de un punto de color, una cruz roja. Es el unico boton
+   de la lista que saca algo del calendario. */
+.add-turn-button--remove {
+    --add-turn-color: #dc2626;
+}
+
+.add-turn-button--remove .add-turn-button__dot::before {
+    content: "\00d7";
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    background: var(--add-turn-color);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 800;
+    line-height: 16px;
+    text-align: center;
+}
+
 /* ==========================================================
    Contingencia (L CONTINGENCIA / N CONTINGENCIA)
 
