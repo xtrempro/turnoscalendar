@@ -696,10 +696,32 @@ test("reglas modulares de Firestore y Storage", async t => {
                 setDoc(turnosRef, replacementRecord("r1"))
             );
             await assertSucceeds(getDoc(turnosRef));
+            await assertFails(
+                setDoc(turnosRef, replacementRecord("r1", {
+                    revision: 1,
+                    record: {
+                        id: "r1",
+                        worker: "BETO",
+                        date: "2026-09-24"
+                    }
+                }))
+            );
             await assertSucceeds(
                 setDoc(turnosRef, replacementRecord("r1", {
                     deleted: true,
                     revision: 2,
+                    record: null
+                }))
+            );
+            await assertFails(
+                setDoc(turnosRef, replacementRecord("r1", {
+                    revision: 3
+                }))
+            );
+            await assertSucceeds(
+                setDoc(turnosRef, replacementRecord("r1", {
+                    deleted: true,
+                    revision: 3,
                     record: null
                 }))
             );

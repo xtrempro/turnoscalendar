@@ -750,28 +750,41 @@ service cloud.firestore {
       // entrada legacy `stateModules/turnos/entries/replacements`; la marca de
       // la unidad decidira mas adelante cual lectura es autoritativa.
       match /replacementRecords/{replacementId} {
-        allow read: if canReadStateModule(workspaceId, "turnos");
-        allow create, update: if
-          canWriteStateModule(workspaceId, "turnos") &&
-          request.resource.data.recordId is string &&
-          request.resource.data.recordId.size() > 0 &&
-          request.resource.data.recordId.size() <= 900 &&
-          request.resource.data.deleted is bool &&
-          request.resource.data.revision is int &&
-          request.resource.data.revision >= 1 &&
-          request.resource.data.updatedAtISO is string &&
-          request.resource.data.updatedAtISO.size() <= 40 &&
-          request.resource.data.clientId is string &&
-          request.resource.data.clientId.size() <= 160 &&
-          (
-            request.resource.data.deleted == true ||
+        function validReplacementRecordWrite() {
+          return request.resource.data.recordId is string &&
+            request.resource.data.recordId.size() > 0 &&
+            request.resource.data.recordId.size() <= 900 &&
+            request.resource.data.deleted is bool &&
+            request.resource.data.revision is int &&
+            request.resource.data.updatedAtISO is string &&
+            request.resource.data.updatedAtISO.size() <= 40 &&
+            request.resource.data.clientId is string &&
+            request.resource.data.clientId.size() <= 160 &&
             (
-              request.resource.data.record is map &&
-              "id" in request.resource.data.record
-            )
+              request.resource.data.deleted == true ||
+              (
+                request.resource.data.record is map &&
+                "id" in request.resource.data.record
+              )
+            );
+        }
+
+        allow read: if canReadStateModule(workspaceId, "turnos");
+        allow create: if
+          canWriteStateModule(workspaceId, "turnos") &&
+          validReplacementRecordWrite() &&
+          request.resource.data.revision == 1;
+        allow update: if
+          canWriteStateModule(workspaceId, "turnos") &&
+          validReplacementRecordWrite() &&
+          request.resource.data.recordId == resource.data.recordId &&
+          request.resource.data.revision == resource.data.revision + 1 &&
+          // Un ID eliminado no se reutiliza. Asi una sesion atrasada no puede
+          // resucitar un reemplazo que ya tiene tombstone.
+          (
+            resource.data.deleted == false ||
+            request.resource.data.deleted == true
           );
-        // Los borrados logicos conservan la revision para impedir que una
-        // sesion atrasada resucite el registro sin detectar el conflicto.
         allow delete: if false;
       }
 

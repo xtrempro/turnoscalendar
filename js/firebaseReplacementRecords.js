@@ -13,6 +13,7 @@ import { recordPerformanceEvent } from "./performanceMonitor.js";
 
 const SHADOW_STORAGE = "records-shadow-v1";
 const WRITE_BATCH_SIZE = 400;
+const WRITE_RETRY_MAX_DELAY_MS = 30000;
 
 let activeWorkspaceId = "";
 let unsubscribeRecords = null;
@@ -21,6 +22,7 @@ let recordDocuments = new Map();
 let writeQueue = Promise.resolve();
 let generation = 0;
 let initialReconciliationPending = false;
+let initialReconciliationInFlight = false;
 
 function clientId() {
     return String(getRaw("proturnos_firebase_client_id", "") || "");
@@ -39,11 +41,27 @@ function localRecordsFromEvent(event) {
     }
 }
 
-function nextRevision(recordId) {
-    return Math.max(
-        1,
-        Number(recordDocuments.get(String(recordId))?.revision || 0) + 1
-    );
+function terminalWriteError(error) {
+    const code = String(error?.code || "").toLowerCase();
+
+    return [
+        "permission-denied",
+        "unauthenticated",
+        "invalid-argument",
+        "replacement-record-tombstoned"
+    ].some(value => code.includes(value));
+}
+
+async function waitForRetry(delay, expectedGeneration) {
+    let remaining = delay;
+
+    while (remaining > 0 && expectedGeneration === generation) {
+        const slice = Math.min(remaining, 500);
+        await new Promise(resolve => setTimeout(resolve, slice));
+        remaining -= slice;
+    }
+
+    return expectedGeneration === generation;
 }
 
 async function writeChanges(workspaceId, changes, expectedGeneration) {
@@ -61,45 +79,124 @@ async function writeChanges(workspaceId, changes, expectedGeneration) {
     for (let offset = 0; offset < operations.length; offset += WRITE_BATCH_SIZE) {
         if (expectedGeneration !== generation) return;
 
-        const batch = firestoreModule.writeBatch(db);
-
-        operations.slice(offset, offset + WRITE_BATCH_SIZE).forEach(operation => {
+        const slice = operations.slice(offset, offset + WRITE_BATCH_SIZE);
+        const refs = slice.map(operation => {
             const recordId = String(
                 operation.type === "upsert"
                     ? operation.record.id
                     : operation.recordId
             );
-            const ref = firestoreModule.doc(
+
+            return firestoreModule.doc(
                 db,
                 "workspaces",
                 workspaceId,
                 "replacementRecords",
                 replacementRecordDocId(recordId)
             );
-            const options = {
-                revision: nextRevision(recordId),
-                clientId: clientId()
-            };
-            const payload = operation.type === "upsert"
-                ? replacementRecordPayload(operation.record, options)
-                : replacementRecordTombstone(recordId, options);
-
-            batch.set(ref, {
-                ...payload,
-                updatedAt: firestoreModule.serverTimestamp()
-            });
         });
 
-        await batch.commit();
+        await firestoreModule.runTransaction(db, async transaction => {
+            const snapshots = await Promise.all(
+                refs.map(ref => transaction.get(ref))
+            );
+
+            slice.forEach((operation, index) => {
+                const snapshot = snapshots[index];
+                const current = snapshot.exists() ? snapshot.data() : {};
+                const recordId = String(
+                    operation.type === "upsert"
+                        ? operation.record.id
+                        : operation.recordId
+                );
+
+                if (operation.type === "upsert" && current.deleted === true) {
+                    const error = new Error(
+                        `El reemplazo ${recordId} ya tiene un tombstone.`
+                    );
+                    error.code = "replacement-record-tombstoned";
+                    throw error;
+                }
+
+                if (operation.type === "delete" && current.deleted === true) {
+                    return;
+                }
+
+                const options = {
+                    revision: Math.max(
+                        1,
+                        Number(current.revision || 0) + 1
+                    ),
+                    clientId: clientId()
+                };
+                const payload = operation.type === "upsert"
+                    ? replacementRecordPayload(operation.record, options)
+                    : replacementRecordTombstone(recordId, options);
+
+                transaction.set(refs[index], {
+                    ...payload,
+                    updatedAt: firestoreModule.serverTimestamp()
+                });
+            });
+        });
     }
+
+    return true;
+}
+
+async function writeChangesWithRetry(
+    workspaceId,
+    changes,
+    expectedGeneration
+) {
+    let attempt = 0;
+
+    while (expectedGeneration === generation) {
+        try {
+            return await writeChanges(
+                workspaceId,
+                changes,
+                expectedGeneration
+            );
+        } catch (error) {
+            if (terminalWriteError(error)) throw error;
+
+            attempt += 1;
+            const delay = Math.min(
+                WRITE_RETRY_MAX_DELAY_MS,
+                500 * (2 ** Math.min(attempt - 1, 6))
+            );
+
+            recordPerformanceEvent("replacement-records:write-retry", {
+                attempt,
+                delay,
+                error: error?.message || String(error)
+            });
+
+            if (!await waitForRetry(delay, expectedGeneration)) return false;
+        }
+    }
+
+    return false;
 }
 
 function enqueueWrite(workspaceId, changes, expectedGeneration) {
-    writeQueue = writeQueue
-        .then(() => writeChanges(workspaceId, changes, expectedGeneration))
-        .catch(error => {
-            console.warn("No se pudo actualizar la copia individual de reemplazos.", error);
-        });
+    const task = writeQueue
+        .catch(() => undefined)
+        .then(() => writeChangesWithRetry(
+            workspaceId,
+            changes,
+            expectedGeneration
+        ));
+
+    writeQueue = task.catch(error => {
+        console.warn(
+            "No se pudo actualizar la copia individual de reemplazos.",
+            error
+        );
+    });
+
+    return task;
 }
 
 function reportAudit(localRecords) {
@@ -134,6 +231,7 @@ export function stopFirebaseReplacementRecordShadowSync() {
     persistenceHandler = null;
     recordDocuments = new Map();
     initialReconciliationPending = false;
+    initialReconciliationInFlight = false;
 }
 
 export async function startFirebaseReplacementRecordShadowSync(workspace) {
@@ -182,18 +280,34 @@ export async function startFirebaseReplacementRecordShadowSync(workspace) {
             // actualizan documentos durante el PRIMER snapshot. Los siguientes
             // solo auditan: reconciliar en cada eco hacia que dos clientes se
             // reescribieran mutuamente registros sanos.
+            if (initialReconciliationPending && !discrepancy.upserts.length) {
+                initialReconciliationPending = false;
+            }
+
             if (
                 initialReconciliationPending &&
+                !initialReconciliationInFlight &&
                 canEditMenu("turnos") &&
                 discrepancy.upserts.length
             ) {
-                enqueueWrite(workspace.id, {
+                initialReconciliationInFlight = true;
+
+                void enqueueWrite(workspace.id, {
                     upserts: discrepancy.upserts,
                     deletedIds: []
-                }, expectedGeneration);
+                }, expectedGeneration)
+                    .then(completed => {
+                        if (completed && expectedGeneration === generation) {
+                            initialReconciliationPending = false;
+                        }
+                    })
+                    .catch(() => {
+                        initialReconciliationPending = false;
+                    })
+                    .finally(() => {
+                        initialReconciliationInFlight = false;
+                    });
             }
-
-            initialReconciliationPending = false;
         },
         error => {
             console.warn("No se pudo auditar la copia individual de reemplazos.", error);
@@ -209,11 +323,11 @@ export async function startFirebaseReplacementRecordShadowSync(workspace) {
         }
 
         const records = localRecordsFromEvent(event);
-        enqueueWrite(
+        void enqueueWrite(
             workspace.id,
             diffReplacementRecords(records.previous, records.next),
             expectedGeneration
-        );
+        ).catch(() => undefined);
     };
     window.addEventListener(
         "proturnos:persistenceChanged",

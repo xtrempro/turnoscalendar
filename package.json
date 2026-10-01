@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/verify-obfuscated-engine.mjs && node build.mjs",
     "build:legible": "node build.mjs --legible",
+    "audit:replacement-records": "node scripts/audit-replacement-records.mjs",
     "appcheck:estado": "node scripts/appcheck-estado.mjs",
     "verify:obfuscation": "node scripts/verify-obfuscated-engine.mjs",
     "bench:obfuscation": "node scripts/bench-obfuscation.mjs",

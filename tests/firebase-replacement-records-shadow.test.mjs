@@ -60,6 +60,21 @@ test("los cambios locales generan upserts y tombstones individuales", () => {
     assert.match(sync, /const WRITE_BATCH_SIZE = 400/);
 });
 
+test("cada documento avanza su revision dentro de una transaccion", () => {
+    assert.match(sync, /firestoreModule\.runTransaction/);
+    assert.match(sync, /refs\.map\(ref => transaction\.get\(ref\)\)/);
+    assert.match(sync, /Number\(current\.revision \|\| 0\) \+ 1/);
+    assert.match(sync, /transaction\.set\(refs\[index\]/);
+    assert.match(sync, /current\.deleted === true/);
+});
+
+test("un fallo transitorio reintenta sin soltar la cola", () => {
+    assert.match(sync, /async function writeChangesWithRetry/);
+    assert.match(sync, /while \(expectedGeneration === generation\)/);
+    assert.match(sync, /replacement-records:write-retry/);
+    assert.match(sync, /WRITE_RETRY_MAX_DELAY_MS/);
+});
+
 test("el modo sombra arranca tras hidratar y se detiene al salir", () => {
     assert.match(
         main,
