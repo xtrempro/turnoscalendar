@@ -19372,11 +19372,7 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 
 /* ---------- raiz y encabezado ---------- */
 .mem-root { display: grid; gap: 14px; align-content: start; min-width: 0; container-type: inline-size; container-name: mem; }
-.mem-pagehead { background: var(--mem-panel); border: 1px solid var(--mem-border); border-radius: 20px; padding: 18px 20px; box-shadow: var(--mem-shadow); display: grid; gap: 16px; }
-.mem-pagehead__top { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-start; justify-content: space-between; }
 .mem-kicker { display: block; color: var(--mem-teal); font-size: 11px; font-weight: 800; letter-spacing: 0.07em; text-transform: uppercase; margin-bottom: 4px; }
-.mem-pagehead h1 { font-family: var(--font-display); font-size: 26px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; color: var(--mem-text); }
-.mem-pagehead__side { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 
 /* ---------- tonos ---------- */
 .mem-pill { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 800; line-height: 1.3; white-space: nowrap; background: var(--mem-mut-bg); color: var(--mem-text-soft); }
@@ -19409,7 +19405,9 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 /* ---------- barra de filtros ---------- */
 .mem-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; background: var(--mem-panel); border: 1px solid var(--mem-border); border-radius: 16px; padding: 10px 12px; box-shadow: var(--mem-shadow); }
 .mem-toolbar__group { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.mem-search { display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 38px; border: 1px solid var(--mem-field-border); border-radius: 12px; background: var(--mem-field); color: var(--mem-muted); min-width: min(260px, 100%); }
+/* Estado y buscador van en la misma linea: el buscador toma lo que sobra. */
+.mem-toolbar__group:first-child { flex: 1 1 440px; flex-wrap: nowrap; min-width: 0; }
+.mem-search { display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 38px; border: 1px solid var(--mem-field-border); border-radius: 12px; background: var(--mem-field); color: var(--mem-muted); min-width: 160px; max-width: 340px; flex: 1 1 auto; }
 .mem-search input { flex: 1; min-width: 0; width: auto; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; outline: 0; color: var(--mem-text); font-size: 13px; }
 .mem-search input:focus { box-shadow: none; border: 0; }
 .mem-select { display: flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 10px; border: 1px solid var(--mem-field-border); border-radius: 12px; background: var(--mem-field); font-size: 12.5px; font-weight: 700; color: var(--mem-text-soft); }
@@ -19552,7 +19550,6 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 }
 
 @container mem (max-width: 620px) {
-    .mem-pagehead { padding: 16px; }
     .mem-memo { grid-template-columns: auto minmax(0, 1fr); }
     .mem-memo__side { grid-column: 2; justify-items: start; }
     .mem-group__h { grid-template-columns: auto minmax(0, 1fr); }

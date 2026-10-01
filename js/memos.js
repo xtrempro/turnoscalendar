@@ -1552,25 +1552,6 @@ function workerShift(name) {
     return label;
 }
 
-/* ---------- encabezado ---------- */
-
-// Sin texto explicativo ni tarjetas de indicadores: el usuario los quito el
-// 2026-09-14, no los necesita.
-function pageHeadHTML() {
-    return `<header class="mem-pagehead">
-        <div class="mem-pagehead__top">
-            <div>
-                <span class="mem-kicker">Documentos del personal</span>
-                <h1>Memorándum</h1>
-            </div>
-            <div class="mem-pagehead__side">
-                <button class="mem-btn mem-btn--secondary" type="button" data-mem-act="print-list">${ic("print")}Imprimir listado</button>
-                <button class="mem-btn mem-btn--primary" type="button" data-mem-act="new">${ic("plus")}Nuevo memorándum</button>
-            </div>
-        </div>
-    </header>`;
-}
-
 function toolbarHTML(ctx) {
     const count = estado =>
         visibleMemos(ctx, { ignore: "estado" }).filter(memo =>
@@ -1579,12 +1560,12 @@ function toolbarHTML(ctx) {
 
     return `<div class="mem-toolbar">
         <div class="mem-toolbar__group">
-            <label class="mem-search" for="memSearch">${ic("search")}<input id="memSearch" type="search" placeholder="Buscar por trabajador" autocomplete="off" value="${attr(ui.query)}" data-mem-search></label>
             <div class="mem-segbtns" role="group" aria-label="Estado">
                 ${[["pending", "Pendientes"], ["done", "Realizados"], ["all", "Todos"]]
                     .map(([id, label]) => `<button type="button" class="${ui.estado === id ? "is-on" : ""}" data-mem-estado="${id}">${label} · ${count(id)}</button>`)
                     .join("")}
             </div>
+            <label class="mem-search" for="memSearch">${ic("search")}<input id="memSearch" type="search" placeholder="Buscar por trabajador" autocomplete="off" value="${attr(ui.query)}" data-mem-search></label>
         </div>
         <div class="mem-toolbar__group">
             <label class="mem-select">Tipo
@@ -1599,6 +1580,7 @@ function toolbarHTML(ctx) {
                 <button type="button" class="${ui.vista === "grupo" ? "is-on" : ""}" data-mem-vista="grupo">${ic("group")} Por trabajador</button>
                 <button type="button" class="${ui.vista === "lista" ? "is-on" : ""}" data-mem-vista="lista">${ic("list")} Lista</button>
             </div>
+            <button class="mem-btn mem-btn--secondary" type="button" data-mem-act="print-list">${ic("print")}Imprimir listado</button>
         </div>
     </div>`;
 }
@@ -1813,14 +1795,6 @@ function viewerHTML(memo, ctx) {
             ? `<button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="download-replacement-memo" data-mem-id="${attr(memo.id)}">${ic("download")}Descargar memorándum de reemplazo</button>`
             : "";
     const state = MEMO_STATES[memoStatus(memo)];
-    const year = ctx.today.slice(0, 4);
-    const fromWorker = ctx.memos.filter(item =>
-        item.profile === memo.profile &&
-        timestampISO(item.createdAt).slice(0, 4) === year
-    );
-    const pending = fromWorker.filter(item =>
-        memoStatus(item) === "pending"
-    ).length;
     const body = doc
         ? `<div class="mem-viewer-tools">
                 <span class="mem-viewer-tools__grp">
@@ -1848,17 +1822,16 @@ function viewerHTML(memo, ctx) {
         : `<div class="mem-dropzone">
                 ${ic("clip")}
                 <strong>${license ? "Todavía no está la licencia" : swapForm ? "Todavía no está el formulario firmado" : "Todavía no está el documento"}</strong>
-                <p>${license
-                    ? "Escanea o fotografía la licencia médica y adjúntala aquí. Apenas se adjunta, el memorándum queda realizado."
+                ${license
+                    ? "<p>Escanea o fotografía la licencia médica y adjúntala aquí. Apenas se adjunta, el memorándum queda realizado.</p>"
                     : swapForm
-                        ? "Descarga el formulario ya relleno, imprímelo y que lo firmen (el motivo lo escribe a mano el trabajador). Luego adjunta el escaneo o una foto aquí: apenas se adjunta, el memorándum queda realizado."
+                        ? "<p>Descarga el formulario ya relleno, imprímelo y que lo firmen (el motivo lo escribe a mano el trabajador). Luego adjunta el escaneo o una foto aquí: apenas se adjunta, el memorándum queda realizado.</p>"
                         : contractForm
-                            ? "Descarga el memorándum de reemplazo ya relleno, imprímelo y fírmalo. Luego adjunta el escaneo o una foto aquí: apenas se adjunta, el memorándum queda realizado."
-                        : "Descárgalo del sistema de personal y adjúntalo aquí, o toma una foto del papel visado. Apenas se adjunta, el memorándum queda realizado."}</p>
+                            ? "<p>Descarga el memorándum de reemplazo ya relleno, imprímelo y fírmalo. Luego adjunta el escaneo o una foto aquí: apenas se adjunta, el memorándum queda realizado.</p>"
+                            : ""}
                 <span class="mem-dropzone__acts">
                     ${anexo4Button}
                     <button class="mem-btn mem-btn--primary mem-btn--sm" type="button" data-mem-act="attach" data-mem-id="${attr(memo.id)}">${ic("clip")}Adjuntar documento</button>
-                    ${memoWasRequested(memo) ? "" : `<button class="mem-btn mem-btn--secondary mem-btn--sm" type="button" data-mem-act="request" data-mem-id="${attr(memo.id)}">${ic("send")}Marcar que se lo pedí</button>`}
                 </span>
             </div>`;
 
@@ -1891,11 +1864,6 @@ function viewerHTML(memo, ctx) {
         ${body}
         <div class="mem-viewer-meta">
             ${timelineHTML(memo)}
-            <div class="mem-metric">
-                <span>${esc(shortName(memo.profile))} este año</span>
-                <strong>${esc(plural(fromWorker.length, "memorándum", "memorándums"))}</strong>
-                <span class="mem-hint">${pending ? `${pending} pendiente${pending > 1 ? "s" : ""}` : "Todos realizados"}</span>
-            </div>
             <button class="mem-link" type="button" data-mem-act="open-calendar" data-mem-id="${attr(memo.id)}">${license ? "Ver la licencia en el calendario" : swapForm ? "Ver el cambio en el calendario" : "Ver el permiso en el calendario"}</button>
             ${documents.length ? "" : `<button class="mem-link mem-link--danger" type="button" data-mem-act="remove-memo" data-mem-id="${attr(memo.id)}">Quitar memorándum</button>`}
         </div>`;
@@ -1946,59 +1914,6 @@ function attachDialog(memo) {
             ui.openId = memo.id;
             ui.docIndex = 0;
             toast("Documento adjunto: el memorándum quedó realizado.");
-
-            return true;
-        }
-    });
-}
-
-function newMemoDialog(ctx) {
-    const names = [...new Set([
-        ...getProfilesSafe().map(profile => profile.name),
-        ...ctx.memos.map(memo => memo.profile)
-    ].filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
-
-    openDialog({
-        title: "Nuevo memorándum",
-        subtitle: "Para el documento que no nace de un permiso ni de un marcaje y que igual hay que guardar.",
-        submitLabel: "Crear memorándum",
-        body: `<div class="mem-fgrid">
-                <label class="mem-field"><span>Trabajador</span><select name="profile">${names.map(name => `<option value="${attr(name)}">${esc(name)}</option>`).join("")}</select></label>
-                <label class="mem-field"><span>Asunto</span><input type="text" name="typeLabel" placeholder="Ej: Constancia de entrega de uniforme" required></label>
-                <label class="mem-field"><span>Fecha del documento</span><input type="date" name="date" value="${attr(ctx.today)}"></label>
-                <label class="mem-field"><span>N° de resolución o referencia</span><input type="text" name="reference" placeholder="Si el documento lo trae"></label>
-            </div>
-            <label class="mem-field is-wide"><span>Detalle</span><textarea name="detail" placeholder="Lo que conviene dejar anotado del documento."></textarea></label>
-            <p class="mem-hint">Puedes crearlo ahora y adjuntar el documento después: queda en la lista como pendiente.</p>`,
-        onSubmit: async form => {
-            const profile = form.querySelector('select[name="profile"]')?.value || "";
-            const typeLabel = (form.querySelector('input[name="typeLabel"]')?.value || "").trim();
-            const date = form.querySelector('input[name="date"]')?.value || ctx.today;
-            const reference = (form.querySelector('input[name="reference"]')?.value || "").trim();
-            const detail = (form.querySelector('textarea[name="detail"]')?.value || "").trim();
-
-            if (!profile || !typeLabel) {
-                toast("Falta el trabajador o el asunto.");
-                return false;
-            }
-
-            const memo = createMemoTask({
-                sourceId: ["manual", profile, typeLabel, date, Date.now()].join(":"),
-                profile,
-                typeLabel,
-                dateKey: isoToDayKey(date),
-                detail: [
-                    `Nombre: ${profile}`,
-                    `Asunto: ${typeLabel}`,
-                    `Fecha: ${formatISO(date)}`,
-                    reference ? `Referencia: ${reference}` : "",
-                    detail ? `Detalle: ${detail}` : ""
-                ].filter(Boolean).join(" | ")
-            });
-
-            ui.openId = memo.id;
-            ui.docIndex = 0;
-            toast("Memorándum creado: queda pendiente hasta que se adjunte el documento.");
 
             return true;
         }
@@ -2488,9 +2403,6 @@ async function onPanelClick(event) {
             if (memo) attachDialog(memo);
             return;
         }
-        case "new":
-            newMemoDialog(ctx);
-            return;
         case "download-anexo4": {
             const memo = memoById(data.memId);
 
@@ -2676,7 +2588,6 @@ export function renderMemosPanel() {
     const caret = searchFocused ? active.selectionStart : null;
 
     panel.innerHTML = `<div class="mem mem-root">
-        ${pageHeadHTML()}
         ${toolbarHTML(ctx)}
         <div class="mem-workspace">
             <main class="mem-list-panel" aria-label="Memorándums">${listHTML(ctx, list)}</main>
