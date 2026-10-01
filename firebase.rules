@@ -761,6 +761,20 @@ service cloud.firestore {
             request.resource.data.clientId is string &&
             request.resource.data.clientId.size() <= 160 &&
             (
+              !("date" in request.resource.data) ||
+              (
+                request.resource.data.date is string &&
+                request.resource.data.date.size() == 10
+              )
+            ) &&
+            (
+              !("month" in request.resource.data) ||
+              (
+                request.resource.data.month is string &&
+                request.resource.data.month.size() == 7
+              )
+            ) &&
+            (
               request.resource.data.deleted == true ||
               (
                 request.resource.data.record is map &&
@@ -785,6 +799,28 @@ service cloud.firestore {
             resource.data.deleted == false ||
             request.resource.data.deleted == true
           );
+        allow delete: if false;
+      }
+
+      // Bitacora particionada por dia y shard. Convive en sombra con auditLog
+      // hasta que la comparacion de ambos formatos autorice el cambio de lectura.
+      match /auditLogShards/{shardId} {
+        allow read: if canReadStateModule(workspaceId, "log");
+        allow create, update: if
+          canWriteStateModule(workspaceId, "log") &&
+          request.resource.data.month is string &&
+          request.resource.data.month.size() == 7 &&
+          request.resource.data.day is string &&
+          request.resource.data.day.size() == 10 &&
+          request.resource.data.shard is int &&
+          request.resource.data.shard >= 0 &&
+          request.resource.data.shard < 4 &&
+          request.resource.data.items is map &&
+          request.resource.data.items.size() <= 1000 &&
+          request.resource.data.updatedAtISO is string &&
+          request.resource.data.updatedAtISO.size() <= 40 &&
+          request.resource.data.clientId is string &&
+          request.resource.data.clientId.size() <= 160;
         allow delete: if false;
       }
 

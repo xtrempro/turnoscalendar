@@ -33,7 +33,7 @@ const MAX_LOGS = 1500;
 //
 // Se deja margen sobre el tope de la regla: entre una poda y la siguiente
 // pueden entrar varias entradas, y una sola puede ser larga.
-const MAX_LOG_CHARS = 600000;
+const MAX_LOG_CHARS = 450000;
 
 /**
  * Deja la bitacora dentro de los dos topes, botando siempre lo mas viejo.

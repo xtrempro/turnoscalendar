@@ -127,7 +127,10 @@ async function writeChanges(workspaceId, changes, expectedGeneration) {
                         1,
                         Number(current.revision || 0) + 1
                     ),
-                    clientId: clientId()
+                    clientId: clientId(),
+                    date: operation.type === "upsert"
+                        ? operation.record?.date
+                        : current.date || current.record?.date
                 };
                 const payload = operation.type === "upsert"
                     ? replacementRecordPayload(operation.record, options)

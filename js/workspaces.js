@@ -74,7 +74,8 @@ export function setActiveWorkspace(workspace) {
         name: workspaceLabel(workspace),
         role: workspace.role || "member",
         stateStorage: String(workspace.stateStorage || ""),
-        replacementStorage: String(workspace.replacementStorage || "")
+        replacementStorage: String(workspace.replacementStorage || ""),
+        auditLogStorage: String(workspace.auditLogStorage || "")
     });
 }
 
@@ -193,6 +194,7 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
             ownerUid: data.ownerUid || "",
             stateStorage: String(data.stateStorage || ""),
             replacementStorage: String(data.replacementStorage || ""),
+            auditLogStorage: String(data.auditLogStorage || ""),
             deletionStatus: data.deletionStatus || "",
             deletionScheduledMs: scheduledMs,
             deletionRequestedByUid: data.deletionRequestedByUid || ""
@@ -226,6 +228,7 @@ export async function createWorkspace(user, name) {
         ownerUid: user.uid,
         stateStorage: "entries-v1",
         replacementStorage: "records-shadow-v1",
+        auditLogStorage: "shards-shadow-v1",
         createdByEmail: user.email || "",
         createdAt: now,
         updatedAt: now

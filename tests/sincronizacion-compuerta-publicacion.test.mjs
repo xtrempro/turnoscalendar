@@ -154,6 +154,27 @@ test("el bloqueo aparece al tiro y se retira al aplicar el estado inicial", () =
     assert.equal(falso.hidden, true);
 });
 
+test("el riesgo de tamano se avisa sin bloquear y se puede levantar", () => {
+    handleSyncStatus({
+        type: "app-state-document-health",
+        level: "critical",
+        percent: 90.9,
+        storageKey: "auditLog"
+    });
+
+    assert.equal(falso.hidden, false);
+    assert.match(falso.className, /is-storage-critical/);
+    assert.match(falso.textContent, /90\.9%/);
+    assert.match(falso.textContent, /auditLog/);
+
+    handleSyncStatus({
+        type: "app-state-document-health",
+        level: "healthy",
+        percent: 0
+    });
+    assert.equal(falso.hidden, true);
+});
+
 test("una caida que dura se avisa aparte, y no bloquea", () => {
     handleSyncStatus({ type: "app-state-offline" });
     esperar(ESPERA_AVISO_SIN_CONEXION_MS);
@@ -372,4 +393,6 @@ test("el aviso esta montado en la app y tiene estilo", () => {
     assert.match(banner, /addEventListener\("offline"/);
     assert.match(estilos, /\.sync-blocked-banner \{/);
     assert.match(estilos, /\.sync-blocked-banner\.is-offline \{/);
+    assert.match(estilos, /\.sync-blocked-banner\.is-storage-warning \{/);
+    assert.match(estilos, /\.sync-blocked-banner\.is-storage-critical \{/);
 });

@@ -308,6 +308,10 @@ import {
     startFirebaseReplacementRecordShadowSync,
     stopFirebaseReplacementRecordShadowSync
 } from "./firebaseReplacementRecords.js";
+import {
+    startFirebaseAuditLogShardShadowSync,
+    stopFirebaseAuditLogShardShadowSync
+} from "./firebaseAuditLogShards.js";
 import { startRrhhSummaryBackgroundPublisher } from "./rrhhSummaryPublisher.js";
 import {
     startFirebaseReplacementRequestSync,
@@ -16958,6 +16962,7 @@ initFirebaseShell({
         if (!user) {
             stopFirebaseAppStateSync();
             stopFirebaseReplacementRecordShadowSync();
+            stopFirebaseAuditLogShardShadowSync();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();
@@ -17196,6 +17201,13 @@ initFirebaseShell({
                             error
                         );
                     });
+                void startFirebaseAuditLogShardShadowSync(workspace)
+                    .catch(error => {
+                        console.warn(
+                            "No se pudo iniciar la bitacora fragmentada.",
+                            error
+                        );
+                    });
                 // La reparacion PWA compara documentos derivados con perfiles,
                 // turnos y configuracion local. Si arranca antes de hidratar,
                 // compara contra la foto vieja y reescribe documentos sanos.
@@ -17291,6 +17303,7 @@ initFirebaseShell({
             stopWatchingAcceptedOutgoingTransfers();
             stopWatchingIncomingTransferBalances();
             stopFirebaseReplacementRecordShadowSync();
+            stopFirebaseAuditLogShardShadowSync();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();

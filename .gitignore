@@ -19,3 +19,4 @@ functions/engine/
 catalogo-tareas-rescatado.json
 asignaciones-rescatadas.json
 snapshot-*.json
+migration-backups/

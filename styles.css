@@ -28473,6 +28473,18 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
     color: #92400e;
 }
 
+.sync-blocked-banner.is-storage-warning {
+    border-color: rgba(245, 158, 11, 0.4);
+    background: #fffbeb;
+    color: #92400e;
+}
+
+.sync-blocked-banner.is-storage-critical {
+    border-color: rgba(220, 38, 38, 0.45);
+    background: #fef2f2;
+    color: #991b1b;
+}
+
 .sync-blocked-banner[hidden] {
     display: none !important;
 }

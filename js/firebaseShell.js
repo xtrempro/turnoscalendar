@@ -1260,7 +1260,8 @@ async function refreshWorkspaces() {
                 deletionScheduledMs: info?.deletionScheduledMs || null,
                 ownerUid: info?.ownerUid || workspace.ownerUid || "",
                 stateStorage: info?.stateStorage || "",
-                replacementStorage: info?.replacementStorage || ""
+                replacementStorage: info?.replacementStorage || "",
+                auditLogStorage: info?.auditLogStorage || ""
             };
         })
     );

@@ -6,6 +6,7 @@ const sync = readFileSync("js/firebaseReplacementRecords.js", "utf8");
 const main = readFileSync("js/main.js", "utf8");
 const shell = readFileSync("js/firebaseShell.js", "utf8");
 const workspaces = readFileSync("js/workspaces.js", "utf8");
+const auditShards = readFileSync("js/firebaseAuditLogShards.js", "utf8");
 
 test("la marca de reemplazos viaja desde el documento de unidad", () => {
     assert.match(
@@ -18,6 +19,10 @@ test("la marca de reemplazos viaja desde el documento de unidad", () => {
     );
     assert.match(
         shell,
+        /auditLogStorage: info\?\.auditLogStorage \|\| ""/
+    );
+    assert.match(
+        shell,
         /currentWorkspace = refreshedWorkspace \|\| storedWorkspace/
     );
     assert.match(shell, /setActiveWorkspace\(refreshedWorkspace\)/);
@@ -27,6 +32,18 @@ test("las unidades nuevas nacen con la copia individual de reemplazos", () => {
     assert.match(
         workspaces,
         /const workspace = \{[\s\S]*?replacementStorage: "records-shadow-v1"/
+    );
+});
+
+test("las unidades nuevas nacen con bitacora fragmentada en sombra", () => {
+    assert.match(
+        workspaces,
+        /const workspace = \{[\s\S]*?auditLogStorage: "shards-shadow-v1"/
+    );
+    assert.match(auditShards, /const SHADOW_STORAGE = "shards-shadow-v1"/);
+    assert.match(
+        auditShards,
+        /workspace\.auditLogStorage !== SHADOW_STORAGE/
     );
 });
 

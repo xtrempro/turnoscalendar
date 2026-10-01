@@ -3,6 +3,8 @@ import test from "node:test";
 import {
     diffReplacementRecords,
     replacementRecordDocId,
+    replacementRecordDate,
+    replacementRecordMonth,
     replacementRecordPayload,
     replacementRecordsFromDocuments,
     replacementRecordTombstone
@@ -23,17 +25,28 @@ test("un documento activo conserva el registro completo", () => {
     assert.equal(payload.record.id, 123);
     assert.equal(payload.revision, 4);
     assert.equal(payload.deleted, false);
+    assert.equal(payload.date, "2026-09-24");
+    assert.equal(payload.month, "2026-09");
 });
 
 test("los borrados se representan con tombstones", () => {
     const tombstone = replacementRecordTombstone("r1", {
         revision: 2,
-        updatedAtISO: "2026-09-24T12:00:00.000Z"
+        updatedAtISO: "2026-09-24T12:00:00.000Z",
+        date: "2026-09-24"
     });
 
     assert.equal(tombstone.deleted, true);
     assert.equal(tombstone.recordId, "r1");
     assert.equal("record" in tombstone, false);
+    assert.equal(tombstone.date, "2026-09-24");
+    assert.equal(tombstone.month, "2026-09");
+});
+
+test("normaliza solo fechas aptas para consultas", () => {
+    assert.equal(replacementRecordDate("2026-09-24"), "2026-09-24");
+    assert.equal(replacementRecordDate("24-09-2026"), "");
+    assert.equal(replacementRecordMonth("2026-09-24"), "2026-09");
 });
 
 test("la lectura ignora tombstones y conserva documentos activos", () => {

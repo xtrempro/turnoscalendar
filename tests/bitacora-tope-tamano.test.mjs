@@ -85,7 +85,7 @@ test("y ahora tambien el tope de tamaño", () => {
         `quedo en ${size}, sobre el tope de la regla`
     );
     // Y con holgura, para que entren varias entradas antes de la proxima poda.
-    assert.ok(size <= 600000, `quedo en ${size}, sin margen`);
+    assert.ok(size <= 450000, `quedo en ${size}, sin margen`);
 });
 
 test("lo que sobrevive es lo mas reciente", () => {
@@ -111,7 +111,7 @@ test("con entradas de tamaño mezclado tambien queda bajo el tope", () => {
     );
     const trimmed = trimAuditLogs(logs);
 
-    assert.ok(JSON.stringify(trimmed).length <= 600000);
+    assert.ok(JSON.stringify(trimmed).length <= 450000);
     assert.ok(trimmed.length > 0);
 });
 
@@ -122,7 +122,7 @@ test("una lista vacia o rota no revienta", () => {
 });
 
 test("todos los guardados de la bitacora podan por tamaño", async () => {
-    // Habia tres sitios que guardaban con .slice(-MAX_LOGS): si alguno se
+    // Todos los sitios que guardan deben pasar por el mismo tope: si alguno se
     // quedara sin podar por tamaño, volveria a llevar la clave al tope.
     const source = (await readFile(
         new URL("../js/auditLog.js", import.meta.url),
@@ -130,7 +130,7 @@ test("todos los guardados de la bitacora podan por tamaño", async () => {
     )).replace(/\r\n/g, "\n");
 
     assert.doesNotMatch(source, /setJSON\(KEY, [^)]*slice\(-MAX_LOGS\)\)/);
-    assert.equal((source.match(/setJSON\(KEY, trimLogs\(/g) || []).length, 3);
+    assert.equal((source.match(/setJSON\(KEY, trimLogs\(/g) || []).length, 4);
 });
 
 test("el tope de la prueba es el mismo que exige la regla", async () => {

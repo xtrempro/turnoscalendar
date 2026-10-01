@@ -4,6 +4,18 @@ function cleanRecordId(value) {
     return String(value ?? "").trim();
 }
 
+export function replacementRecordDate(value) {
+    const date = String(value || "").trim();
+
+    return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
+}
+
+export function replacementRecordMonth(value) {
+    const date = replacementRecordDate(value);
+
+    return date ? date.slice(0, 7) : "";
+}
+
 function stableValue(value) {
     if (Array.isArray(value)) return value.map(stableValue);
     if (!value || typeof value !== "object") return value;
@@ -41,7 +53,8 @@ export function replacementRecordPayload(record, options = {}) {
         throw new Error("Cada reemplazo necesita un ID estable.");
     }
 
-    return {
+    const date = replacementRecordDate(record?.date);
+    const payload = {
         recordId,
         record: { ...record },
         deleted: false,
@@ -51,6 +64,13 @@ export function replacementRecordPayload(record, options = {}) {
             new Date().toISOString(),
         clientId: String(options.clientId || "").trim()
     };
+
+    if (date) {
+        payload.date = date;
+        payload.month = replacementRecordMonth(date);
+    }
+
+    return payload;
 }
 
 export function replacementRecordTombstone(recordId, options = {}) {
@@ -60,7 +80,8 @@ export function replacementRecordTombstone(recordId, options = {}) {
         throw new Error("El tombstone necesita el ID del reemplazo.");
     }
 
-    return {
+    const date = replacementRecordDate(options.date);
+    const payload = {
         recordId: clean,
         deleted: true,
         revision: Math.max(1, Number(options.revision) || 1),
@@ -69,6 +90,13 @@ export function replacementRecordTombstone(recordId, options = {}) {
             new Date().toISOString(),
         clientId: String(options.clientId || "").trim()
     };
+
+    if (date) {
+        payload.date = date;
+        payload.month = replacementRecordMonth(date);
+    }
+
+    return payload;
 }
 
 export function replacementRecordsFromDocuments(documents = []) {

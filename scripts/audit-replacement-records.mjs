@@ -106,19 +106,27 @@ async function createIndividualRecord(workspaceId, record) {
 
     url.searchParams.set("currentDocument.exists", "false");
 
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(record?.date || ""))
+        ? String(record.date)
+        : "";
+    const fields = {
+        recordId: { stringValue: recordId },
+        record: firestoreValue(record),
+        deleted: { booleanValue: false },
+        revision: { integerValue: "1" },
+        updatedAtISO: { stringValue: now },
+        updatedAt: { timestampValue: now },
+        clientId: { stringValue: "audit-backfill-v1" }
+    };
+
+    if (date) {
+        fields.date = { stringValue: date };
+        fields.month = { stringValue: date.slice(0, 7) };
+    }
+
     await api(url, {
         method: "PATCH",
-        body: JSON.stringify({
-            fields: {
-                recordId: { stringValue: recordId },
-                record: firestoreValue(record),
-                deleted: { booleanValue: false },
-                revision: { integerValue: "1" },
-                updatedAtISO: { stringValue: now },
-                updatedAt: { timestampValue: now },
-                clientId: { stringValue: "audit-backfill-v1" }
-            }
-        })
+        body: JSON.stringify({ fields })
     });
 }
 
@@ -131,6 +139,55 @@ async function createMissingRecords(workspaceId, records) {
                 createIndividualRecord(workspaceId, record)
             )
         );
+    }
+}
+
+async function patchIndividualRecordDate(document, date) {
+    const data = documentData(document);
+    const documentPath = String(document.name || "").split("/documents/")[1];
+
+    if (!documentPath || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+
+    const now = new Date().toISOString();
+    const url = new URL(`${DOCUMENTS_ROOT}/${documentPath}`);
+    const fieldPaths = [
+        "date",
+        "month",
+        "revision",
+        "updatedAtISO",
+        "updatedAt",
+        "clientId"
+    ];
+
+    fieldPaths.forEach(fieldPath =>
+        url.searchParams.append("updateMask.fieldPaths", fieldPath)
+    );
+    url.searchParams.set("currentDocument.updateTime", document.updateTime);
+
+    await api(url, {
+        method: "PATCH",
+        body: JSON.stringify({
+            fields: {
+                date: { stringValue: date },
+                month: { stringValue: date.slice(0, 7) },
+                revision: {
+                    integerValue: String(Math.max(1, Number(data.revision || 0) + 1))
+                },
+                updatedAtISO: { stringValue: now },
+                updatedAt: { timestampValue: now },
+                clientId: { stringValue: "audit-date-backfill-v1" }
+            }
+        })
+    });
+}
+
+async function patchIndividualRecordDates(records) {
+    const size = 10;
+
+    for (let offset = 0; offset < records.length; offset += size) {
+        await Promise.all(records.slice(offset, offset + size).map(item =>
+            patchIndividualRecordDate(item.document, item.date)
+        ));
     }
 }
 
@@ -268,6 +325,7 @@ function parseIndividualRecords(documents) {
     const tombstones = new Set();
     const allIds = new Set();
     const invalid = [];
+    const documentsById = new Map();
 
     documents.forEach(document => {
         const data = documentData(document);
@@ -279,6 +337,7 @@ function parseIndividualRecords(documents) {
         }
 
         allIds.add(id);
+        documentsById.set(id, { document, data });
 
         if (data.deleted === true) {
             tombstones.add(id);
@@ -293,7 +352,7 @@ function parseIndividualRecords(documents) {
         active.set(id, data.record);
     });
 
-    return { active, tombstones, allIds, invalid };
+    return { active, tombstones, allIds, invalid, documentsById };
 }
 
 function sample(values) {
@@ -319,6 +378,7 @@ async function auditWorkspace(workspace) {
     const extra = [];
     const different = [];
     const activeTombstones = [];
+    const missingQueryDates = [];
 
     legacy.byId.forEach((record, id) => {
         if (!individual.active.has(id)) {
@@ -336,8 +396,20 @@ async function auditWorkspace(workspace) {
         if (!legacy.byId.has(id)) extra.push(id);
     });
 
+    individual.documentsById.forEach(({ document, data }, recordId) => {
+        const date = String(
+            data.record?.date || legacy.byId.get(recordId)?.date || ""
+        );
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+        if (data.date === date && data.month === date.slice(0, 7)) return;
+
+        missingQueryDates.push({ recordId, date, document });
+    });
+
     const issueCount = missing.length + extra.length + different.length +
-        legacy.invalid.length + legacy.duplicates.length + individual.invalid.length;
+        missingQueryDates.length + legacy.invalid.length +
+        legacy.duplicates.length + individual.invalid.length;
     const latestIndividualUpdate = individualDocuments
         .map(document => String(document.updateTime || ""))
         .filter(Boolean)
@@ -360,7 +432,8 @@ async function auditWorkspace(workspace) {
     console.log(
         `  faltan=${missing.length}  extras=${extra.length}` +
         `  distintos=${different.length}  invalidos=${legacy.invalid.length + individual.invalid.length}` +
-        `  ids-duplicados=${legacy.duplicates.length}`
+        `  ids-duplicados=${legacy.duplicates.length}` +
+        `  sin-fecha-consultable=${missingQueryDates.length}`
     );
     if (missing.length) console.log(`  IDs faltantes: ${sample(missing)}`);
     if (activeTombstones.length) {
@@ -370,6 +443,11 @@ async function auditWorkspace(workspace) {
     if (different.length) console.log(`  IDs distintos: ${sample(different)}`);
     if (legacy.duplicates.length) {
         console.log(`  IDs duplicados legacy: ${sample(legacy.duplicates)}`);
+    }
+    if (missingQueryDates.length) {
+        console.log(
+            `  IDs sin fecha consultable: ${sample(missingQueryDates.map(item => item.recordId))}`
+        );
     }
 
     if (APPLY) {
@@ -399,6 +477,15 @@ async function auditWorkspace(workspace) {
                 "tombstone y no fueron sobrescritos."
             );
         }
+
+        if (missingQueryDates.length) {
+            await patchIndividualRecordDates(missingQueryDates);
+            console.log(
+                `  BACKFILL: ${missingQueryDates.length} documentos recibieron date/month.`
+            );
+        } else {
+            console.log("  BACKFILL: todas las fechas consultables ya estan listas.");
+        }
     }
 
     return {
@@ -410,6 +497,7 @@ async function auditWorkspace(workspace) {
         missingCount: missing.length,
         extraCount: extra.length,
         differentCount: different.length,
+        missingQueryDateCount: missingQueryDates.length,
         issueCount
     };
 }

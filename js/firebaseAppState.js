@@ -26,6 +26,7 @@ import {
     mergePartialStateEntries,
     planPartialStateEntries
 } from "./firebasePartialState.js";
+import { assessFirestoreDocumentHealth } from "./firestoreDocumentHealth.js";
 import {
     isRemoteDiscrepant,
     isSyncStale,
@@ -146,6 +147,8 @@ const localDirtyStateEntries = new Map();
 const appliedEntrySignatures = new Map();
 const EMPTY_SIGNATURES = new Map();
 const entryModulesPresent = new Set();
+const documentHealthByPath = new Map();
+let documentHealthStatusSignature = "";
 let unsubscribeStateEntries = null;
 // Bloqueo de edicion mientras la copia local no merece que se edite encima
 // (ver js/syncFreshness.js). "" = sin bloqueo; si no, "stale" o "discrepancy".
@@ -1710,6 +1713,71 @@ function dispatchStatus(detail) {
     );
 }
 
+function observeStateDocumentHealth(docSnap) {
+    const data = docSnap?.data?.() || {};
+    const documentPath = String(
+        docSnap?.ref?.path ||
+        `${data.moduleId || ""}/${data.storageKey || docSnap?.id || ""}`
+    );
+    const assessment = assessFirestoreDocumentHealth(data, documentPath);
+    const previous = documentHealthByPath.get(documentPath);
+
+    if (assessment.level === "healthy") {
+        documentHealthByPath.delete(documentPath);
+    } else {
+        documentHealthByPath.set(documentPath, {
+            ...assessment,
+            documentPath,
+            moduleId: String(data.moduleId || ""),
+            storageKey: String(data.storageKey || "")
+        });
+    }
+
+    const highest = [...documentHealthByPath.values()]
+        .sort((a, b) => b.ratio - a.ratio)[0] || null;
+
+    if (
+        assessment.level !== "healthy" &&
+        (
+            previous?.level !== assessment.level ||
+            previous?.percent !== assessment.percent
+        )
+    ) {
+        recordPerformanceEvent("firebase-app-state:document-health", {
+            type: "storage-health",
+            ...assessment,
+            documentPath,
+            moduleId: String(data.moduleId || ""),
+            storageKey: String(data.storageKey || "")
+        });
+        console.warn(
+            `[TurnoPlus] Documento Firestore al ${assessment.percent}%: ` +
+            documentPath
+        );
+    }
+
+    const status = {
+        type: "app-state-document-health",
+        level: highest?.level || "healthy",
+        percent: highest?.percent || 0,
+        estimatedBytes: highest?.estimatedBytes || 0,
+        limitBytes: highest?.limitBytes || assessment.limitBytes,
+        documentPath: highest?.documentPath || "",
+        moduleId: highest?.moduleId || "",
+        storageKey: highest?.storageKey || ""
+    };
+    const signature = [
+        status.level,
+        status.percent,
+        status.documentPath
+    ].join("|");
+
+    if (signature === documentHealthStatusSignature) return;
+
+    documentHealthStatusSignature = signature;
+    dispatchStatus(status);
+}
+
 async function readRemoteModuleSnapshot(
     workspaceId,
     moduleId,
@@ -1753,6 +1821,7 @@ async function readRemoteModuleSnapshot(
 }
 
 function stateEntriesFromDoc(docSnap) {
+    observeStateDocumentHealth(docSnap);
     const data = docSnap.data() || {};
     const updatedAtMillis =
         typeof data.updatedAt?.toMillis === "function"
@@ -2817,6 +2886,13 @@ export function stopFirebaseAppStateSync() {
     localDirtyStateEntries.clear();
     appliedEntrySignatures.clear();
     entryModulesPresent.clear();
+    documentHealthByPath.clear();
+    documentHealthStatusSignature = "";
+    dispatchStatus({
+        type: "app-state-document-health",
+        level: "healthy",
+        percent: 0
+    });
     syncGeneration++;
 }
 

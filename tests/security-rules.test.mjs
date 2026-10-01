@@ -736,6 +736,41 @@ test("reglas modulares de Firestore y Storage", async t => {
     );
 
     await t.test(
+        "la bitacora fragmentada respeta permisos y forma",
+        async () => {
+            const path = [
+                "workspaces",
+                WORKSPACE_ID,
+                "auditLogShards",
+                "2026-10-01_0"
+            ];
+            const payload = {
+                month: "2026-10",
+                day: "2026-10-01",
+                shard: 0,
+                items: {
+                    log_1: JSON.stringify({
+                        id: "log_1",
+                        createdAt: "2026-10-01T10:00:00.000Z"
+                    })
+                },
+                updatedAtISO: "2026-10-01T10:00:00.000Z",
+                clientId: "rules-test"
+            };
+            const ownerRef = doc(owner.firestore(), ...path);
+
+            await assertSucceeds(setDoc(ownerRef, payload));
+            await assertSucceeds(getDoc(ownerRef));
+            await assertFails(setDoc(
+                doc(profileEditor.firestore(), ...path),
+                payload
+            ));
+            await assertFails(setDoc(ownerRef, { ...payload, shard: 4 }));
+            await assertFails(deleteDoc(ownerRef));
+        }
+    );
+
+    await t.test(
         "owner y administrador fusionan el LOG mediante transacciones",
         async () => {
             const path = [
