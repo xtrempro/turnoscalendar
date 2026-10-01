@@ -37,6 +37,7 @@ import {
     isHheeReturnTransferEnabled
 } from "./hourReturnTransfers.js";
 import {
+    isHonorariaProfile,
     isReplacementProfile
 } from "./contracts.js";
 import { getShiftMoveMarkers } from "./shiftMoves.js";
@@ -1279,6 +1280,9 @@ function baseShiftRemovalHoursByDay(
         const keyDay = key(y, m, d);
 
         if (!removals[keyDay]) continue;
+
+        // Los honorarios no hacen horas extras: no hay de donde descontar.
+        if (isHonorariaProfile(nombre, keyDay)) continue;
 
         if (!includesContractDay(nombre, keyDay)) continue;
 

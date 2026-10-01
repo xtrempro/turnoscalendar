@@ -10809,6 +10809,14 @@ async function confirmExtraShiftRemoval(profileName, keyDay, parts) {
     );
 }
 
+// Los honorarios no hacen horas extras: solo las horas de su contrato. Quitarles
+// un turno no descuenta nada de extras, solo deja de contar esas horas.
+function removalHoursConsequence(profileName, keyDay) {
+    return isHonorariaProfile(profileName, keyDay)
+        ? "dejaran de contarse entre las horas realizadas de su contrato de honorarios."
+        : "se restaran de las horas extras que tenga este mes.";
+}
+
 async function confirmBaseShiftRemoval(profileName, keyDay, parts) {
     const date = dateFromKeyDay(keyDay);
     const holidays = await fetchHolidays(date.getFullYear());
@@ -10824,7 +10832,7 @@ async function confirmBaseShiftRemoval(profileName, keyDay, parts) {
             `Turno: ${removalTurnLabel(parts.baseTurn)}, ${leaveDateLabelFromKey(keyDay)}.\n\n` +
             `Sus ${formatRemovalHours(total)} horas` +
             (detail ? ` (${detail})` : "") +
-            " se restaran de las horas extras que tenga este mes.",
+            ` ${removalHoursConsequence(profileName, keyDay)}`,
         {
             title: "Quitar turno de la rotativa base",
             tone: "danger",
@@ -10868,7 +10876,13 @@ async function removeBaseShift(profileName, keyDay, parts, options = {}) {
         Number(restarTurnoCubierto(parts.actual, parts.baseTurn)) ||
         TURNO.LIBRE;
 
-    recordBaseShiftRemoval(profileName, keyDay, parts.baseTurn);
+    const honoraria = isHonorariaProfile(profileName, keyDay);
+
+    // La anotacion es la que descuenta horas extras: un honorario no las tiene.
+    if (!honoraria) {
+        recordBaseShiftRemoval(profileName, keyDay, parts.baseTurn);
+    }
+
     commitCalendarTurnChange({
         profileName,
         keyDay,
@@ -10884,7 +10898,10 @@ async function removeBaseShift(profileName, keyDay, parts, options = {}) {
     addAuditLog(
         AUDIT_CATEGORY.CALENDAR,
         "Quito turno de la rotativa base",
-        `${profileName}: se quito el turno ${removalTurnLabel(parts.baseTurn)} del ${keyDay}; sus horas se descuentan de las horas extras del mes.`,
+        `${profileName}: se quito el turno ${removalTurnLabel(parts.baseTurn)} del ${keyDay}; ` +
+            (honoraria
+                ? "sus horas dejan de contarse en su contrato de honorarios."
+                : "sus horas se descuentan de las horas extras del mes."),
         {
             profile: profileName,
             keyDay,
@@ -10927,7 +10944,9 @@ export async function offerShiftRemoval(profileName, keyDay, options = {}) {
                     {
                         value: "base",
                         label: `Turno base: ${removalTurnLabel(parts.baseTurn)}`,
-                        hint: "Sus horas se restan de las horas extras del mes."
+                        hint: isHonorariaProfile(profileName, keyDay)
+                            ? "Sus horas dejan de contarse en su contrato de honorarios."
+                            : "Sus horas se restan de las horas extras del mes."
                     }
                 ]
             }
