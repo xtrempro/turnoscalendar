@@ -2,28 +2,51 @@ import { escapeHTML } from "./htmlUtils.js";
 import { parseISODate as parseInputDate } from "./dateUtils.js";
 import {
     findTopProfileSearchMatch,
+    getCalendarProfileDetail,
     getCalendarProfileSearchOptionValues,
     getCalendarProfileSearchValue
 } from "./profileSearchUtils.js";
 import {
+    activeMonthlySwapCount,
     cambiosDelMes,
     cambioEstaAnulado,
     canSwapProfiles,
+    deshacerCambioTurno,
     getEligibleSwapReceivers,
     getSwapDateBlockReason,
     getSwapTurnState,
     isSwapExchangeableTurn,
-    registrarCambio
+    registrarCambio,
+    swapCodeLabel
 } from "./swaps.js";
 import {
     getCurrentProfile,
     getProfiles,
+    getRotativa,
+    getSwaps,
     getTurnChangeConfig,
+    getWorkerRequests,
     isProfileActive,
     setCurrentProfile
 } from "./storage.js";
 import { refreshAll } from "./refresh.js";
 import { pushHistory } from "./history.js";
+import { showConfirm } from "./dialogs.js";
+import { getRotativaLabel } from "./rotationUtils.js";
+import { getTurnoColorConfig } from "./turnoColors.js";
+import {
+    downloadSwapAnexo4,
+    downloadSwapAnexo4Batch,
+    findSwapMemo,
+    getMemoDocuments,
+    openMemoDocument
+} from "./memos.js";
+import { openSwapScanDialog } from "./swapScan.js";
+import { isPendingSwapRequest } from "./pendingSwapRequests.js";
+import {
+    acceptWorkerRequestById,
+    rejectWorkerRequestById
+} from "./workerRequests.js";
 
 let fechaCambioSeleccionada = "";
 let fechaDevolucionSeleccionada = "";
@@ -100,18 +123,6 @@ function getSwapYear(){
 
 function getSwapMonth(){
     return swapDate.getMonth();
-}
-
-function formatSwapMonth(){
-    return swapDate
-        .toLocaleString(
-            "es-CL",
-            {
-                month: "long",
-                year: "numeric"
-            }
-        )
-        .toUpperCase();
 }
 
 function cambiarMesSwap(offset){
@@ -337,44 +348,11 @@ function renderSwapFromOptions() {
         .join("");
 }
 
-function renderSwapFromSearch(selectedFrom) {
-    const currentProfile = getPerfil(selectedFrom);
-    const value = currentProfile
-        ? getCalendarProfileSearchValue(currentProfile)
-        : selectedFrom || "";
-
-    return `
-        <form id="swapFromSearchForm" class="profile-viewer swap-profile-viewer" autocomplete="off">
-            <div class="profile-viewer__field">
-                <input
-                    id="swapFromSearch"
-                    type="search"
-                    list="swapFromOptions"
-                    placeholder="Selecciona colaborador"
-                    value="${escapeHTML(value)}"
-                >
-                <button class="profile-viewer__button" type="submit" aria-label="Buscar trabajador que entrega turno">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="7"></circle>
-                        <path d="M21 21l-4.35-4.35"></path>
-                    </svg>
-                </button>
-            </div>
-            <datalist id="swapFromOptions">
-                ${renderSwapFromOptions()}
-            </datalist>
-        </form>
-    `;
-}
-
 function syncSwapFromSearch() {
     const input = document.getElementById("swapFromSearch");
     if (!input) return;
 
-    const profile = getPerfil(getCurrentProfile());
-    input.value = profile
-        ? getCalendarProfileSearchValue(profile)
-        : getCurrentProfile() || "";
+    input.value = getCurrentProfile() || "";
 }
 
 function handleSwapFromSearch() {
@@ -401,7 +379,7 @@ function handleSwapFromSearch() {
         return;
     }
 
-    input.value = getCalendarProfileSearchValue(match);
+    input.value = match.name;
     input.blur();
 
     if (match.name === getCurrentProfile()) return;
@@ -438,160 +416,6 @@ function bindSwapFromSearch() {
         if (!input.value.trim()) syncSwapFromSearch();
     };
 }
-
-function renderSwapSelectorEmpty(box, selectedFrom, message) {
-    box.innerHTML = `
-        <div class="swap-row swap-row--selector-only">
-            <div class="field-stack swap-from-field">
-                <span>Entrega turno</span>
-                ${renderSwapFromSearch(selectedFrom)}
-            </div>
-        </div>
-        <div class="empty-state">
-            ${escapeHTML(message)}
-        </div>
-    `;
-
-    bindSwapFromSearch();
-}
-
-export function renderSwapPanel(){
-    const box = document.getElementById("swapPanel");
-    if (!box) return;
-
-    const perfiles = getProfiles();
-    const selectedFrom = getCurrentProfile();
-    const previousTo =
-        document.getElementById("swapTo")?.value || "";
-    const perfilFrom = getPerfil(selectedFrom);
-
-    if (!selectedFrom || !perfilFrom) {
-        renderSwapSelectorEmpty(
-            box,
-            selectedFrom,
-            "Selecciona un trabajador para revisar cambios de turno."
-        );
-        return;
-    }
-
-    if (!getTurnChangeConfig().allowSwaps) {
-        box.innerHTML = `
-            <div class="empty-state">
-                Los cambios de turno estan desactivados en Ajustes del sistema.
-            </div>
-        `;
-        return;
-    }
-
-    if (noPuedeIntercambiar(selectedFrom)) {
-        renderSwapSelectorEmpty(
-            box,
-            selectedFrom,
-            `${selectedFrom} no puede intercambiar turnos porque el perfil esta desactivado.`
-        );
-        return;
-    }
-
-    if (perfiles.length < 2) {
-        box.innerHTML = `
-            <div class="empty-state">
-                Necesitas al menos dos colaboradores para registrar cambios de turno.
-            </div>
-        `;
-        return;
-    }
-
-    const options = getTrabajadoresDisponibles(
-        selectedFrom
-    )
-        .map(profile => `
-            <option
-                value="${escapeHTML(profile.name)}"
-                ${profile.name === previousTo ? "selected" : ""}
-            >
-                ${escapeHTML(profile.name)}
-            </option>
-        `)
-        .join("");
-
-    box.innerHTML = `
-        <div class="swap-monthbar">
-            <button id="swapPrevMonth" class="swap-month-button" type="button" aria-label="Mes anterior">
-                &lt;
-            </button>
-
-            <button
-                id="swapMonthLabel"
-                class="swap-month-trigger"
-                type="button"
-                aria-label="Elegir mes y a&#241;o"
-                aria-haspopup="dialog"
-                aria-expanded="false"
-            >
-                ${formatSwapMonth()}
-            </button>
-
-            <button id="swapNextMonth" class="swap-month-button" type="button" aria-label="Mes siguiente">
-                &gt;
-            </button>
-        </div>
-
-        <div class="swap-row">
-            <div class="field-stack swap-from-field">
-                <span>Entrega turno</span>
-                ${renderSwapFromSearch(selectedFrom)}
-            </div>
-
-            <label class="field-stack">
-                <span>Recibe turno</span>
-                <select id="swapTo">
-                    ${options}
-                </select>
-            </label>
-
-            <div class="mini-wrap">
-                <label>Fecha de cambio</label>
-                <div id="swapCalendar1"></div>
-            </div>
-
-            <div class="mini-wrap">
-                <label>Fecha de devolución</label>
-                <div id="swapCalendar2"></div>
-            </div>
-
-            <button id="saveSwapBtn" class="primary-button primary-button--wide" type="button">
-                Registrar cambio
-            </button>
-        </div>
-
-        <div id="swapList"></div>
-    `;
-
-    document.getElementById("swapPrevMonth").onclick =
-        () => cambiarMesSwap(-1);
-
-    document.getElementById("swapNextMonth").onclick =
-        () => cambiarMesSwap(1);
-
-    setupSwapMonthPicker(document.getElementById("swapMonthLabel"));
-
-    bindSwapFromSearch();
-
-    document.getElementById("saveSwapBtn").onclick =
-        guardarCambioTurno;
-
-    document.getElementById("swapTo").onchange = () => {
-        fechaDevolucionSeleccionada = "";
-        renderMiniCalendarios();
-        renderSwapList();
-    };
-
-    actualizarSwapTo(previousTo);
-    renderSwapList();
-    renderMiniCalendarios();
-}
-
-window.renderSwapPanel = renderSwapPanel;
 
 /**
  * Los tipos de turno que estos dos pueden intercambiar ENTRE SI este mes, o
@@ -702,6 +526,8 @@ function renderMiniCalendarios(){
         selectedCambioTurn,
         tiposComunes
     );
+
+    renderSwapSummary();
 }
 
 function renderMiniCalendar(
@@ -726,10 +552,15 @@ function renderMiniCalendar(
     const first = (new Date(y, m, 1).getDay() + 6) % 7;
     const totalCells = 42;
 
-    let html = `<div class="mini-grid">`;
+    let html = `
+        <div class="swx-weekdays" aria-hidden="true">
+            <span>L</span><span>M</span><span>M</span><span>J</span><span>V</span><span>S</span><span>D</span>
+        </div>
+        <div class="swx-days">
+    `;
 
     for (let i = 0; i < first; i++) {
-        html += `<div class="mini-day mini-spacer" aria-hidden="true"></div>`;
+        html += `<span class="swx-day swx-day--spacer" aria-hidden="true"></span>`;
     }
 
     for (let d = 1; d <= days; d++) {
@@ -763,38 +594,41 @@ function renderMiniCalendar(
 
         if (valido) ofrecidos++;
 
-        const turnoClass = turnoBase === 1
-            ? "mini-turn-larga"
-            : turnoBase === 2
-                ? "mini-turn-noche"
-                : "";
-        let clase = "mini-off";
-
-        if (valido) clase = `mini-on ${turnoClass}`;
-
+        // Larga y Noche llevan el color configurado del turno, igual que en el
+        // calendario; el resto (Diurno, 24h, libre) va en gris.
+        const colorTurno = turnoBase === 1 || turnoBase === 2
+            ? turnColor(turnoBase)
+            : "";
         const seleccionada = esCambio
             ? fechaCambioSeleccionada === toISO(fecha)
             : fechaDevolucionSeleccionada === toISO(fecha);
-
-        if (seleccionada) {
-            clase = `mini-selected ${turnoClass}`;
-        }
+        const clase = [
+            colorTurno ? "is-turn" : "is-plain",
+            seleccionada ? "is-picked" : valido ? "is-on" : "is-off"
+        ].join(" ");
+        const estado = seleccionada
+            ? "elegido"
+            : valido ? "disponible" : "no disponible";
 
         html += `
-            <div
-                class="mini-day ${clase}"
+            <button
+                type="button"
+                class="swx-day ${clase}"
+                style="${colorTurno ? `--swx-turn: ${escapeHTML(colorTurno)}` : ""}"
                 data-fecha="${toISO(fecha)}"
                 data-tipo="${esCambio ? 1 : 2}"
                 title="${escapeHTML(motivoBloqueo || `${giver} entrega ${textoTurno(turnoBase)}`)}"
+                aria-label="${d}, ${escapeHTML(textoTurno(turnoBase) || "libre")}, ${estado}"
+                ${valido || seleccionada ? "" : 'aria-disabled="true"'}
             >
                 <span>${d}</span>
                 <small>${textoTurno(turnoBase)}</small>
-            </div>
+            </button>
         `;
     }
 
     for (let i = first + days; i < totalCells; i++) {
-        html += `<div class="mini-day mini-spacer" aria-hidden="true"></div>`;
+        html += `<span class="swx-day swx-day--spacer" aria-hidden="true"></span>`;
     }
 
     html += `</div>`;
@@ -818,7 +652,7 @@ function renderMiniCalendar(
             </div>
         `;
 
-    div.querySelectorAll(".mini-on, .mini-selected")
+    div.querySelectorAll(".swx-day.is-on, .swx-day.is-picked")
         .forEach(item => {
             item.onclick = () => {
                 const fecha = item.dataset.fecha;
@@ -830,6 +664,9 @@ function renderMiniCalendar(
                     fechaCambioSeleccionada = fecha;
                     fechaDevolucionSeleccionada = "";
                     actualizarSwapTo(previousTo);
+                    // Los compatibles dependen de la fecha que se entrega.
+                    renderSwapPanel();
+                    return;
                 } else {
                     fechaDevolucionSeleccionada = fecha;
                 }
@@ -905,51 +742,7 @@ function actualizarSwapTo(preferredTo = ""){
     return selectedTo;
 }
 
-function renderSwapList(){
-    const div = document.getElementById("swapList");
-    if (!div) return;
-
-    const from = getCurrentProfile();
-    const to = document.getElementById("swapTo")?.value || "";
-    const selectedWorkers = new Set(
-        [from, to].filter(Boolean)
-    );
-    const swaps = cambiosDelMes(
-        getSwapYear(),
-        getSwapMonth()
-    ).filter(swap =>
-        selectedWorkers.has(swap.from) ||
-        selectedWorkers.has(swap.to)
-    );
-
-    if (!swaps.length) {
-        const pairText = from && to
-            ? ` donde participe ${escapeHTML(from)} o ${escapeHTML(to)}`
-            : "";
-
-        div.innerHTML = `
-            <div class="empty-state empty-state--compact">
-                No hay cambios de turno registrados${pairText} en ${formatSwapMonth().toLowerCase()}.
-            </div>
-        `;
-        return;
-    }
-
-    div.innerHTML = swaps
-        .slice()
-        .sort((a, b) => a.fecha.localeCompare(b.fecha))
-        .map(swap => `
-            <div class="swap-item ${cambioEstaAnulado(swap) ? "is-canceled" : ""}">
-                ${escapeHTML(swap.from)} -> ${escapeHTML(swap.to)}
-                (${escapeHTML(formatFecha(swap.fecha))})
-                ${cambioEstaAnulado(swap) ? "| ANULADO" : ""}
-                | devolución ${formatFecha(swap.devolucion)}
-            </div>
-        `)
-        .join("");
-}
-
-function guardarCambioTurno(){
+async function guardarCambioTurno(){
     const from = getCurrentProfile();
     const to = document.getElementById("swapTo")?.value;
     const fecha = fechaCambioSeleccionada;
@@ -1055,7 +848,7 @@ function guardarCambioTurno(){
 
     pushHistory();
 
-    registrarCambio({
+    const swap = registrarCambio({
         from,
         to,
         fecha,
@@ -1068,7 +861,820 @@ function guardarCambioTurno(){
 
     fechaCambioSeleccionada = "";
     fechaDevolucionSeleccionada = "";
+    // Recien registrado, lo que hay que atender es su firma.
+    swapListFilter = "pending";
 
     refreshAll();
-    alert("Cambio registrado.");
+
+    // El memorandum se crea al registrar (evento proturnos:swapRegistered);
+    // el Word sale de inmediato para imprimirlo y firmarlo.
+    if (swap?.id) await downloadSwapAnexo4(swap.id);
+}
+
+/* =========================================================
+   Panel de Cambios de turno (mockup aprobado 2026-10-01)
+
+   Izquierda: registrar un cambio en tres pasos -quien entrega, quien recibe y
+   las fechas- con el resumen en palabras y las reglas que se cumplen. Derecha:
+   las solicitudes de cambio que llegan desde la app (tambien siguen en el menu
+   Solicitudes) y los cambios del mes con su Anexo 4: descargarlo para firmar y
+   escanear el firmado, que queda en el memorandum del cambio.
+========================================================= */
+
+const ICONS = {
+    prev: '<path d="m15 18-6-6 6-6"></path>',
+    next: '<path d="m9 18 6-6-6-6"></path>',
+    download: '<path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path>',
+    search: '<circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path>',
+    check: '<path d="M20 6 9 17l-5-5"></path>',
+    scan: '<path d="M4 8V5a1 1 0 0 1 1-1h3"></path><path d="M16 4h3a1 1 0 0 1 1 1v3"></path><path d="M20 16v3a1 1 0 0 1-1 1h-3"></path><path d="M8 20H5a1 1 0 0 1-1-1v-3"></path><path d="M4 12h16"></path>',
+    doc: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"></path><path d="M14 3v5h5"></path><path d="m9 14 2 2 4-4"></path>',
+    phone: '<rect x="7" y="2" width="10" height="20" rx="2.5"></rect><path d="M11 18h2"></path>'
+};
+
+function icon(name) {
+    return `<svg class="swx-i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+}
+
+// Filtro y busqueda de la lista del mes. `null` = todavia no se eligio: se
+// abre en "Por firmar" si hay alguno, que es lo que hay que atender.
+let swapListFilter = null;
+let swapListQuery = "";
+
+const OVERDUE_DAYS = 3;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function initials(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+    const surnameIndex = parts.length >= 3 ? parts.length - 2 : parts.length - 1;
+
+    return `${parts[0]?.[0] || ""}${parts[surnameIndex]?.[0] || ""}`.toUpperCase();
+}
+
+function firstName(name) {
+    return String(name || "").trim().split(/\s+/)[0] || "";
+}
+
+function shortName(name) {
+    const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+
+    if (parts.length < 2) return parts[0] || "";
+
+    const surname = parts.length >= 3 ? parts[parts.length - 2] : parts[parts.length - 1];
+
+    return `${parts[0][0]}. ${surname}`;
+}
+
+function isoToDate(iso) {
+    const [y, m, d] = String(iso || "").split("-").map(Number);
+
+    return new Date(y, (m || 1) - 1, d || 1);
+}
+
+function shortDayLabel(iso) {
+    const date = isoToDate(iso);
+
+    if (Number.isNaN(date.getTime())) return iso || "";
+
+    return date
+        .toLocaleDateString("es-CL", { weekday: "short", day: "numeric" })
+        .replace(".", "");
+}
+
+function profileSubtitle(name) {
+    const profile = getPerfil(name);
+
+    if (!profile) return "";
+
+    const rotativa = getRotativa(name)?.type;
+
+    return [
+        getCalendarProfileDetail(profile),
+        rotativa ? `Rotativa ${getRotativaLabel(rotativa)}` : ""
+    ].filter(Boolean).join(" · ");
+}
+
+function monthlyLimit() {
+    const config = getTurnChangeConfig();
+
+    return config.limitMonthlySwaps
+        ? Number(config.monthlySwapLimit) || 0
+        : 0;
+}
+
+function swapCountText(name) {
+    const limit = monthlyLimit();
+
+    if (!limit) return "";
+
+    return `${activeMonthlySwapCount(name, getSwapYear(), getSwapMonth())}/${limit}`;
+}
+
+function turnColor(turno) {
+    return getTurnoColorConfig()?.base?.[Number(turno)] || "";
+}
+
+/* ---------- Estado de firma de cada cambio ---------- */
+
+function swapCreatedAt(swap, memo) {
+    const fromMemo = Date.parse(memo?.createdAt || "");
+
+    if (Number.isFinite(fromMemo)) return fromMemo;
+
+    // El id de un cambio es el Date.now() del momento en que se registro.
+    const fromId = Number(swap?.id);
+
+    return Number.isFinite(fromId) && fromId > 1e12 ? fromId : Date.now();
+}
+
+function swapDocState(swap) {
+    if (cambioEstaAnulado(swap)) return { key: "canceled" };
+
+    const memo = findSwapMemo(swap.id);
+    const documents = memo ? getMemoDocuments(memo.id) : [];
+
+    if (documents.length) {
+        return { key: "signed", memo, document: documents[documents.length - 1] };
+    }
+
+    return {
+        key: "pending",
+        memo,
+        days: Math.max(0, Math.floor((Date.now() - swapCreatedAt(swap, memo)) / DAY_MS))
+    };
+}
+
+function monthSwaps() {
+    return cambiosDelMes(getSwapYear(), getSwapMonth())
+        .slice()
+        .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)))
+        .map(swap => ({ swap, state: swapDocState(swap) }));
+}
+
+function pendingSignatureSwaps(items = monthSwaps()) {
+    return items.filter(item => item.state.key === "pending");
+}
+
+/* ---------- Solicitudes desde la app ---------- */
+
+function requestField(request, ...keys) {
+    for (const key of keys) {
+        if (request?.[key]) return String(request[key]);
+    }
+
+    return "";
+}
+
+function pendingAppSwapRequests() {
+    return getWorkerRequests().filter(isPendingSwapRequest);
+}
+
+function requestTurnLabel(profile, iso) {
+    const date = isoToDate(iso);
+
+    if (!profile || Number.isNaN(date.getTime())) return "";
+
+    const turno = getSwapTurnState(
+        profile,
+        `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+    );
+
+    return swapCodeLabel(codigoTurno(turno)) || "";
+}
+
+function requestCardHTML(request) {
+    const from = requestField(request, "from", "profile");
+    const to = requestField(request, "to", "targetProfile", "counterpart", "receiver");
+    const fecha = requestField(request, "fecha", "changeDate", "date");
+    const devolucion = requestField(request, "devolucion", "returnDate", "endDate");
+    const entrega = [requestTurnLabel(from, fecha), shortDayLabel(fecha)].filter(Boolean).join(" ");
+    const devuelve = [requestTurnLabel(to, devolucion), shortDayLabel(devolucion)].filter(Boolean).join(" ");
+
+    return `
+        <div class="swx-request">
+            <div class="swx-request__text">
+                <strong>${escapeHTML(shortName(from))} → ${escapeHTML(shortName(to))}</strong>
+                <span>Entrega ${escapeHTML(entrega)} · devuelve ${escapeHTML(devuelve)}</span>
+                <em>El colega ya aceptó</em>
+            </div>
+            <div class="swx-request__actions">
+                <button class="swx-btn swx-btn--ghost swx-btn--danger-text" type="button" data-swx-act="reject-request" data-request-id="${escapeHTML(request.id)}">Rechazar</button>
+                <button class="swx-btn swx-btn--ghost" type="button" data-swx-act="request-calendar" data-profile="${escapeHTML(from)}" data-date="${escapeHTML(fecha)}">Ver en calendario</button>
+                <button class="swx-btn swx-btn--ok" type="button" data-swx-act="accept-request" data-request-id="${escapeHTML(request.id)}">Aprobar</button>
+            </div>
+        </div>
+    `;
+}
+
+function requestsHTML() {
+    const requests = pendingAppSwapRequests();
+
+    if (!requests.length) return "";
+
+    return `
+        <section class="swx-card swx-requests">
+            <div class="swx-requests__head">
+                <span class="swx-requests__icon">${icon("phone")}</span>
+                <h2>Solicitudes desde la app · ${requests.length}</h2>
+            </div>
+            ${requests.map(requestCardHTML).join("")}
+        </section>
+    `;
+}
+
+/* ---------- Lista del mes ---------- */
+
+function swapBadge(state) {
+    if (state.key === "canceled") return '<span class="swx-badge swx-badge--muted">Anulado</span>';
+    if (state.key === "signed") return '<span class="swx-badge swx-badge--ok">Firmado</span>';
+
+    return state.days > OVERDUE_DAYS
+        ? `<span class="swx-badge swx-badge--late">Por firmar · ${state.days} días</span>`
+        : '<span class="swx-badge swx-badge--warn">Por firmar</span>';
+}
+
+function attachedLabel(document) {
+    const date = Date.parse(document?.attachedAt || document?.addedAt || "");
+    const when = Number.isFinite(date)
+        ? new Date(date).toLocaleDateString("es-CL", { day: "2-digit", month: "2-digit" })
+        : "";
+
+    return [document?.name || "Anexo 4 firmado", when].filter(Boolean).join(" · ");
+}
+
+function swapItemHTML({ swap, state }) {
+    const id = escapeHTML(String(swap.id));
+
+    return `
+        <article class="swx-item is-${state.key}">
+            <div class="swx-item__top">
+                <span class="swx-pair" aria-hidden="true">
+                    <span class="swx-av">${escapeHTML(initials(swap.from))}</span>
+                    <span class="swx-av swx-av--alt">${escapeHTML(initials(swap.to))}</span>
+                </span>
+                <span class="swx-item__text">
+                    <strong>${escapeHTML(shortName(swap.from))} → ${escapeHTML(shortName(swap.to))}</strong>
+                    <span>${escapeHTML(swap.turno || "")} ${escapeHTML(shortDayLabel(swap.fecha))} ⇄ ${escapeHTML(swap.turnoDevuelto || "")} ${escapeHTML(shortDayLabel(swap.devolucion))}</span>
+                </span>
+                ${swapBadge(state)}
+            </div>
+            ${state.key === "pending" ? `
+                <div class="swx-item__actions">
+                    <button class="swx-btn swx-btn--ghost" type="button" data-swx-act="anexo" data-swap-id="${id}">${icon("download")}Anexo 4 (Word)</button>
+                    <button class="swx-btn swx-btn--warn" type="button" data-swx-act="scan" data-swap-id="${id}">${icon("scan")}Escanear firmado</button>
+                </div>
+            ` : ""}
+            ${state.key === "signed" ? `
+                <div class="swx-item__doc">
+                    ${icon("doc")}
+                    <span>${escapeHTML(attachedLabel(state.document))}</span>
+                    <button class="swx-link" type="button" data-swx-act="open-doc" data-memo-id="${escapeHTML(state.memo.id)}" data-doc-id="${escapeHTML(state.document.id)}">Ver</button>
+                </div>
+            ` : ""}
+            <div class="swx-item__links">
+                <button class="swx-link" type="button" data-swx-act="calendar" data-swap-id="${id}">Ver en calendario</button>
+                ${state.key !== "canceled" ? `<button class="swx-link swx-link--danger" type="button" data-swx-act="cancel" data-swap-id="${id}">Anular cambio</button>` : ""}
+            </div>
+        </article>
+    `;
+}
+
+function swapListHTML() {
+    const items = monthSwaps();
+    const counts = {
+        all: items.length,
+        pending: items.filter(item => item.state.key === "pending").length,
+        signed: items.filter(item => item.state.key === "signed").length,
+        canceled: items.filter(item => item.state.key === "canceled").length
+    };
+    const filter = swapListFilter || (counts.pending ? "pending" : "all");
+    const query = swapListQuery
+        .toLocaleLowerCase("es")
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "");
+    const visible = items.filter(item => {
+        if (filter !== "all" && item.state.key !== filter) return false;
+        if (!query) return true;
+
+        return `${item.swap.from} ${item.swap.to}`
+            .toLocaleLowerCase("es")
+            .normalize("NFD")
+            .replace(/[̀-ͯ]/g, "")
+            .includes(query);
+    });
+    const tabs = [
+        ["all", "Todos"],
+        ["pending", "Por firmar"],
+        ["signed", "Firmados"],
+        ["canceled", "Anulados"]
+    ];
+    const monthName = SWAP_MONTH_NAMES[getSwapMonth()].toLocaleLowerCase("es");
+
+    return `
+        <section class="swx-card swx-list">
+            <div class="swx-list__head">
+                <h2>Cambios de ${escapeHTML(monthName)}</h2>
+                <label class="swx-search">
+                    ${icon("search")}
+                    <input type="search" placeholder="Buscar trabajador" aria-label="Buscar trabajador" value="${escapeHTML(swapListQuery)}" data-swx-search>
+                </label>
+            </div>
+            <div class="swx-tabs" role="tablist">
+                ${tabs.map(([key, label]) => `
+                    <button type="button" role="tab" aria-selected="${filter === key}" class="${filter === key ? `is-active is-${key}` : ""}" data-swx-filter="${key}">${label} ${counts[key]}</button>
+                `).join("")}
+            </div>
+            <div id="swapList" class="swx-list__items">
+                ${visible.length
+                    ? visible.map(swapItemHTML).join("")
+                    : `<div class="empty-state empty-state--compact">No hay cambios${filter === "all" ? "" : " en este filtro"} en ${escapeHTML(monthName)}.</div>`}
+            </div>
+        </section>
+    `;
+}
+
+function renderSwapList() {
+    const holder = document.getElementById("swapListHolder");
+
+    if (!holder) return;
+
+    const focused = document.activeElement?.matches?.("[data-swx-search]");
+    const caret = focused ? document.activeElement.selectionStart : null;
+
+    holder.innerHTML = swapListHTML();
+
+    if (focused) {
+        const input = holder.querySelector("[data-swx-search]");
+
+        input?.focus();
+        if (caret !== null) input?.setSelectionRange(caret, caret);
+    }
+}
+
+/* ---------- Registrar cambio ---------- */
+
+function personCardHTML({ label, avatarClass, name, field, subtitle }) {
+    return `
+        <div class="swx-person">
+            <span class="swx-person__label">${label}</span>
+            <div class="swx-person__box">
+                <span class="swx-av swx-av--lg ${avatarClass}">${escapeHTML(initials(name) || "?")}</span>
+                <span class="swx-person__field">
+                    ${field}
+                    <small>${escapeHTML(subtitle || "")}</small>
+                </span>
+            </div>
+        </div>
+    `;
+}
+
+function renderSwapFromSearch(selectedFrom) {
+    // Solo el nombre: el estamento y la rotativa van debajo, en la tarjeta.
+    const value = selectedFrom || "";
+
+    return `
+        <form id="swapFromSearchForm" class="swx-from-search" autocomplete="off">
+            <input
+                id="swapFromSearch"
+                type="search"
+                list="swapFromOptions"
+                placeholder="Selecciona colaborador"
+                aria-label="Trabajador que entrega el turno"
+                value="${escapeHTML(value)}"
+            >
+            <button class="swx-icon-btn" type="submit" aria-label="Buscar trabajador que entrega turno">${icon("search")}</button>
+            <datalist id="swapFromOptions">
+                ${renderSwapFromOptions()}
+            </datalist>
+        </form>
+    `;
+}
+
+function stepsHTML(from, to) {
+    const dates = Boolean(fechaCambioSeleccionada && fechaDevolucionSeleccionada);
+    const steps = [
+        ["Quién entrega", Boolean(from)],
+        ["Quién recibe", Boolean(from && to)],
+        ["Fechas", dates]
+    ];
+    const current = steps.findIndex(([, done]) => !done);
+
+    return `
+        <ol class="swx-steps" id="swapSteps">
+            ${steps.map(([label, done], index) => `
+                <li class="${done ? "is-done" : index === current ? "is-current" : ""}">
+                    <span>${index + 1}</span>${label}
+                </li>
+            `).join("")}
+        </ol>
+    `;
+}
+
+function receiverChipsHTML(from, to) {
+    const y = getSwapYear();
+    const m = getSwapMonth();
+    const receivers = getTrabajadoresDisponibles(
+        from,
+        fechaCambioSeleccionada ? keyFromInputDate(fechaCambioSeleccionada) : ""
+    )
+        .map(profile => ({
+            name: profile.name,
+            used: activeMonthlySwapCount(profile.name, y, m)
+        }))
+        .sort((a, b) => a.used - b.used || a.name.localeCompare(b.name, "es"))
+        .slice(0, 6);
+
+    if (!receivers.length) return "";
+
+    return `
+        <div class="swx-chips">
+            <span>Compatibles:</span>
+            ${receivers.map(item => {
+                const count = swapCountText(item.name);
+
+                return `
+                    <button type="button" class="swx-chip ${item.name === to ? "is-active" : ""}" data-swx-receiver="${escapeHTML(item.name)}">
+                        ${escapeHTML(shortName(item.name))}${count ? ` · ${count}` : ""}
+                    </button>
+                `;
+            }).join("")}
+        </div>
+    `;
+}
+
+function legendHTML() {
+    const colors = getTurnoColorConfig()?.base || {};
+
+    return `
+        <div class="swx-legend">
+            <span><i style="background: ${escapeHTML(colors[1] || "#1f9d55")}"></i>Larga</span>
+            <span><i style="background: ${escapeHTML(colors[2] || "#2563eb")}"></i>Noche</span>
+            <span><i class="is-plain"></i>Diurno / libre</span>
+            <span><i class="is-picked"></i>Elegido</span>
+            <span><i class="is-off"></i>No disponible (pasa el mouse para ver por qué)</span>
+        </div>
+    `;
+}
+
+function selectedTurn(name, iso) {
+    return iso ? Number(getSwapTurnState(name, keyFromInputDate(iso))) || 0 : 0;
+}
+
+function summaryHTML(from, to) {
+    if (!from || !to || !fechaCambioSeleccionada || !fechaDevolucionSeleccionada) {
+        return `
+            <div class="swx-summary swx-summary--empty">
+                Elige en el calendario de la izquierda el turno que entrega ${escapeHTML(firstName(from))} y, en el de la derecha, el que le devuelven.
+            </div>
+        `;
+    }
+
+    const turnoEntrega = selectedTurn(from, fechaCambioSeleccionada);
+    const turnoDevuelve = selectedTurn(to, fechaDevolucionSeleccionada);
+    const entregaLabel = swapCodeLabel(codigoTurno(turnoEntrega));
+    const devuelveLabel = swapCodeLabel(codigoTurno(turnoDevuelve));
+    const longDay = iso => isoToDate(iso)
+        .toLocaleDateString("es-CL", { weekday: "short", day: "numeric" })
+        .replace(".", "")
+        .replace(/^./, letter => letter.toUpperCase());
+    const limit = monthlyLimit();
+    const y = getSwapYear();
+    const m = getSwapMonth();
+    const sameType = turnoEntrega === turnoDevuelve;
+    const checks = [
+        sameType
+            ? `Mismo tipo de turno (${entregaLabel} por ${devuelveLabel})`
+            : `${entregaLabel} por ${devuelveLabel}: la unidad permite tipos distintos`,
+        "Sin 24 h invertido ni turnos encadenados",
+        limit
+            ? `Dentro del límite: ${firstName(from)} quedaría en ${activeMonthlySwapCount(from, y, m) + 1}/${limit} · ${firstName(to)} en ${activeMonthlySwapCount(to, y, m) + 1}/${limit}`
+            : "La unidad no limita los cambios del mes",
+        "Ninguno tiene permiso esos días"
+    ];
+    const chip = turno => `<span class="swx-turn" style="--swx-turn: ${escapeHTML(turnColor(turno))}">${escapeHTML(codigoTurno(turno))}</span>`;
+
+    return `
+        <div class="swx-summary">
+            <div class="swx-summary__lines">
+                <span class="swx-kicker">Así queda el cambio</span>
+                <p>${chip(turnoEntrega)}<span><strong>${escapeHTML(longDay(fechaCambioSeleccionada))}</strong> · ${escapeHTML(firstName(from))} entrega su ${escapeHTML(entregaLabel)} → la hace ${escapeHTML(firstName(to))}</span></p>
+                <p>${chip(turnoDevuelve)}<span><strong>${escapeHTML(longDay(fechaDevolucionSeleccionada))}</strong> · ${escapeHTML(firstName(to))} devuelve su ${escapeHTML(devuelveLabel)} → la hace ${escapeHTML(firstName(from))}</span></p>
+            </div>
+            <ul class="swx-summary__checks">
+                ${checks.map(text => `<li>${icon("check")}${escapeHTML(text)}</li>`).join("")}
+            </ul>
+        </div>
+    `;
+}
+
+function renderSwapSummary() {
+    const from = getCurrentProfile();
+    const to = document.getElementById("swapTo")?.value || "";
+    const summary = document.getElementById("swapSummary");
+    const steps = document.getElementById("swapSteps");
+    const save = document.getElementById("saveSwapBtn");
+
+    if (summary) summary.innerHTML = summaryHTML(from, to);
+    if (steps) steps.outerHTML = stepsHTML(from, to);
+    if (save) {
+        save.disabled = !(from && to && fechaCambioSeleccionada && fechaDevolucionSeleccionada);
+    }
+}
+
+function newSwapHTML(selectedFrom, previousTo, message = "") {
+    const to = previousTo;
+    const fromName = firstName(selectedFrom);
+    const limit = monthlyLimit();
+
+    if (message) {
+        return `
+            <section class="swx-card swx-new">
+                <div class="swx-new__head"><h2>Registrar cambio</h2>${stepsHTML("", "")}</div>
+                <div class="swx-people">
+                    ${personCardHTML({
+                        label: "Entrega el turno",
+                        avatarClass: "",
+                        name: selectedFrom,
+                        field: renderSwapFromSearch(selectedFrom),
+                        subtitle: profileSubtitle(selectedFrom)
+                    })}
+                </div>
+                <div class="empty-state">${escapeHTML(message)}</div>
+            </section>
+        `;
+    }
+
+    return `
+        <section class="swx-card swx-new">
+            <div class="swx-new__head">
+                <h2>Registrar cambio</h2>
+                ${stepsHTML(selectedFrom, to)}
+            </div>
+
+            <div class="swx-people">
+                <div class="swx-people__col">
+                    ${personCardHTML({
+                        label: "Entrega el turno",
+                        avatarClass: "",
+                        name: selectedFrom,
+                        field: renderSwapFromSearch(selectedFrom),
+                        subtitle: profileSubtitle(selectedFrom)
+                    })}
+                    ${limit ? `<span class="swx-note">Cambios este mes: <strong>${activeMonthlySwapCount(selectedFrom, getSwapYear(), getSwapMonth())} de ${limit}</strong></span>` : ""}
+                </div>
+                <div class="swx-people__col">
+                    ${personCardHTML({
+                        label: "Recibe el turno",
+                        avatarClass: "swx-av--alt",
+                        name: to,
+                        field: `<select id="swapTo" aria-label="Trabajador que recibe el turno"></select>`,
+                        subtitle: profileSubtitle(to)
+                    })}
+                    <div id="swapReceiverChips">${receiverChipsHTML(selectedFrom, to)}</div>
+                </div>
+            </div>
+
+            <div class="swx-cals">
+                <div class="swx-cal">
+                    <div class="swx-cal__head"><strong>${escapeHTML(fromName)} entrega</strong><span>Solo sus Largas y Noches base</span></div>
+                    <div id="swapCalendar1"></div>
+                </div>
+                <div class="swx-cal">
+                    <div class="swx-cal__head"><strong id="swapCalendar2Title">${escapeHTML(firstName(to) || "Quien recibe")} devuelve</strong><span>Turnos que ${escapeHTML(fromName)} puede hacer</span></div>
+                    <div id="swapCalendar2"></div>
+                </div>
+            </div>
+
+            ${legendHTML()}
+
+            <div id="swapSummary">${summaryHTML(selectedFrom, to)}</div>
+
+            <div class="swx-new__foot">
+                <span>Al registrar se crea el memorándum con el <strong>Anexo 4</strong> ya rellenado, listo para imprimir y firmar.</span>
+                <button id="saveSwapBtn" class="swx-btn swx-btn--primary swx-btn--lg" type="button" disabled>${icon("check")}Registrar y descargar Anexo 4</button>
+            </div>
+        </section>
+    `;
+}
+
+export function renderSwapPanel(){
+    const box = document.getElementById("swapPanel");
+    if (!box) return;
+
+    if (!getTurnChangeConfig().allowSwaps) {
+        box.innerHTML = `
+            <div class="empty-state">
+                Los cambios de turno estan desactivados en Ajustes del sistema.
+            </div>
+        `;
+        return;
+    }
+
+    const perfiles = getProfiles();
+    const selectedFrom = getCurrentProfile();
+    const previousTo =
+        document.getElementById("swapTo")?.value || "";
+    const perfilFrom = getPerfil(selectedFrom);
+    const pendingCount = pendingSignatureSwaps().length;
+    const message = !selectedFrom || !perfilFrom
+        ? "Selecciona un trabajador para revisar cambios de turno."
+        : noPuedeIntercambiar(selectedFrom)
+            ? `${selectedFrom} no puede intercambiar turnos porque el perfil esta desactivado.`
+            : perfiles.length < 2
+                ? "Necesitas al menos dos colaboradores para registrar cambios de turno."
+                : "";
+    // Quien recibe se resuelve ANTES de pintar: su tarjeta y su calendario
+    // salen con nombre desde el principio, no despues de llenar el select.
+    const receivers = message
+        ? []
+        : getTrabajadoresDisponibles(
+            selectedFrom,
+            fechaCambioSeleccionada
+                ? keyFromInputDate(fechaCambioSeleccionada)
+                : ""
+        );
+    const effectiveTo = receivers.some(profile => profile.name === previousTo)
+        ? previousTo
+        : receivers[0]?.name || "";
+
+    box.innerHTML = `
+        <div class="swx">
+            <header class="swx-head">
+                <div class="swx-head__title">
+                    <h1>Cambios de turno</h1>
+                    <p>Registra el cambio, descarga el Anexo 4 para firmar y adjunta el escaneo en el mismo lugar.</p>
+                </div>
+                <div class="swx-month">
+                    <button id="swapPrevMonth" class="swx-month__nav" type="button" aria-label="Mes anterior">${icon("prev")}</button>
+                    <button
+                        id="swapMonthLabel"
+                        class="swx-month__label"
+                        type="button"
+                        aria-label="Elegir mes y a&#241;o"
+                        aria-haspopup="dialog"
+                        aria-expanded="false"
+                    >${escapeHTML(SWAP_MONTH_NAMES[getSwapMonth()])} ${getSwapYear()}</button>
+                    <button id="swapNextMonth" class="swx-month__nav" type="button" aria-label="Mes siguiente">${icon("next")}</button>
+                </div>
+                <button class="swx-btn swx-btn--ghost swx-btn--lg" type="button" data-swx-act="download-pending" ${pendingCount ? "" : "disabled"}>${icon("download")}Descargar pendientes de firma (${pendingCount})</button>
+            </header>
+
+            <div class="swx-grid">
+                ${newSwapHTML(selectedFrom, effectiveTo, message)}
+                <aside class="swx-side">
+                    ${requestsHTML()}
+                    <div id="swapListHolder">${swapListHTML()}</div>
+                </aside>
+            </div>
+        </div>
+    `;
+
+    document.getElementById("swapPrevMonth").onclick =
+        () => cambiarMesSwap(-1);
+
+    document.getElementById("swapNextMonth").onclick =
+        () => cambiarMesSwap(1);
+
+    setupSwapMonthPicker(document.getElementById("swapMonthLabel"));
+    bindSwapFromSearch();
+    bindSwapPanelActions(box);
+
+    if (message) return;
+
+    document.getElementById("saveSwapBtn").onclick =
+        guardarCambioTurno;
+
+    document.getElementById("swapTo").onchange = () => {
+        fechaDevolucionSeleccionada = "";
+        renderSwapPanel();
+    };
+
+    actualizarSwapTo(effectiveTo);
+    renderMiniCalendarios();
+}
+
+window.renderSwapPanel = renderSwapPanel;
+
+function swapFromId(swapId) {
+    return getSwaps().find(swap => String(swap?.id) === String(swapId)) || null;
+}
+
+function viewInCalendar(profile, iso) {
+    if (!profile || !iso) return;
+
+    window.dispatchEvent(new CustomEvent("proturnos:viewWorkerRequestInCalendar", {
+        detail: { profile, date: iso }
+    }));
+}
+
+async function cancelSwapFromList(swap) {
+    const confirmed = await showConfirm(
+        `Se anulará el cambio entre ${swap.from} y ${swap.to} ` +
+            `(${formatFecha(swap.fecha)} y ${formatFecha(swap.devolucion)}). ` +
+            "Cada uno vuelve a su turno original.",
+        {
+            title: "Anular cambio de turno",
+            tone: "danger",
+            confirmText: "Anular cambio",
+            cancelText: "Volver",
+            destructive: true
+        }
+    );
+
+    if (!confirmed) return;
+
+    pushHistory();
+    deshacerCambioTurno(swap);
+    refreshAll();
+}
+
+// Un solo manejador por panel: el contenido se repinta entero y los botones
+// llegan y se van, pero `box` es el mismo.
+function bindSwapPanelActions(box) {
+    if (box.dataset.swxBound === "true") return;
+
+    box.dataset.swxBound = "true";
+
+    box.addEventListener("input", event => {
+        if (!event.target.matches?.("[data-swx-search]")) return;
+
+        swapListQuery = event.target.value;
+        renderSwapList();
+    });
+
+    box.addEventListener("click", async event => {
+        const filter = event.target.closest("[data-swx-filter]");
+
+        if (filter) {
+            swapListFilter = filter.dataset.swxFilter;
+            renderSwapList();
+            return;
+        }
+
+        const receiver = event.target.closest("[data-swx-receiver]");
+
+        if (receiver) {
+            const select = document.getElementById("swapTo");
+
+            if (select && select.value !== receiver.dataset.swxReceiver) {
+                select.value = receiver.dataset.swxReceiver;
+                select.onchange?.();
+            }
+            return;
+        }
+
+        const button = event.target.closest("[data-swx-act]");
+
+        if (!button) return;
+
+        const action = button.dataset.swxAct;
+        const swap = button.dataset.swapId ? swapFromId(button.dataset.swapId) : null;
+
+        if (action === "download-pending") {
+            const pending = pendingSignatureSwaps().map(item => item.swap.id);
+            const month = `${SWAP_MONTH_NAMES[getSwapMonth()]}_${getSwapYear()}`;
+
+            await downloadSwapAnexo4Batch(pending, `Anexos4_pendientes_${month}.zip`);
+            return;
+        }
+
+        if (action === "anexo" && swap) {
+            await downloadSwapAnexo4(swap.id);
+            return;
+        }
+
+        if (action === "scan" && swap) {
+            openSwapScanDialog(swap, { onDone: () => renderSwapPanel() });
+            return;
+        }
+
+        if (action === "open-doc") {
+            await openMemoDocument(button.dataset.memoId, button.dataset.docId);
+            return;
+        }
+
+        if (action === "calendar" && swap) {
+            viewInCalendar(swap.from, swap.fecha);
+            return;
+        }
+
+        if (action === "cancel" && swap) {
+            await cancelSwapFromList(swap);
+            return;
+        }
+
+        if (action === "request-calendar") {
+            viewInCalendar(button.dataset.profile, button.dataset.date);
+            return;
+        }
+
+        if (action === "accept-request" || action === "reject-request") {
+            const done = action === "accept-request"
+                ? await acceptWorkerRequestById(button.dataset.requestId)
+                : await rejectWorkerRequestById(button.dataset.requestId);
+
+            if (done !== false) refreshAll();
+            renderSwapPanel();
+        }
+    });
 }

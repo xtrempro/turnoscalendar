@@ -376,6 +376,9 @@ export function registrarCambio(data) {
             to: data.to
         }
     );
+
+    // El panel de Cambios de turno lo usa para descargar su Anexo 4 al tiro.
+    return swaps[swaps.length - 1];
 }
 
 /* =========================================

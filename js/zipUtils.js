@@ -196,3 +196,31 @@ export function writeZip(entries) {
 
     return out;
 }
+
+/**
+ * Un archivo nuevo para writeZip, guardado sin comprimir. El nombre va en
+ * UTF-8 (bit 11 de flags) para que las tildes se lean bien al descomprimir.
+ */
+export function storedZipEntry(name, bytes, when = new Date()) {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const time =
+        (when.getHours() << 11) |
+        (when.getMinutes() << 5) |
+        Math.floor(when.getSeconds() / 2);
+    const date =
+        ((Math.max(1980, when.getFullYear()) - 1980) << 9) |
+        ((when.getMonth() + 1) << 5) |
+        when.getDate();
+
+    return {
+        nameBytes: new TextEncoder().encode(String(name || "archivo")),
+        flags: 0x0800,
+        method: 0,
+        time,
+        date,
+        crc: crc32(data),
+        compressedSize: data.length,
+        size: data.length,
+        data
+    };
+}

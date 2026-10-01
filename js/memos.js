@@ -60,6 +60,7 @@ import {
     todayISO
 } from "./memosInsights.js";
 import { memoListPrintHTML, printDocument } from "./memosPrint.js";
+import { storedZipEntry, writeZip } from "./zipUtils.js";
 import {
     LEAVE_ATTACHMENT_ACCEPT,
     addLeaveAttachment,
@@ -2130,45 +2131,163 @@ function openInCalendar(memo) {
     }));
 }
 
+async function fetchAnexo4Template() {
+    const response = await fetch(ANEXO4_TEMPLATE_URL, { cache: "no-cache" });
+
+    if (!response.ok) throw new Error("No se encontró la plantilla del formulario.");
+
+    return response.arrayBuffer();
+}
+
+// El Word relleno de UN cambio. `template` se pasa para no bajarla una vez por
+// cambio al armar varios juntos.
+async function buildSwapAnexo4(swap, template, requestedAt = "") {
+    const profiles = getProfilesSafe();
+    const data = anexo4Data(swap, {
+        unitName: getActiveWorkspace()?.name || "",
+        rutFor: name => profiles.find(profile => profile.name === name)?.rut || "",
+        requestedAt
+    });
+
+    return {
+        bytes: await buildAnexo4Docx(template.slice(0), data),
+        fileName: anexo4FileName(data)
+    };
+}
+
+function swapById(swapId) {
+    const id = String(swapId || "");
+
+    return getSwaps().find(item => String(item?.id) === id) || null;
+}
+
+/**
+ * El memorandum de un cambio de turno (el que lleva su Anexo 4), o null.
+ */
+export function findSwapMemo(swapId) {
+    const id = String(swapId || "");
+
+    if (!id) return null;
+
+    return getMemos().find(memo => swapIdOfMemo(memo) === id) || null;
+}
+
+/**
+ * El memorandum del cambio, creandolo si no existe. Los cambios registrados
+ * antes de que existiera el Anexo 4 (2026-09-29) no tienen uno, y escanear su
+ * formulario firmado necesita donde dejarlo.
+ */
+export function ensureSwapMemo(swapId) {
+    const existing = findSwapMemo(swapId);
+
+    if (existing) return existing;
+
+    const swap = swapById(swapId);
+
+    if (!swap) return null;
+
+    createSwapMemoTask(swap);
+
+    return findSwapMemo(swapId);
+}
+
+/**
+ * Descarga el Anexo 4 relleno con los datos ACTUALES de un cambio de turno.
+ * La usan el visor del memorandum y el panel de Cambios de turno.
+ */
+export async function downloadSwapAnexo4(swapId) {
+    const swap = swapById(swapId);
+
+    if (!swap) {
+        toast("El cambio de turno ya no existe.");
+        return false;
+    }
+
+    try {
+        const memo = findSwapMemo(swapId);
+        const { bytes, fileName } = await buildSwapAnexo4(
+            swap,
+            await fetchAnexo4Template(),
+            memo?.createdAt || ""
+        );
+
+        downloadBytes(bytes, fileName);
+        return true;
+    } catch (error) {
+        console.warn("No se pudo generar el Anexo 4.", error);
+        toast(error?.message || "No se pudo generar el formulario.");
+        return false;
+    }
+}
+
+/**
+ * Varios Anexo 4 en un solo .zip, para imprimirlos de una vez.
+ */
+export async function downloadSwapAnexo4Batch(swapIds = [], zipName = "Anexos4.zip") {
+    const swaps = swapIds.map(swapById).filter(Boolean);
+
+    if (!swaps.length) {
+        toast("No hay formularios pendientes de firma.");
+        return false;
+    }
+
+    if (swaps.length === 1) return downloadSwapAnexo4(swaps[0].id);
+
+    try {
+        const template = await fetchAnexo4Template();
+        const used = new Set();
+        const entries = [];
+
+        for (const swap of swaps) {
+            const { bytes, fileName } = await buildSwapAnexo4(
+                swap,
+                template,
+                findSwapMemo(swap.id)?.createdAt || ""
+            );
+            // Dos cambios de la misma persona el mismo dia darian el mismo nombre.
+            let name = fileName;
+            let copy = 2;
+
+            while (used.has(name)) {
+                name = fileName.replace(/\.docx$/, `_${copy++}.docx`);
+            }
+
+            used.add(name);
+            entries.push(storedZipEntry(name, bytes));
+        }
+
+        const url = URL.createObjectURL(
+            new Blob([writeZip(entries)], { type: "application/zip" })
+        );
+        const link = document.createElement("a");
+
+        link.href = url;
+        link.download = zipName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+        return true;
+    } catch (error) {
+        console.warn("No se pudieron generar los Anexo 4.", error);
+        toast(error?.message || "No se pudieron generar los formularios.");
+        return false;
+    }
+}
+
 /**
  * Descarga el Anexo 4 relleno con los datos ACTUALES del cambio de turno.
  */
 async function downloadSwapForm(memo) {
     const swapId = swapIdOfMemo(memo);
-    const swap = getSwaps().find(item => String(item?.id) === swapId);
 
-    if (!swap) {
+    if (!swapById(swapId)) {
         toast("El cambio de turno de este memorándum ya no existe.");
         return;
     }
 
-    try {
-        const response = await fetch(ANEXO4_TEMPLATE_URL, { cache: "no-cache" });
-
-        if (!response.ok) throw new Error("No se encontró la plantilla del formulario.");
-
-        const profiles = getProfilesSafe();
-        const data = anexo4Data(swap, {
-            unitName: getActiveWorkspace()?.name || "",
-            rutFor: name => profiles.find(profile => profile.name === name)?.rut || "",
-            requestedAt: memo.createdAt
-        });
-        const bytes = await buildAnexo4Docx(await response.arrayBuffer(), data);
-        const url = URL.createObjectURL(new Blob([bytes], {
-            type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        }));
-        const link = document.createElement("a");
-
-        link.href = url;
-        link.download = anexo4FileName(data);
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-    } catch (error) {
-        console.warn("No se pudo generar el Anexo 4.", error);
-        toast(error?.message || "No se pudo generar el formulario.");
-    }
+    await downloadSwapAnexo4(swapId);
 }
 
 function downloadBytes(bytes, fileName) {
