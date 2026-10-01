@@ -196,17 +196,17 @@ service cloud.firestore {
 
     function canReadWorkerData(workspaceId) {
       return isOwner(workspaceId) ||
-        canViewMenu(workspaceId, "profile") ||
+        canViewExplicitMenu(workspaceId, "profile") ||
         canViewExplicitMenu(workspaceId, "turnos") ||
-        canViewMenu(workspaceId, "requests") ||
-        canViewMenu(workspaceId, "swap");
+        canViewExplicitMenu(workspaceId, "requests") ||
+        canViewExplicitMenu(workspaceId, "swap");
     }
 
     function canReadRequests(workspaceId) {
       return isOwner(workspaceId) ||
-        canViewMenu(workspaceId, "requests") ||
+        canViewExplicitMenu(workspaceId, "requests") ||
         canViewExplicitMenu(workspaceId, "turnos") ||
-        canViewMenu(workspaceId, "swap");
+        canViewExplicitMenu(workspaceId, "swap");
     }
 
     // Para menus sin reglas de compatibilidad especiales. Evita expandir en
@@ -327,21 +327,21 @@ service cloud.firestore {
 
     function canReadStateModule(workspaceId, moduleId) {
       return isOwner(workspaceId) ||
-        (moduleId == "profile" && canViewMenu(workspaceId, "profile")) ||
+        (moduleId == "profile" && canViewExplicitMenu(workspaceId, "profile")) ||
         (moduleId == "qualifications" && canViewMenu(workspaceId, "qualifications")) ||
         (moduleId == "turnos" && canViewExplicitMenu(workspaceId, "turnos")) ||
-        (moduleId == "clockmarks" && canViewMenu(workspaceId, "clockmarks")) ||
-        (moduleId == "requests" && canViewMenu(workspaceId, "requests")) ||
-        (moduleId == "memos" && canViewMenu(workspaceId, "memos")) ||
+        (moduleId == "clockmarks" && canViewExplicitMenu(workspaceId, "clockmarks")) ||
+        (moduleId == "requests" && canViewExplicitMenu(workspaceId, "requests")) ||
+        (moduleId == "memos" && canViewExplicitMenu(workspaceId, "memos")) ||
         (moduleId == "informations" && canViewInformationsMenu(workspaceId)) ||
         (moduleId == "medicalEquipment" && canViewMenu(workspaceId, "medicalEquipment")) ||
         (moduleId == "tenders" && canViewMenu(workspaceId, "tenders")) ||
-        (moduleId == "swap" && canViewMenu(workspaceId, "swap")) ||
-        (moduleId == "hours" && canViewMenu(workspaceId, "hours")) ||
-        (moduleId == "weekly" && canViewMenu(workspaceId, "weekly")) ||
-        (moduleId == "tasks" && canViewMenu(workspaceId, "tasks")) ||
-        (moduleId == "agenda" && canViewMenu(workspaceId, "agenda")) ||
-        (moduleId == "reports" && canViewMenu(workspaceId, "reports")) ||
+        (moduleId == "swap" && canViewExplicitMenu(workspaceId, "swap")) ||
+        (moduleId == "hours" && canViewExplicitMenu(workspaceId, "hours")) ||
+        (moduleId == "weekly" && canViewExplicitMenu(workspaceId, "weekly")) ||
+        (moduleId == "tasks" && canViewExplicitMenu(workspaceId, "tasks")) ||
+        (moduleId == "agenda" && canViewExplicitMenu(workspaceId, "agenda")) ||
+        (moduleId == "reports" && canViewExplicitMenu(workspaceId, "reports")) ||
         (moduleId == "log" && canViewExplicitMenu(workspaceId, "log")) ||
         // El inicio no tiene permiso de menu propio: lo ve cualquier
         // administrador del entorno, y ahi viven las tareas diarias que uno
@@ -351,21 +351,21 @@ service cloud.firestore {
 
     function canWriteStateModule(workspaceId, moduleId) {
       return isOwner(workspaceId) ||
-        (moduleId == "profile" && canEditMenu(workspaceId, "profile")) ||
+        (moduleId == "profile" && canEditExplicitMenu(workspaceId, "profile")) ||
         (moduleId == "qualifications" && canEditMenu(workspaceId, "qualifications")) ||
         (moduleId == "turnos" && canEditExplicitMenu(workspaceId, "turnos")) ||
-        (moduleId == "clockmarks" && canEditMenu(workspaceId, "clockmarks")) ||
-        (moduleId == "requests" && canEditMenu(workspaceId, "requests")) ||
-        (moduleId == "memos" && canEditMenu(workspaceId, "memos")) ||
+        (moduleId == "clockmarks" && canEditExplicitMenu(workspaceId, "clockmarks")) ||
+        (moduleId == "requests" && canEditExplicitMenu(workspaceId, "requests")) ||
+        (moduleId == "memos" && canEditExplicitMenu(workspaceId, "memos")) ||
         (moduleId == "informations" && canEditInformationsMenu(workspaceId)) ||
         (moduleId == "medicalEquipment" && canEditMenu(workspaceId, "medicalEquipment")) ||
         (moduleId == "tenders" && canEditMenu(workspaceId, "tenders")) ||
-        (moduleId == "swap" && canEditMenu(workspaceId, "swap")) ||
-        (moduleId == "hours" && canEditMenu(workspaceId, "hours")) ||
-        (moduleId == "weekly" && canEditMenu(workspaceId, "weekly")) ||
-        (moduleId == "tasks" && canEditMenu(workspaceId, "tasks")) ||
-        (moduleId == "agenda" && canEditMenu(workspaceId, "agenda")) ||
-        (moduleId == "reports" && canEditMenu(workspaceId, "reports")) ||
+        (moduleId == "swap" && canEditExplicitMenu(workspaceId, "swap")) ||
+        (moduleId == "hours" && canEditExplicitMenu(workspaceId, "hours")) ||
+        (moduleId == "weekly" && canEditExplicitMenu(workspaceId, "weekly")) ||
+        (moduleId == "tasks" && canEditExplicitMenu(workspaceId, "tasks")) ||
+        (moduleId == "agenda" && canEditExplicitMenu(workspaceId, "agenda")) ||
+        (moduleId == "reports" && canEditExplicitMenu(workspaceId, "reports")) ||
         (moduleId == "log" && canEditExplicitMenu(workspaceId, "log")) ||
         // El inicio se LEE con ser miembro (hay que ver lo que le compartieron
         // a uno), pero compartir es escribir en la unidad: un miembro de solo
@@ -1395,10 +1395,10 @@ service cloud.firestore {
         allow create, update: if isMember(workspaceId) &&
           (
             isOwner(workspaceId) ||
-            canViewMenu(workspaceId, "dashboard") ||
-            canViewMenu(workspaceId, "hours") ||
+            canViewExplicitMenu(workspaceId, "dashboard") ||
+            canViewExplicitMenu(workspaceId, "hours") ||
             canViewExplicitMenu(workspaceId, "turnos") ||
-            canViewMenu(workspaceId, "reports")
+            canViewExplicitMenu(workspaceId, "reports")
           ) &&
           request.resource.data.month == monthId &&
           request.resource.data.source == "app" &&
