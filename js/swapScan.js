@@ -645,7 +645,8 @@ export function openSwapScanDialog(swap, { onDone } = {}) {
         root,
         swap,
         onDone,
-        tab: "camera",
+        // Lo comun es tener el PDF del escaner; la camara queda a un clic.
+        tab: "upload",
         facing: "environment",
         pages: [],
         pdf: null,

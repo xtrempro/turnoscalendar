@@ -29700,6 +29700,7 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 
 /* Encabezado */
 .swx-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.swx-head__spacer { flex: 1 1 auto; }
 .swx-head__title { display: flex; flex-direction: column; gap: 4px; flex: 1 1 260px; min-width: 0; }
 .swx-head__title h1 { margin: 0; font-family: var(--font-display); font-size: 28px; font-weight: 800; letter-spacing: -0.02em; color: var(--swx-text); }
 .swx-head__title p { margin: 0; font-size: 14px; color: var(--swx-muted); }

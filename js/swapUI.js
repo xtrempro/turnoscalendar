@@ -1500,10 +1500,7 @@ export function renderSwapPanel(){
     box.innerHTML = `
         <div class="swx">
             <header class="swx-head">
-                <div class="swx-head__title">
-                    <h1>Cambios de turno</h1>
-                    <p>Registra el cambio, descarga el Anexo 4 para firmar y adjunta el escaneo en el mismo lugar.</p>
-                </div>
+                <span class="swx-head__spacer"></span>
                 <div class="swx-month">
                     <button id="swapPrevMonth" class="swx-month__nav" type="button" aria-label="Mes anterior">${icon("prev")}</button>
                     <button
