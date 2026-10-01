@@ -1526,13 +1526,30 @@ async function flushPartialStateEntries() {
         return;
     }
 
-    entrySyncInFlight = true;
     const workspaceId = activeWorkspaceId;
     const pending = [...pendingStateEntries.values()];
     pendingStateEntries.clear();
+
+    // Un modulo diferido aun no se puede publicar, pero eso no convierte sus
+    // cambios en descartables. El caso real era: se aplicaba un permiso, su
+    // entrada de LOG quedaba en cola y el guardado urgente del reemplazo
+    // vaciaba la cola antes de que LOG terminara de hidratarse. El permiso y la
+    // cobertura llegaban a Firestore, pero su autoria desaparecia.
+    const deferred = pending.filter(entry =>
+        deferredPendingModules.has(entry.moduleId)
+    );
     const writable = pending.filter(entry =>
+        !deferredPendingModules.has(entry.moduleId) &&
         canWriteModule(entry.moduleId)
     );
+
+    queueGroupedPartialStateEntries(deferred);
+
+    // La hidratacion que abra la barrera reanudara estas entradas. No se deja
+    // un timer reintentando en bucle mientras el modulo siga cerrado.
+    if (!writable.length) return;
+
+    entrySyncInFlight = true;
     const documents = groupPartialStateEntries(writable);
 
     try {
@@ -1620,7 +1637,7 @@ async function flushPartialStateEntries() {
         });
         markServerSync();
     } catch (error) {
-        pending.forEach(entry => {
+        writable.forEach(entry => {
             const id = [
                 entry.moduleId,
                 entry.storageKey,
@@ -1639,12 +1656,15 @@ async function flushPartialStateEntries() {
     } finally {
         entrySyncInFlight = false;
 
-        if (pendingStateEntries.size) {
+        const hasWritablePending = [...pendingStateEntries.values()]
+            .some(entry => canWriteModule(entry.moduleId));
+
+        if (hasWritablePending) {
             scheduleEntrySync(
                 urgentEntrySyncPending ? 0 : firebaseStateInteractiveDelay(),
                 { urgent: urgentEntrySyncPending }
             );
-        } else {
+        } else if (!pendingStateEntries.size) {
             pendingEntriesOldestAt = 0;
         }
     }
@@ -2673,6 +2693,15 @@ export async function startFirebaseAppStateSync(
                 // registrar sus entradas. Si la lectura falla, este bloque no
                 // corre y ninguna copia parcial puede publicarse.
                 deferredPendingModules.delete(moduleId);
+
+                // Los cambios creados mientras la barrera estaba cerrada se
+                // conservaron en la cola. Ahora ya pueden salir, sin esperar a
+                // que otra accion casual vuelva a activar la sincronizacion.
+                if ([...pendingStateEntries.values()].some(entry =>
+                    entry.moduleId === moduleId
+                )) {
+                    scheduleEntrySync(0, { urgent: true });
+                }
             }).catch(error => {
                 if (
                     workspaceId === activeWorkspaceId &&

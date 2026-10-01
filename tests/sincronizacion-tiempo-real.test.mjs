@@ -156,7 +156,10 @@ test("al vaciarse la cola la marca vuelve a cero", async () => {
     // Sin el reseteo, la siguiente entrada nacería con el techo ya agotado y
     // perderia por completo el diferimiento que protege el hilo principal.
     assert.match(source, /\} else \{\s*\n\s*remoteQueueOldestAt = 0;/);
-    assert.match(source, /\} else \{\s*\n\s*pendingEntriesOldestAt = 0;/);
+    assert.match(
+        source,
+        /\} else if \(!pendingStateEntries\.size\) \{\s*\n\s*pendingEntriesOldestAt = 0;/
+    );
 });
 
 test("las vistas con cache se enteran del cambio ajeno, no solo del arranque", async () => {

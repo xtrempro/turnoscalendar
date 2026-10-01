@@ -63,3 +63,38 @@ test("el reintento no se programa si no hay nada encolado ni workspace", async (
         /function scheduleEntrySyncRetry[\s\S]{0,200}if \(!pendingStateEntries\.size \|\| !activeWorkspaceId\) return;/
     );
 });
+
+test("un LOG encolado no se pierde si otro cambio urgente se guarda antes", async () => {
+    const source = await readSource();
+    const flush = source.slice(
+        source.indexOf("async function flushPartialStateEntries()"),
+        source.indexOf("// Firestore no avisa", source.indexOf("async function flushPartialStateEntries()"))
+    );
+
+    assert.match(
+        flush,
+        /const deferred = pending\.filter\(entry =>\s*deferredPendingModules\.has\(entry\.moduleId\)\s*\);/
+    );
+    assert.match(flush, /queueGroupedPartialStateEntries\(deferred\);/);
+    assert.match(
+        flush,
+        /const writable = pending\.filter\(entry =>\s*!deferredPendingModules\.has\(entry\.moduleId\) &&\s*canWriteModule\(entry\.moduleId\)\s*\);/
+    );
+    assert.match(flush, /if \(!writable\.length\) return;/);
+});
+
+test("hidratar LOG reanuda de inmediato las entradas que quedaron en cola", async () => {
+    const source = await readSource();
+    const hydrate = source.slice(source.indexOf("hydrateDeferred = async moduleId"));
+    const opensBarrier = hydrate.indexOf("deferredPendingModules.delete(moduleId)");
+    const resumesQueue = hydrate.indexOf(
+        "scheduleEntrySync(0, { urgent: true })",
+        opensBarrier
+    );
+
+    assert.notEqual(opensBarrier, -1, "la hidratacion ya no abre la barrera");
+    assert.ok(
+        resumesQueue > opensBarrier,
+        "la cola se reanuda antes de abrir la barrera o no se reanuda"
+    );
+});
