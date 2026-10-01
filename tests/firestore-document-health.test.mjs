@@ -48,3 +48,16 @@ test("un documento holgado permanece saludable", () => {
     assert.equal(result.level, "healthy");
     assert.ok(result.percent < 70);
 });
+
+test("el banner de almacenamiento lo ve solo el dueno de la unidad", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(
+        new URL("../js/firebaseAppState.js", import.meta.url),
+        "utf8"
+    );
+
+    assert.match(
+        source,
+        /type: "app-state-document-health",\s*level: isWorkspaceOwner\(\) \? highest\?\.level \|\| "healthy" : "healthy"/
+    );
+});

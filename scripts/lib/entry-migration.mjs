@@ -126,7 +126,18 @@ export function assessLegacyValueRemoval(data = {}) {
     }
 
     const before = entryLogicalState(data, true);
-    const after = entryLogicalState(data, false);
+    // El "despues" se lee del documento TAL COMO QUEDARA: sin `value` (ni su
+    // `deleted`, que se borra con el). Asi decide si es lista igual que el
+    // servidor (functions/lib/stateReader.js) y un navegador sin cache: solo
+    // por `container: "array"`. Antes miraba el propio `value` que iba a
+    // borrar, y un documento-lista sin esa marca salia SEGURO aunque despues
+    // se leyera como objeto.
+    const remaining = { ...data };
+
+    delete remaining.value;
+    delete remaining.deleted;
+
+    const after = entryLogicalState(remaining, true);
 
     if (before === null || after === null) {
         return {

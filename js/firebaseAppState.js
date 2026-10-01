@@ -1756,9 +1756,13 @@ function observeStateDocumentHealth(docSnap) {
         );
     }
 
+    // El banner lo ve solo el dueno de la unidad: es quien puede pedir el
+    // mantenimiento. A un supervisor le aparecia un aviso tecnico ("requiere
+    // mantenimiento") que no puede resolver. La consola y la metrica de
+    // rendimiento siguen registrandolo en todas las sesiones.
     const status = {
         type: "app-state-document-health",
-        level: highest?.level || "healthy",
+        level: isWorkspaceOwner() ? highest?.level || "healthy" : "healthy",
         percent: highest?.percent || 0,
         estimatedBytes: highest?.estimatedBytes || 0,
         limitBytes: highest?.limitBytes || assessment.limitBytes,

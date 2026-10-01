@@ -51,3 +51,26 @@ test("una lapida cuenta como cobertura y la compactacion conserva el estado", ()
     assert.equal(compacted.removedTombstones, 1);
     assert.equal(compacted.removedFalseMarkers, 1);
 });
+
+test("una lista sin container queda BLOQUEADA: sin value se leeria como objeto", () => {
+    // El servidor (functions/lib/stateReader.js) y un navegador sin cache solo
+    // reconocen una lista por `container: "array"`. Si la marca falta, el
+    // documento sin `value` se convierte en un objeto por id.
+    const data = {
+        value: JSON.stringify([{ id: "a", x: 1 }]),
+        items: { a: JSON.stringify({ id: "a", x: 1 }) },
+        deletedItems: { a: false }
+    };
+
+    assert.equal(assessLegacyValueRemoval(data).safe, false);
+});
+
+test("un mapa sin container se puede retirar si items lo cubre", () => {
+    const data = {
+        value: JSON.stringify({ "2026-9-1": 1 }),
+        items: { "2026-9-1": "1" },
+        deletedItems: { "2026-9-1": false }
+    };
+
+    assert.equal(assessLegacyValueRemoval(data).safe, true);
+});
