@@ -19448,6 +19448,9 @@ button.meq-chip:hover { border-color: var(--meq-brand-ring); }
 .mem-memo__type--contract { background: var(--mem-brand-soft); color: var(--mem-brand-ink); }
 .mem-memo__type .mem-i { width: 17px; height: 17px; stroke-width: 2; }
 .mem-memo__body { display: grid; gap: 5px; min-width: 0; }
+/* Vista Lista: quien origina el memorandum (en la vista por trabajador lo dice el grupo). */
+.mem-memo__who { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12.5px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; color: var(--mem-brand-ink); }
+.mem-memo__who .mem-i { width: 15px; height: 15px; vertical-align: 0; }
 .mem-memo__top { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .mem-memo__top strong { font-size: 13.5px; font-weight: 800; }
 .mem-memo__facts { display: flex; flex-wrap: wrap; gap: 2px 14px; color: var(--mem-text-soft); font-size: 12.5px; font-weight: 600; }
@@ -28370,7 +28373,45 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
 /* Horario propio del trabajador, en su perfil y en su editor. */
 .pf-schedule-value { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pf-schedule-custom { font-weight: 600; }
-.ws-dialog { max-width: 460px; }
+/* Dos columnas: los horarios registrados (con su propio scroll, del mas
+   reciente al mas antiguo) y el formulario del nuevo. El modal nunca pasa del
+   alto de la pantalla: crece la lista, no el modal. */
+.ws-dialog {
+    width: min(920px, 100%);
+    max-width: none;
+    /* El fondo deja 24 px por lado. */
+    max-height: calc(100vh - 48px);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    box-sizing: border-box;
+}
+.ws-head .ws-intro { margin-bottom: 0; }
+.ws-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 20px;
+    min-height: 0;
+    flex: 1 1 auto;
+}
+.ws-col { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
+.ws-col--form { overflow-y: auto; padding-right: 4px; }
+.ws-col--form .ws-segment { margin: 0; }
+.ws-col__title { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 700; color: var(--text-strong); }
+.ws-col__title span { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--panel-alt); color: var(--text-soft); font-size: 0.78rem; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
+.ws-col--list .ws-periods { margin-bottom: 0; overflow-y: auto; min-height: 0; padding-right: 4px; }
+.ws-chip { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: #0f766e; color: #fff; font-size: 0.7rem; font-weight: 700; vertical-align: 1px; }
+.ws-period.is-current { box-shadow: inset 0 0 0 1.5px rgba(13, 148, 136, 0.55); }
+.ws-dialog .ws-actions { display: flex; justify-content: flex-end; gap: 10px; flex: none; }
+.ws-dialog .ws-actions > button { width: auto; flex: 0 0 auto; min-width: 140px; }
+.ws-empty-periods { padding: 14px; border: 1px dashed var(--border-strong); border-radius: 14px; }
+
+@media (max-width: 760px) {
+    .ws-dialog { overflow-y: auto; }
+    .ws-body { grid-template-columns: minmax(0, 1fr); }
+    .ws-col--form { overflow: visible; }
+    .ws-col--list .ws-periods { max-height: 30vh; }
+}
 .ws-intro { margin: 2px 0 14px; color: var(--text-soft); font-size: 0.9rem; }
 .ws-segment {
     border: 1px solid var(--border-soft, rgba(148, 163, 184, 0.35));

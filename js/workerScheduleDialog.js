@@ -55,18 +55,30 @@ function horasLabel(period, segments) {
         .join(" · ");
 }
 
+function rigeHoy(period, hoy) {
+    return (!period.from || period.from <= hoy) && (!period.to || hoy <= period.to);
+}
+
+// Del mas reciente al mas antiguo: el que se esta revisando casi siempre es el
+// ultimo que se agrego. La lista tiene su propio scroll, asi el modal no crece
+// con cada periodo hasta salirse de la pantalla.
 function periodosHTML(periods, segments) {
     if (!periods.length) {
-        return `<p class="ws-note">Todavía no tiene horarios propios: usa el
-            horario del turno.</p>`;
+        return `<p class="ws-note ws-empty-periods">Todavía no tiene horarios
+            propios: usa el horario del turno.</p>`;
     }
+
+    const hoy = isoFromDate(new Date());
+    const ordenados = [...periods].sort((a, b) =>
+        String(b.from || "").localeCompare(String(a.from || ""))
+    );
 
     return `
         <div class="ws-periods">
-            ${periods.map(period => `
-                <div class="ws-period ${period.to ? "" : "is-open"}">
+            ${ordenados.map(period => `
+                <div class="ws-period ${period.to ? "" : "is-open"} ${rigeHoy(period, hoy) ? "is-current" : ""}">
                     <div>
-                        <b>${escapeHTML(vigenciaLabel(period))}</b>
+                        <b>${escapeHTML(vigenciaLabel(period))}${rigeHoy(period, hoy) ? '<span class="ws-chip">Vigente</span>' : ""}</b>
                         <small>${escapeHTML(horasLabel(period, segments))}</small>
                     </div>
                     <button class="ghost-button" type="button"
@@ -131,15 +143,25 @@ export function openWorkerScheduleDialog(profile) {
             backdrop.innerHTML = `
                 <section class="turn-change-dialog ws-dialog" role="dialog"
                     aria-modal="true" aria-label="Horario propio">
-                    <strong>Horarios de entrada y salida</strong>
-                    <p class="ws-intro">
-                        ${escapeHTML(profile)} — sus atrasos e incidencias se
-                        medirán con estos horarios en vez del general.
-                    </p>
+                    <header class="ws-head">
+                        <strong>Horarios de entrada y salida</strong>
+                        <p class="ws-intro">
+                            ${escapeHTML(profile)} — sus atrasos e incidencias se
+                            medirán con estos horarios en vez del general.
+                        </p>
+                    </header>
 
-                    ${periodosHTML(periods, segments)}
+                    <div class="ws-body">
+                    <div class="ws-col ws-col--list">
+                        <h4 class="ws-col__title">
+                            Horarios registrados
+                            <span>${periods.length}</span>
+                        </h4>
+                        ${periodosHTML(periods, segments)}
+                    </div>
 
-                    <form data-ws-form>
+                    <form class="ws-col ws-col--form" id="wsForm" data-ws-form>
+                        <h4 class="ws-col__title">Nuevo horario</h4>
                         <fieldset class="ws-segment ws-validity">
                             <legend>Vigencia del nuevo horario</legend>
                             <div class="ws-fields">
@@ -184,15 +206,17 @@ export function openWorkerScheduleDialog(profile) {
                             Deja un campo vacío para que ese tramo use el
                             horario del turno.
                         </p>
-                        <div class="turn-change-dialog__actions">
-                            <button class="primary-button" type="submit">
-                                Agregar horario
-                            </button>
-                            <button class="ghost-button" type="button" data-ws-close>
-                                Cerrar
-                            </button>
-                        </div>
                     </form>
+                    </div>
+
+                    <div class="turn-change-dialog__actions ws-actions">
+                        <button class="ghost-button" type="button" data-ws-close>
+                            Cerrar
+                        </button>
+                        <button class="primary-button" type="submit" form="wsForm">
+                            Agregar horario
+                        </button>
+                    </div>
                 </section>`;
 
             backdrop.querySelector("[data-ws-form]").addEventListener(

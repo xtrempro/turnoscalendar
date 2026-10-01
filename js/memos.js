@@ -1137,6 +1137,7 @@ const ICONS = {
     search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
     cal: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
     swap: '<path d="M17 3l4 4-4 4"/><path d="M3 7h18"/><path d="M7 21l-4-4 4-4"/><path d="M21 17H3"/>',
     alert: '<path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17.2v.1"/>',
@@ -1604,7 +1605,7 @@ function toolbarHTML(ctx) {
 
 /* ---------- lista ---------- */
 
-function memoRowHTML(memo, ctx) {
+function memoRowHTML(memo, ctx, { showWorker = false } = {}) {
     const state = MEMO_STATES[memoStatus(memo)];
     const age = memoDaysOld(memo, ctx.today);
     const overdue = memoIsOverdue(memo, ctx.today);
@@ -1616,6 +1617,7 @@ function memoRowHTML(memo, ctx) {
     return `<div class="mem-memo ${open ? "is-on" : ""}" data-mem-memo="${attr(memo.id)}">
         <span class="mem-memo__type mem-memo__type--${kind}" title="${attr(MEMO_KINDS[kind].label)}">${ic(MEMO_KINDS[kind].icon)}</span>
         <div class="mem-memo__body">
+            ${showWorker ? `<span class="mem-memo__who">${ic("user")}${esc(memo.profile || "Sin trabajador")}</span>` : ""}
             <div class="mem-memo__top">
                 <strong>${esc(memo.typeLabel)}</strong>
                 <span class="mem-pill mem-pill--${state.tone}">${esc(state.label)}</span>
@@ -1725,7 +1727,8 @@ function listHTML(ctx, list) {
 
     const body = ui.vista === "grupo"
         ? groupByWorker(list).map(group => groupHTML(group, ctx)).join("")
-        : `<section class="mem-group">${list.map(memo => memoRowHTML(memo, ctx)).join("")}</section>`;
+        // En la lista no hay encabezado por trabajador: el nombre va en cada uno.
+        : `<section class="mem-group">${list.map(memo => memoRowHTML(memo, ctx, { showWorker: true })).join("")}</section>`;
     return `${title}${overdueCalloutHTML(list, ctx)}${body}`;
 }
 
