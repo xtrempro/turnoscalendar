@@ -174,6 +174,7 @@ import {
     actorLabelText,
     addAuditLog,
     AUDIT_CATEGORY,
+    cancelContractsForCanceledLeave,
     getLeaveApplicationInfo,
     getClockMarkAuditInfo,
     getNoCoverageAuditInfo,
@@ -6220,6 +6221,14 @@ async function cancelReplacedProfileLeave(profileName, keyDay) {
     // Sin LOG no se cancelan solos: anula los reemplazos que cubrian estos dias
     // del ausente y recopila a esos trabajadores para refrescar sus filas.
     const coveringWorkers = new Set(coveringBefore);
+
+    // El contrato de reemplazo que nacio de este permiso tambien se anula (va
+    // despues de guardar los mapas: mira si al ausente le queda permiso).
+    cancelContractsForCanceledLeave({
+        profile: profileName,
+        leaveType: type,
+        keys: cancelKeys
+    }).forEach(({ worker }) => coveringWorkers.add(worker));
     const now = new Date().toISOString();
     let changedReplacements = false;
     const nextReplacements = getReplacements().map(replacement => {

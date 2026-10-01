@@ -15,6 +15,7 @@ import {
     clearLeaveCancellation,
     markLeaveCancellation
 } from "./leaveCancellationBarrier.js";
+import { cancelReplacementContractsForLeave } from "./contracts.js";
 import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
@@ -1098,13 +1099,27 @@ async function undoLeaveAbsenceLog(log) {
 
     const canceledReplacements =
         cancelReplacementsForAbsence(profile, removedKeys, log);
+    // Y el CONTRATO de reemplazo que nacio de este permiso: sin esto seguia
+    // heredando los turnos del ausente, y un permiso nuevo esos dias salia
+    // cubierto sin preguntar quien cubre (ver contracts.js).
+    const canceledContracts = cancelContractsForCanceledLeave({
+        profile,
+        leaveType: type,
+        keys: removedKeys
+    });
 
     // El memorandum que pedia el documento de este permiso ya no corresponde.
     // memos.js escucha el aviso: importarlo aca seria circular (el importa la
     // bitacora).
     if (typeof window !== "undefined" && typeof CustomEvent === "function") {
         window.dispatchEvent(new CustomEvent("proturnos:leaveCanceled", {
-            detail: { profile, leaveType: type, keys: removedKeys, logId: log.id }
+            detail: {
+                profile,
+                leaveType: type,
+                keys: removedKeys,
+                logId: log.id,
+                canceledContracts
+            }
         }));
     }
 
@@ -1122,6 +1137,60 @@ async function undoLeaveAbsenceLog(log) {
         ok: true,
         canceledReplacements
     };
+}
+
+/**
+ * Anula los contratos de reemplazo que nacieron del permiso anulado, deja su
+ * registro en la bitacora y avisa al calendario de quien los tenia. La usan la
+ * anulacion desde el LOG (calendario, LOG y app del trabajador pasan por
+ * aqui) y la limpieza manual del calendario.
+ */
+export function cancelContractsForCanceledLeave({ profile, leaveType, keys }) {
+    const results = cancelReplacementContractsForLeave({
+        profile,
+        leaveType,
+        keys
+    });
+
+    results.forEach(({ worker, contract, action, dates }) => {
+        addAuditLog(
+            AUDIT_CATEGORY.LEAVE_ABSENCE,
+            action === "removed"
+                ? "Anulo contrato de reemplazo"
+                : "Quito dias de contrato de reemplazo",
+            action === "removed"
+                ? `${worker} dejo de reemplazar a ${profile} (${contract.start} al ${contract.end}): se anulo el permiso que lo originaba.`
+                : `${worker} deja de reemplazar a ${profile} el ${dates.join(", ")}: se anulo ese permiso.`,
+            {
+                profile: worker,
+                replaced: profile,
+                contractId: String(contract.id || ""),
+                action
+            }
+        );
+    });
+
+    if (
+        results.length &&
+        typeof window !== "undefined" &&
+        typeof CustomEvent === "function"
+    ) {
+        window.dispatchEvent(new CustomEvent("proturnos:calendarProfilesChanged", {
+            detail: {
+                profiles: [...new Set([profile, ...results.map(item => item.worker)])],
+                metadata: {
+                    changeType: "replacement_contract_canceled",
+                    source: "leave_cancellation",
+                    title: "Contrato de reemplazo anulado",
+                    message: "Se anulo el permiso que originaba tu contrato de reemplazo.",
+                    affectedDates: [...new Set(results.flatMap(item => item.dates))],
+                    notifyProfiles: [...new Set(results.map(item => item.worker))]
+                }
+            }
+        }));
+    }
+
+    return results;
 }
 
 function cancelReplacementsForAbsence(profile, removedKeys, sourceLog) {

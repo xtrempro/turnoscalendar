@@ -740,6 +740,28 @@ export function cancelLeaveMemos({ profile, leaveType, keys = [] } = {}) {
  * @param {string} memoId
  * @returns {boolean}
  */
+/**
+ * El memorandum de un contrato de reemplazo que se anulo junto con su permiso.
+ * Solo se quita si sigue PENDIENTE: con documento adjunto queda como respaldo.
+ *
+ * @param {Array<{worker: string, contract: Object, action: string}>} canceled
+ */
+export function cancelReplacementContractMemos(canceled = []) {
+    (Array.isArray(canceled) ? canceled : [])
+        .filter(item => item?.action === "removed" && item.worker && item.contract)
+        .forEach(({ worker, contract }) => {
+            const prefix = [
+                "replacement_contract",
+                worker,
+                contract.id || contract.start
+            ].join(":") + ":";
+
+            getMemos()
+                .filter(memo => String(memo.sourceId || "").startsWith(prefix))
+                .forEach(memo => removePendingMemo(memo.id));
+        });
+}
+
 export function removePendingMemo(memoId) {
     const memo = getMemoById(memoId);
 
@@ -849,6 +871,7 @@ export function cancelSwapMemo(swapId) {
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("proturnos:leaveCanceled", event => {
         cancelLeaveMemos(event?.detail || {});
+        cancelReplacementContractMemos(event?.detail?.canceledContracts || []);
     });
     window.addEventListener("proturnos:swapRegistered", event => {
         createSwapMemoTask(event?.detail?.swap || {});

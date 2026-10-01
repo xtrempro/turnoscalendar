@@ -12,6 +12,7 @@ import {
     getContractTypeAt
 } from "./storage.js";
 import { TURNO } from "./constants.js";
+import { getJSON } from "./persistence.js";
 import {
     REPLACEMENT_ROTATION_MODE,
     normalizeReplacementRotationMode
@@ -198,6 +199,160 @@ export function excludeReplacementContractDate(contract, iso) {
     if (changed) saveContractsForProfile(worker, next);
 
     return changed;
+}
+
+function isoDaysBetween(startISO, endISO) {
+    const days = [];
+    const start = new Date(`${startISO}T12:00:00`);
+    const end = new Date(`${endISO}T12:00:00`);
+
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return days;
+
+    for (const day = start; day <= end; day.setDate(day.getDate() + 1)) {
+        days.push([
+            day.getFullYear(),
+            String(day.getMonth() + 1).padStart(2, "0"),
+            String(day.getDate()).padStart(2, "0")
+        ].join("-"));
+    }
+
+    return days;
+}
+
+function isoToCalendarKey(iso) {
+    const [year, month, day] = String(iso || "").split("-").map(Number);
+
+    return year && month && day ? `${year}-${month - 1}-${day}` : "";
+}
+
+function absenceTypeOf(value) {
+    if (value && typeof value === "object") return String(value.type || "");
+
+    return String(value || "");
+}
+
+// Si al ausente le queda, en esos dias, un permiso DEL MISMO TIPO que origino el
+// contrato. Otro permiso (un P. Administrativo puesto despues) no lo mantiene:
+// ese necesita su propia cobertura. Se lee de los mapas guardados -no del perfil
+// abierto: el ausente casi nunca es el perfil que se esta mirando-.
+function hasLeaveOfTypeOnAnyDay(profile, isoDays, leaveType) {
+    const type = String(leaveType || "").trim();
+    const map = getJSON(
+        `${type === "legal" || type === "comp" ? type : "absences"}_${profile}`,
+        {}
+    ) || {};
+
+    return isoDays.some(iso => {
+        const value = map[isoToCalendarKey(iso)];
+
+        if (!value) return false;
+        if (type === "legal" || type === "comp" || !type) return true;
+
+        return absenceTypeOf(value) === type;
+    });
+}
+
+/**
+ * Anular un permiso anula tambien el CONTRATO de reemplazo que nacio de el.
+ *
+ * El contrato hereda los turnos del ausente en todo su rango, sin preguntar si
+ * el ausente sigue ausente: al anular el permiso se cancelaban los reemplazos
+ * por dia, pero el contrato seguia vigente, y un permiso nuevo esos mismos dias
+ * salia "cubierto" por el contrato viejo sin preguntar quien cubre (paso el
+ * 2026-10-01 con un F. Legal anulado y un P. Administrativo puesto despues).
+ *
+ * Solo se tocan los contratos que vienen de un permiso (`leaveType` o
+ * `leaveRef`): uno hecho a mano por una vacante no depende de ningun permiso.
+ * Se llama DESPUES de quitar el permiso de los mapas. Si al ausente ya no le
+ * queda ningun permiso dentro del rango del contrato, el contrato se elimina
+ * (un F. Legal cuenta dias habiles y el contrato corre seguido: los fines de
+ * semana no vienen en los dias anulados, pero tampoco tienen razon de seguir).
+ * Si le queda alguno, solo se excluyen los dias anulados (igual que "Quitar
+ * reemplazo" de un dia).
+ *
+ * Trabaja sobre la lista GUARDADA (ver excludeReplacementContractDate).
+ *
+ * @param {{profile: string, leaveType?: string, keys: string[]}} leave el
+ *   permiso anulado: el ausente, su tipo y los dias (claves del calendario)
+ * @returns {Array<{worker: string, contract: Object, action: "removed"|"excluded", dates: string[]}>}
+ */
+export function cancelReplacementContractsForLeave({
+    profile,
+    leaveType = "",
+    keys = []
+} = {}) {
+    const replaced = String(profile || "").trim();
+    const canceled = new Set(
+        (Array.isArray(keys) ? keys : []).map(keyToISO).filter(Boolean)
+    );
+    const type = String(leaveType || "").trim();
+    const results = [];
+
+    if (!replaced || !canceled.size) return results;
+
+    getProfiles().forEach(({ name: worker }) => {
+        if (!worker) return;
+
+        const stored = getReplacementContracts(worker);
+        let changed = false;
+        const next = [];
+
+        stored.forEach(contract => {
+            const fromLeave = Boolean(
+                String(contract?.leaveType || "").trim() ||
+                String(contract?.leaveRef || "").trim()
+            );
+            const sameType = !type ||
+                !String(contract?.leaveType || "").trim() ||
+                String(contract.leaveType).trim() === type;
+
+            if (
+                String(contract?.replaces || "").trim() !== replaced ||
+                !fromLeave ||
+                !sameType ||
+                !contract.start ||
+                !contract.end
+            ) {
+                next.push(contract);
+                return;
+            }
+
+            const excluded = new Set(
+                Array.isArray(contract.excludedDates) ? contract.excludedDates : []
+            );
+            const contractDays = isoDaysBetween(contract.start, contract.end)
+                .filter(day => !excluded.has(day));
+            const hit = contractDays.filter(day => canceled.has(day));
+
+            if (!hit.length) {
+                next.push(contract);
+                return;
+            }
+
+            changed = true;
+
+            if (
+                !hasLeaveOfTypeOnAnyDay(
+                    replaced,
+                    contractDays,
+                    contract.leaveType || type
+                )
+            ) {
+                results.push({ worker, contract, action: "removed", dates: hit });
+                return;
+            }
+
+            next.push({
+                ...contract,
+                excludedDates: Array.from(new Set([...excluded, ...hit])).sort()
+            });
+            results.push({ worker, contract, action: "excluded", dates: hit });
+        });
+
+        if (changed) saveContractsForProfile(worker, next);
+    });
+
+    return results;
 }
 
 export function addReplacementContract(profileName, contract) {

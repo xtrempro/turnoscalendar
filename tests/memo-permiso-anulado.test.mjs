@@ -273,7 +273,8 @@ test("la anulacion desde el LOG avisa a memos por evento", async () => {
     const memos = await read("../js/memos.js");
 
     assert.match(auditLog, /window\.dispatchEvent\(new CustomEvent\("proturnos:leaveCanceled"/);
-    assert.match(auditLog, /detail: \{ profile, leaveType: type, keys: removedKeys, logId: log\.id \}/);
+    // Desde 2026-10-01 el aviso lleva tambien los contratos anulados.
+    assert.match(auditLog, /detail: \{\s*profile,\s*leaveType: type,\s*keys: removedKeys,\s*logId: log\.id,\s*canceledContracts\s*\}/);
     assert.match(memos, /window\.addEventListener\("proturnos:leaveCanceled", event => \{\n\s*cancelLeaveMemos\(event\?\.detail \|\| \{\}\);/);
 });
 
