@@ -197,7 +197,7 @@ service cloud.firestore {
     function canReadWorkerData(workspaceId) {
       return isOwner(workspaceId) ||
         canViewMenu(workspaceId, "profile") ||
-        canViewMenu(workspaceId, "turnos") ||
+        canViewExplicitMenu(workspaceId, "turnos") ||
         canViewMenu(workspaceId, "requests") ||
         canViewMenu(workspaceId, "swap");
     }
@@ -205,8 +205,34 @@ service cloud.firestore {
     function canReadRequests(workspaceId) {
       return isOwner(workspaceId) ||
         canViewMenu(workspaceId, "requests") ||
-        canViewMenu(workspaceId, "turnos") ||
+        canViewExplicitMenu(workspaceId, "turnos") ||
         canViewMenu(workspaceId, "swap");
+    }
+
+    // Para menus sin reglas de compatibilidad especiales. Evita expandir en
+    // cada uso las excepciones de Calificaciones, Equipos y Licitaciones.
+    function canEditExplicitMenu(workspaceId, menuKey) {
+      let member = memberData(workspaceId);
+      let permissions =
+        "permissions" in member ? member.permissions : {};
+
+      return isMember(workspaceId) &&
+        (
+          member.role == "owner" ||
+          (menuKey in permissions && permissions[menuKey].edit == true)
+        );
+    }
+
+    function canViewExplicitMenu(workspaceId, menuKey) {
+      let member = memberData(workspaceId);
+      let permissions =
+        "permissions" in member ? member.permissions : {};
+
+      return isMember(workspaceId) &&
+        (
+          member.role == "owner" ||
+          (menuKey in permissions && permissions[menuKey].view == true)
+        );
     }
 
     function canEditMenu(workspaceId, menuKey) {
@@ -303,7 +329,7 @@ service cloud.firestore {
       return isOwner(workspaceId) ||
         (moduleId == "profile" && canViewMenu(workspaceId, "profile")) ||
         (moduleId == "qualifications" && canViewMenu(workspaceId, "qualifications")) ||
-        (moduleId == "turnos" && canViewMenu(workspaceId, "turnos")) ||
+        (moduleId == "turnos" && canViewExplicitMenu(workspaceId, "turnos")) ||
         (moduleId == "clockmarks" && canViewMenu(workspaceId, "clockmarks")) ||
         (moduleId == "requests" && canViewMenu(workspaceId, "requests")) ||
         (moduleId == "memos" && canViewMenu(workspaceId, "memos")) ||
@@ -316,7 +342,7 @@ service cloud.firestore {
         (moduleId == "tasks" && canViewMenu(workspaceId, "tasks")) ||
         (moduleId == "agenda" && canViewMenu(workspaceId, "agenda")) ||
         (moduleId == "reports" && canViewMenu(workspaceId, "reports")) ||
-        (moduleId == "log" && canViewMenu(workspaceId, "log")) ||
+        (moduleId == "log" && canViewExplicitMenu(workspaceId, "log")) ||
         // El inicio no tiene permiso de menu propio: lo ve cualquier
         // administrador del entorno, y ahi viven las tareas diarias que uno
         // comparte con los demas.
@@ -327,7 +353,7 @@ service cloud.firestore {
       return isOwner(workspaceId) ||
         (moduleId == "profile" && canEditMenu(workspaceId, "profile")) ||
         (moduleId == "qualifications" && canEditMenu(workspaceId, "qualifications")) ||
-        (moduleId == "turnos" && canEditMenu(workspaceId, "turnos")) ||
+        (moduleId == "turnos" && canEditExplicitMenu(workspaceId, "turnos")) ||
         (moduleId == "clockmarks" && canEditMenu(workspaceId, "clockmarks")) ||
         (moduleId == "requests" && canEditMenu(workspaceId, "requests")) ||
         (moduleId == "memos" && canEditMenu(workspaceId, "memos")) ||
@@ -340,7 +366,7 @@ service cloud.firestore {
         (moduleId == "tasks" && canEditMenu(workspaceId, "tasks")) ||
         (moduleId == "agenda" && canEditMenu(workspaceId, "agenda")) ||
         (moduleId == "reports" && canEditMenu(workspaceId, "reports")) ||
-        (moduleId == "log" && canEditMenu(workspaceId, "log")) ||
+        (moduleId == "log" && canEditExplicitMenu(workspaceId, "log")) ||
         // El inicio se LEE con ser miembro (hay que ver lo que le compartieron
         // a uno), pero compartir es escribir en la unidad: un miembro de solo
         // lectura no lo hace. No hay menu propio que mirar, asi que se le pide
@@ -783,13 +809,15 @@ service cloud.firestore {
             );
         }
 
-        allow read: if canReadStateModule(workspaceId, "turnos");
+        // El modulo es fijo: evitar el selector general reduce mucho el grafo
+        // que debe expandir el compilador de reglas.
+        allow read: if canViewExplicitMenu(workspaceId, "turnos");
         allow create: if
-          canWriteStateModule(workspaceId, "turnos") &&
+          canEditExplicitMenu(workspaceId, "turnos") &&
           validReplacementRecordWrite() &&
           request.resource.data.revision == 1;
         allow update: if
-          canWriteStateModule(workspaceId, "turnos") &&
+          canEditExplicitMenu(workspaceId, "turnos") &&
           validReplacementRecordWrite() &&
           request.resource.data.recordId == resource.data.recordId &&
           request.resource.data.revision == resource.data.revision + 1 &&
@@ -805,9 +833,9 @@ service cloud.firestore {
       // Bitacora particionada por dia y shard. Convive en sombra con auditLog
       // hasta que la comparacion de ambos formatos autorice el cambio de lectura.
       match /auditLogShards/{shardId} {
-        allow read: if canReadStateModule(workspaceId, "log");
+        allow read: if canViewExplicitMenu(workspaceId, "log");
         allow create, update: if
-          canWriteStateModule(workspaceId, "log") &&
+          canEditExplicitMenu(workspaceId, "log") &&
           request.resource.data.month is string &&
           request.resource.data.month.size() == 7 &&
           request.resource.data.day is string &&
@@ -1369,7 +1397,7 @@ service cloud.firestore {
             isOwner(workspaceId) ||
             canViewMenu(workspaceId, "dashboard") ||
             canViewMenu(workspaceId, "hours") ||
-            canViewMenu(workspaceId, "turnos") ||
+            canViewExplicitMenu(workspaceId, "turnos") ||
             canViewMenu(workspaceId, "reports")
           ) &&
           request.resource.data.month == monthId &&
