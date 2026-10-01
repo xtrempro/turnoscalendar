@@ -456,28 +456,31 @@ function renderOvertimePanel() {
     `;
 }
 
+// Las cuatro lineas del pie de firma: su nombre y el ejemplo que se ve
+// mientras esta vacia (en el campo y en la vista previa).
+const SIGNATURE_LINES = [
+    { label: "L&iacute;nea 1 &middot; nombre", placeholder: "[Nombre del jefe de servicio]" },
+    { label: "L&iacute;nea 2 &middot; cargo", placeholder: "[Cargo]" },
+    { label: "L&iacute;nea 3 &middot; unidad", placeholder: "[Unidad]" },
+    { label: "L&iacute;nea 4 &middot; establecimiento", placeholder: "[Nombre del hospital]" }
+];
+
 function renderSignaturePanel() {
     const config =
         reportSignatureConfigDraft ||
         getReportSignatureConfig();
-    const labels = [
-        "L&iacute;nea 1 &middot; nombre",
-        "L&iacute;nea 2 &middot; cargo",
-        "L&iacute;nea 3",
-        "L&iacute;nea 4"
-    ];
-
     return `
-        ${sectionHeadHTML("Documentos y firma", "El pie de firma de los documentos imprimibles. Las l\u00edneas 1 y 2 prellenan el jefe directo y su cargo en Calificaciones.")}
+        ${sectionHeadHTML("Documentos y firma", "El pie de firma de los documentos imprimibles. La l\u00ednea 1 y 2 prellenan el jefe directo y su cargo en Calificaciones.")}
         <div class="sx-signature">
             <section class="sx-card sx-card--pad settings-signature-grid">
-                ${labels.map((label, index) => `
+                ${SIGNATURE_LINES.map((line, index) => `
                     <label class="sx-field settings-signature-field">
-                        <span>${label}</span>
+                        <span>${line.label}</span>
                         <input
                             type="text"
                             maxlength="120"
                             data-signature-line="${index}"
+                            placeholder="${escapeHTML(line.placeholder)}"
                             value="${escapeHTML(config.lines[index] || "")}"
                         >
                     </label>
@@ -487,8 +490,11 @@ function renderSignaturePanel() {
                 <figcaption>Vista previa</figcaption>
                 <div class="sx-signature__paper">
                     <span class="sx-signature__line"></span>
-                    ${config.lines.map((line, index) => `
-                        <span class="${index === 0 ? "is-name" : ""}" data-signature-preview="${index}">${escapeHTML(line || "")}</span>
+                    ${SIGNATURE_LINES.map((line, index) => `
+                        <span
+                            class="${index === 0 ? "is-name" : ""} ${config.lines[index] ? "" : "is-placeholder"}"
+                            data-signature-preview="${index}"
+                        >${escapeHTML(config.lines[index] || line.placeholder)}</span>
                     `).join("")}
                 </div>
             </figure>
@@ -1634,7 +1640,13 @@ function bindBackdrop(backdrop) {
                 `[data-signature-preview="${signatureLine.dataset.signatureLine}"]`
             );
 
-            if (preview) preview.textContent = signatureLine.value;
+            if (preview) {
+                const value = signatureLine.value.trim();
+
+                // Vacia: se ve el ejemplo, atenuado, como en el campo.
+                preview.textContent = value || signatureLine.placeholder || "";
+                preview.classList.toggle("is-placeholder", !value);
+            }
         }
 
         if (
