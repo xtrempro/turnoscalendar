@@ -64,7 +64,7 @@ test("Equipos Medicos queda enganchado a ProTurnos, permisos y PWA", async () =>
     assert.match(firestoreRules, /docId == "medicalEquipment" && canEditMenu\(workspaceId, "medicalEquipment"\)/);
     assert.match(storageRules, /medicalEquipmentEnabledByDefault/);
     assert.match(css, /body:not\(\[data-active-view="medicalEquipment"\]\) #medicalEquipmentPanel/);
-    assert.match(css, /\.actionbar \.nav-tile\[data-target="medicalEquipmentPanel"\]\s*\{[\s\S]{0,80}order:\s*13/);
+    assert.match(css, /\.actionbar \.nav-tile\[data-target="medicalEquipmentPanel"\]\s*\{[\s\S]{0,80}order:\s*16/);
     assert.match(source, /export async function publishMedicalEquipmentToWorkers/);
     assert.match(source, /export function medicalEquipmentOutagesForRange/);
     assert.match(source, /export function medicalEquipmentCalendarEventsForRange/);

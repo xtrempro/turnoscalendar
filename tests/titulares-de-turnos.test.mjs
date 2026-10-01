@@ -1186,28 +1186,28 @@ test("el menu esta enganchado a su vista y a su panel", async () => {
     assert.match(css, /body:not\(\[data-active-view="holders"\]\) #shiftHoldersPanel/);
 });
 
-test("el menu va justo despues de Turnos", async () => {
+test("el menu lateral sigue el orden pedido por el usuario", async () => {
     // El orden del menu lateral lo pone el CSS: un tile sin regla de `order`
-    // cae con order 0, es decir, arriba de todo.
+    // cae con order 0, es decir, arriba de todo. Orden pedido el 2026-09-30.
     const css = await read("../styles.css");
     const ORDENES = [
         ["homePanel", null],
+        ["workerRequestsPanel", null],
+        ["calendarPanel", null],
+        [null, "#turnChangesNav"],
+        ["staffingWeeklyCalendar", null],
+        ["monthlyCalendarPanel", null],
+        ["taskAssignmentsPanel", null],
+        ["hoursPanel", null],
+        ["reportsPanel", null],
         ["profileSection", null],
         ["qualificationsPanel", null],
-        ["calendarPanel", null],
         ["shiftHoldersPanel", null],
-        [null, "#turnChangesNav"],
-        ["clockMarksPanel", null],
-        ["reportsPanel", null],
-        ["workerRequestsPanel", null],
-        ["staffingWeeklyCalendar", null],
-        ["taskAssignmentsPanel", null],
         ["informationsPanel", null],
+        ["agendaPanel", null],
+        ["kanbanPanel", null],
         ["medicalEquipmentPanel", null],
         ["tendersPanel", null],
-        ["kanbanPanel", null],
-        ["agendaPanel", null],
-        ["hoursPanel", null],
         ["memosPanel", null],
         ["dashboardPanel", null],
         ["auditLogPanel", null]
@@ -1226,12 +1226,9 @@ test("el menu va justo despues de Turnos", async () => {
     };
     const numeros = ORDENES.map(orden);
 
-    // Titulares queda entre Turnos y Cambios de Turno.
-    assert.equal(numeros[4], numeros[3] + 1, "va después de Turnos");
-    assert.equal(numeros[5], numeros[4] + 1, "y antes de Cambios de Turno");
-    // Y nadie quedó con el mismo número al correr la lista.
+    // Ninguno repetido y todos en el orden de la lista.
     assert.equal(new Set(numeros).size, numeros.length, "hay órdenes repetidos");
-    assert.deepEqual(numeros, [...numeros].sort((a, b) => a - b), "sin saltos");
+    assert.deepEqual(numeros, [...numeros].sort((a, b) => a - b), "fuera de orden");
 });
 
 test("su vista no oculta la grilla que contiene al panel", async () => {

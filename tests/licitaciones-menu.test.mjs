@@ -86,7 +86,7 @@ test("Licitaciones queda enganchado a menu, permisos, sync, adjuntos y Kanban", 
     assert.match(firestoreRules, /moduleId == "tenders" && canEditMenu\(workspaceId, "tenders"\)/);
     assert.match(storageRules, /tendersEnabledByDefault/);
     assert.match(css, /body:not\(\[data-active-view="tenders"\]\) #tendersPanel/);
-    assert.match(css, /\.actionbar \.nav-tile\[data-target="tendersPanel"\]\s*\{[\s\S]{0,80}order:\s*14/);
+    assert.match(css, /\.actionbar \.nav-tile\[data-target="tendersPanel"\]\s*\{[\s\S]{0,80}order:\s*17/);
     assert.match(kanban, /tenderRenewalKanbanCards\(today\)/);
     assert.match(kanban, /data-kanban-tender/);
 });

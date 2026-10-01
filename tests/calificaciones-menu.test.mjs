@@ -40,9 +40,9 @@ test("Calificaciones queda enganchado como menu supervisor", async () => {
     assert.match(firestoreRules, /moduleId == "qualifications" && canViewMenu\(workspaceId, "qualifications"\)/);
     assert.match(firestoreRules, /moduleId == "qualifications" && canEditMenu\(workspaceId, "qualifications"\)/);
     assert.match(css, /body:not\(\[data-active-view="qualifications"\]\) #qualificationsPanel/);
-    assert.match(css, /\.actionbar \.nav-tile\[data-target="profileSection"\]\s*\{[\s\S]{0,80}order:\s*2/);
-    assert.match(css, /\.actionbar \.nav-tile\[data-target="qualificationsPanel"\]\s*\{[\s\S]{0,80}order:\s*3/);
-    assert.match(css, /\.actionbar \.nav-tile\[data-target="calendarPanel"\]\s*\{[\s\S]{0,80}order:\s*4/);
+    assert.match(css, /\.actionbar \.nav-tile\[data-target="profileSection"\]\s*\{[\s\S]{0,80}order:\s*10/);
+    assert.match(css, /\.actionbar \.nav-tile\[data-target="qualificationsPanel"\]\s*\{[\s\S]{0,80}order:\s*11/);
+    assert.match(css, /\.actionbar \.nav-tile\[data-target="calendarPanel"\]\s*\{[\s\S]{0,80}order:\s*3/);
     assert.match(css, /\.qual-subfactor/);
 });
 

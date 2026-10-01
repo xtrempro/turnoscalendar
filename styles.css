@@ -5805,66 +5805,68 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     gap: 5px;
 }
 
-/* Orden del menu lateral (mismo orden en la barra movil). */
+/* Orden del menu lateral (mismo orden en la barra movil). Pedido del
+   usuario 2026-09-30: Inicio, Solicitudes, Turnos, Cambios de Turno,
+   Semanal, Mensual, Asignacion de Tareas, HHEE, Reportes, Perfiles,
+   Calificaciones, Titulares, Informaciones, Contactos, Kanban, Equipos
+   Medicos, Licitaciones, Memorandum, Dashboard, LOG. */
 .actionbar .nav-tile[data-target="homePanel"] {
     order: 1;
 }
 
-.actionbar .nav-tile[data-target="profileSection"] {
+.actionbar .nav-tile[data-target="workerRequestsPanel"] {
     order: 2;
 }
 
 .actionbar .nav-tile[data-target="calendarPanel"] {
-    order: 4;
-}
-
-.actionbar .nav-tile[data-target="shiftHoldersPanel"] {
-    order: 5;
-}
-
-#turnChangesNav {
-    order: 6;
-}
-
-.actionbar .nav-tile[data-target="qualificationsPanel"] {
     order: 3;
 }
 
-.actionbar .nav-tile[data-target="clockMarksPanel"] {
-    order: 7;
-}
-
-.actionbar .nav-tile[data-target="reportsPanel"] {
-    order: 8;
-}
-
-.actionbar .nav-tile[data-target="workerRequestsPanel"] {
-    order: 9;
+#turnChangesNav {
+    order: 4;
 }
 
 .actionbar .nav-tile[data-target="staffingWeeklyCalendar"] {
-    order: 10;
+    order: 5;
 }
 
-/* Mismo orden que el Semanal: empata y decide el HTML, donde va justo despues.
-   Sin esto quedaba en 0 y aparecia entre los primeros del menu. */
 .actionbar .nav-tile[data-target="monthlyCalendarPanel"] {
-    order: 10;
+    order: 6;
 }
 
 .actionbar .nav-tile[data-target="taskAssignmentsPanel"] {
+    order: 7;
+}
+
+.actionbar .nav-tile[data-target="hoursPanel"] {
+    order: 8;
+}
+
+.actionbar .nav-tile[data-target="reportsPanel"] {
+    order: 9;
+}
+
+.actionbar .nav-tile[data-target="clockMarksPanel"] {
+    order: 9;
+}
+
+.actionbar .nav-tile[data-target="profileSection"] {
+    order: 10;
+}
+
+.actionbar .nav-tile[data-target="qualificationsPanel"] {
     order: 11;
 }
 
-.actionbar .nav-tile[data-target="informationsPanel"] {
+.actionbar .nav-tile[data-target="shiftHoldersPanel"] {
     order: 12;
 }
 
-.actionbar .nav-tile[data-target="medicalEquipmentPanel"] {
+.actionbar .nav-tile[data-target="informationsPanel"] {
     order: 13;
 }
 
-.actionbar .nav-tile[data-target="tendersPanel"] {
+.actionbar .nav-tile[data-target="agendaPanel"] {
     order: 14;
 }
 
@@ -5872,11 +5874,11 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     order: 15;
 }
 
-.actionbar .nav-tile[data-target="agendaPanel"] {
+.actionbar .nav-tile[data-target="medicalEquipmentPanel"] {
     order: 16;
 }
 
-.actionbar .nav-tile[data-target="hoursPanel"] {
+.actionbar .nav-tile[data-target="tendersPanel"] {
     order: 17;
 }
 
