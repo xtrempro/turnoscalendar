@@ -3,7 +3,7 @@
 // - Reporte: sin Anexo 1/2, sin grado ni asignacion de turno, sin resumen de
 //   horas extras, permisos ni cambios de turno; detalle de turnos solo con el
 //   turno realizado (sin turno base ni HHEE). En su lugar, las horas del
-//   contrato contra las realizadas por periodo del tope, en rojo si se pasa.
+//   contrato contra las realizadas en el mes, en rojo si se pasa.
 // - Calendario: ningun permiso, y un turno agregado nunca pide motivo ni a
 //   quien cubre.
 // - Un marcaje modificado cuenta: es como el supervisor recorta un exceso.
@@ -72,11 +72,11 @@ beforeEach(() => {
     setJSON("honorariaContracts_" + N, [
         { id: "c1", start: "2026-10-01", end: "2026-10-31", hourlyRate: 3500, maxHours: 20, limitPeriod: "weekly" }
     ]);
-    // Semana del lunes 5 al domingo 11 de octubre: tres Diurnos (27 h > 20).
+    // Tres semanas distintas: el acumulado mensual (27 h) supera el tope de 20.
     setJSON("data_" + N, {
         "2026-9-5": TURNO.DIURNO,
-        "2026-9-6": TURNO.DIURNO,
-        "2026-9-7": TURNO.DIURNO
+        "2026-9-12": TURNO.DIURNO,
+        "2026-9-19": TURNO.DIURNO
     });
 });
 
@@ -84,7 +84,8 @@ test("el reporte deja solo lo que corresponde a honorarios", async () => {
     const html = await buildWorkerReportPreviewHTML(PROFILE, new Date(2026, 9, 1));
 
     assert.match(html, /honoraria-report/);
-    assert.match(html, /Horas del contrato \(tope semanal\)/);
+    assert.match(html, /Horas del contrato \(tope mensual\)/);
+    assert.doesNotMatch(html, /tope semanal/);
     for (const quitado of [
         "Resumen de horas extras",
         "Permisos / Ausencias",
@@ -105,7 +106,7 @@ test("el reporte deja solo lo que corresponde a honorarios", async () => {
 test("el periodo que pasa el tope y sus dias van en rojo", async () => {
     const html = await buildWorkerReportPreviewHTML(PROFILE, new Date(2026, 9, 1));
 
-    assert.match(html, /Semana 05-10-2026 al 11-10-2026/);
+    assert.match(html, /Mes de octubre de 2026/);
     assert.match(html, /class="report-row--excess"/);
     assert.match(html, /\(se pasa\)/);
     assert.match(html, /Se pasa del contrato/);

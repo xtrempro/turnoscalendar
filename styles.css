@@ -5491,57 +5491,6 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     line-height: 1.35;
 }
 
-/* Campo "Maximo de horas" con el toggle de periodo al lado, para que se entienda
-   que el tope es semanal o mensual. */
-.honoraria-max-hours-cell {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-}
-
-.honoraria-max-hours-cell input {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-/* Toggle segmentado semanal/mensual. */
-.period-toggle {
-    display: inline-flex;
-    flex: 0 0 auto;
-    padding: 3px;
-    gap: 2px;
-    border-radius: 999px;
-    background: var(--field, #eef1f6);
-    border: 1px solid var(--border, #d7dce6);
-}
-
-.period-toggle-option {
-    border: none;
-    background: transparent;
-    color: var(--text-muted, #64748b);
-    font-size: 0.82rem;
-    font-weight: 700;
-    padding: 5px 12px;
-    border-radius: 999px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background 0.15s ease, color 0.15s ease;
-}
-
-.period-toggle-option.is-active {
-    background: var(--accent, #10498b);
-    color: #fff;
-}
-
-.period-toggle.is-disabled {
-    opacity: 0.55;
-}
-
-.period-toggle-option:disabled {
-    cursor: not-allowed;
-}
-
 .honoraria-add-contract {
     grid-column: 1 / -1;
     justify-self: start;
@@ -5650,14 +5599,6 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
 
 .honoraria-contract-fields .rotation-contract-field {
     min-width: 0;
-}
-
-.honoraria-contract-fields .honoraria-max-hours-cell {
-    flex-wrap: wrap;
-}
-
-.period-toggle--honoraria-modal {
-    flex: 0 0 auto;
 }
 
 @media (max-width: 520px) {

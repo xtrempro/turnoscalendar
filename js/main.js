@@ -1413,7 +1413,7 @@ function renderHonorariaContractList(profileName) {
             <div class="honoraria-contract-item">
                 <div class="honoraria-contract-item-info">
                     <strong>${escapeHTML(formatDisplayDate(contract.start))} al ${escapeHTML(formatDisplayDate(contract.end))}</strong>
-                    <small>Valor hora $${escapeHTML(String(contract.hourlyRate))} · Tope ${escapeHTML(String(contract.maxHours))} ${contract.limitPeriod === "monthly" ? "h/mes" : "h/sem"}</small>
+                    <small>Valor hora $${escapeHTML(String(contract.hourlyRate))} · Tope ${escapeHTML(String(contract.maxHours))} h/mes</small>
                 </div>
                 ${editing
                     ? `<div class="honoraria-contract-actions">
@@ -9995,7 +9995,7 @@ function requestHonorariaOverlapDecision(overlapping) {
                     ${escapeHTML(formatContractDate(contract.start))} al ${escapeHTML(formatContractDate(contract.end))}
                     <span class="honoraria-overlap-meta">
                         $${Number(contract.hourlyRate || 0).toLocaleString("es-CL")}/h ·
-                        tope ${Number(contract.maxHours || 0)} ${contract.limitPeriod === "monthly" ? "h/mes" : "h/sem"}
+                        tope ${Number(contract.maxHours || 0)} h/mes
                     </span>
                 </li>
             `)
@@ -10044,8 +10044,8 @@ function requestHonorariaOverlapDecision(overlapping) {
 // Modal interactivo para crear (o extender) un contrato de Honorarios desde el
 // calendario principal. El inicio arranca en el dia clickeado (flecha verde ->);
 // al hacer click en un dia posterior se fija el termino (flecha azul <-) y en uno
-// anterior se mueve el inicio. Permite valor hora, tope y su periodo (semanal o
-// mensual). Los contratos NUNCA se solapan: si el rango toca otro, se pregunta si
+// anterior se mueve el inicio. Permite valor hora y tope mensual. Los contratos
+// NUNCA se solapan: si el rango toca otro, se pregunta si
 // extenderlo o crear uno recortado. Devuelve el contrato guardado, o null.
 function openHonorariaContractModal({ profileName, startISO = "", contractId = "" }) {
     return new Promise(resolve => {
@@ -10070,8 +10070,7 @@ function openHonorariaContractModal({ profileName, startISO = "", contractId = "
             start: editingContract?.start || startISO || "",
             end: editingContract?.end || "",
             hourlyRate: editingContract ? String(editingContract.hourlyRate || "") : "",
-            maxHours: editingContract ? String(editingContract.maxHours || "") : "",
-            limitPeriod: editingContract?.limitPeriod === "monthly" ? "monthly" : "weekly"
+            maxHours: editingContract ? String(editingContract.maxHours || "") : ""
         };
         const backdrop = document.createElement("div");
 
@@ -10177,14 +10176,8 @@ function openHonorariaContractModal({ profileName, startISO = "", contractId = "
                         </label>
 
                         <label class="rotation-contract-field">
-                            <span>M&aacute;ximo de horas</span>
-                            <div class="honoraria-max-hours-cell">
-                                <input type="number" min="0" step="1" inputmode="numeric" data-honoraria-max value="${escapeHTML(state.maxHours)}" placeholder="0">
-                                <div class="period-toggle period-toggle--honoraria-modal" role="group" aria-label="Periodo del tope de horas" data-period-toggle>
-                                    <button type="button" class="period-toggle-option ${state.limitPeriod === "weekly" ? "is-active" : ""}" data-period="weekly" aria-pressed="${state.limitPeriod === "weekly"}">Semanal</button>
-                                    <button type="button" class="period-toggle-option ${state.limitPeriod === "monthly" ? "is-active" : ""}" data-period="monthly" aria-pressed="${state.limitPeriod === "monthly"}">Mensual</button>
-                                </div>
-                            </div>
+                            <span>L&iacute;mite de horas mensuales</span>
+                            <input type="number" min="0" step="1" inputmode="numeric" data-honoraria-max value="${escapeHTML(state.maxHours)}" placeholder="0">
                         </label>
                     </div>
 
@@ -10261,7 +10254,7 @@ function openHonorariaContractModal({ profileName, startISO = "", contractId = "
                     end: state.end,
                     hourlyRate,
                     maxHours,
-                    limitPeriod: state.limitPeriod
+                    limitPeriod: "monthly"
                 }));
                 return;
             }
@@ -10311,7 +10304,7 @@ function openHonorariaContractModal({ profileName, startISO = "", contractId = "
                         end: clamped.end,
                         hourlyRate,
                         maxHours,
-                        limitPeriod: state.limitPeriod
+                        limitPeriod: "monthly"
                     });
                 }
             } else {
@@ -10320,7 +10313,7 @@ function openHonorariaContractModal({ profileName, startISO = "", contractId = "
                     end: state.end,
                     hourlyRate,
                     maxHours,
-                    limitPeriod: state.limitPeriod
+                    limitPeriod: "monthly"
                 });
             }
 
@@ -10350,18 +10343,6 @@ function openHonorariaContractModal({ profileName, startISO = "", contractId = "
                 event.target instanceof Element
                     ? event.target
                     : event.target.parentElement;
-
-            const periodButton =
-                targetElement?.closest("[data-period]");
-
-            if (periodButton) {
-                state.limitPeriod =
-                    periodButton.dataset.period === "monthly"
-                        ? "monthly"
-                        : "weekly";
-                render();
-                return;
-            }
 
             const dayButton =
                 targetElement?.closest(".profile-mini-day");

@@ -3698,8 +3698,8 @@ function noAssignmentProfileRows(model) {
 
    Se le pagan solo las horas trabajadas: no tiene asignacion de turno, grado,
    horas extras, permisos ni cambios de turno. Lo que el supervisor vigila es
-   que no pase las horas de su contrato (semanal o mensual). Por eso el reporte
-   muestra, por periodo del tope, las horas del contrato contra las realizadas
+   que no pase las horas mensuales de su contrato. Por eso el reporte muestra,
+   por contrato vigente en el mes, las horas permitidas contra las realizadas
    -con el marcaje modificado aplicado- y marca en rojo lo que se pasa, y en el
    detalle los dias donde se pasa, para saber que turno recortar o quitar.
 ========================================================= */
@@ -3737,7 +3737,6 @@ function shortISODate(iso) {
 function honorariaPeriodRows(summary, model) {
     if (!summary) return [];
 
-    const monthly = summary.contract?.limitPeriod === "monthly";
     const row = ({ periodo, allowed, assigned }) => {
         const excess = Math.round((assigned - allowed) * 100) / 100;
 
@@ -3751,23 +3750,17 @@ function honorariaPeriodRows(summary, model) {
             rowClass: excess > 0 ? "report-row--excess" : ""
         };
     };
+    const periods = Object.values(summary.periods || {})
+        .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+    const multiple = periods.length > 1;
 
-    if (monthly) {
-        return [row({
-            periodo: `Mes de ${model.monthName}`,
-            allowed: summary.allowedHours,
-            assigned: summary.assignedHours
-        })];
-    }
-
-    return Object.values(summary.weeks || {})
-        .filter(week => week.allowedHours || week.assignedHours)
-        .sort((a, b) => String(a.start).localeCompare(String(b.start)))
-        .map(week => row({
-            periodo: `Semana ${shortISODate(week.start)} al ${shortISODate(week.end)}`,
-            allowed: week.allowedHours,
-            assigned: week.assignedHours
-        }));
+    return periods.map(period => row({
+        periodo: multiple
+            ? `Mes de ${model.monthName} · contrato ${shortISODate(period.start)} al ${shortISODate(period.end)}`
+            : `Mes de ${model.monthName}`,
+        allowed: period.allowedHours,
+        assigned: period.assignedHours
+    }));
 }
 
 function buildHonorariaReportHTML(model) {
@@ -3782,9 +3775,6 @@ function buildHonorariaReportHTML(model) {
         Object.keys(summary?.excessByKey || {}).map(key => isoFromKey(key))
     );
     const periodRows = honorariaPeriodRows(summary, model);
-    const period = summary?.contract?.limitPeriod === "monthly"
-        ? "mensual"
-        : "semanal";
     const dayRows = (model.dayRows || []).map(row => {
         const [day, month, year] = String(row.fecha || "").split("-");
         const iso = year && month && day ? `${year}-${month}-${day}` : "";
@@ -3803,7 +3793,7 @@ function buildHonorariaReportHTML(model) {
                 { key: "campo", label: "Campo" },
                 { key: "valor", label: "Valor" }
             ], honorariaProfileRows(model))}
-            ${reportTable(`Horas del contrato (tope ${period})`, [
+            ${reportTable("Horas del contrato (tope mensual)", [
                 { key: "periodo", label: "Periodo" },
                 { key: "contrato", label: "Horas del contrato" },
                 { key: "realizadas", label: "Horas realizadas" },

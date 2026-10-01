@@ -24,7 +24,7 @@ const {
 const PROFILE = "Honorarios";
 const YEAR = 2026;
 const MONTH = 6;
-const WEEKLY_LIMIT = 16;
+const MONTHLY_LIMIT = 16;
 
 function key(day) {
     return `${YEAR}-${MONTH}-${day}`;
@@ -40,7 +40,7 @@ function seedHonoraria(turns) {
             honorariaStart: "2026-07-01",
             honorariaEnd: "2026-07-31",
             honorariaHourlyRate: 10000,
-            honorariaMaxMonthlyHours: WEEKLY_LIMIT
+            honorariaMaxMonthlyHours: MONTHLY_LIMIT
         }
     ]);
     setJSON("data_" + PROFILE, turns);
@@ -50,28 +50,7 @@ beforeEach(() => {
     localStorage.clear();
 });
 
-test("el tope de honorarios se evalua por semana, no por mes", () => {
-    seedHonoraria({
-        [key(6)]: TURNO.DIURNO,
-        [key(7)]: TURNO.DIURNO
-    });
-
-    const summary = getHonorariaMonthlySummary(
-        PROFILE,
-        YEAR,
-        MONTH,
-        {}
-    );
-
-    assert.equal(getHonorariaExcessForKey(summary, key(6)), null);
-    assert.ok(getHonorariaExcessForKey(summary, key(7)));
-    assert.match(
-        getHonorariaLimitMessage(summary, key(7)),
-        /esta semana/
-    );
-});
-
-test("turnos de honorarios en semanas distintas no se acumulan entre si", () => {
+test("el tope de honorarios acumula semanas distintas dentro del mes", () => {
     seedHonoraria({
         [key(6)]: TURNO.DIURNO,
         [key(13)]: TURNO.DIURNO
@@ -85,6 +64,41 @@ test("turnos de honorarios en semanas distintas no se acumulan entre si", () => 
     );
 
     assert.equal(getHonorariaExcessForKey(summary, key(6)), null);
-    assert.equal(getHonorariaExcessForKey(summary, key(13)), null);
-    assert.equal(summary.overtimeHours, 0);
+    assert.ok(getHonorariaExcessForKey(summary, key(13)));
+    assert.match(
+        getHonorariaLimitMessage(summary, key(13)),
+        /este mes/
+    );
+    assert.doesNotMatch(getHonorariaLimitMessage(summary, key(13)), /semana/);
+});
+
+test("un limitPeriod semanal antiguo tambien se acumula por mes", () => {
+    localStorage.clear();
+    setJSON("profiles", [
+        { name: PROFILE, contractType: "Honorarios" }
+    ]);
+    setJSON("honorariaContracts_" + PROFILE, [{
+        id: "legacy-weekly",
+        start: "2026-07-01",
+        end: "2026-07-31",
+        hourlyRate: 10000,
+        maxHours: MONTHLY_LIMIT,
+        limitPeriod: "weekly"
+    }]);
+    setJSON("data_" + PROFILE, {
+        [key(6)]: TURNO.DIURNO,
+        [key(13)]: TURNO.DIURNO
+    });
+
+    const summary = getHonorariaMonthlySummary(
+        PROFILE,
+        YEAR,
+        MONTH,
+        {}
+    );
+
+    assert.equal(summary.contract.limitPeriod, "monthly");
+    assert.equal(getHonorariaExcessForKey(summary, key(6)), null);
+    assert.ok(getHonorariaExcessForKey(summary, key(13)));
+    assert.ok(summary.overtimeHours > 0);
 });

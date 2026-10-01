@@ -62,7 +62,7 @@ function seed(baseTurn) {
         start: ISO_START,
         end: ISO_END,
         maxHours: 44,
-        limitPeriod: "semanal"
+        limitPeriod: "monthly"
     }]));
 }
 

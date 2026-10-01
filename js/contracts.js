@@ -230,17 +230,14 @@ export function isOtherContractType(value) {
 }
 
 export function normalizeHonorariaContract(contract = {}) {
-    // El tope de horas puede ser semanal o mensual segun el contrato. maxHours es
-    // el valor generico; limitPeriod indica el periodo del tope.
-    const limitPeriod =
-        String(contract.limitPeriod || "").trim().toLowerCase() === "monthly"
-            ? "monthly"
-            : "weekly";
+    // Desde ahora el tope de Honorarios es siempre mensual. Los aliases antiguos
+    // se siguen leyendo para que un contrato guardado como semanal no pierda su
+    // valor, pero hacia el resto de la aplicacion sale canonizado como mensual.
     const maxHours = Math.max(
         0,
         Number(contract.maxHours) ||
-            Number(contract.maxWeeklyHours) ||
             Number(contract.maxMonthlyHours) ||
+            Number(contract.maxWeeklyHours) ||
             0
     );
 
@@ -250,11 +247,9 @@ export function normalizeHonorariaContract(contract = {}) {
         end: String(contract.end || "").trim(),
         hourlyRate: Math.max(0, Number(contract.hourlyRate) || 0),
         maxHours,
-        limitPeriod,
-        // Alias de compatibilidad: reflejan el tope segun su periodo. El consumidor
-        // nuevo usa maxHours + limitPeriod.
-        maxWeeklyHours: limitPeriod === "weekly" ? maxHours : 0,
-        maxMonthlyHours: limitPeriod === "monthly" ? maxHours : 0,
+        limitPeriod: "monthly",
+        maxWeeklyHours: 0,
+        maxMonthlyHours: maxHours,
         createdAt: contract.createdAt || new Date().toISOString()
     };
 }
@@ -276,9 +271,9 @@ function legacyHonorariaContract(profile) {
         start: profile.honorariaStart,
         end: profile.honorariaEnd,
         hourlyRate: profile.honorariaHourlyRate,
-        maxWeeklyHours:
-            profile.honorariaMaxWeeklyHours ||
-            profile.honorariaMaxMonthlyHours
+        maxMonthlyHours:
+            profile.honorariaMaxMonthlyHours ||
+            profile.honorariaMaxWeeklyHours
     });
 }
 

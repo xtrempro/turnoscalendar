@@ -1542,7 +1542,7 @@ export function saveReplacementContracts(
 }
 
 // Contratos de Honorarios: varios por trabajador, cada uno con su vigencia, valor
-// hora y tope semanal (antes era un unico contrato en campos del perfil).
+// hora y tope mensual (antes era un unico contrato en campos del perfil).
 export function getHonorariaContracts(profile = currentProfile){
     if (!profile) return [];
 

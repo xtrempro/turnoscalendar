@@ -20,6 +20,10 @@ test("honorarios lista contratos y agrega via modal (sin campos inline)", () => 
         main,
         /honorariaAddContractBtn\.onclick[\s\S]{0,500}openHonorariaContractModal/
     );
+    assert.match(main, /L&iacute;mite de horas mensuales/);
+    assert.doesNotMatch(main, /data-period="weekly"/);
+    assert.doesNotMatch(main, />Semanal<\/button>/);
+    assert.match(main, /limitPeriod: "monthly"/);
 });
 
 test("honorarios oculta grado, permiso gremial y asignacion de turno", () => {

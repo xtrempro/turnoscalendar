@@ -1,5 +1,5 @@
 // Honorarios con MULTIPLES contratos: cada uno con su vigencia, valor hora y tope
-// semanal. La rotativa solo aplica dentro de un contrato; el valor hora y el tope
+// mensual. La rotativa solo aplica dentro de un contrato; el valor hora y el tope
 // del resumen salen del contrato vigente por fecha; y los campos antiguos del
 // perfil se migran a un contrato de solo lectura.
 import test, { beforeEach } from "node:test";
@@ -35,8 +35,8 @@ function seedTwoContracts() {
         type: "diurno", start: "2026-07-01", firstTurn: "larga"
     });
     setJSON("honorariaContracts_" + N, [
-        { id: "c1", start: "2026-07-01", end: "2026-07-31", hourlyRate: 5000, maxWeeklyHours: 20 },
-        { id: "c2", start: "2026-08-01", end: "2026-08-31", hourlyRate: 8000, maxWeeklyHours: 44 }
+        { id: "c1", start: "2026-07-01", end: "2026-07-31", hourlyRate: 5000, maxHours: 20, limitPeriod: "weekly" },
+        { id: "c2", start: "2026-08-01", end: "2026-08-31", hourlyRate: 8000, maxMonthlyHours: 44 }
     ]);
 }
 
@@ -131,13 +131,13 @@ test("un cambio futuro de Honorarios a Contrata respeta la fecha efectiva", () =
     assert.equal(getHonorariaMonthlySummary(N, 2026, 7, {}), null);
 });
 
-test("el tope semanal del resumen sale del contrato del dia", () => {
+test("el tope mensual del resumen sale del contrato vigente", () => {
     seedTwoContracts();
 
-    const week = summary => Object.values(summary.weeks)[0]?.allowedHours;
+    const allowed = summary => Object.values(summary.periods)[0]?.allowedHours;
 
-    assert.equal(week(getHonorariaMonthlySummary(N, 2026, 6, {})), 20);
-    assert.equal(week(getHonorariaMonthlySummary(N, 2026, 7, {})), 44);
+    assert.equal(allowed(getHonorariaMonthlySummary(N, 2026, 6, {})), 20);
+    assert.equal(allowed(getHonorariaMonthlySummary(N, 2026, 7, {})), 44);
 });
 
 test("migra el contrato legado (campos del perfil) a la lista", () => {
@@ -152,7 +152,9 @@ test("migra el contrato legado (campos del perfil) a la lista", () => {
 
     assert.equal(list.length, 1);
     assert.equal(list[0].hourlyRate, 6000);
-    assert.equal(list[0].maxWeeklyHours, 30);
+    assert.equal(list[0].maxMonthlyHours, 30);
+    assert.equal(list[0].maxWeeklyHours, 0);
+    assert.equal(list[0].limitPeriod, "monthly");
     assert.equal(getValorHora(N, new Date(2026, 6, 10)), 6000);
 });
 
@@ -177,8 +179,8 @@ test("agregar un contrato materializa el legado y no lo pierde", () => {
     );
 });
 
-test("el tope puede ser semanal o mensual por contrato", () => {
-    function overtime(period) {
+test("un contrato antiguo marcado semanal se calcula como mensual", () => {
+    function summaryFor(period) {
         localStorage.clear();
         setJSON("profiles", [
             { name: N, contractType: "Honorarios", estamento: "Profesional" }
@@ -194,13 +196,15 @@ test("el tope puede ser semanal o mensual por contrato", () => {
         }
         setJSON("data_" + N, data);
 
-        return getHonorariaMonthlySummary(N, 2026, 6, {}).overtimeHours;
+        return getHonorariaMonthlySummary(N, 2026, 6, {});
     }
 
-    // Semanal: cada semana (~35) no supera 40 => sin HHEE.
-    assert.equal(overtime("weekly"), 0);
-    // Mensual: el total (~70) supera 40 => HHEE > 0.
-    assert.ok(overtime("monthly") > 0);
+    const legacyWeekly = summaryFor("weekly");
+    const monthly = summaryFor("monthly");
+
+    assert.equal(legacyWeekly.contract.limitPeriod, "monthly");
+    assert.ok(legacyWeekly.overtimeHours > 0);
+    assert.equal(legacyWeekly.overtimeHours, monthly.overtimeHours);
 });
 
 test("los turnos guardados se ven aunque la rotativa quede desalineada", () => {
@@ -300,7 +304,7 @@ test("extender un contrato conserva su tarifa y tope, solo cambia fechas", () =>
     assert.equal(stored.maxHours, 20);
 });
 
-test("editar un contrato actualiza fechas, tarifa, tope y periodo", () => {
+test("editar un contrato actualiza fechas, tarifa y tope mensual", () => {
     localStorage.clear();
     setJSON("profiles", [
         { name: N, contractType: "Honorarios", estamento: "Profesional" }
