@@ -16432,6 +16432,9 @@ window.addEventListener("proturnos:autoCoverageChanged", () => {
 window.addEventListener("proturnos:memosChanged", () => {
     if (document.body.dataset.activeView === "memos") {
         renderMemosPanel();
+    } else if (document.body.dataset.activeView === "swap") {
+        renderSwapPanel();
+        updateMemosNavBadge();
     } else {
         updateMemosNavBadge();
     }
@@ -17054,6 +17057,11 @@ initFirebaseShell({
                                 if (detail.partial === true) {
                                     if (detail.keys?.includes("profiles")) {
                                         renderProfiles({ dashboard: false });
+                                    }
+                                    if (detail.keys?.includes("memos")) {
+                                        window.dispatchEvent(
+                                            new CustomEvent("proturnos:memosChanged")
+                                        );
                                     }
                                     renderBotones();
                                 } else {

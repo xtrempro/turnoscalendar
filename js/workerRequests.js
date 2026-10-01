@@ -14,6 +14,11 @@ import {
     isFirebaseConfigured
 } from "./firebaseClient.js";
 import {
+    claimWorkerRequestResolution,
+    finishWorkerRequestResolution,
+    releaseWorkerRequestResolution
+} from "./firebaseWorkerRequests.js";
+import {
     acceptWorkspaceLink,
     chooseWorkspaceForLink,
     isOwnerPendingWorkspaceLink,
@@ -995,7 +1000,9 @@ async function applySwapRequest(request, profile) {
         };
     }
 
-    registrarCambio({
+    const swap = registrarCambio({
+        id: `worker_request:${request.id}`,
+        sourceRequestId: request.id,
         from,
         to,
         fecha,
@@ -1006,7 +1013,7 @@ async function applySwapRequest(request, profile) {
         month: date.getMonth()
     });
 
-    return { ok: true };
+    return { ok: true, swap };
 }
 
 async function applyWorkerRequest(request) {
@@ -1960,9 +1967,38 @@ function showRejectDialog(request) {
 }
 
 async function acceptRequest(request) {
-    const result = await applyWorkerRequest(request);
+    let claim;
+
+    try {
+        claim = await claimWorkerRequestResolution(request);
+    } catch (error) {
+        console.warn("No se pudo reservar la solicitud.", error);
+        alert("No se pudo confirmar la solicitud en el servidor. Intenta nuevamente.");
+        return false;
+    }
+
+    if (!claim.claimed) {
+        alert(
+            claim.reason === "resolved"
+                ? "Esta solicitud ya fue resuelta por otro administrador."
+                : "Otro administrador está procesando esta solicitud."
+        );
+        return false;
+    }
+
+    let result;
+
+    try {
+        result = await applyWorkerRequest(request);
+    } catch (error) {
+        await releaseWorkerRequestResolution(request.id, claim.token)
+            .catch(() => {});
+        throw error;
+    }
 
     if (!result.ok) {
+        await releaseWorkerRequestResolution(request.id, claim.token)
+            .catch(() => {});
         alert(result.message);
         return false;
     }
@@ -1971,11 +2007,31 @@ async function acceptRequest(request) {
     // anula por perfil, y notifyWorkerApp busca el enlace por nombre exacto.
     const profileName = resolveProfileName(request) || request.profile;
 
-    saveUpdatedRequest(request.id, {
+    const now = new Date().toISOString();
+    const patch = {
         status: "accepted",
-        acceptedAt: new Date().toISOString(),
-        appliedAt: new Date().toISOString()
-    });
+        acceptedAt: now,
+        appliedAt: now
+    };
+
+    try {
+        const finished = await finishWorkerRequestResolution(
+            request.id,
+            claim.token,
+            patch
+        );
+
+        if (!finished) {
+            alert("La solicitud cambió mientras se procesaba. Actualiza el panel antes de continuar.");
+            return false;
+        }
+    } catch (error) {
+        // La aplicacion local ya ocurrio. Se conserva como aceptada y el
+        // sincronizador monotono reintentara sin devolverla a pendiente.
+        console.warn("La solicitud se aplicó, pero su confirmación remota quedó pendiente.", error);
+    }
+
+    saveUpdatedRequest(request.id, patch);
 
     if (request.type === "leave_cancel" && profileName) {
         void notifyWorkerApp(
@@ -2010,13 +2066,52 @@ async function rejectRequest(request) {
 
     if (!reason) return false;
 
-    const profileName = resolveProfileName(request) || request.profile;
+    let claim;
 
-    saveUpdatedRequest(request.id, {
+    try {
+        claim = await claimWorkerRequestResolution(request);
+    } catch (error) {
+        console.warn("No se pudo reservar la solicitud.", error);
+        alert("No se pudo confirmar la solicitud en el servidor. Intenta nuevamente.");
+        return false;
+    }
+
+    if (!claim.claimed) {
+        alert(
+            claim.reason === "resolved"
+                ? "Esta solicitud ya fue resuelta por otro administrador."
+                : "Otro administrador está procesando esta solicitud."
+        );
+        return false;
+    }
+
+    const profileName = resolveProfileName(request) || request.profile;
+    const patch = {
         status: "rejected",
         rejectedAt: new Date().toISOString(),
         rejectReason: reason
-    });
+    };
+
+    try {
+        const finished = await finishWorkerRequestResolution(
+            request.id,
+            claim.token,
+            patch
+        );
+
+        if (!finished) {
+            alert("La solicitud ya fue resuelta por otro administrador.");
+            return false;
+        }
+    } catch (error) {
+        console.warn("No se pudo guardar el rechazo en el servidor.", error);
+        await releaseWorkerRequestResolution(request.id, claim.token)
+            .catch(() => {});
+        alert("No se pudo guardar el rechazo. Intenta nuevamente.");
+        return false;
+    }
+
+    saveUpdatedRequest(request.id, patch);
 
     if (request.type === "hhee_return" && profileName) {
         const monthLabel = monthLabelFromYearMonth(

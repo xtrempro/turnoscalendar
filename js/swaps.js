@@ -313,10 +313,18 @@ function moveSwapManualExtraBackups(swap, undo = false) {
 export function registrarCambio(data) {
 
     const swaps = getSwaps();
-    const id = Date.now();
+    const suppliedId = String(data?.id || "").trim();
+    const id = suppliedId || Date.now();
+    const existing = swaps.find(item => String(item?.id) === String(id));
+
+    // Las solicitudes de la app usan un id derivado de la solicitud. Aunque
+    // una sesion reintente despues de perder conexion, no vuelve a mover los
+    // turnos ni crea un segundo registro para la misma aprobacion.
+    if (existing) return existing;
 
     swaps.push({
         id,
+        sourceRequestId: String(data?.sourceRequestId || ""),
 
         from: data.from,
         to: data.to,

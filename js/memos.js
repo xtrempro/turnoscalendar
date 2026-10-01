@@ -146,9 +146,18 @@ export function leaveMemoCancellationAuditId({
 function normalizeMemo(memo = {}) {
     const sourceId = String(memo.sourceId || "");
     const createdAt = memo.createdAt || new Date().toISOString();
-    const documents = Array.isArray(memo.documents)
+    const deletedDocumentIds = [...new Set(
+        (Array.isArray(memo.deletedDocumentIds)
+            ? memo.deletedDocumentIds
+            : [])
+            .map(id => String(id || ""))
+            .filter(Boolean)
+    )];
+    const deletedDocuments = new Set(deletedDocumentIds);
+    const documents = (Array.isArray(memo.documents)
         ? memo.documents.map(normalizeDocument).filter(Boolean)
-        : [];
+        : [])
+        .filter(document => !deletedDocuments.has(document.id));
     const sourceDocuments = Array.isArray(memo.sourceDocuments)
         ? memo.sourceDocuments.map(normalizeDocument).filter(Boolean)
         : [];
@@ -185,6 +194,9 @@ function normalizeMemo(memo = {}) {
             ? memo.completedAt || documents[0].attachedAt || createdAt
             : "",
         documents,
+        // Evita que una escritura concurrente vuelva a incorporar un archivo
+        // que otro administrador ya elimino de Storage.
+        deletedDocumentIds,
         sourceDocuments
     };
 }
@@ -366,7 +378,8 @@ export function createMemoTask(task = {}) {
             id: existing.id,
             completedAt: existing.completedAt,
             requestedAt: existing.requestedAt,
-            documents: existing.documents
+            documents: existing.documents,
+            deletedDocumentIds: existing.deletedDocumentIds
         });
     } else {
         memos.unshift(memo);
@@ -849,11 +862,20 @@ export function getMemoDocuments(memoId) {
     return getMemoById(memoId)?.documents || [];
 }
 
-function setMemoDocuments(memoId, documents) {
+function setMemoDocuments(memoId, documents, options = {}) {
     const memos = getMemos();
     const updated = memos.map(memo =>
         memo.id === memoId
-            ? normalizeMemo({ ...memo, documents })
+            ? normalizeMemo({
+                ...memo,
+                documents,
+                deletedDocumentIds: options.deletedDocumentId
+                    ? [
+                        ...(memo.deletedDocumentIds || []),
+                        String(options.deletedDocumentId)
+                    ]
+                    : memo.deletedDocumentIds
+            })
             : memo
     );
 
@@ -911,6 +933,8 @@ function attachMemoDocument(id, document) {
 
         return normalizeMemo({
             ...memo,
+            deletedDocumentIds: (memo.deletedDocumentIds || [])
+                .filter(documentId => documentId !== String(document.id)),
             documents: [
                 ...(memo.documents || []),
                 document
@@ -1059,7 +1083,8 @@ export async function removeMemoDocument(memoId, documentId) {
 
     const memo = setMemoDocuments(
         memoId,
-        documents.filter(item => item !== document)
+        documents.filter(item => item !== document),
+        { deletedDocumentId: document.id }
     );
 
     // La copia del computador ya no sirve: el archivo no existe en Storage.

@@ -1666,10 +1666,12 @@ function bindSwapPanelActions(box) {
         }
 
         if (action === "accept-request" || action === "reject-request") {
+            button.disabled = true;
             const done = action === "accept-request"
                 ? await acceptWorkerRequestById(button.dataset.requestId)
                 : await rejectWorkerRequestById(button.dataset.requestId);
 
+            if (done === false) button.disabled = false;
             if (done !== false) refreshAll();
             renderSwapPanel();
         }

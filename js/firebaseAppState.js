@@ -1126,6 +1126,79 @@ function partialStateDocumentPayload(entry, firestoreModule, current = {}) {
     return payload;
 }
 
+function parseMemoItem(raw) {
+    try {
+        const value = JSON.parse(String(raw ?? "null"));
+
+        return value && typeof value === "object" && !Array.isArray(value)
+            ? value
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function mergeMemoDocuments(localMemo, remoteMemo) {
+    const deletedDocumentIds = [...new Set([
+        ...(remoteMemo.deletedDocumentIds || []),
+        ...(localMemo.deletedDocumentIds || [])
+    ].map(id => String(id || "")).filter(Boolean))];
+    const deleted = new Set(deletedDocumentIds);
+    const documents = new Map();
+
+    [
+        ...(Array.isArray(remoteMemo.documents) ? remoteMemo.documents : []),
+        ...(Array.isArray(localMemo.documents) ? localMemo.documents : [])
+    ].forEach(document => {
+        const id = String(document?.id || "");
+
+        if (id && !deleted.has(id)) documents.set(id, document);
+    });
+
+    const mergedDocuments = [...documents.values()];
+
+    return {
+        ...remoteMemo,
+        ...localMemo,
+        documents: mergedDocuments,
+        deletedDocumentIds,
+        status: mergedDocuments.length ? "completed" : "pending",
+        completedAt: mergedDocuments.length
+            ? localMemo.completedAt || remoteMemo.completedAt ||
+                mergedDocuments[0]?.attachedAt || ""
+            : ""
+    };
+}
+
+// `memos` se parte por memorandum, pero los documentos viven dentro de ese
+// elemento. Dos supervisores adjuntando al mismo memorandum deben unir los
+// archivos dentro de la transaccion, no reemplazar el arreglo completo.
+export function guardMemoEntryDocuments(entry = {}, current = {}) {
+    if (entry.storageKey !== "memos" || !entry.items) return entry;
+
+    const guarded = {
+        ...entry,
+        items: { ...entry.items },
+        deletedItems: { ...(entry.deletedItems || {}) }
+    };
+
+    Object.entries(guarded.items).forEach(([itemKey, localRaw]) => {
+        if (guarded.deletedItems[itemKey] === true) return;
+        if (current.deletedItems?.[itemKey] === true) return;
+
+        const localMemo = parseMemoItem(localRaw);
+        const remoteMemo = parseMemoItem(current.items?.[itemKey]);
+
+        if (!localMemo || !remoteMemo) return;
+
+        guarded.items[itemKey] = JSON.stringify(
+            mergeMemoDocuments(localMemo, remoteMemo)
+        );
+    });
+
+    return guarded;
+}
+
 async function commitPartialStateFields(
     db,
     firestoreModule,
@@ -1208,12 +1281,16 @@ async function commitPartialStateSlice(
                 const current = snapshots[index].exists()
                     ? snapshots[index].data()
                     : {};
-                const guardedEntry = entry.storageKey === "replacements"
-                    ? guardReplacementEntryWithBarriers(
-                        entry,
-                        current
-                    )
+                let guardedEntry = entry.storageKey === "replacements"
+                    ? guardReplacementEntryWithBarriers(entry, current)
                     : entry;
+
+                if (entry.storageKey === "memos") {
+                    guardedEntry = guardMemoEntryDocuments(
+                        guardedEntry,
+                        current
+                    );
+                }
                 const payload = partialStateDocumentPayload(
                     guardedEntry,
                     firestoreModule,
@@ -1229,7 +1306,10 @@ async function commitPartialStateSlice(
             error: error?.message || String(error),
             documentCount: entries.length
         });
-        if (entries.some(entry => entry.storageKey === "replacements")) {
+        if (entries.some(entry =>
+            entry.storageKey === "replacements" ||
+            entry.storageKey === "memos"
+        )) {
             throw error;
         }
 
