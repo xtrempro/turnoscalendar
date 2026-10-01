@@ -964,10 +964,9 @@ async function services() {
 // Medido el 2026-09-22 en la unidad grande: el estado inicial son 6,15 MB, y el
 // usuario ve el tablero enseguida pero el raton se queda congelado hasta el
 // segundo 20-25 mientras el SDK mastica esa descarga. `log` son 0,85 MB -767 KB
-// en un solo documento- de puro registro: ninguna vista deriva de el salvo la
-// Bitacora, que se repinta por refresh.js y no tiene oyentes propios (eso ya se
-// comprobo al sacarlo de las invalidaciones de cache, ver
-// js/stateChangeRelevance.js).
+// en un solo documento- de puro registro. Las vistas que necesitan sus datos
+// (Bitacora, perfil, solicitudes y detalles del calendario) lo hidratan bajo
+// demanda; no hace falta cargarlo para pintar el tablero inicial.
 const DEFERRED_STATE_MODULES = new Set(["log"]);
 
 // Los que estan pendientes de hidratar. Mientras uno este aqui NO se publica en

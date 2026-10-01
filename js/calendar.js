@@ -234,6 +234,7 @@ import {
     hourReturnCalendarLabel
 } from "./hourReturns.js";
 import { withBusyState } from "./busy.js";
+import { hydrateDeferredStateModule } from "./firebaseAppState.js";
 import {
     ensureAttendanceIncidentIndex,
     getAttendanceIncidentsForDay,
@@ -4753,7 +4754,7 @@ export function openLeaveRecordDocuments(
     openDocumentsForTarget(target, profile, { onClose });
 }
 
-function openLeaveDetailDialog({
+async function openLeaveDetailDialog({
     profile,
     keyDay,
     admin,
@@ -4764,6 +4765,13 @@ function openLeaveDetailDialog({
     const type = leaveTypeForDay(keyDay, admin, legal, comp, absences);
 
     if (!type) return;
+
+    // La bitacora no viaja en la carga inicial. Este detalle depende de ella
+    // para mostrar fecha, autor, documentos y permitir anular el permiso, asi
+    // que debe esperar su hidratacion antes de buscar el registro.
+    if (type !== "half_admin") {
+        await hydrateDeferredStateModule("log").catch(() => {});
+    }
 
     const label = leaveLabelForType(type);
     const info = type === "half_admin"
@@ -10362,7 +10370,7 @@ async function clickDia(
             absences
         )
     ) {
-        openLeaveDetailDialog({
+        await openLeaveDetailDialog({
             profile: profileName,
             keyDay,
             admin,

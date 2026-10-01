@@ -147,3 +147,24 @@ test("los modales de detalle usan el helper y no el campo crudo", () => {
         2
     );
 });
+
+test("el detalle de un permiso espera la bitacora diferida", () => {
+    const start = calendar.indexOf("async function openLeaveDetailDialog({");
+    const end = calendar.indexOf("function attendanceMarksSlotHTML", start);
+    const detailBlock = calendar.slice(start, end);
+
+    assert.notEqual(start, -1);
+    assert.match(
+        detailBlock,
+        /await hydrateDeferredStateModule\("log"\)/
+    );
+    assert.ok(
+        detailBlock.indexOf('await hydrateDeferredStateModule("log")') <
+        detailBlock.indexOf("getLeaveApplicationInfo({"),
+        "la bitacora debe llegar antes de buscar el permiso"
+    );
+    assert.match(
+        calendar,
+        /await openLeaveDetailDialog\(\{\s*\n\s*profile: profileName/
+    );
+});
