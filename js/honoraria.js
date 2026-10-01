@@ -1,7 +1,7 @@
 import {
     getHonorariaContractForDate
 } from "./contracts.js";
-import { calcHours } from "./calculations.js";
+import { calcExtraHours } from "./calculations.js";
 import { getTurnoReal } from "./turnEngine.js";
 import { getClockMark, getWorkedIntervalsForState } from "./clockMarks.js";
 
@@ -14,7 +14,10 @@ import { getClockMark, getWorkedIntervalsForState } from "./clockMarks.js";
  * tope es de horas totales, el reparto solo informa.
  */
 function honorariaDayHours(profileName, keyDay, date, state, holidays) {
-    const base = calcHours(date, state, holidays);
+    // Honorarios contabiliza un turno efectivamente realizado. Por eso el
+    // Diurno vale 9 h de lunes a jueves y 8 h el viernes, no el promedio 8,8
+    // usado para repartir la jornada habil contractual de otros trabajadores.
+    const base = calcExtraHours(date, state, holidays);
     const baseDay = Math.max(0, Number(base.d) || 0);
     const baseNight = Math.max(0, Number(base.n) || 0);
 

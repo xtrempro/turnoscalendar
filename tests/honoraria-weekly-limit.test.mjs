@@ -102,3 +102,69 @@ test("un limitPeriod semanal antiguo tambien se acumula por mes", () => {
     assert.ok(getHonorariaExcessForKey(summary, key(13)));
     assert.ok(summary.overtimeHours > 0);
 });
+
+test("los Diurnos realizados suman 9 horas de lunes a jueves y 8 el viernes", () => {
+    seedHonoraria({
+        [key(6)]: TURNO.DIURNO,
+        [key(7)]: TURNO.DIURNO,
+        [key(8)]: TURNO.DIURNO,
+        [key(9)]: TURNO.DIURNO,
+        [key(10)]: TURNO.DIURNO
+    });
+
+    const summary = getHonorariaMonthlySummary(
+        PROFILE,
+        YEAR,
+        MONTH,
+        {}
+    );
+
+    assert.equal(summary.assignedHours, 44);
+    assert.equal(Number.isInteger(summary.assignedHours), true);
+});
+
+test("una Larga y una Noche realizadas suman 12 horas cada una", () => {
+    seedHonoraria({
+        [key(11)]: TURNO.LARGA,
+        [key(12)]: TURNO.NOCHE
+    });
+
+    const summary = getHonorariaMonthlySummary(
+        PROFILE,
+        YEAR,
+        MONTH,
+        {}
+    );
+
+    assert.equal(summary.assignedHours, 24);
+});
+
+test("caso Mathias septiembre: el total correcto es 179 y excede 3 horas", () => {
+    localStorage.clear();
+    setJSON("profiles", [
+        { name: PROFILE, contractType: "Honorarios" }
+    ]);
+    setJSON("honorariaContracts_" + PROFILE, [{
+        id: "septiembre",
+        start: "2026-09-01",
+        end: "2026-09-30",
+        hourlyRate: 3500,
+        maxHours: 176,
+        limitPeriod: "monthly"
+    }]);
+    const shifts = {};
+
+    for (const day of [1, 2, 3, 4, 7, 8, 9, 14, 15, 16, 17, 21, 22, 23, 24]) {
+        shifts[`2026-8-${day}`] = TURNO.DIURNO;
+    }
+    shifts["2026-8-6"] = TURNO.LARGA;
+    shifts["2026-8-10"] = TURNO.DIURNO_NOCHE;
+    shifts["2026-8-18"] = TURNO.NOCHE;
+    setJSON("data_" + PROFILE, shifts);
+
+    const summary = getHonorariaMonthlySummary(PROFILE, 2026, 8, {});
+
+    assert.equal(summary.assignedHours, 179);
+    assert.equal(summary.overtimeHours, 3);
+    assert.match(getHonorariaLimitMessage(summary, "2026-8-24"), /179 horas/);
+});
