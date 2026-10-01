@@ -1,7 +1,7 @@
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import { isBusinessDay } from "./calculations.js";
 import { getJSON, setJSON } from "./persistence.js";
-import { getRotativa } from "./storage.js";
+import { getRotativa, getTurnChangeConfig } from "./storage.js";
 import { getHourReturn } from "./hourReturns.js";
 import { createClockMemoTask } from "./memos.js";
 import {
@@ -38,9 +38,9 @@ function roundExtraMinutes(minutes) {
 }
 
 // Dias de JORNADA CORTA por fiestas: la vispera del 18 de septiembre, la de
-// Navidad y la de Ano Nuevo. Esos dias la jornada diurna se anticipa y termina
-// 12:30 -y los viernes 12:00, como si a todos les dieran medio administrativo
-// de tarde-.
+// Navidad y la de Ano Nuevo. Esos dias la jornada diurna se anticipa al horario
+// configurado por la unidad (12:30 de lunes a jueves y 12:00 los viernes por
+// defecto).
 //
 // Van como "mes-dia" y sin ano porque son fechas fijas. Solo aplican en dia
 // habil, que es lo que ya comprueba quien arma el tramo diurno.
@@ -55,16 +55,22 @@ function isShortDiurnoDay(date) {
 /**
  * A que hora termina la jornada diurna de ese dia.
  *
- * Devuelve la fecha y no la hora suelta porque la jornada corta termina a las
- * 12:30, y una hora entera no alcanza para decirlo.
+ * Devuelve la fecha y no la hora suelta porque el horario configurable puede
+ * incluir minutos, y una hora entera no alcanza para representarlo.
  */
 function diurnoEndAt(date) {
     const isFriday = date.getDay() === 5;
 
     if (isShortDiurnoDay(date)) {
-        return isFriday
-            ? dateAt(date, 12)
-            : dateAt(date, 12, 30);
+        const config = getTurnChangeConfig();
+        const configuredTime = isFriday
+            ? config.shortDiurnoEndTimeFriday
+            : config.shortDiurnoEndTimeMondayThursday;
+        const [hours, minutes] = configuredTime
+            .split(":")
+            .map(Number);
+
+        return dateAt(date, hours, minutes);
     }
 
     return dateAt(date, isFriday ? 16 : 17);

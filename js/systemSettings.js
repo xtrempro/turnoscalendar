@@ -88,7 +88,7 @@ const SETTINGS_NAV = [
     {
         label: "Turnos y cobertura",
         items: [
-            { id: "shifts", label: "Reglas de turnos", dot: "#0F766E", keywords: "24 horas invertido diurno post dos funcionarios repartir turno quitar turno boton planta contrata" },
+            { id: "shifts", label: "Reglas de turnos", dot: "#0F766E", keywords: "24 horas invertido diurno post dos funcionarios repartir turno quitar turno boton planta contrata jornada corta salida temprana 17 septiembre 24 diciembre 31 diciembre reloj control" },
             { id: "swaps", label: "Cambios de turno", dot: "#0F766E", keywords: "cambios de turno cctt limite mensual tipos" },
             { id: "requests", label: "Reemplazos", dot: "#0F766E", keywords: "reemplazos sugerencias unidades enlazadas profesiones aceptacion caducidad devolucion de tiempo horas" },
             { id: "training", label: "Capacitaciones", dot: "#0F766E", keywords: "capacitaciones capacitacion noche" }
@@ -571,6 +571,35 @@ function renderShiftRulesPanel() {
                 title: "Botón Quitar turno para planta y contrata",
                 description: "Muestra el botón QUITAR TURNO en el menú Turnos también para planta y contrata (para reemplazos y honorarios está siempre). Quitar un turno de la rotativa base descuenta sus horas de las horas extras del mes."
             })}
+
+            <div class="sx-row settings-short-diurno-row">
+                <span class="sx-row__text">
+                    <strong>Jornada corta en fechas especiales</strong>
+                    <small>Hora de salida de los turnos diurnos el 17 de septiembre, 24 y 31 de diciembre. El marcaje a esta hora no genera una alerta de salida temprana.</small>
+                </span>
+                <div class="settings-short-diurno-times">
+                    <label>
+                        <span>Lunes a jueves</span>
+                        <input
+                            id="settingsShortDiurnoEndTimeMondayThursday"
+                            type="time"
+                            min="08:00"
+                            max="17:00"
+                            value="${escapeHTML(config.shortDiurnoEndTimeMondayThursday)}"
+                        >
+                    </label>
+                    <label>
+                        <span>Viernes</span>
+                        <input
+                            id="settingsShortDiurnoEndTimeFriday"
+                            type="time"
+                            min="08:00"
+                            max="16:00"
+                            value="${escapeHTML(config.shortDiurnoEndTimeFriday)}"
+                        >
+                    </label>
+                </div>
+            </div>
         </div>
     `;
 }
@@ -1246,6 +1275,8 @@ function readTurnChangeConfig(backdrop) {
         Boolean(backdrop.querySelector(`#${id}`));
     const checked = id =>
         Boolean(backdrop.querySelector(`#${id}`)?.checked);
+    const value = id =>
+        backdrop.querySelector(`#${id}`)?.value;
     const monthlySwapLimit = Number(
         backdrop.querySelector("#settingsMonthlySwapLimit")?.value
     );
@@ -1275,6 +1306,14 @@ function readTurnChangeConfig(backdrop) {
             hasInput("settingsAllowRemoveShiftButton")
                 ? checked("settingsAllowRemoveShiftButton")
                 : fallback.allowRemoveShiftButton,
+        shortDiurnoEndTimeMondayThursday:
+            hasInput("settingsShortDiurnoEndTimeMondayThursday")
+                ? value("settingsShortDiurnoEndTimeMondayThursday")
+                : fallback.shortDiurnoEndTimeMondayThursday,
+        shortDiurnoEndTimeFriday:
+            hasInput("settingsShortDiurnoEndTimeFriday")
+                ? value("settingsShortDiurnoEndTimeFriday")
+                : fallback.shortDiurnoEndTimeFriday,
         // El checkbox solo existe en el DOM con los turnos 24 activos. Al
         // desactivarlos desaparece, y sin este `false` explicito el fallback
         // conservaria la excepcion encendida de forma invisible.

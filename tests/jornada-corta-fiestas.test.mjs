@@ -1,18 +1,20 @@
 // Jornada corta por fiestas: 17 de septiembre, 24 y 31 de diciembre.
 //
 // Esos tres dias -visperas del 18, de Navidad y de Ano Nuevo- la jornada diurna
-// se anticipa: termina a las 12:30, y los VIERNES a las 12:00, como si a todos
-// les dieran medio administrativo de tarde. Sin esta regla, al adjuntar las
-// marcaciones el reporte acusaba salidas tempranas que no eran tales.
+// se anticipa: por defecto termina a las 12:30, y los VIERNES a las 12:00. La
+// unidad puede adelantar ambos horarios desde Ajustes del sistema. Sin esta
+// regla, al adjuntar las marcaciones el reporte acusaba salidas tempranas que
+// no eran tales.
 //
 // Rige para todo turno diurno, sea cual sea la rotativa -tambien el tramo
-// diurno de un D+N- y en todas las unidades: son fechas nacionales fijas.
+// diurno de un D+N-. Las fechas son fijas y el horario pertenece a cada unidad.
 //
 // Las horas NO cambian: calcDiurno reparte 8,8 en cualquier dia habil, igual
 // que ya hacia con el viernes que sale a las 16:00. Lo que cambia es el horario
 // contra el que se miden las marcas.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 class MemoryStorage {
     constructor() { this.values = new Map(); }
@@ -46,6 +48,17 @@ const {
 } = await import("../js/clockMarks.js");
 const { calcDiurno } = await import("../js/calculations.js");
 const { TURNO } = await import("../js/constants.js");
+const {
+    getTurnChangeConfig,
+    saveTurnChangeConfig
+} = await import("../js/storage.js");
+const {
+    classifyClockMarkSegment
+} = await import("../js/clockMarkUtils.js");
+
+test.beforeEach(() => {
+    localStorage.clear();
+});
 
 /** "08:00" del Date que devuelve el motor. */
 const hhmm = date => [
@@ -102,6 +115,55 @@ test("y si caen en viernes, a las 12:00", () => {
 
     assert.equal(hhmm(tramo.start), "08:00");
     assert.equal(hhmm(tramo.end), "12:00");
+});
+
+test("la unidad puede adelantar ambos horarios de jornada corta", () => {
+    saveTurnChangeConfig({
+        shortDiurnoEndTimeMondayThursday: "11:00",
+        shortDiurnoEndTimeFriday: "11:15"
+    });
+
+    assert.equal(hhmm(tramoDiurno(J17SEP).end), "11:00");
+    assert.equal(hhmm(tramoDiurno(V24DIC).end), "11:15");
+});
+
+test("una salida a la hora configurada no genera alerta temprana", () => {
+    saveTurnChangeConfig({
+        shortDiurnoEndTimeMondayThursday: "11:00"
+    });
+    const tramo = tramoDiurno(J24DIC);
+    const exacta = classifyClockMarkSegment(
+        J24DIC,
+        tramo,
+        { entryTime: "08:00", exitTime: "11:00" },
+        { isBaseOrSwap: true }
+    );
+    const anticipada = classifyClockMarkSegment(
+        J24DIC,
+        tramo,
+        { entryTime: "08:00", exitTime: "10:59" },
+        { isBaseOrSwap: true }
+    );
+
+    assert.equal(exacta.timing.earlyExit, false);
+    assert.equal(exacta.isReduction, false);
+    assert.equal(exacta.uncoveredMinutes, 0);
+    assert.equal(anticipada.timing.earlyExit, true);
+    assert.equal(anticipada.uncoveredMinutes, 1);
+});
+
+test("configuraciones antiguas o invalidas conservan los horarios base", () => {
+    localStorage.setItem("turnChangeConfig", JSON.stringify({
+        shortDiurnoEndTimeMondayThursday: "hora-invalida",
+        shortDiurnoEndTimeFriday: "25:90"
+    }));
+
+    const config = getTurnChangeConfig();
+
+    assert.equal(config.shortDiurnoEndTimeMondayThursday, "12:30");
+    assert.equal(config.shortDiurnoEndTimeFriday, "12:00");
+    assert.equal(hhmm(tramoDiurno(J24DIC).end), "12:30");
+    assert.equal(hhmm(tramoDiurno(V24DIC).end), "12:00");
 });
 
 test("un dia normal no cambia", () => {
@@ -167,4 +229,20 @@ test("el reparto de horas del mes sigue siendo 8,8", () => {
     // duracion del dia.
     assert.deepEqual(calcDiurno(J24DIC, {}), { d: 8.8, n: 0 });
     assert.deepEqual(calcDiurno(LUNES, {}), { d: 8.8, n: 0 });
+});
+
+test("Ajustes muestra y guarda los dos horarios por unidad", () => {
+    const settings = readFileSync("js/systemSettings.js", "utf8");
+
+    assert.match(settings, /Jornada corta en fechas especiales/);
+    assert.match(settings, /id="settingsShortDiurnoEndTimeMondayThursday"/);
+    assert.match(settings, /id="settingsShortDiurnoEndTimeFriday"/);
+    assert.match(
+        settings,
+        /shortDiurnoEndTimeMondayThursday:[\s\S]{0,180}value\("settingsShortDiurnoEndTimeMondayThursday"\)/
+    );
+    assert.match(
+        settings,
+        /shortDiurnoEndTimeFriday:[\s\S]{0,150}value\("settingsShortDiurnoEndTimeFriday"\)/
+    );
 });

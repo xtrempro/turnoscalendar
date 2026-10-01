@@ -1060,6 +1060,10 @@ export const DEFAULT_TURN_CHANGE_CONFIG = {
     // reemplazos y honorarios esta siempre; para el resto lo habilita la unidad,
     // porque quitar un turno de la rotativa base descuenta horas extras.
     allowRemoveShiftButton: false,
+    // Jornada corta del 17 de septiembre, 24 y 31 de diciembre. Estos
+    // horarios son editables por unidad desde Ajustes del sistema.
+    shortDiurnoEndTimeMondayThursday: "12:30",
+    shortDiurnoEndTimeFriday: "12:00",
     limitMonthlySwaps: false,
     monthlySwapLimit: 2
 };
@@ -1100,6 +1104,13 @@ function normalizeReplacementRequestConfig(config = {}) {
 
 function normalizeTurnChangeConfig(config = {}) {
     const monthlySwapLimit = Number(config.monthlySwapLimit);
+    const normalizeTime = (value, fallback) => {
+        const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(
+            String(value || "").trim()
+        );
+
+        return match ? `${match[1]}:${match[2]}` : fallback;
+    };
 
     return {
         allowSwaps:
@@ -1120,6 +1131,14 @@ function normalizeTurnChangeConfig(config = {}) {
             config.allowSplitShiftCoverage === true,
         allowRemoveShiftButton:
             config.allowRemoveShiftButton === true,
+        shortDiurnoEndTimeMondayThursday: normalizeTime(
+            config.shortDiurnoEndTimeMondayThursday,
+            DEFAULT_TURN_CHANGE_CONFIG.shortDiurnoEndTimeMondayThursday
+        ),
+        shortDiurnoEndTimeFriday: normalizeTime(
+            config.shortDiurnoEndTimeFriday,
+            DEFAULT_TURN_CHANGE_CONFIG.shortDiurnoEndTimeFriday
+        ),
         limitMonthlySwaps:
             config.limitMonthlySwaps === true,
         monthlySwapLimit:
