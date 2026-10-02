@@ -1086,3 +1086,53 @@ test("monitor: solo metadatos distintos entre formatos NO cuenta como 'sin versi
   assert.equal(warning.data.writerMismatchCount, 1);
   assert.equal(db.docs.get("storageHealthUnits/w1").overview.auditLogVersions.writerMismatch, 1);
 });
+
+test("version: con 25 metadatos distintos el total es 25 aunque la muestra traiga 20 ids", async () => {
+  const encode = id => encodeURIComponent(id).replace(/\./g, "%2E");
+  const legacyItems = {};
+  const shardItems = {};
+  const legacy = [];
+  const shard = [];
+
+  for (let index = 0; index < 25; index++) {
+    const id = `m${index}`;
+    const a = vlog(id, "2026-10-09T10:00:00Z", { writer: writer("build-a") });
+    const b = vlog(id, "2026-10-09T10:00:00Z", { writer: writer("build-b") });
+
+    legacy.push(a);
+    shard.push(b);
+    legacyItems[encode(id)] = JSON.stringify(a);
+    shardItems[encode(id)] = JSON.stringify(b);
+  }
+
+  const pure = checkAuditLogVersions(legacy, shard, NOW_V);
+
+  assert.equal(pure.writerMismatchCount, 25);
+  assert.equal(pure.writerMismatch.length, 20);
+  assert.equal(pure.issues, 25);
+
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: { storageKey: "auditLog", container: "array", items: legacyItems, deletedItems: {} },
+    "workspaces/w1/auditLogShards/2026-10-09_0": { items: shardItems }
+  });
+  const warnings = [];
+
+  await runStorageHealthCheck({
+    db,
+    now: NOW_V,
+    log: { info() {}, error() {}, warn: (message, data) => warnings.push({ message, data }) }
+  });
+
+  const warning = warnings.find(item => item.message === "storage health: incidencias de version de bitacora");
+  const overview = db.docs.get("storageHealthUnits/w1").overview.auditLogVersions;
+  const report = db.docs.get("storageHealthReports/2026-10-10/units/w1").auditLogVersions;
+
+  assert.equal(warning.data.writerMismatchCount, 25, "Cloud Logging lleva el total");
+  assert.equal(warning.data.writerMismatch.length, 20, "y la muestra de ids");
+  assert.equal(overview.writerMismatchCount, 25);
+  assert.equal(overview.writerMismatch, 25);
+  assert.equal(overview.issues, 25);
+  assert.equal(report.writerMismatchCount, 25);
+  assert.equal(report.writerMismatch.length, 20);
+});

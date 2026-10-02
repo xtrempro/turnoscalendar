@@ -114,6 +114,10 @@ function sanitizeAuditLogVersions(value) {
     unversionedIds: list(value.unversionedIds),
     lastUnversionedAtMillis: num(value.lastUnversionedAtMillis),
     writerMismatch: Array.isArray(value.writerMismatch) ? list(value.writerMismatch) : (num(value.writerMismatch) ?? 0),
+    // Total real (la lista es una muestra de hasta 20 ids). Informes previos al
+    // campo: se deriva de lo que haya.
+    writerMismatchCount: num(value.writerMismatchCount) ??
+      (Array.isArray(value.writerMismatch) ? value.writerMismatch.length : (num(value.writerMismatch) ?? 0)),
     recentBuilds: value.recentBuilds && typeof value.recentBuilds === "object"
       ? Object.fromEntries(Object.entries(value.recentBuilds).slice(0, 10)
         .map(([build, count]) => [text(build, 80), num(count) ?? 0]))

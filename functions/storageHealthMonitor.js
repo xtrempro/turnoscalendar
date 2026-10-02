@@ -726,13 +726,13 @@ async function runStorageHealthCheck({
       if (measured.auditLogVersions?.issues > 0) {
         unitsWithAuditLogVersionIssues++;
         if (measured.auditLogVersions.unversionedRecent > 0) unitsWithUnversionedLogs++;
-        if (measured.auditLogVersions.writerMismatch.length > 0) unitsWithWriterMismatch++;
+        if (measured.auditLogVersions.writerMismatchCount > 0) unitsWithWriterMismatch++;
         // Solo Cloud Logging y TurnoPlus-Admin: ni eventos ni correos.
         log.warn("storage health: incidencias de version de bitacora", {
           workspaceId,
           workspaceName: name,
           unversionedRecent: measured.auditLogVersions.unversionedRecent,
-          writerMismatchCount: measured.auditLogVersions.writerMismatch.length,
+          writerMismatchCount: measured.auditLogVersions.writerMismatchCount,
           unversionedIds: measured.auditLogVersions.unversionedIds,
           writerMismatch: measured.auditLogVersions.writerMismatch,
           recentBuilds: measured.auditLogVersions.recentBuilds
@@ -792,7 +792,8 @@ async function runStorageHealthCheck({
             adoptedAtMillis: measured.auditLogVersions.adoptedAtMillis,
             versioned: measured.auditLogVersions.versioned,
             unversionedRecent: measured.auditLogVersions.unversionedRecent,
-            writerMismatch: measured.auditLogVersions.writerMismatch.length,
+            writerMismatch: measured.auditLogVersions.writerMismatchCount,
+            writerMismatchCount: measured.auditLogVersions.writerMismatchCount,
             lastUnversionedAtMillis: measured.auditLogVersions.lastUnversionedAtMillis,
             issues: measured.auditLogVersions.issues
           } : null

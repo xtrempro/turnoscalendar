@@ -404,3 +404,32 @@ test("version de escritura: el resumen y el historial la entregan saneada a Admi
   assert.deepEqual(versions.writerMismatch, []);
   assert.equal(history.events.length, 0, "no genera eventos");
 });
+
+test("version: Admin recibe el total real de metadatos distintos (25), no el largo de la muestra (20)", async () => {
+  const encode = id => encodeURIComponent(id).replace(/\./g, "%2E");
+  const legacyItems = {};
+  const shardItems = {};
+
+  for (let index = 0; index < 25; index++) {
+    const base = { id: `m${index}`, createdAt: "2026-10-02T07:00:00Z", action: "x" };
+
+    legacyItems[encode(base.id)] = JSON.stringify({ ...base, writer: { schemaVersion: 1, buildId: "build-a" } });
+    shardItems[encode(base.id)] = JSON.stringify({ ...base, writer: { schemaVersion: 1, buildId: "build-b" } });
+  }
+
+  const { db, handlers } = setup({
+    "workspaces/w1": { name: "Imagenologia" },
+    "workspaces/w1/stateModules/log/entries/auditLog": { storageKey: "auditLog", container: "array", items: legacyItems, deletedItems: {} },
+    "workspaces/w1/auditLogShards/2026-10-02_0": { items: shardItems }
+  });
+
+  await runStorageHealthCheck({ db, now: DAY1, log: silentLog });
+
+  const unit = (await handlers.overview({ auth: auth.admin, data: {} })).units.find(item => item.workspaceId === "w1");
+  const measured = (await handlers.history({ auth: auth.admin, data: { workspaceId: "w1" } })).measurements[0].auditLogVersions;
+
+  assert.equal(unit.auditLogVersions.writerMismatchCount, 25);
+  assert.equal(unit.auditLogVersions.issues, 25);
+  assert.equal(measured.writerMismatchCount, 25);
+  assert.equal(measured.writerMismatch.length, 20, "muestra de ids");
+});

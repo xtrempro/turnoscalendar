@@ -374,7 +374,8 @@ function createdMillis(log) {
  *  - unversionedRecent: registros SIN version creados despues de esa adopcion
  *    y dentro de la ventana reciente: los escribio una pestana con un build
  *    anterior;
- *  - writerMismatch: un mismo id con metadatos distintos en el formato viejo y
+ *  - writerMismatchCount / writerMismatch: cuantos ids (y una muestra de hasta
+ *    20) tienen metadatos distintos en el formato viejo y
  *    en los fragmentos (deben ser identicos);
  *  - recentBuilds: cuantos registros recientes escribio cada build.
  * Solo tecnico: no genera eventos ni correos ni cambia el estado de la unidad.
@@ -442,6 +443,8 @@ function checkAuditLogVersions(legacyLogs = [], shardLogs = [], now = Date.now()
     unversionedRecent: unversionedRecent.length,
     unversionedIds: unversionedRecent.slice(0, 20).map(item => item.id),
     lastUnversionedAtMillis: unversionedRecent[0]?.time ?? null,
+    // El total va aparte: la lista es solo una muestra de ids.
+    writerMismatchCount: writerMismatch.length,
     writerMismatch: writerMismatch.slice(0, 20),
     recentBuilds: Object.fromEntries(
       Object.entries(recentBuilds).sort((a, b) => b[1] - a[1]).slice(0, 10)
