@@ -952,3 +952,107 @@ test("outbox nuevo: si su primer intento es skipped_* se suelta (nunca llego al 
   await run(db, DAY1 + DAY, { sendAlert: null });
   assert.equal(db.docs.get("storageHealthControl/state").outbox, null);
 });
+
+// --- Version de escritura de la bitacora ----------------------------------
+
+const { checkAuditLogVersions } = require("../lib/storageHealth");
+const NOW_V = Date.parse("2026-10-10T12:00:00Z");
+const writer = (buildId = "20261003T120000Z-abc1234") => ({ schemaVersion: 1, buildId });
+const vlog = (id, createdAt, extra = {}) => ({ id, createdAt, action: "x", ...extra });
+
+test("version: sin ningun registro versionado todo es historico (sin falsas alertas)", () => {
+  const result = checkAuditLogVersions(
+    [vlog("a", "2026-10-09T10:00:00Z"), vlog("b", "2025-01-01T10:00:00Z")],
+    [vlog("a", "2026-10-09T10:00:00Z")],
+    NOW_V
+  );
+
+  assert.equal(result.adopted, false);
+  assert.equal(result.issues, 0);
+  assert.equal(result.unversionedRecent, 0);
+});
+
+test("version: lo anterior a la primera escritura versionada no cuenta; lo posterior y reciente si", () => {
+  const legacy = [
+    vlog("antes", "2026-10-08T10:00:00Z"),
+    vlog("v1", "2026-10-09T09:00:00Z", { writer: writer() }),
+    vlog("pestana-vieja", "2026-10-09T11:00:00Z"),
+    vlog("v2", "2026-10-09T12:00:00Z", { writer: writer("20261009T110000Z-def5678") })
+  ];
+  const result = checkAuditLogVersions(legacy, legacy, NOW_V);
+
+  assert.equal(result.adopted, true);
+  assert.equal(result.adoptedAtMillis, Date.parse("2026-10-09T09:00:00Z"));
+  assert.equal(result.versioned, 2);
+  assert.deepEqual(result.unversionedIds, ["pestana-vieja"]);
+  assert.equal(result.lastUnversionedAtMillis, Date.parse("2026-10-09T11:00:00Z"));
+  assert.deepEqual(result.recentBuilds, { "20261003T120000Z-abc1234": 1, "20261009T110000Z-def5678": 1 });
+  assert.equal(result.issues, 1);
+});
+
+test("version: una escritura sin version fuera de la ventana reciente ya no avisa (se recupera sola)", () => {
+  const logs = [
+    vlog("v1", "2026-09-20T09:00:00Z", { writer: writer() }),
+    vlog("vieja", "2026-09-25T11:00:00Z")
+  ];
+
+  assert.equal(checkAuditLogVersions(logs, logs, NOW_V).issues, 0);
+  assert.equal(checkAuditLogVersions(logs, logs, Date.parse("2026-09-26T12:00:00Z")).issues, 1);
+});
+
+test("version: metadatos distintos entre formatos para el mismo id son incidencia", () => {
+  const result = checkAuditLogVersions(
+    [vlog("x", "2026-10-09T10:00:00Z", { writer: writer("build-a") })],
+    [vlog("x", "2026-10-09T10:00:00Z", { writer: writer("build-b") })],
+    NOW_V
+  );
+
+  assert.deepEqual(result.writerMismatch, ["x"]);
+  assert.equal(result.issues, 1);
+});
+
+test("version: formato viejo ilegible (null) usa solo los fragmentos", () => {
+  const result = checkAuditLogVersions(null, [vlog("v1", "2026-10-09T09:00:00Z", { writer: writer() }), vlog("s", "2026-10-09T10:00:00Z")], NOW_V);
+
+  assert.deepEqual(result.unversionedIds, ["s"]);
+});
+
+test("monitor: una escritura reciente sin version va a Cloud Logging y al informe, sin eventos ni correos", async () => {
+  const v1 = vlog("v1", "2026-10-09T09:00:00Z", { writer: writer() });
+  const old = vlog("pestana-vieja", "2026-10-09T11:00:00Z");
+  const historical = vlog("historico", "2026-01-01T10:00:00Z");
+  const encode = id => encodeURIComponent(id).replace(/\./g, "%2E");
+  const item = log => ({ [encode(log.id)]: JSON.stringify(log) });
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia", auditLogStorage: "shards-read-v1" },
+    [AUDIT_PATH]: {
+      storageKey: "auditLog",
+      container: "array",
+      items: { ...item(historical), ...item(v1), ...item(old) },
+      deletedItems: {}
+    },
+    "workspaces/w1/auditLogShards/2026-01-01_0": { items: item(historical) },
+    "workspaces/w1/auditLogShards/2026-10-09_0": { items: { ...item(v1), ...item(old) } }
+  });
+  const warnings = [];
+  const mail = recorder("sent");
+  const summary = await runStorageHealthCheck({
+    db,
+    now: NOW_V,
+    sendAlert: mail.sendAlert,
+    log: { info() {}, error() {}, warn: (message, data) => warnings.push({ message, data }) }
+  });
+  const report = db.docs.get("storageHealthReports/2026-10-10/units/w1");
+  const state = db.docs.get("storageHealthUnits/w1");
+  const versionWarning = warnings.find(item => /sin version/.test(item.message));
+
+  assert.deepEqual(report.auditLogVersions.unversionedIds, ["pestana-vieja"], "el historico no cuenta");
+  assert.equal(state.overview.auditLogVersions.unversionedRecent, 1);
+  assert.equal(summary.unitsWithUnversionedLogs, 1);
+  assert.ok(versionWarning, "queda en Cloud Logging");
+  assert.deepEqual(versionWarning.data.unversionedIds, ["pestana-vieja"]);
+  assert.equal(state.status, "normal", "no cambia el estado de la unidad");
+  assert.ok(!report.audits.some(audit => audit.kind === "auditLogVersions"), "no entra a las auditorias que generan eventos");
+  assert.equal(events(db).length, 0, "sin eventos");
+  assert.equal(mail.sent.length, 0, "sin correos");
+});

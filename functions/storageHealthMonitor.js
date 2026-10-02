@@ -58,6 +58,7 @@ const { applyEntry, parseStoredJSON } = require("./lib/stateReader");
 const {
   FIRESTORE_DOCUMENT_LIMIT_BYTES,
   auditShardIntegrity,
+  checkAuditLogVersions,
   compareAuditLogFormats,
   compareReplacementFormats,
   estimateFirestoreDocumentBytes,
@@ -228,12 +229,21 @@ async function measureWorkspace(db, workspaceId, workspace, now) {
     audits.push({ kind: "auditLogShards", ...auditShardIntegrity(shards) });
   }
 
+  const legacyAuditLogs = auditLogEntry ? legacyList(auditLogEntry) : [];
+  const shardAuditLogs = shardLogsFrom(shards);
+
   if (String(workspace.auditLogStorage || "").startsWith("shards-") && auditLogEntry) {
     audits.push({
       kind: "auditLog",
-      ...compareAuditLogFormats(legacyList(auditLogEntry), shardLogsFrom(shards), now)
+      ...compareAuditLogFormats(legacyAuditLogs, shardAuditLogs, now)
     });
   }
+
+  // Version de escritura de la bitacora: aparte de `audits` a proposito, para
+  // que no genere eventos, correos ni cambie el estado de la unidad.
+  const auditLogVersions = auditLogEntry || shards.length
+    ? checkAuditLogVersions(legacyAuditLogs, shardAuditLogs, now)
+    : null;
 
   if (String(workspace.replacementStorage || "").startsWith("records-") && replacementsEntry) {
     const recordsSnap = await db
@@ -251,7 +261,7 @@ async function measureWorkspace(db, workspaceId, workspace, now) {
     });
   }
 
-  return { documents, audits, documentsRead, shardDocuments: shards.length };
+  return { documents, audits, auditLogVersions, documentsRead, shardDocuments: shards.length };
 }
 
 /**
@@ -636,6 +646,7 @@ async function runStorageHealthCheck({
   let shardDocuments = 0;
   let eventsCreated = 0;
   let unitsWithAuditIssues = 0;
+  let unitsWithUnversionedLogs = 0;
 
   for (const workspaceDoc of workspaces.docs) {
     const workspaceId = workspaceDoc.id;
@@ -705,8 +716,22 @@ async function runStorageHealthCheck({
         incomplete: false,
         documents,
         audits: measured.audits,
+        auditLogVersions: measured.auditLogVersions,
         metrics
       });
+
+      if (measured.auditLogVersions?.issues > 0) {
+        unitsWithUnversionedLogs++;
+        // Solo Cloud Logging y TurnoPlus-Admin: ni eventos ni correos.
+        log.warn("storage health: registros de bitacora sin version reciente", {
+          workspaceId,
+          workspaceName: name,
+          unversionedRecent: measured.auditLogVersions.unversionedRecent,
+          unversionedIds: measured.auditLogVersions.unversionedIds,
+          writerMismatch: measured.auditLogVersions.writerMismatch,
+          recentBuilds: measured.auditLogVersions.recentBuilds
+        });
+      }
 
       const raisedNow = transitions.some(item => item.direction === "raised");
       const recoveredNow = transitions.some(item => item.direction === "recovered");
@@ -755,7 +780,16 @@ async function runStorageHealthCheck({
           criticalDocuments: documents.filter(item => item.level === "critical").length,
           auditLog: auditOverview(measured.audits, "auditLog"),
           auditLogShards: auditOverview(measured.audits, "auditLogShards"),
-          replacements: auditOverview(measured.audits, "replacements")
+          replacements: auditOverview(measured.audits, "replacements"),
+          auditLogVersions: measured.auditLogVersions ? {
+            adopted: measured.auditLogVersions.adopted,
+            adoptedAtMillis: measured.auditLogVersions.adoptedAtMillis,
+            versioned: measured.auditLogVersions.versioned,
+            unversionedRecent: measured.auditLogVersions.unversionedRecent,
+            writerMismatch: measured.auditLogVersions.writerMismatch.length,
+            lastUnversionedAtMillis: measured.auditLogVersions.lastUnversionedAtMillis,
+            issues: measured.auditLogVersions.issues
+          } : null
         },
         tracked: Object.fromEntries(documents.map(item => [docKey(item), item.bytes])),
         lastAlertAtMillis: raisedNow ? now : previous.lastAlertAtMillis ?? null,
@@ -870,6 +904,7 @@ async function runStorageHealthCheck({
     incompleteIds,
     complete: incomplete.length === 0,
     unitsWithAuditIssues,
+    unitsWithUnversionedLogs,
     removedUnits: removedUnits.length,
     measuredDocuments,
     documentsRead,

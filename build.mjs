@@ -12,6 +12,7 @@ import * as esbuild from "esbuild";
 import { rmSync, mkdirSync, cpSync, readFileSync, writeFileSync, existsSync } from "fs";
 import path from "path";
 import { buildObfuscatedTree, PROTECTED_MODULES } from "./scripts/obfuscate-engine.mjs";
+import { currentBuildId } from "./scripts/build-id.mjs";
 
 const DIST = "dist";
 // Carpeta temporal con la copia de js/ que lleva los motores ofuscados. Vive
@@ -20,6 +21,9 @@ const OBF_DIR = path.join("node_modules", ".turnoplus-build");
 // Escotilla para depurar: "npm run build:legible" deja el bundle sin ofuscar.
 // No usarla para publicar.
 const OBFUSCATE = !process.argv.includes("--legible");
+// Identificador de este build: viaja en cada registro nuevo de la bitacora
+// (js/auditLogVersion.js). Se genera antes de empaquetar.
+const AUDIT_BUILD_ID = currentBuildId();
 
 // 1) Limpiar dist/
 rmSync(DIST, { recursive: true, force: true });
@@ -79,7 +83,8 @@ const result = await esbuild.build({
     target: ["es2020"],
     legalComments: "none",
     define: {
-        __SCHEDULE_WORKER_URL__: JSON.stringify(workerHref)
+        __SCHEDULE_WORKER_URL__: JSON.stringify(workerHref),
+        __TURNOPLUS_AUDIT_BUILD_ID__: JSON.stringify(AUDIT_BUILD_ID)
     },
     entryNames: "app-[hash]",
     outdir: path.join(DIST, "assets"),

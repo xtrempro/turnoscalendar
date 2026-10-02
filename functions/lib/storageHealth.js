@@ -348,7 +348,111 @@ function auditShardIntegrity(shards = []) {
   };
 }
 
+// Registros de la bitacora escritos sin version (js/auditLogVersion.js).
+// "Reciente" = dentro de esta ventana: un aviso que ya no se repite se
+// recupera solo.
+const UNVERSIONED_RECENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function validWriter(writer) {
+  return Boolean(writer) && typeof writer === "object" &&
+    Number.isInteger(writer.schemaVersion) && writer.schemaVersion >= 1 &&
+    typeof writer.buildId === "string" && writer.buildId.trim() !== "";
+}
+
+function createdMillis(log) {
+  const time = Date.parse(String(log?.createdAt || ""));
+
+  return Number.isFinite(time) ? time : null;
+}
+
+/**
+ * Version de escritura de la bitacora. Junta los registros de ambos formatos
+ * (por id) y reporta:
+ *  - adoptedAtMillis: el primer registro CON version de la unidad. Antes de
+ *    eso todo es historico y no cuenta (no hay falsas alertas por registros
+ *    anteriores al despliegue);
+ *  - unversionedRecent: registros SIN version creados despues de esa adopcion
+ *    y dentro de la ventana reciente: los escribio una pestana con un build
+ *    anterior;
+ *  - writerMismatch: un mismo id con metadatos distintos en el formato viejo y
+ *    en los fragmentos (deben ser identicos);
+ *  - recentBuilds: cuantos registros recientes escribio cada build.
+ * Solo tecnico: no genera eventos ni correos ni cambia el estado de la unidad.
+ *
+ * @param {Array|null} legacyLogs null si el formato viejo no se pudo leer
+ * @param {Array} shardLogs
+ */
+function checkAuditLogVersions(legacyLogs = [], shardLogs = [], now = Date.now()) {
+  const byId = new Map();
+  const writerMismatch = [];
+
+  (shardLogs || []).forEach(log => {
+    const id = String(log?.id || "").trim();
+
+    if (id) byId.set(id, { log, shard: log });
+  });
+  (Array.isArray(legacyLogs) ? legacyLogs : []).forEach(log => {
+    const id = String(log?.id || "").trim();
+
+    if (!id) return;
+
+    const current = byId.get(id);
+
+    if (current?.shard && JSON.stringify(current.shard.writer ?? null) !== JSON.stringify(log.writer ?? null)) {
+      writerMismatch.push(id);
+    }
+    if (!current) byId.set(id, { log });
+  });
+
+  let adoptedAtMillis = null;
+  let versioned = 0;
+
+  byId.forEach(({ log }) => {
+    if (!validWriter(log.writer)) return;
+
+    versioned++;
+
+    const time = createdMillis(log);
+
+    if (time !== null && (adoptedAtMillis === null || time < adoptedAtMillis)) adoptedAtMillis = time;
+  });
+
+  const recentFrom = now - UNVERSIONED_RECENT_WINDOW_MS;
+  const unversionedRecent = [];
+  const recentBuilds = {};
+
+  byId.forEach(({ log }, id) => {
+    const time = createdMillis(log);
+
+    if (time === null || time < recentFrom) return;
+    if (validWriter(log.writer)) {
+      recentBuilds[log.writer.buildId] = (recentBuilds[log.writer.buildId] || 0) + 1;
+      return;
+    }
+    if (adoptedAtMillis !== null && time >= adoptedAtMillis) unversionedRecent.push({ id, time });
+  });
+
+  unversionedRecent.sort((a, b) => b.time - a.time);
+
+  return {
+    adopted: adoptedAtMillis !== null,
+    adoptedAtMillis,
+    records: byId.size,
+    versioned,
+    unversionedRecent: unversionedRecent.length,
+    unversionedIds: unversionedRecent.slice(0, 20).map(item => item.id),
+    lastUnversionedAtMillis: unversionedRecent[0]?.time ?? null,
+    writerMismatch: writerMismatch.slice(0, 20),
+    recentBuilds: Object.fromEntries(
+      Object.entries(recentBuilds).sort((a, b) => b[1] - a[1]).slice(0, 10)
+    ),
+    issues: unversionedRecent.length + writerMismatch.length
+  };
+}
+
 module.exports = {
+  UNVERSIONED_RECENT_WINDOW_MS,
+  checkAuditLogVersions,
   auditShardIntegrity,
   encodeShardItemKey,
   legacyListReadable,

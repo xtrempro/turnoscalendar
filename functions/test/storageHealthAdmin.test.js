@@ -370,3 +370,37 @@ test("sin dato sigue siendo sin dato: null no se convierte en 0 (ni dias al 85% 
 
   assert.equal(history.measurements[0].metrics.shardDocuments, 0, "un 0 real se conserva");
 });
+
+test("version de escritura: el resumen y el historial la entregan saneada a Admin", async () => {
+  const encode = id => encodeURIComponent(id).replace(/\./g, "%2E");
+  const log = (id, createdAt, extra = {}) => ({ id, createdAt, action: "x", ...extra });
+  const v1 = log("v1", "2026-10-02T07:00:00Z", { writer: { schemaVersion: 1, buildId: "20261002T060000Z-abc1234" } });
+  const old = log("vieja", "2026-10-02T08:00:00Z");
+  const { db, handlers } = setup({
+    "workspaces/w1": { name: "Imagenologia" },
+    "workspaces/w1/stateModules/log/entries/auditLog": {
+      storageKey: "auditLog",
+      container: "array",
+      items: { [encode(v1.id)]: JSON.stringify(v1), [encode(old.id)]: JSON.stringify(old) },
+      deletedItems: {}
+    },
+    "workspaces/w1/auditLogShards/2026-10-02_0": { items: { [encode(v1.id)]: JSON.stringify(v1), [encode(old.id)]: JSON.stringify(old) } }
+  });
+
+  await runStorageHealthCheck({ db, now: DAY1, log: silentLog });
+
+  const overview = await handlers.overview({ auth: auth.admin, data: {} });
+  const unit = overview.units.find(item => item.workspaceId === "w1");
+
+  assert.equal(unit.auditLogVersions.unversionedRecent, 1);
+  assert.equal(unit.auditLogVersions.adopted, true);
+  assert.equal(unit.status, "normal");
+
+  const history = await handlers.history({ auth: auth.admin, data: { workspaceId: "w1" } });
+  const versions = history.measurements[0].auditLogVersions;
+
+  assert.deepEqual(versions.unversionedIds, ["vieja"]);
+  assert.deepEqual(versions.recentBuilds, { "20261002T060000Z-abc1234": 1 });
+  assert.deepEqual(versions.writerMismatch, []);
+  assert.equal(history.events.length, 0, "no genera eventos");
+});

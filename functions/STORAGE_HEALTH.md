@@ -50,6 +50,23 @@ En el proyecto test, `RESEND_API_KEY` tiene un valor provisorio, así que el env
 - Cada correo lleva hasta 50 eventos. Los que no caben salen en el correo siguiente.
 - El historial pagina los eventos por id de documento (`eventsCursor` = id del último recibido). El id es único, así que no salta ni repite eventos aunque muchos tengan el mismo milisegundo. Firestore solo recorre `__name__` en orden **ascendente**, por eso el id empieza con la fecha invertida (`99999999 − AAAAMMDD`, luego la fecha y un hash): el orden ascendente queda "más reciente primero". No necesita índice compuesto: la igualdad por `workspaceId` más el orden por `__name__` se resuelve con los índices de un solo campo (verificado en el emulador).
 
+## Versión de escritura de la bitácora
+
+Cada registro **nuevo** de `auditLog` lleva `writer: { schemaVersion, buildId }` (`js/auditLogVersion.js`):
+
+- `schemaVersion`: versión estable del formato del registro. Hoy vale `1` y solo sube cuando cambia la forma del registro.
+- `buildId`: lo genera `scripts/build-id.mjs` en cada build (`AAAAMMDDTHHMMSSZ-<sha>[-dirty]`) y esbuild lo inyecta. `build-engine.mjs` hace lo mismo con el prefijo `server-` para los registros que escribe el servidor (cobertura automática). Sin empaquetar vale `dev`.
+
+El registro es el mismo objeto en el formato viejo y en los fragmentos, porque el escritor de fragmentos copia el JSON persistido; por eso los metadatos son idénticos en ambos. Los registros históricos no se modifican.
+
+La revisión calcula `auditLogVersions` por unidad, fuera de `audits`, así que **no** genera eventos ni correos y no cambia el estado de la unidad:
+
+- **Adopción:** el primer registro con versión de la unidad. Todo lo anterior es histórico y no cuenta, así que no hay falsas alertas por registros previos al despliegue.
+- **Recientes sin versión:** registros sin `writer` creados después de la adopción y dentro de los últimos 7 días. Indican una pestaña abierta con un build anterior. Pasados los 7 días el aviso desaparece solo.
+- **Metadatos distintos entre formatos** para un mismo id.
+
+Se ve en TurnoPlus-Admin, como indicador en la tabla y en el detalle de la unidad, y en Cloud Logging (`storage health: registros de bitacora sin version reciente`). Nunca se muestra a owners ni supervisores.
+
 ## Costo
 
 Cada revisión lee todos los documentos de estado y todos los fragmentos de la bitácora. Los fragmentos aumentan con el tiempo: hay uno por día con actividad. Cada informe registra `documentsRead`, `shardDocuments` y `durationMs`, por unidad y en total.

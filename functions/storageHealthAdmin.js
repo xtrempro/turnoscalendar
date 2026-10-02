@@ -101,6 +101,27 @@ function sanitizeAuditOverview(value) {
   };
 }
 
+// Version de escritura de la bitacora (solo tecnico; ver checkAuditLogVersions).
+function sanitizeAuditLogVersions(value) {
+  if (!value || typeof value !== "object") return null;
+
+  return {
+    adopted: value.adopted === true,
+    adoptedAtMillis: num(value.adoptedAtMillis),
+    records: num(value.records),
+    versioned: num(value.versioned) ?? 0,
+    unversionedRecent: num(value.unversionedRecent) ?? 0,
+    unversionedIds: list(value.unversionedIds),
+    lastUnversionedAtMillis: num(value.lastUnversionedAtMillis),
+    writerMismatch: Array.isArray(value.writerMismatch) ? list(value.writerMismatch) : (num(value.writerMismatch) ?? 0),
+    recentBuilds: value.recentBuilds && typeof value.recentBuilds === "object"
+      ? Object.fromEntries(Object.entries(value.recentBuilds).slice(0, 10)
+        .map(([build, count]) => [text(build, 80), num(count) ?? 0]))
+      : {},
+    issues: num(value.issues) ?? 0
+  };
+}
+
 function sanitizeMetrics(metrics = {}) {
   return {
     durationMs: num(metrics.durationMs),
@@ -145,6 +166,7 @@ function sanitizeUnit(data = {}, account = null) {
     auditLog: sanitizeAuditOverview(overview.auditLog),
     auditLogShards: sanitizeAuditOverview(overview.auditLogShards),
     replacements: sanitizeAuditOverview(overview.replacements),
+    auditLogVersions: sanitizeAuditLogVersions(overview.auditLogVersions),
     alerts: {
       documents: (data.alerts?.documents || []).slice(0, 50).map(sanitizeDocument),
       audits: (data.alerts?.audits || []).slice(0, 10).map(audit => ({
@@ -175,6 +197,7 @@ function sanitizeSummary(data = {}) {
     incomplete: list(data.incomplete, 50),
     complete: data.complete !== false,
     unitsWithAuditIssues: num(data.unitsWithAuditIssues) ?? 0,
+    unitsWithUnversionedLogs: num(data.unitsWithUnversionedLogs) ?? 0,
     measuredDocuments: num(data.measuredDocuments),
     documentsRead: num(data.documentsRead),
     shardDocuments: num(data.shardDocuments),
@@ -206,6 +229,7 @@ function sanitizeMeasurement(data = {}) {
     documents: (data.documents || []).slice(0, MAX_DOCUMENTS_PER_MEASUREMENT).map(sanitizeDocument),
     documentsTotal: Array.isArray(data.documents) ? data.documents.length : 0,
     audits: (data.audits || []).slice(0, 10).map(sanitizeAudit),
+    auditLogVersions: sanitizeAuditLogVersions(data.auditLogVersions),
     metrics: sanitizeMetrics(data.metrics)
   };
 }

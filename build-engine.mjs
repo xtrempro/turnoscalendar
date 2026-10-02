@@ -8,8 +8,16 @@
 
 import * as esbuild from "esbuild";
 import { mkdirSync } from "fs";
+import { currentBuildId } from "./scripts/build-id.mjs";
 
 mkdirSync("functions/engine", { recursive: true });
+
+// Los registros de bitacora que escribe el servidor (p. ej. la cobertura
+// automatica) tambien llevan version de escritura (js/auditLogVersion.js); el
+// prefijo distingue el motor del servidor del bundle del navegador.
+const define = {
+    __TURNOPLUS_AUDIT_BUILD_ID__: JSON.stringify(`server-${currentBuildId()}`)
+};
 
 await esbuild.build({
     entryPoints: ["js/serverEngine.js"],
@@ -19,6 +27,7 @@ await esbuild.build({
     target: ["node22"],
     charset: "utf8",
     legalComments: "none",
+    define,
     outfile: "functions/engine/engine.mjs",
     logLevel: "info"
 });
@@ -39,6 +48,7 @@ await esbuild.build({
     target: ["node22"],
     charset: "utf8",
     legalComments: "none",
+    define,
     outfile: "functions/engine/autoCoverage.mjs",
     logLevel: "info"
 });
@@ -57,6 +67,7 @@ await esbuild.build({
     target: ["node22"],
     charset: "utf8",
     legalComments: "none",
+    define,
     outfile: "functions/engine/scheduleGridFromSheet.cjs",
     logLevel: "info"
 });

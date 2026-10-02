@@ -1,5 +1,6 @@
 import { keyFromDate } from "./dateUtils.js";
 import { escapeHTML } from "./htmlUtils.js";
+import { auditLogWriterMeta } from "./auditLogVersion.js";
 import { getJSON, getRaw, setJSON } from "./persistence.js";
 import {
     asRecordList,
@@ -1744,7 +1745,10 @@ export function addAuditLog(category, action, details = "", meta = {}) {
             actorName: entryMeta.actorName || actor.name,
             actorEmail: entryMeta.actorEmail || actor.email,
             actorUid: entryMeta.actorUid || actor.uid
-        }
+        },
+        // Version de escritura (esquema + build). Viaja igual al formato viejo
+        // y a los fragmentos porque es el mismo objeto.
+        writer: auditLogWriterMeta()
     };
 
     const leaveType = getLeaveUndoType(entry);
