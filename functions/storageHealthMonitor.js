@@ -6,22 +6,31 @@
 //
 // Cada dia, en todas las unidades:
 //  - mide cada documento de estado (stateModules/*/entries) y los fragmentos de
-//    la bitacora, y guarda el informe en storageHealthReports/{fecha} (solo el
-//    servidor lo lee: las reglas cierran todo lo que no nombran);
-//  - calcula el crecimiento contra el informe anterior y los dias que faltan al
-//    85 % a ese ritmo;
+//    la bitacora;
+//  - calcula el crecimiento contra la medicion anterior de ESA unidad y los dias
+//    que faltan al 85 % a ese ritmo;
 //  - compara el formato viejo y el nuevo de la bitacora y de los reemplazos en
-//    las unidades que los tienen en convivencia;
-//  - AVISA solo cuando un documento SUBE de nivel (70 % / 85 %) o cuando una
-//    comparacion que estaba limpia encuentra diferencias. El ultimo estado va
-//    en storageHealthState/current para no repetir el mismo aviso cada dia.
+//    las unidades que los tienen en convivencia (si el viejo no se puede
+//    reconstruir, eso es una incidencia, no "sin diferencias").
 //
-// Solo LEE las unidades: escribe unicamente sus propios documentos en la raiz.
-// Por eso no hay que excluir UCI ni UTI (ver el plan: no se escribe en ellas).
+// Donde queda (todo FRAGMENTADO por unidad, ningun documento global que crezca
+// con las unidades):
+//  - storageHealthUnits/{unidad}: sus avisos VIGENTES (los lee el dueno para el
+//    banner de la app), lo ultimo medido de sus documentos grandes (para el
+//    crecimiento) y lo que ya se aviso por correo;
+//  - storageHealthReports/{fecha}/units/{unidad}: el detalle del dia;
+//  - storageHealthReports/{fecha}: un resumen chico (unidades, incompletas,
+//    cambios, entrega del correo).
+//
+// El correo avisa CAMBIOS: un documento que sube a 70 % u 85 %, uno que se
+// recupera, una comparacion que encuentra diferencias o que vuelve a quedar
+// limpia, y las unidades que no se pudieron medir. Lo avisado solo se da por
+// avisado si el correo SALIO: si falla (o falta destinatario o clave), al dia
+// siguiente se vuelve a intentar.
+//
+// Solo LEE las unidades: escribe unicamente sus documentos en la raiz (nada
+// dentro de UCI ni UTI). La funcion programada se declara en index.js.
 
-// La funcion programada (checkStorageHealth) se declara en index.js, junto a las
-// demas: asi reutiliza la clave de Resend y el remitente que ya estan definidos
-// alli. Este modulo solo trae la logica.
 const logger = require("firebase-functions/logger");
 const { applyEntry, parseStoredJSON } = require("./lib/stateReader");
 const {
@@ -31,13 +40,15 @@ const {
   estimateFirestoreDocumentBytes,
   growthBetween,
   healthLevel,
-  levelIncreases,
+  legacyListReadable,
+  levelChanges,
   percentOf
 } = require("./lib/storageHealth");
 
-// Documentos que se guardan en el informe aunque esten sanos: los grandes, para
-// poder medir su crecimiento dia a dia.
+// Documentos que se guardan aunque esten sanos: los grandes, para poder medir
+// su crecimiento dia a dia.
 const TRACK_MIN_BYTES = 100 * 1024;
+const MAX_TRACKED_PER_UNIT = 60;
 
 function chileDate(now) {
   return new Intl.DateTimeFormat("en-CA", {
@@ -48,20 +59,27 @@ function chileDate(now) {
   }).format(new Date(now));
 }
 
-function stateKey(path) {
-  return encodeURIComponent(path);
+function docKey(item) {
+  return encodeURIComponent(`${item.moduleId}/${item.storageKey}`);
 }
 
+/**
+ * La lista del formato viejo, o null si NO se pudo reconstruir.
+ */
 function legacyList(entryData) {
-  if (!entryData?.storageKey) return [];
+  if (!entryData?.storageKey || !legacyListReadable(entryData)) return null;
 
   const state = {};
 
   applyEntry(state, entryData);
 
-  const list = parseStoredJSON(state[entryData.storageKey], []);
+  const raw = state[entryData.storageKey];
 
-  return Array.isArray(list) ? list : [];
+  if (raw === undefined || raw === null) return [];
+
+  const list = parseStoredJSON(raw, null);
+
+  return Array.isArray(list) ? list : null;
 }
 
 function shardLogsFrom(shardDocs) {
@@ -82,10 +100,7 @@ function shardLogsFrom(shardDocs) {
   return logs;
 }
 
-async function measureWorkspace(db, workspaceDoc, now) {
-  const workspaceId = workspaceDoc.id;
-  const workspace = workspaceDoc.data() || {};
-  const name = String(workspace.name || workspaceId);
+async function measureWorkspace(db, workspaceId, workspace, now) {
   const documents = [];
   const audits = [];
   let auditLogEntry = null;
@@ -100,16 +115,11 @@ async function measureWorkspace(db, workspaceDoc, now) {
 
     entries.forEach(entryDoc => {
       const data = entryDoc.data() || {};
-      const path = entryDoc.ref.path;
-      const bytes = estimateFirestoreDocumentBytes(data, path);
 
       documents.push({
-        path,
-        workspaceId,
-        workspaceName: name,
         moduleId: moduleRef.id,
-        storageKey: String(data.storageKey || ""),
-        bytes
+        storageKey: String(data.storageKey || entryDoc.id),
+        bytes: estimateFirestoreDocumentBytes(data, entryDoc.ref.path)
       });
 
       if (moduleRef.id === "log" && data.storageKey === "auditLog") auditLogEntry = data;
@@ -117,7 +127,6 @@ async function measureWorkspace(db, workspaceDoc, now) {
     });
   }
 
-  const shardsEnabled = String(workspace.auditLogStorage || "").startsWith("shards-");
   const shardSnap = await db.collection(`workspaces/${workspaceId}/auditLogShards`).get();
   const shardDocs = [];
 
@@ -126,19 +135,14 @@ async function measureWorkspace(db, workspaceDoc, now) {
 
     shardDocs.push(data);
     documents.push({
-      path: shardDoc.ref.path,
-      workspaceId,
-      workspaceName: name,
       moduleId: "auditLogShards",
       storageKey: shardDoc.id,
       bytes: estimateFirestoreDocumentBytes(data, shardDoc.ref.path)
     });
   });
 
-  if (shardsEnabled && auditLogEntry) {
+  if (String(workspace.auditLogStorage || "").startsWith("shards-") && auditLogEntry) {
     audits.push({
-      workspaceId,
-      workspaceName: name,
       kind: "auditLog",
       ...compareAuditLogFormats(legacyList(auditLogEntry), shardLogsFrom(shardDocs), now)
     });
@@ -150,8 +154,6 @@ async function measureWorkspace(db, workspaceDoc, now) {
       .get();
 
     audits.push({
-      workspaceId,
-      workspaceName: name,
       kind: "replacements",
       ...compareReplacementFormats(
         legacyList(replacementsEntry),
@@ -165,158 +167,223 @@ async function measureWorkspace(db, workspaceDoc, now) {
 }
 
 /**
+ * Lo que cambio en una unidad respecto de lo ya avisado por correo.
+ */
+function unitChanges(name, documents, audits, emailed = {}) {
+  const currentLevels = Object.fromEntries(
+    documents
+      .filter(item => item.level !== "healthy")
+      .map(item => [docKey(item), item.level])
+  );
+  const { raised, recovered } = levelChanges(emailed.levels || {}, currentLevels);
+  const byKey = new Map(documents.map(item => [docKey(item), item]));
+  const label = key => decodeURIComponent(key);
+  const lines = [];
+
+  raised.forEach(({ key, to }) => {
+    const item = byKey.get(key);
+
+    lines.push(
+      `${to === "critical" ? "CRITICO" : "En observacion"} ${item?.percent ?? "?"}%: ${name} ${label(key)}` +
+      (Number.isFinite(item?.daysToCritical) ? ` (al ritmo actual, ${item.daysToCritical} dias al 85%)` : "")
+    );
+  });
+  recovered.forEach(({ key, from, to }) => {
+    const item = byKey.get(key);
+
+    lines.push(
+      `Recuperado: ${name} ${label(key)} bajo de ${from === "critical" ? "85%" : "70%"}` +
+      (to === "healthy" ? "" : " (sigue sobre 70%)") +
+      (item ? ` (${item.percent}%)` : "")
+    );
+  });
+
+  const currentAudits = Object.fromEntries(audits.map(audit => [audit.kind, audit.issues > 0]));
+
+  audits.forEach(audit => {
+    if (audit.issues > 0 && !emailed.audits?.[audit.kind]) {
+      lines.push(
+        audit.unreadable
+          ? `No se pudo reconstruir el formato viejo de ${audit.kind}: ${name}`
+          : `Diferencias entre formatos: ${name} ${audit.kind}: ${audit.issues} (viejo ${audit.legacy}, nuevo ${audit.archive})`
+      );
+    }
+  });
+  Object.entries(emailed.audits || {}).forEach(([kind, hadIssues]) => {
+    if (hadIssues && currentAudits[kind] === false) {
+      lines.push(`Comparacion limpia otra vez: ${name} ${kind}`);
+    }
+  });
+
+  return {
+    lines,
+    nextEmailed: { levels: currentLevels, audits: currentAudits }
+  };
+}
+
+/**
  * Corre la revision completa. Separado de la funcion programada para poder
  * probarlo con un Firestore de mentira.
  *
- * @returns {Promise<Object>} el informe guardado
+ * @returns {Promise<Object>} el resumen del dia
  */
 async function runStorageHealthCheck({ db, now = Date.now(), sendAlert = null, log = logger }) {
   const date = chileDate(now);
-  const previousSnap = await db
-    .collection("storageHealthReports")
-    .where("date", "<", date)
-    .orderBy("date", "desc")
-    .limit(1)
-    .get();
-  const previous = previousSnap.empty ? null : previousSnap.docs[0].data();
-  const previousBytes = new Map(
-    (previous?.documents || []).map(item => [item.path, item.bytes])
-  );
-  const elapsedMs = previous ? now - Number(previous.generatedAtMillis || 0) : NaN;
-
   const workspaces = await db.collection("workspaces").get();
-  const allDocuments = [];
-  const audits = [];
+  const pendingStates = [];
+  const incomplete = [];
+  const lines = [];
+  let measuredDocuments = 0;
+  const top = [];
 
   for (const workspaceDoc of workspaces.docs) {
-    try {
-      const measured = await measureWorkspace(db, workspaceDoc, now);
+    const workspaceId = workspaceDoc.id;
+    const workspace = workspaceDoc.data() || {};
+    const name = String(workspace.name || workspaceId);
+    const stateRef = db.doc(`storageHealthUnits/${workspaceId}`);
+    let previous = {};
 
-      allDocuments.push(...measured.documents);
-      audits.push(...measured.audits);
+    try {
+      const previousSnap = await stateRef.get();
+
+      previous = previousSnap.exists ? previousSnap.data() || {} : {};
+
+      const measured = await measureWorkspace(db, workspaceId, workspace, now);
+      const elapsedMs = now - Number(previous.measuredAtMillis || NaN);
+
+      measuredDocuments += measured.documents.length;
+
+      const documents = measured.documents
+        .map(item => ({
+          ...item,
+          percent: percentOf(item.bytes),
+          level: healthLevel(item.bytes),
+          ...growthBetween({
+            bytes: item.bytes,
+            previousBytes: previous.tracked?.[docKey(item)],
+            elapsedMs
+          })
+        }))
+        .filter(item => item.level !== "healthy" || item.bytes >= TRACK_MIN_BYTES)
+        .sort((a, b) => b.bytes - a.bytes)
+        .slice(0, MAX_TRACKED_PER_UNIT);
+      const changes = unitChanges(name, documents, measured.audits, previous.emailed);
+
+      lines.push(...changes.lines);
+      documents.slice(0, 3).forEach(item => top.push({ workspaceName: name, ...item }));
+
+      await db.doc(`storageHealthReports/${date}/units/${workspaceId}`).set({
+        date,
+        workspaceId,
+        workspaceName: name,
+        documents,
+        audits: measured.audits
+      });
+
+      pendingStates.push({
+        stateRef,
+        previous,
+        changed: changes.lines.length > 0,
+        state: {
+          workspaceId,
+          workspaceName: name,
+          reportDate: date,
+          measuredAtMillis: now,
+          // Lo vigente, para el banner del dueno.
+          alerts: {
+            documents: documents
+              .filter(item => item.level !== "healthy")
+              .map(({ moduleId, storageKey, percent, level, daysToCritical }) =>
+                ({ moduleId, storageKey, percent, level, daysToCritical: daysToCritical ?? null })),
+            audits: measured.audits
+              .filter(audit => audit.issues > 0)
+              .map(({ kind, issues, unreadable }) => ({ kind, issues, unreadable: Boolean(unreadable) }))
+          },
+          tracked: Object.fromEntries(documents.map(item => [docKey(item), item.bytes])),
+          nextEmailed: changes.nextEmailed
+        }
+      });
     } catch (error) {
+      // Su estado anterior queda como estaba: no se pierden sus avisos.
+      incomplete.push(name);
+      lines.push(`No se pudo medir la unidad ${name}: ${error?.message || error}`);
       log.error("storage health: no se pudo medir la unidad", {
-        workspaceId: workspaceDoc.id,
+        workspaceId,
         error: error?.message || String(error)
       });
     }
   }
 
-  const documents = allDocuments
-    .map(item => ({
-      ...item,
-      percent: percentOf(item.bytes),
-      level: healthLevel(item.bytes),
-      ...growthBetween({
-        bytes: item.bytes,
-        previousBytes: previousBytes.get(item.path),
-        elapsedMs
-      })
-    }))
-    .filter(item => item.level !== "healthy" || item.bytes >= TRACK_MIN_BYTES)
-    .sort((a, b) => b.bytes - a.bytes)
-    .slice(0, 400);
+  let delivery = "none";
 
-  const stateRef = db.doc("storageHealthState/current");
-  const stateSnap = await stateRef.get();
-  const state = stateSnap.exists ? stateSnap.data() || {} : {};
-  const currentLevels = Object.fromEntries(
-    documents
-      .filter(item => item.level !== "healthy")
-      .map(item => [stateKey(item.path), item.level])
-  );
-  const raised = levelIncreases(state.levels || {}, currentLevels).map(change => ({
-    ...change,
-    document: documents.find(item => stateKey(item.path) === change.key)
-  }));
-  const currentAuditIssues = Object.fromEntries(
-    audits.map(audit => [`${audit.workspaceId}:${audit.kind}`, audit.issues])
-  );
-  const newAuditIssues = audits.filter(audit =>
-    audit.issues > 0 &&
-    !(Number(state.auditIssues?.[`${audit.workspaceId}:${audit.kind}`]) > 0)
-  );
-
-  let alertDelivery = "none";
-
-  if (raised.length || newAuditIssues.length) {
-    const lines = [
-      ...raised.map(({ document, to }) =>
-        `${to === "critical" ? "CRITICO" : "Observacion"} ${document.percent}%: ` +
-        `${document.workspaceName} ${document.moduleId}/${document.storageKey}` +
-        (document.daysToCritical !== null && document.daysToCritical !== undefined
-          ? ` (al ritmo actual, ${document.daysToCritical} dias al 85%)`
-          : "")
-      ),
-      ...newAuditIssues.map(audit =>
-        `Diferencias entre formatos: ${audit.workspaceName} ${audit.kind}: ${audit.issues} ` +
-        `(viejo ${audit.legacy}, nuevo ${audit.archive})`
-      )
-    ];
-
+  if (lines.length) {
     log.warn("storage health: avisos", { lines });
-    alertDelivery = sendAlert
+    delivery = sendAlert
       ? await sendAlert({
-        subject: `TurnoPlus: almacenamiento (${raised.length + newAuditIssues.length} aviso(s))`,
+        subject: `TurnoPlus: almacenamiento (${lines.length} aviso(s))`,
         text: [
           "Revision diaria del almacenamiento de Firestore.",
           "",
           ...lines,
           "",
-          `Informe: storageHealthReports/${date}`
+          `Detalle: storageHealthReports/${date}`
         ].join("\n")
       }).catch(error => `error: ${error?.message || error}`)
       : "skipped_no_sender";
   }
 
-  const report = {
+  const delivered = delivery === "sent";
+
+  for (const pending of pendingStates) {
+    const { nextEmailed, ...state } = pending.state;
+
+    await pending.stateRef.set({
+      ...state,
+      // Solo se da por avisado lo que el correo llevo. Si no salio, queda lo
+      // anterior y manana se vuelve a intentar.
+      emailed: delivered || !pending.changed
+        ? nextEmailed
+        : (pending.previous.emailed || { levels: {}, audits: {} })
+    });
+  }
+
+  const summary = {
     date,
     generatedAt: new Date(now).toISOString(),
     generatedAtMillis: now,
     limitBytes: FIRESTORE_DOCUMENT_LIMIT_BYTES,
-    measuredDocuments: allDocuments.length,
-    documents,
-    audits,
-    alerts: {
-      raised: raised.map(({ document, from, to }) => ({
-        path: document.path,
-        workspaceName: document.workspaceName,
-        storageKey: document.storageKey,
-        from,
-        to,
-        percent: document.percent
-      })),
-      auditIssues: newAuditIssues.map(audit => ({
-        workspaceName: audit.workspaceName,
-        kind: audit.kind,
-        issues: audit.issues
-      })),
-      delivery: alertDelivery
-    }
+    units: workspaces.docs.length,
+    measuredDocuments,
+    incomplete,
+    complete: incomplete.length === 0,
+    changes: lines.length,
+    delivery,
+    top: top
+      .sort((a, b) => b.bytes - a.bytes)
+      .slice(0, 10)
+      .map(({ workspaceName, moduleId, storageKey, percent, level }) =>
+        ({ workspaceName, moduleId, storageKey, percent, level }))
   };
 
-  await db.doc(`storageHealthReports/${date}`).set(report);
-  await stateRef.set({
-    levels: currentLevels,
-    auditIssues: currentAuditIssues,
-    updatedAt: new Date(now).toISOString()
-  });
+  await db.doc(`storageHealthReports/${date}`).set(summary);
 
   log.info("storage health: informe", {
     date,
-    measuredDocuments: allDocuments.length,
-    tracked: documents.length,
-    top: documents.slice(0, 5).map(item => `${item.workspaceName} ${item.storageKey} ${item.percent}%`),
-    audits: audits.map(audit => `${audit.workspaceName} ${audit.kind}: ${audit.issues}`),
-    alertDelivery
+    units: summary.units,
+    measuredDocuments,
+    incomplete,
+    changes: lines.length,
+    delivery,
+    top: summary.top.map(item => `${item.workspaceName} ${item.storageKey} ${item.percent}%`)
   });
 
-  return report;
+  return { ...summary, lines };
 }
 
 /**
  * El aviso por correo (Resend). Devuelve el estado de la entrega, que queda en
- * el informe: sin destinatario o sin clave no se manda nada.
+ * el resumen: sin destinatario o sin clave no se manda nada (y lo avisado no
+ * se da por avisado).
  */
 function createStorageAlertSender({ to, apiKey, from, fetchImpl = fetch }) {
   return async ({ subject, text }) => {

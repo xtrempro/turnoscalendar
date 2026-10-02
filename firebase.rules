@@ -576,6 +576,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Vigilancia diaria del almacenamiento (checkStorageHealth): un documento por
+    // unidad con sus avisos vigentes. Solo lo escribe la Cloud Function; lo lee
+    // el dueno de la unidad para mostrar el aviso en la app. Va en la raiz y no
+    // dentro de la unidad para no escribir en el arbol de UCI ni UTI.
+    match /storageHealthUnits/{workspaceId} {
+      allow read: if isOwner(workspaceId);
+      allow write: if false;
+    }
+
     // Alertas de recordatorio del trabajador (para el push programado). El
     // trabajador escribe sus recordatorios con alerta; el campo "sent" (control
     // de envios) lo escribe la Cloud Function con Admin SDK.

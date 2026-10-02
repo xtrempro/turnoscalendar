@@ -48,6 +48,10 @@ let banner = null;
 let bloqueado = "";
 let storageHealthMessage = "";
 let storageHealthLevel = "";
+// El aviso que deja la revision diaria del servidor (storageHealthNotice.js).
+// Va aparte del local: la alerta local se apaga sola cuando los documentos que
+// ve esta sesion estan sanos, y eso no puede tapar lo que midio el servidor.
+let serverStorageMessage = "";
 let lockReason = "";
 let lockNode = null;
 let lockTitle = null;
@@ -214,6 +218,13 @@ function render() {
         return;
     }
 
+    if (serverStorageMessage) {
+        node.textContent = serverStorageMessage;
+        node.className = "sync-blocked-banner is-storage-warning";
+        node.hidden = false;
+        return;
+    }
+
     node.hidden = true;
 }
 
@@ -254,6 +265,12 @@ export function handleSyncStatus(detail) {
         servidorSinRespuesta = false;
         navegadorSinRed = false;
         vigilarCaida();
+        render();
+        return;
+    }
+
+    if (tipo === "server-storage-health") {
+        serverStorageMessage = String(detail.message || "");
         render();
         return;
     }

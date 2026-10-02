@@ -112,15 +112,29 @@ function growthBetween({ bytes, previousBytes, elapsedMs }) {
 }
 
 /**
- * Que niveles SUBIERON desde el informe anterior. Solo eso se avisa: un mismo
- * documento en "warning" dos dias seguidos no vuelve a avisar.
+ * Que niveles cambiaron respecto de lo ya AVISADO: los que subieron (70 % ->
+ * 85 %) y los que se recuperaron (bajaron, o volvieron a sano). Un documento en
+ * el mismo nivel dos dias seguidos no vuelve a avisar.
  */
+function levelChanges(previousLevels = {}, currentLevels = {}) {
+  const keys = new Set([...Object.keys(previousLevels), ...Object.keys(currentLevels)]);
+  const raised = [];
+  const recovered = [];
+
+  keys.forEach(key => {
+    const from = previousLevels[key] || "healthy";
+    const to = currentLevels[key] || "healthy";
+    const delta = (LEVEL_RANK[to] || 0) - (LEVEL_RANK[from] || 0);
+
+    if (delta > 0) raised.push({ key, from, to });
+    if (delta < 0) recovered.push({ key, from, to });
+  });
+
+  return { raised, recovered };
+}
+
 function levelIncreases(previousLevels = {}, currentLevels = {}) {
-  return Object.entries(currentLevels)
-    .filter(([key, level]) =>
-      (LEVEL_RANK[level] || 0) > (LEVEL_RANK[previousLevels[key]] || 0)
-    )
-    .map(([key, level]) => ({ key, from: previousLevels[key] || "healthy", to: level }));
+  return levelChanges(previousLevels, currentLevels).raised;
 }
 
 function canonical(value) {
@@ -151,6 +165,12 @@ function isRecent(isoValue, now) {
  * @param {Array} shardLogs registros de todos los fragmentos
  */
 function compareAuditLogFormats(legacyLogs = [], shardLogs = [], now = Date.now()) {
+  // null = el formato viejo no se pudo reconstruir. No puede pasar por "sin
+  // diferencias": una lista vacia por error se veria limpia.
+  if (legacyLogs === null) {
+    return { legacy: null, archive: (shardLogs || []).length, unreadable: true, missingOrDifferent: [], issues: 1 };
+  }
+
   const archived = new Map(
     (shardLogs || [])
       .filter(log => String(log?.id || "").trim())
@@ -182,6 +202,10 @@ function compareAuditLogFormats(legacyLogs = [], shardLogs = [], now = Date.now(
  * @param {Array} recordDocs datos de replacementRecords/{id}
  */
 function compareReplacementFormats(legacyRecords = [], recordDocs = [], now = Date.now()) {
+  if (legacyRecords === null) {
+    return { legacy: null, archive: (recordDocs || []).length, unreadable: true, missing: [], different: [], extra: [], withoutDate: 0, issues: 1 };
+  }
+
   const legacy = new Map(
     (legacyRecords || [])
       .filter(record => String(record?.id ?? "").trim())
@@ -222,7 +246,40 @@ function compareReplacementFormats(legacyRecords = [], recordDocs = [], now = Da
   };
 }
 
+/**
+ * Si un documento de lista del formato viejo se puede leer ENTERO: `value` (si
+ * esta) tiene que ser una lista JSON y cada item un objeto JSON (o la lapida
+ * "null" de un borrado). Si algo no se entiende, el que compara tiene que saber
+ * que no pudo leer, no recibir una lista vacia.
+ */
+function legacyListReadable(entry = {}) {
+  if (!entry || typeof entry !== "object") return false;
+
+  if (Object.prototype.hasOwnProperty.call(entry, "value") && entry.value !== null) {
+    try {
+      if (!Array.isArray(typeof entry.value === "string" ? JSON.parse(entry.value) : entry.value)) return false;
+    } catch {
+      return false;
+    }
+  }
+
+  const deleted = entry.deletedItems || {};
+
+  return Object.entries(entry.items || {}).every(([key, raw]) => {
+    if (deleted[key] === true) return true;
+
+    try {
+      const item = typeof raw === "string" ? JSON.parse(raw) : raw;
+
+      return Boolean(item) && typeof item === "object" && !Array.isArray(item);
+    } catch {
+      return false;
+    }
+  });
+}
+
 module.exports = {
+  legacyListReadable,
   FIRESTORE_DOCUMENT_LIMIT_BYTES,
   WARNING_RATIO,
   CRITICAL_RATIO,
@@ -232,6 +289,7 @@ module.exports = {
   healthLevel,
   percentOf,
   growthBetween,
+  levelChanges,
   levelIncreases,
   compareAuditLogFormats,
   compareReplacementFormats

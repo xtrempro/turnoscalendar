@@ -198,66 +198,167 @@ function bigAuditLog(bytes) {
   };
 }
 
+const DAY = 24 * 60 * 60 * 1000;
+const DAY1 = Date.parse("2026-10-02T08:30:00Z");
+const AUDIT_PATH = "workspaces/w1/stateModules/log/entries/auditLog";
+
+function recorder(result = "sent") {
+  const sent = [];
+
+  return {
+    sent,
+    sendAlert: async message => {
+      sent.push(message);
+      return typeof result === "function" ? result(sent.length) : result;
+    }
+  };
+}
+
 test("recorrido diario: avisa al cruzar el 85 % una sola vez y mide el crecimiento", async () => {
   const db = fakeDb({
     "workspaces/w1": { name: "Imagenologia" },
-    "workspaces/w1/stateModules/log/entries/auditLog": bigAuditLog(Math.round(MiB * 0.86))
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
   });
-  const sent = [];
-  const sendAlert = async message => {
-    sent.push(message);
-    return "sent";
-  };
-  const day1 = Date.parse("2026-10-02T08:30:00Z");
+  const mail = recorder("sent");
 
-  const first = await runStorageHealthCheck({ db, now: day1, sendAlert, log: silentLog });
+  const first = await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
 
-  assert.equal(first.alerts.raised.length, 1);
-  assert.equal(first.alerts.raised[0].to, "critical");
-  assert.equal(first.alerts.delivery, "sent");
-  assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /CRITICO .*Imagenologia log\/auditLog/);
+  assert.equal(first.delivery, "sent");
+  assert.equal(mail.sent.length, 1);
+  assert.match(mail.sent[0].text, /CRITICO .*Imagenologia log\/auditLog/);
 
-  // Al dia siguiente crecio un poco: sigue critico, NO se repite el aviso.
-  db.docs.set(
-    "workspaces/w1/stateModules/log/entries/auditLog",
-    bigAuditLog(Math.round(MiB * 0.86) + 5000)
-  );
-  const second = await runStorageHealthCheck({
-    db,
-    now: day1 + 24 * 60 * 60 * 1000,
-    sendAlert,
-    log: silentLog
-  });
+  db.docs.set(AUDIT_PATH, bigAuditLog(Math.round(MiB * 0.86) + 5000));
+  const second = await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
 
-  assert.equal(second.alerts.raised.length, 0);
-  assert.equal(sent.length, 1);
-  assert.equal(second.documents[0].bytesPerDay, 5000);
-  assert.ok(db.docs.has("storageHealthReports/2026-10-03"));
+  assert.equal(second.changes, 0, "mismo nivel: no se repite");
+  assert.equal(mail.sent.length, 1);
+
+  const unitReport = db.docs.get("storageHealthReports/2026-10-03/units/w1");
+
+  assert.equal(unitReport.documents[0].bytesPerDay, 5000);
 });
 
-test("recorrido diario: avisa si la comparacion de formatos encuentra diferencias", async () => {
+test("si el correo NO sale, el aviso no se consume: se reintenta al dia siguiente", async () => {
+  const db = fakeDb({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  const failing = recorder("skipped_no_api_key");
+
+  const first = await runStorageHealthCheck({ db, now: DAY1, sendAlert: failing.sendAlert, log: silentLog });
+
+  assert.equal(first.delivery, "skipped_no_api_key");
+  assert.deepEqual(db.docs.get("storageHealthUnits/w1").emailed, { levels: {}, audits: {} });
+  // Lo vigente si queda para el banner del dueno.
+  assert.equal(db.docs.get("storageHealthUnits/w1").alerts.documents[0].level, "critical");
+
+  const working = recorder("sent");
+  const second = await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: working.sendAlert, log: silentLog });
+
+  assert.equal(second.delivery, "sent");
+  assert.match(working.sent[0].text, /CRITICO/);
+});
+
+test("avisa la recuperacion cuando un documento baja del umbral", async () => {
+  const db = fakeDb({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  const mail = recorder("sent");
+
+  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+  db.docs.set(AUDIT_PATH, bigAuditLog(Math.round(MiB * 0.5)));
+  await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
+
+  assert.equal(mail.sent.length, 2);
+  assert.match(mail.sent[1].text, /Recuperado: Imagenologia log\/auditLog bajo de 85%/);
+  assert.deepEqual(db.docs.get("storageHealthUnits/w1").alerts.documents, []);
+});
+
+test("diferencias entre formatos: avisa, y avisa cuando vuelve a quedar limpio", async () => {
+  const legacy = {
+    storageKey: "auditLog",
+    container: "array",
+    items: { a: JSON.stringify({ id: "a", createdAt: "2026-09-01T10:00:00Z" }) },
+    deletedItems: { a: false }
+  };
   const db = fakeDb({
     "workspaces/w1": { name: "Imagenologia", auditLogStorage: "shards-read-v1" },
-    "workspaces/w1/stateModules/log/entries/auditLog": {
-      storageKey: "auditLog",
-      container: "array",
-      items: { a: JSON.stringify({ id: "a", createdAt: "2026-09-01T10:00:00Z" }) },
-      deletedItems: { a: false }
-    },
+    [AUDIT_PATH]: legacy,
     "workspaces/w1/auditLogShards/2026-09-01_0": { items: {} }
   });
-  const sent = [];
-  const report = await runStorageHealthCheck({
-    db,
-    now: Date.parse("2026-10-02T08:30:00Z"),
-    sendAlert: async message => { sent.push(message); return "sent"; },
-    log: silentLog
+  const mail = recorder("sent");
+
+  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+
+  assert.match(mail.sent[0].text, /Diferencias entre formatos: Imagenologia auditLog: 1/);
+  assert.equal(db.docs.get("storageHealthUnits/w1").alerts.audits[0].issues, 1);
+
+  db.docs.set("workspaces/w1/auditLogShards/2026-09-01_0", { items: { a: legacy.items.a } });
+  await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
+
+  assert.match(mail.sent[1].text, /Comparacion limpia otra vez: Imagenologia auditLog/);
+});
+
+test("una bitacora vieja que no se puede reconstruir NO pasa por limpia", async () => {
+  const db = fakeDb({
+    "workspaces/w1": { name: "Imagenologia", auditLogStorage: "shards-read-v1" },
+    [AUDIT_PATH]: { storageKey: "auditLog", container: "array", value: "{roto", items: {} },
+    "workspaces/w1/auditLogShards/2026-09-01_0": { items: {} }
+  });
+  const mail = recorder("sent");
+
+  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+
+  const audit = db.docs.get("storageHealthReports/2026-10-02/units/w1").audits[0];
+
+  assert.equal(audit.unreadable, true);
+  assert.equal(audit.issues, 1);
+  assert.match(mail.sent[0].text, /No se pudo reconstruir el formato viejo de auditLog/);
+});
+
+test("una unidad que no se pudo medir conserva su estado y se avisa", async () => {
+  const db = fakeDb({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  const mail = recorder("sent");
+
+  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+
+  const before = db.docs.get("storageHealthUnits/w1");
+  const brokenCollection = db.collection;
+
+  db.collection = path => {
+    if (path === "workspaces/w1/stateModules") throw new Error("lectura fallida");
+    return brokenCollection(path);
+  };
+
+  const second = await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
+
+  assert.deepEqual(second.incomplete, ["Imagenologia"]);
+  assert.equal(second.complete, false);
+  assert.deepEqual(db.docs.get("storageHealthUnits/w1"), before, "su estado anterior queda intacto");
+  assert.match(mail.sent[1].text, /No se pudo medir la unidad Imagenologia/);
+});
+
+test("todo queda por unidad: resumen chico por fecha y detalle en units/{unidad}", async () => {
+  const db = fakeDb({
+    "workspaces/w1": { name: "A" },
+    "workspaces/w2": { name: "B" },
+    [AUDIT_PATH]: bigAuditLog(200 * 1024)
   });
 
-  assert.equal(report.audits[0].issues, 1);
-  assert.equal(report.alerts.auditIssues.length, 1);
-  assert.match(sent[0].text, /Diferencias entre formatos: Imagenologia auditLog: 1/);
+  await runStorageHealthCheck({ db, now: DAY1, sendAlert: recorder().sendAlert, log: silentLog });
+
+  const summary = db.docs.get("storageHealthReports/2026-10-02");
+
+  assert.equal(summary.units, 2);
+  assert.equal(summary.documents, undefined, "el resumen no lleva el detalle");
+  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w1"));
+  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w2"));
+  assert.ok(db.docs.has("storageHealthUnits/w1"));
+  assert.ok(db.docs.has("storageHealthUnits/w2"));
 });
 
 test("el correo no sale sin destinatario o sin clave, y lo dice", async () => {
