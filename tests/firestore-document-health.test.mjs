@@ -49,15 +49,20 @@ test("un documento holgado permanece saludable", () => {
     assert.ok(result.percent < 70);
 });
 
-test("el banner de almacenamiento lo ve solo el dueno de la unidad", async () => {
+test("la salud del almacenamiento no llega a la pantalla de nadie", async () => {
     const { readFile } = await import("node:fs/promises");
     const source = await readFile(
         new URL("../js/firebaseAppState.js", import.meta.url),
         "utf8"
     );
-
-    assert.match(
-        source,
-        /type: "app-state-document-health",\s*level: isWorkspaceOwner\(\) \? highest\?\.level \|\| "healthy" : "healthy"/
+    const banner = await readFile(
+        new URL("../js/syncBanner.js", import.meta.url),
+        "utf8"
     );
+
+    // Solo queda como metrica de la sesion; los avisos tecnicos viven en
+    // TurnoPlus-Admin (checkStorageHealth), no en la app de supervisores.
+    assert.match(source, /recordPerformanceEvent\("firebase-app-state:document-health"/);
+    assert.doesNotMatch(source, /app-state-document-health/);
+    assert.doesNotMatch(banner, /document-health|storage-health|is-storage/);
 });

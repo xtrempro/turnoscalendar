@@ -7,6 +7,7 @@ const { pathToFileURL } = require("node:url");
 
 const {
   FIRESTORE_DOCUMENT_LIMIT_BYTES,
+  auditShardIntegrity,
   compareAuditLogFormats,
   compareReplacementFormats,
   estimateFirestoreDocumentBytes,
@@ -15,12 +16,19 @@ const {
   levelIncreases
 } = require("../lib/storageHealth");
 const {
+  MAX_HEALTHY_TRACKED_PER_UNIT,
+  StorageHealthBusyError,
+  createStorageAlertSender,
   runStorageHealthCheck,
-  createStorageAlertSender
+  runStorageHealthCheckLocked,
+  sendStorageHealthTestAlert
 } = require("../storageHealthMonitor");
+const { fakeFirestore } = require("./helpers/fakeFirestore");
 
 const MiB = FIRESTORE_DOCUMENT_LIMIT_BYTES;
 const silentLog = { info() {}, warn() {}, error() {} };
+
+// --- Logica pura -----------------------------------------------------------
 
 test("el tamano se estima igual que la alerta del navegador", async () => {
   const browser = await import(
@@ -66,7 +74,7 @@ test("crecimiento diario y dias que faltan al 85 %", () => {
   );
 });
 
-test("solo se avisa cuando un documento SUBE de nivel", () => {
+test("solo cuenta como subida cuando un documento SUBE de nivel", () => {
   assert.deepEqual(levelIncreases({}, { a: "warning" }), [{ key: "a", from: "healthy", to: "warning" }]);
   assert.deepEqual(levelIncreases({ a: "warning" }, { a: "warning" }), []);
   assert.deepEqual(levelIncreases({ a: "warning" }, { a: "critical" }), [{ key: "a", from: "warning", to: "critical" }]);
@@ -112,82 +120,34 @@ test("reemplazos: faltantes, distintos y sobrantes; los borrados y la falta de f
   assert.equal(result.withoutDate, 1);
 });
 
-// --- Firestore de mentira para el recorrido completo -----------------------
-
-function fakeDb(seed) {
-  const docs = new Map(Object.entries(seed));
-  const snapshotOf = (docPath) => ({
-    id: docPath.split("/").pop(),
-    ref: { path: docPath },
-    exists: docs.has(docPath),
-    data: () => docs.get(docPath)
-  });
-  const childrenOf = (collectionPath) => [...docs.keys()].filter(key =>
-    key.startsWith(`${collectionPath}/`) &&
-    !key.slice(collectionPath.length + 1).includes("/")
-  );
-  const collection = (collectionPath) => {
-    const query = {
-      filters: [],
-      order: null,
-      max: Infinity,
-      where(field, op, value) {
-        this.filters.push({ field, op, value });
-        return this;
-      },
-      orderBy(field, direction) {
-        this.order = { field, direction };
-        return this;
-      },
-      limit(count) {
-        this.max = count;
-        return this;
-      },
-      async get() {
-        let rows = childrenOf(collectionPath).map(snapshotOf);
-
-        this.filters.forEach(({ field, op, value }) => {
-          rows = rows.filter(row => op === "<" ? row.data()[field] < value : true);
-        });
-        if (this.order) {
-          rows.sort((a, b) => String(a.data()[this.order.field]).localeCompare(String(b.data()[this.order.field])));
-          if (this.order.direction === "desc") rows.reverse();
+test("fragmentos: rotos, ilegibles, clave distinta de su id e ids duplicados son incidencias", () => {
+  const result = auditShardIntegrity([
+    {
+      id: "2026-09-01_0",
+      data: {
+        items: {
+          a: JSON.stringify({ id: "a" }),
+          roto: "{roto",
+          sinId: JSON.stringify({ action: "x" }),
+          "x%2Ey": JSON.stringify({ id: "x.y" })
         }
-        rows = rows.slice(0, this.max);
-
-        return {
-          empty: !rows.length,
-          size: rows.length,
-          docs: rows,
-          forEach: fn => rows.forEach(fn)
-        };
-      },
-      async listDocuments() {
-        const ids = new Set(
-          [...docs.keys()]
-            .filter(key => key.startsWith(`${collectionPath}/`))
-            .map(key => key.slice(collectionPath.length + 1).split("/")[0])
-        );
-
-        return [...ids].map(id => ({
-          id,
-          collection: name => collection(`${collectionPath}/${id}/${name}`)
-        }));
       }
-    };
+    },
+    { id: "2026-09-02_0", data: { items: { a: JSON.stringify({ id: "a" }), z: JSON.stringify({ id: "q" }) } } },
+    { id: "2026-09-03_0", data: { month: "2026-09" } },
+    { id: "2026-09-04_0", data: { items: "no es un mapa" } }
+  ]);
 
-    return Object.assign(Object.create(query), { filters: [], order: null, max: Infinity });
-  };
+  assert.deepEqual(result.malformed, ["2026-09-03_0", "2026-09-04_0"]);
+  assert.deepEqual(result.unparseable, ["2026-09-01_0/roto", "2026-09-01_0/sinId"]);
+  assert.deepEqual(result.mismatched, ["2026-09-02_0/z"]);
+  assert.deepEqual(result.duplicates, ["a"]);
+  assert.equal(result.records, 4);
+  assert.equal(result.issues, 6);
+  assert.equal(auditShardIntegrity([{ id: "s", data: { items: { a: JSON.stringify({ id: "a" }) } } }]).issues, 0);
+});
 
-  return {
-    docs,
-    collection,
-    doc: docPath => ({
-      async get() { return snapshotOf(docPath); },
-      async set(value) { docs.set(docPath, value); }
-    })
-  };
-}
+// --- Recorrido completo ----------------------------------------------------
 
 function bigAuditLog(bytes) {
   return {
@@ -209,163 +169,518 @@ function recorder(result = "sent") {
     sent,
     sendAlert: async message => {
       sent.push(message);
-      return typeof result === "function" ? result(sent.length) : result;
+      const status = typeof result === "function" ? result(sent.length) : result;
+
+      if (status instanceof Error) throw status;
+
+      return typeof status === "string" ? { status, providerId: status === "sent" ? `msg-${sent.length}` : null } : status;
     }
   };
 }
 
-test("recorrido diario: avisa al cruzar el 85 % una sola vez y mide el crecimiento", async () => {
-  const db = fakeDb({
+function events(db) {
+  return [...db.docs.entries()]
+    .filter(([key]) => key.startsWith("storageHealthEvents/"))
+    .map(([, value]) => value)
+    .sort((a, b) => a.detectedAtMillis - b.detectedAtMillis);
+}
+
+function run(db, now, mail, extra = {}) {
+  return runStorageHealthCheck({ db, now, sendAlert: mail?.sendAlert, log: silentLog, ...extra });
+}
+
+test("cruzar el 85 % crea UN evento, se entrega una vez y mide el crecimiento", async () => {
+  const db = fakeFirestore({
     "workspaces/w1": { name: "Imagenologia" },
     [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
   });
   const mail = recorder("sent");
 
-  const first = await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+  const first = await run(db, DAY1, mail);
 
-  assert.equal(first.delivery, "sent");
+  assert.equal(first.delivery.status, "sent");
+  assert.equal(first.changes, 1);
   assert.equal(mail.sent.length, 1);
   assert.match(mail.sent[0].text, /CRITICO .*Imagenologia log\/auditLog/);
+  assert.match(mail.sent[0].idempotencyKey, /^storage-health-[0-9a-f]{32}$/);
+
+  const [event] = events(db);
+
+  assert.equal(event.type, "document_level");
+  assert.equal(event.from, "healthy");
+  assert.equal(event.to, "critical");
+  assert.equal(event.deliveryPending, false);
+  assert.equal(event.delivery.status, "sent");
+  assert.equal(event.delivery.attempts, 1);
+  assert.equal(event.delivery.providerId, "msg-1");
 
   db.docs.set(AUDIT_PATH, bigAuditLog(Math.round(MiB * 0.86) + 5000));
-  const second = await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
+  const second = await run(db, DAY1 + DAY, mail);
 
-  assert.equal(second.changes, 0, "mismo nivel: no se repite");
+  assert.equal(second.changes, 0, "mismo nivel: no hay transicion");
+  assert.equal(second.delivery.status, "none");
   assert.equal(mail.sent.length, 1);
-
-  const unitReport = db.docs.get("storageHealthReports/2026-10-03/units/w1");
-
-  assert.equal(unitReport.documents[0].bytesPerDay, 5000);
+  assert.equal(events(db).length, 1);
+  assert.equal(db.docs.get("storageHealthReports/2026-10-03/units/w1").documents[0].bytesPerDay, 5000);
+  assert.equal(db.docs.get("storageHealthUnits/w1").overview.largest.bytesPerDay, 5000);
 });
 
-test("si el correo NO sale, el aviso no se consume: se reintenta al dia siguiente", async () => {
-  const db = fakeDb({
+test("repetir la revision el mismo dia no duplica eventos ni correos", async () => {
+  const db = fakeFirestore({
     "workspaces/w1": { name: "Imagenologia" },
     [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
   });
-  const failing = recorder("skipped_no_api_key");
+  const failing = recorder("failed");
 
-  const first = await runStorageHealthCheck({ db, now: DAY1, sendAlert: failing.sendAlert, log: silentLog });
+  await run(db, DAY1, failing);
+  // Se pierde la linea base (como si la funcion muriera tras crear el evento):
+  // la revision siguiente del mismo dia llega al MISMO id y no lo duplica.
+  const state = db.docs.get("storageHealthUnits/w1");
 
-  assert.equal(first.delivery, "skipped_no_api_key");
-  assert.deepEqual(db.docs.get("storageHealthUnits/w1").emailed, { levels: {}, audits: {} });
-  // Lo vigente si queda para el banner del dueno.
-  assert.equal(db.docs.get("storageHealthUnits/w1").alerts.documents[0].level, "critical");
+  db.docs.set("storageHealthUnits/w1", { ...state, baseline: { levels: {}, audits: {} } });
+  const again = await run(db, DAY1 + 60 * 60 * 1000, failing);
 
-  const working = recorder("sent");
-  const second = await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: working.sendAlert, log: silentLog });
-
-  assert.equal(second.delivery, "sent");
-  assert.match(working.sent[0].text, /CRITICO/);
+  assert.equal(again.changes, 0);
+  assert.equal(events(db).length, 1);
+  // El reintento usa la misma clave de idempotencia: mismo lote de eventos.
+  assert.equal(failing.sent.length, 2);
+  assert.equal(failing.sent[0].idempotencyKey, failing.sent[1].idempotencyKey);
 });
 
-test("avisa la recuperacion cuando un documento baja del umbral", async () => {
-  const db = fakeDb({
+test("una entrega fallida no queda como enviada y se reintenta hasta que sale", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  const outcomes = ["skipped_no_recipient", "skipped_no_api_key", "failed", new Error("Bearer re_secreto123 timeout"), "sent"];
+  const mail = recorder(count => outcomes[count - 1]);
+
+  for (let day = 0; day < outcomes.length; day++) {
+    const result = await run(db, DAY1 + day * DAY, mail);
+    const [event] = events(db);
+
+    if (day < outcomes.length - 1) {
+      assert.notEqual(event.delivery.status, "sent", `dia ${day}: no puede quedar enviado`);
+      assert.equal(event.deliveryPending, true);
+      assert.equal(event.delivery.sentAtMillis, null);
+    }
+    assert.equal(result.changes, day === 0 ? 1 : 0, "un solo evento, sin repetir la transicion");
+  }
+
+  const [event] = events(db);
+
+  assert.equal(events(db).length, 1);
+  assert.equal(event.delivery.status, "sent");
+  assert.equal(event.deliveryPending, false);
+  // Solo cuentan los intentos que llegaron al proveedor (failed, error, sent).
+  assert.equal(event.delivery.attempts, 3);
+  assert.equal(mail.sent.length, 5);
+  assert.ok(mail.sent.every(message => /CRITICO/.test(message.text)));
+});
+
+test("el error guardado de una entrega no expone credenciales", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+
+  await run(db, DAY1, recorder(() => new Error("fallo con Bearer re_abc123XYZ")));
+
+  const [event] = events(db);
+
+  assert.equal(event.delivery.status, "failed");
+  assert.doesNotMatch(event.delivery.lastError, /re_abc123XYZ/);
+  assert.match(event.delivery.lastError, /Bearer \*\*\*/);
+});
+
+test("la recuperacion se registra como evento propio", async () => {
+  const db = fakeFirestore({
     "workspaces/w1": { name: "Imagenologia" },
     [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
   });
   const mail = recorder("sent");
 
-  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+  await run(db, DAY1, mail);
   db.docs.set(AUDIT_PATH, bigAuditLog(Math.round(MiB * 0.5)));
-  await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
+  await run(db, DAY1 + DAY, mail);
+
+  const recovered = events(db).find(event => event.direction === "recovered");
 
   assert.equal(mail.sent.length, 2);
   assert.match(mail.sent[1].text, /Recuperado: Imagenologia log\/auditLog bajo de 85%/);
+  assert.equal(recovered.from, "critical");
+  assert.equal(recovered.to, "healthy");
   assert.deepEqual(db.docs.get("storageHealthUnits/w1").alerts.documents, []);
+  assert.equal(db.docs.get("storageHealthUnits/w1").status, "normal");
+  assert.equal(db.docs.get("storageHealthUnits/w1").lastRecoveryAtMillis, DAY1 + DAY);
 });
 
-test("diferencias entre formatos: avisa, y avisa cuando vuelve a quedar limpio", async () => {
+test("diferencias entre formatos: evento al aparecer y al quedar limpio", async () => {
   const legacy = {
     storageKey: "auditLog",
     container: "array",
     items: { a: JSON.stringify({ id: "a", createdAt: "2026-09-01T10:00:00Z" }) },
     deletedItems: { a: false }
   };
-  const db = fakeDb({
+  const db = fakeFirestore({
     "workspaces/w1": { name: "Imagenologia", auditLogStorage: "shards-read-v1" },
     [AUDIT_PATH]: legacy,
     "workspaces/w1/auditLogShards/2026-09-01_0": { items: {} }
   });
   const mail = recorder("sent");
 
-  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+  await run(db, DAY1, mail);
 
-  assert.match(mail.sent[0].text, /Diferencias entre formatos: Imagenologia auditLog: 1/);
-  assert.equal(db.docs.get("storageHealthUnits/w1").alerts.audits[0].issues, 1);
+  assert.match(mail.sent[0].text, /Diferencias en bitacora .*: Imagenologia: 1/);
+  assert.equal(db.docs.get("storageHealthUnits/w1").status, "warning");
+  assert.deepEqual(db.docs.get("storageHealthUnits/w1").overview.auditLog, { legacy: 1, archive: 0, issues: 1, unreadable: false });
 
   db.docs.set("workspaces/w1/auditLogShards/2026-09-01_0", { items: { a: legacy.items.a } });
-  await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
+  await run(db, DAY1 + DAY, mail);
 
   assert.match(mail.sent[1].text, /Comparacion limpia otra vez: Imagenologia auditLog/);
 });
 
 test("una bitacora vieja que no se puede reconstruir NO pasa por limpia", async () => {
-  const db = fakeDb({
+  const db = fakeFirestore({
     "workspaces/w1": { name: "Imagenologia", auditLogStorage: "shards-read-v1" },
     [AUDIT_PATH]: { storageKey: "auditLog", container: "array", value: "{roto", items: {} },
     "workspaces/w1/auditLogShards/2026-09-01_0": { items: {} }
   });
   const mail = recorder("sent");
 
-  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+  await run(db, DAY1, mail);
 
-  const audit = db.docs.get("storageHealthReports/2026-10-02/units/w1").audits[0];
+  const audit = db.docs.get("storageHealthReports/2026-10-02/units/w1").audits
+    .find(item => item.kind === "auditLog");
 
   assert.equal(audit.unreadable, true);
   assert.equal(audit.issues, 1);
   assert.match(mail.sent[0].text, /No se pudo reconstruir el formato viejo de auditLog/);
 });
 
-test("una unidad que no se pudo medir conserva su estado y se avisa", async () => {
-  const db = fakeDb({
+test("fragmentos rotos e ids duplicados generan incidencia en el recorrido", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    "workspaces/w1/auditLogShards/2026-09-01_0": { items: { a: JSON.stringify({ id: "a" }), b: "{roto" } },
+    "workspaces/w1/auditLogShards/2026-09-02_0": { items: { a: JSON.stringify({ id: "a" }) } },
+    "workspaces/w1/auditLogShards/2026-09-03_0": { month: "2026-09" }
+  });
+  const mail = recorder("sent");
+
+  await run(db, DAY1, mail);
+
+  const audit = db.docs.get("storageHealthReports/2026-10-02/units/w1").audits
+    .find(item => item.kind === "auditLogShards");
+
+  assert.deepEqual(audit.duplicates, ["a"]);
+  assert.deepEqual(audit.unparseable, ["2026-09-01_0/b"]);
+  assert.deepEqual(audit.malformed, ["2026-09-03_0"]);
+  assert.match(mail.sent[0].text, /Fragmentos con problemas: Imagenologia: 3 \(rotos 1, ilegibles 1, clave distinta 0, ids duplicados 1\)/);
+  assert.equal(events(db)[0].type, "audit");
+  assert.equal(db.docs.get("storageHealthUnits/w1").status, "warning");
+});
+
+test("una unidad que no se puede medir: un evento al caer y otro al volver, sin repetir cada dia", async () => {
+  const db = fakeFirestore({
     "workspaces/w1": { name: "Imagenologia" },
     [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
   });
   const mail = recorder("sent");
 
-  await runStorageHealthCheck({ db, now: DAY1, sendAlert: mail.sendAlert, log: silentLog });
+  await run(db, DAY1, mail);
 
   const before = db.docs.get("storageHealthUnits/w1");
-  const brokenCollection = db.collection;
+  const healthyCollection = db.collection;
+  let broken = true;
 
-  db.collection = path => {
-    if (path === "workspaces/w1/stateModules") throw new Error("lectura fallida");
-    return brokenCollection(path);
+  db.collection = collectionPath => {
+    if (broken && collectionPath === "workspaces/w1/stateModules") throw new Error("lectura fallida");
+    return healthyCollection(collectionPath);
   };
 
-  const second = await runStorageHealthCheck({ db, now: DAY1 + DAY, sendAlert: mail.sendAlert, log: silentLog });
+  const second = await run(db, DAY1 + DAY, mail);
+  const afterFailure = db.docs.get("storageHealthUnits/w1");
 
   assert.deepEqual(second.incomplete, ["Imagenologia"]);
   assert.equal(second.complete, false);
-  assert.deepEqual(db.docs.get("storageHealthUnits/w1"), before, "su estado anterior queda intacto");
+  assert.equal(second.counts.incomplete, 1);
+  assert.match(mail.sent[1].text, /No se pudo medir la unidad Imagenologia: lectura fallida/);
+  assert.equal(afterFailure.status, "incomplete");
+  assert.equal(afterFailure.monitoring.status, "incomplete");
+  // Conserva sus mediciones, su linea base y sus alertas.
+  assert.deepEqual(afterFailure.baseline, before.baseline);
+  assert.deepEqual(afterFailure.tracked, before.tracked);
+  assert.deepEqual(afterFailure.alerts, before.alerts);
+  assert.equal(afterFailure.measuredAtMillis, before.measuredAtMillis);
+  assert.equal(db.docs.get("storageHealthReports/2026-10-03/units/w1").incomplete, true);
+
+  const third = await run(db, DAY1 + 2 * DAY, mail);
+
+  assert.equal(third.changes, 0, "sigue incompleta: no se repite");
+  assert.equal(mail.sent.length, 2, "ni el correo");
+  assert.equal(db.docs.get("storageHealthUnits/w1").monitoring.since, DAY1 + DAY);
+
+  broken = false;
+  const fourth = await run(db, DAY1 + 3 * DAY, mail);
+
+  assert.equal(fourth.changes, 1);
+  assert.match(mail.sent[2].text, /La unidad Imagenologia se volvio a medir completa/);
+  assert.equal(db.docs.get("storageHealthUnits/w1").monitoring.status, "ok");
+  assert.equal(db.docs.get("storageHealthUnits/w1").status, "critical");
+  assert.deepEqual(
+    events(db).filter(event => event.type === "monitoring").map(event => `${event.from}->${event.to}`),
+    ["ok->incomplete", "incomplete->ok"]
+  );
+});
+
+test("unidad incompleta: si la entrega fallo, se reintenta el MISMO evento", async () => {
+  const db = fakeFirestore({ "workspaces/w1": { name: "Imagenologia" } });
+  const healthyCollection = db.collection;
+
+  db.collection = collectionPath => {
+    if (collectionPath === "workspaces/w1/stateModules") throw new Error("lectura fallida");
+    return healthyCollection(collectionPath);
+  };
+
+  const mail = recorder(count => (count === 1 ? "failed" : "sent"));
+
+  await run(db, DAY1, mail);
+  await run(db, DAY1 + DAY, mail);
+
+  assert.equal(events(db).length, 1);
+  assert.equal(events(db)[0].delivery.status, "sent");
+  assert.equal(mail.sent.length, 2);
   assert.match(mail.sent[1].text, /No se pudo medir la unidad Imagenologia/);
 });
 
-test("todo queda por unidad: resumen chico por fecha y detalle en units/{unidad}", async () => {
-  const db = fakeDb({
-    "workspaces/w1": { name: "A" },
-    "workspaces/w2": { name: "B" },
-    [AUDIT_PATH]: bigAuditLog(200 * 1024)
-  });
+test("mas de 60 documentos: ninguno en alerta queda fuera; el tope es solo para los sanos", async () => {
+  const seed = { "workspaces/w1": { name: "Grande" } };
+  const big = bytes => ({ storageKey: "k", value: "x".repeat(bytes) });
 
-  await runStorageHealthCheck({ db, now: DAY1, sendAlert: recorder().sendAlert, log: silentLog });
+  for (let index = 0; index < 70; index++) {
+    seed[`workspaces/w1/stateModules/turnos/entries/alerta${index}`] = { ...big(Math.round(MiB * 0.72)), storageKey: `alerta${index}` };
+    seed[`workspaces/w1/stateModules/profile/entries/sano${index}`] = { ...big(200 * 1024), storageKey: `sano${index}` };
+  }
 
-  const summary = db.docs.get("storageHealthReports/2026-10-02");
+  const db = fakeFirestore(seed);
+  const mail = recorder("sent");
 
-  assert.equal(summary.units, 2);
-  assert.equal(summary.documents, undefined, "el resumen no lleva el detalle");
-  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w1"));
-  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w2"));
-  assert.ok(db.docs.has("storageHealthUnits/w1"));
-  assert.ok(db.docs.has("storageHealthUnits/w2"));
+  await run(db, DAY1, mail);
+
+  const report = db.docs.get("storageHealthReports/2026-10-02/units/w1");
+  const state = db.docs.get("storageHealthUnits/w1");
+
+  assert.equal(report.documents.filter(item => item.level === "warning").length, 70);
+  assert.equal(report.documents.filter(item => item.level === "healthy").length, MAX_HEALTHY_TRACKED_PER_UNIT);
+  assert.equal(state.alerts.documents.length, 70);
+  assert.equal(Object.keys(state.baseline.levels).length, 70);
+  assert.equal(state.overview.warningDocuments, 70);
+  assert.equal(events(db).length, 70);
+  assert.equal(mail.sent.length, 1, "un correo con 50 avisos");
+  assert.match(mail.sent[0].subject, /\(50 aviso\(s\)\)/);
+  assert.match(mail.sent[0].text, /Y 20 aviso\(s\) mas pendientes/);
+
+  // Los 20 que no cupieron salen en la revision siguiente.
+  await run(db, DAY1 + DAY, mail);
+
+  assert.equal(mail.sent.length, 2);
+  assert.match(mail.sent[1].subject, /\(20 aviso\(s\)\)/);
+  assert.ok(events(db).every(event => event.delivery.status === "sent"));
 });
 
-test("el correo no sale sin destinatario o sin clave, y lo dice", async () => {
-  assert.equal(await createStorageAlertSender({ to: "", apiKey: "k", from: "x" })({ subject: "s", text: "t" }), "skipped_no_recipient");
-  assert.equal(await createStorageAlertSender({ to: "a@b.cl", apiKey: "", from: "x" })({ subject: "s", text: "t" }), "skipped_no_api_key");
-  assert.equal(
-    await createStorageAlertSender({ to: "a@b.cl", apiKey: "k", from: "x", fetchImpl: async () => ({ ok: true }) })({ subject: "s", text: "t" }),
-    "sent"
+test("todo queda por unidad, con metricas de lectura y duracion; el resumen es chico", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "A", ownerUid: "u1" },
+    "workspaces/w2": { name: "B" },
+    [AUDIT_PATH]: bigAuditLog(200 * 1024),
+    "workspaces/w1/auditLogShards/2026-09-01_0": { items: { a: JSON.stringify({ id: "a" }) } }
+  });
+  let tick = 1000;
+  const clock = () => (tick += 7);
+
+  const summary = await run(db, DAY1, recorder(), { clock });
+  const stored = db.docs.get("storageHealthReports/2026-10-02");
+  const unit = db.docs.get("storageHealthUnits/w1");
+
+  assert.equal(stored.units, 2);
+  assert.equal(stored.documents, undefined, "el resumen no lleva el detalle");
+  assert.deepEqual(stored.counts, { normal: 2, warning: 0, critical: 0, incomplete: 0 });
+  assert.ok(stored.durationMs > 0);
+  assert.equal(stored.shardDocuments, 1);
+  assert.equal(stored.documentsRead, 2 + 1 + 1, "entrada + fragmento + estado previo de w1, estado previo de w2");
+  assert.ok(JSON.stringify(stored).length < 4000);
+  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w1"));
+  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w2"));
+  assert.ok(db.docs.has(`storageHealthRuns/${summary.runId}`));
+  assert.equal(unit.ownerUid, "u1");
+  assert.ok(unit.metrics.durationMs > 0);
+  assert.equal(unit.metrics.documentsRead, 3);
+  assert.equal(unit.metrics.shardDocuments, 1);
+  assert.deepEqual(unit.overview.auditLogShards, { shards: 1, records: 1, issues: 0 });
+});
+
+test("la revision solo escribe en las colecciones storageHealth*", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia", auditLogStorage: "shards-read-v1" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86)),
+    "workspaces/w1/auditLogShards/2026-09-01_0": { items: {} }
+  });
+  const before = new Map([...db.docs.entries()].map(([key, value]) => [key, JSON.stringify(value)]));
+
+  await runStorageHealthCheckLocked({ db, now: DAY1, sendAlert: recorder().sendAlert, log: silentLog });
+
+  [...db.docs.keys()].forEach(key => {
+    if (before.has(key)) {
+      assert.equal(JSON.stringify(db.docs.get(key)), before.get(key), `${key} no se toca`);
+    } else {
+      assert.match(key, /^storageHealth(Units|Events|Reports|Runs|Control)\//, `${key} esta fuera de storageHealth*`);
+    }
+  });
+});
+
+// --- Candado, frecuencia y modos -------------------------------------------
+
+test("candado: no corren dos revisiones a la vez y se suelta al terminar", async () => {
+  const db = fakeFirestore({ "workspaces/w1": { name: "A" } });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const healthyCollection = db.collection;
+
+  db.collection = collectionPath => {
+    if (collectionPath === "workspaces") {
+      return { get: async () => { await gate; return healthyCollection("workspaces").get(); } };
+    }
+    return healthyCollection(collectionPath);
+  };
+
+  const first = runStorageHealthCheckLocked({ db, now: DAY1, log: silentLog, trigger: "manual" });
+
+  await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(
+    runStorageHealthCheckLocked({ db, now: DAY1 + 1000, log: silentLog, trigger: "schedule" }),
+    error => error instanceof StorageHealthBusyError && error.reason === "running"
   );
+
+  release();
+  await first;
+
+  const control = db.docs.get("storageHealthControl/state");
+
+  assert.equal(control.lock, null);
+  assert.equal(control.lastRun.ok, true);
+  assert.equal(control.lastRun.trigger, "manual");
+});
+
+test("frecuencia: una manual no se repite antes de 10 minutos; la programada no tiene ese limite", async () => {
+  const db = fakeFirestore({ "workspaces/w1": { name: "A" } });
+  const options = { db, log: silentLog, trigger: "manual" };
+
+  await runStorageHealthCheckLocked({ ...options, now: DAY1 });
+  await assert.rejects(
+    runStorageHealthCheckLocked({ ...options, now: DAY1 + 5 * 60 * 1000 }),
+    error => error instanceof StorageHealthBusyError && error.reason === "rate_limited" && error.retryAfterMs === 5 * 60 * 1000
+  );
+  await runStorageHealthCheckLocked({ db, log: silentLog, trigger: "schedule", now: DAY1 + 6 * 60 * 1000 });
+  await runStorageHealthCheckLocked({ ...options, now: DAY1 + 11 * 60 * 1000 });
+});
+
+test("un candado vencido (funcion caida) no bloquea para siempre", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "A" },
+    "storageHealthControl/state": { lock: { runId: "viejo", expiresAtMillis: DAY1 - 1 } }
+  });
+
+  await runStorageHealthCheckLocked({ db, now: DAY1, log: silentLog });
+  assert.equal(db.docs.get("storageHealthControl/state").lock, null);
+});
+
+test("modo entregas: reintenta lo pendiente sin medir ni crear eventos", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+
+  await run(db, DAY1, recorder("skipped_no_api_key"));
+
+  const reportsBefore = [...db.docs.keys()].filter(key => key.startsWith("storageHealthReports/")).length;
+  const mail = recorder("sent");
+  const result = await runStorageHealthCheckLocked({
+    db,
+    now: DAY1 + 60 * 1000,
+    sendAlert: mail.sendAlert,
+    log: silentLog,
+    trigger: "manual",
+    mode: "deliveries"
+  });
+
+  assert.equal(result.mode, "deliveries");
+  assert.equal(result.delivery.status, "sent");
+  assert.equal(events(db).length, 1);
+  assert.equal(events(db)[0].delivery.status, "sent");
+  assert.equal(
+    [...db.docs.keys()].filter(key => key.startsWith("storageHealthReports/")).length,
+    reportsBefore,
+    "no mide de nuevo"
+  );
+});
+
+test("correo de prueba: queda como evento sin reintentos y tiene limite de frecuencia", async () => {
+  const db = fakeFirestore({});
+  const mail = recorder("sent");
+
+  const result = await sendStorageHealthTestAlert({ db, now: DAY1, sendAlert: mail.sendAlert, requestedBy: "admin1" });
+
+  assert.equal(result.delivery.status, "sent");
+  assert.equal(events(db)[0].type, "test");
+  assert.equal(events(db)[0].deliveryPending, false);
+  await assert.rejects(
+    sendStorageHealthTestAlert({ db, now: DAY1 + 60 * 1000, sendAlert: mail.sendAlert }),
+    error => error instanceof StorageHealthBusyError && error.reason === "rate_limited"
+  );
+
+  // Un correo de prueba fallido no entra a los reintentos diarios.
+  const failing = await sendStorageHealthTestAlert({ db, now: DAY1 + 6 * 60 * 1000, sendAlert: recorder("skipped_no_recipient").sendAlert });
+
+  assert.equal(failing.delivery.status, "skipped_no_recipient");
+  assert.equal(events(db).filter(event => event.deliveryPending).length, 0);
+});
+
+// --- Proveedor de correo ---------------------------------------------------
+
+test("el correo no sale sin destinatario o sin clave, y lo dice", async () => {
+  const message = { subject: "s", text: "t" };
+
+  assert.deepEqual(await createStorageAlertSender({ to: "", apiKey: "k", from: "x" })(message), { status: "skipped_no_recipient" });
+  assert.deepEqual(await createStorageAlertSender({ to: "a@b.cl", apiKey: "", from: "x" })(message), { status: "skipped_no_api_key" });
+});
+
+test("solo una respuesta exitosa cuenta como enviado; lleva Idempotency-Key", async () => {
+  const calls = [];
+  const send = response => createStorageAlertSender({
+    to: "tecnico@turnoplus.cl",
+    apiKey: "re_clave",
+    from: "TurnoPlus <noreply@turnoplus.cl>",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      if (response instanceof Error) throw response;
+      return response;
+    }
+  });
+
+  assert.deepEqual(
+    await send({ ok: true, json: async () => ({ id: "resend-1" }) })({ subject: "s", text: "t", idempotencyKey: "k1" }),
+    { status: "sent", providerId: "resend-1" }
+  );
+  assert.equal(calls[0].init.headers["Idempotency-Key"], "k1");
+  assert.deepEqual(JSON.parse(calls[0].init.body).to, ["tecnico@turnoplus.cl"]);
+  assert.deepEqual(
+    await send({ ok: false, status: 429 })({ subject: "s", text: "t" }),
+    { status: "failed", error: "Resend 429" }
+  );
+
+  const thrown = await send(new Error("red caida con re_clave"))({ subject: "s", text: "t" });
+
+  assert.equal(thrown.status, "failed");
+  assert.doesNotMatch(thrown.error, /re_clave/);
 });

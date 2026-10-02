@@ -154,24 +154,18 @@ test("el bloqueo aparece al tiro y se retira al aplicar el estado inicial", () =
     assert.equal(falso.hidden, true);
 });
 
-test("el riesgo de tamano se avisa sin bloquear y se puede levantar", () => {
+test("un aviso tecnico de almacenamiento no se muestra al supervisor", () => {
     handleSyncStatus({
         type: "app-state-document-health",
         level: "critical",
         percent: 90.9,
         storageKey: "auditLog"
     });
-
-    assert.equal(falso.hidden, false);
-    assert.match(falso.className, /is-storage-critical/);
-    assert.match(falso.textContent, /90\.9%/);
-    assert.match(falso.textContent, /auditLog/);
-
     handleSyncStatus({
-        type: "app-state-document-health",
-        level: "healthy",
-        percent: 0
+        type: "server-storage-health",
+        message: "La revision diaria del servidor encontro documentos grandes."
     });
+
     assert.equal(falso.hidden, true);
 });
 
@@ -393,6 +387,5 @@ test("el aviso esta montado en la app y tiene estilo", () => {
     assert.match(banner, /addEventListener\("offline"/);
     assert.match(estilos, /\.sync-blocked-banner \{/);
     assert.match(estilos, /\.sync-blocked-banner\.is-offline \{/);
-    assert.match(estilos, /\.sync-blocked-banner\.is-storage-warning \{/);
-    assert.match(estilos, /\.sync-blocked-banner\.is-storage-critical \{/);
+    assert.doesNotMatch(estilos, /\.sync-blocked-banner\.is-storage-/);
 });

@@ -19,57 +19,19 @@ const {
   summarizeSubscription,
   timestampToMillis
 } = require("./getAccountsAndUnitsCore");
+const { configuredAdminEmails, createAdminGuard } = require("./lib/adminAuthorization");
 
 if (!admin.apps.length) admin.initializeApp();
 
 const db = admin.firestore();
+// La misma autorizacion que usan las callables de salud del almacenamiento.
+const { requireAdmin } = createAdminGuard({ db, HttpsError, logger });
 const REGION = "southamerica-west1";
-const DEFAULT_ADMIN_EMAILS = ["tm.alanplaza@gmail.com"];
 const ENFORCE_APP_CHECK = true;
 const MAX_PAGE_SIZE = 50;
 
 function cleanText(value, maxLength = 160) {
   return String(value || "").trim().slice(0, maxLength);
-}
-
-function configuredAdminEmails() {
-  const configured = cleanText(process.env.ADMIN_EMAILS, 4000)
-    .split(",")
-    .map(normalizeEmail)
-    .filter(Boolean);
-
-  return configured.length ? configured : DEFAULT_ADMIN_EMAILS.map(normalizeEmail);
-}
-
-async function isAdminCaller(auth) {
-  if (!auth?.uid) return false;
-
-  let hasAdminDocument = false;
-  try {
-    const adminDoc = await db.collection("adminUsers").doc(auth.uid).get();
-    hasAdminDocument = adminDoc.exists && adminDoc.data()?.active !== false;
-  } catch (error) {
-    logger.warn("No se pudo consultar adminUsers.", { message: error.message });
-  }
-
-  return isAuthorizedAdminIdentity({
-    token: auth.token || {},
-    hasAdminDocument,
-    configuredEmails: configuredAdminEmails()
-  });
-}
-
-async function requireAdmin(auth) {
-  if (!auth?.uid) {
-    throw new HttpsError("unauthenticated", "Inicia sesión para continuar.");
-  }
-
-  if (!await isAdminCaller(auth)) {
-    throw new HttpsError(
-      "permission-denied",
-      "Esta cuenta no tiene permisos de administrador global."
-    );
-  }
 }
 
 async function mapLimit(items, limit, mapper) {

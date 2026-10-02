@@ -78,10 +78,6 @@ const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 const MAIL_FROM = defineString("MAIL_FROM", {
   default: "TurnoPlus <onboarding@resend.dev>"
 });
-// A quien avisa la vigilancia diaria del almacenamiento (checkStorageHealth).
-// Vacio = no se manda correo: el aviso queda en storageHealthReports y en los
-// logs. Configurar en functions/.env: STORAGE_ALERT_EMAIL=...
-const STORAGE_ALERT_EMAIL = defineString("STORAGE_ALERT_EMAIL", { default: "" });
 // TurnoPlus, la PWA y TurnoPlus Test tienen proveedor App Check registrado.
 // Todos los endpoints callable deben rechazar clientes sin token valido.
 const ENFORCE_APP_CHECK = true;
@@ -122,10 +118,17 @@ Object.assign(exports, require("./attributeInterUnitCost"));
 Object.assign(exports, require("./rrhhDashboards"));
 // Proyección del worker-app en el servidor (reemplaza el pipeline del navegador).
 Object.assign(exports, require("./workerAppProjection"));
-const {
-  runStorageHealthCheck,
-  createStorageAlertSender
-} = require("./storageHealthMonitor");
+// Vigilancia del almacenamiento: revision diaria y callables de TurnoPlus-Admin
+// (solo administrador global). Ver storageHealthFunctions.js.
+{
+  const storageHealth = require("./storageHealthFunctions");
+
+  exports.checkStorageHealth = storageHealth.checkStorageHealth;
+  exports.getStorageHealthOverview = storageHealth.getStorageHealthOverview;
+  exports.getStorageHealthHistory = storageHealth.getStorageHealthHistory;
+  exports.runStorageHealthCheckNow = storageHealth.runStorageHealthCheckNow;
+  exports.sendStorageHealthTestAlert = storageHealth.sendStorageHealthTestAlert;
+}
 
 const db = admin.firestore();
 const WORKER_APP_BASE_URL = process.env.GCLOUD_PROJECT === "turnoplus-test-7c4d9"
@@ -5805,30 +5808,6 @@ function pruneReminderSent(sent, todayIso) {
   }
   return out;
 }
-
-// Vigilancia diaria del almacenamiento: tamano de cada documento de estado,
-// crecimiento y comparacion de formatos en migracion. Avisa solo cuando algo
-// sube de nivel (70 % / 85 %) o aparecen diferencias. Ver storageHealthMonitor.js.
-exports.checkStorageHealth = onSchedule(
-  {
-    schedule: "every day 05:30",
-    timeZone: "America/Santiago",
-    region: "us-central1",
-    memory: "1GiB",
-    timeoutSeconds: 540,
-    secrets: [RESEND_API_KEY]
-  },
-  async () => {
-    await runStorageHealthCheck({
-      db,
-      sendAlert: createStorageAlertSender({
-        to: STORAGE_ALERT_EMAIL.value(),
-        apiKey: RESEND_API_KEY.value(),
-        from: safeMailFrom()
-      })
-    });
-  }
-);
 
 exports.sendReminderAlerts = onSchedule(
   {

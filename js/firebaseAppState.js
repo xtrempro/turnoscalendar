@@ -148,7 +148,6 @@ const appliedEntrySignatures = new Map();
 const EMPTY_SIGNATURES = new Map();
 const entryModulesPresent = new Set();
 const documentHealthByPath = new Map();
-let documentHealthStatusSignature = "";
 let unsubscribeStateEntries = null;
 // Bloqueo de edicion mientras la copia local no merece que se edite encima
 // (ver js/syncFreshness.js). "" = sin bloqueo; si no, "stale" o "discrepancy".
@@ -1733,9 +1732,6 @@ function observeStateDocumentHealth(docSnap) {
         });
     }
 
-    const highest = [...documentHealthByPath.values()]
-        .sort((a, b) => b.ratio - a.ratio)[0] || null;
-
     if (
         assessment.level !== "healthy" &&
         (
@@ -1750,36 +1746,12 @@ function observeStateDocumentHealth(docSnap) {
             moduleId: String(data.moduleId || ""),
             storageKey: String(data.storageKey || "")
         });
-        console.warn(
-            `[TurnoPlus] Documento Firestore al ${assessment.percent}%: ` +
-            documentPath
-        );
     }
 
-    // El banner lo ve solo el dueno de la unidad: es quien puede pedir el
-    // mantenimiento. A un supervisor le aparecia un aviso tecnico ("requiere
-    // mantenimiento") que no puede resolver. La consola y la metrica de
-    // rendimiento siguen registrandolo en todas las sesiones.
-    const status = {
-        type: "app-state-document-health",
-        level: isWorkspaceOwner() ? highest?.level || "healthy" : "healthy",
-        percent: highest?.percent || 0,
-        estimatedBytes: highest?.estimatedBytes || 0,
-        limitBytes: highest?.limitBytes || assessment.limitBytes,
-        documentPath: highest?.documentPath || "",
-        moduleId: highest?.moduleId || "",
-        storageKey: highest?.storageKey || ""
-    };
-    const signature = [
-        status.level,
-        status.percent,
-        status.documentPath
-    ].join("|");
-
-    if (signature === documentHealthStatusSignature) return;
-
-    documentHealthStatusSignature = signature;
-    dispatchStatus(status);
+    // Nada de esto llega a la pantalla (2026-10-02): los avisos tecnicos de
+    // almacenamiento no son para supervisores ni duenos. La revision diaria del
+    // servidor (checkStorageHealth) los centraliza en TurnoPlus-Admin; aqui solo
+    // queda la metrica de rendimiento de esta sesion.
 }
 
 async function readRemoteModuleSnapshot(
@@ -2891,12 +2863,6 @@ export function stopFirebaseAppStateSync() {
     appliedEntrySignatures.clear();
     entryModulesPresent.clear();
     documentHealthByPath.clear();
-    documentHealthStatusSignature = "";
-    dispatchStatus({
-        type: "app-state-document-health",
-        level: "healthy",
-        percent: 0
-    });
     syncGeneration++;
 }
 

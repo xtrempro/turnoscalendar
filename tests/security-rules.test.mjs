@@ -2648,5 +2648,52 @@ test("reglas modulares de Firestore y Storage", async t => {
         }
     );
 
+    await t.test(
+        "la vigilancia del almacenamiento no la lee ni la escribe ningun cliente",
+        async () => {
+            // Solo la Cloud Function (Admin SDK) y TurnoPlus-Admin por sus
+            // callables. Ni el dueno de la unidad, ni un ajeno, ni siquiera
+            // una cuenta con claim de admin global desde el navegador.
+            const globalAdmin = env.authenticatedContext("global-admin", {
+                email: "admin@example.com",
+                email_verified: true,
+                admin: true,
+                globalAdmin: true
+            });
+            const paths = [
+                ["storageHealthUnits", WORKSPACE_ID],
+                ["storageHealthReports", "2026-10-02"],
+                ["storageHealthReports", "2026-10-02", "units", WORKSPACE_ID],
+                ["storageHealthEvents", "2026-10-02_evento"],
+                ["storageHealthRuns", "run_1"],
+                ["storageHealthControl", "state"]
+            ];
+
+            await env.withSecurityRulesDisabled(async context => {
+                for (const path of paths) {
+                    await setDoc(doc(context.firestore(), ...path), {
+                        workspaceId: WORKSPACE_ID,
+                        status: "critical"
+                    });
+                }
+            });
+
+            for (const context of [owner, outsider, globalAdmin]) {
+                const db = context.firestore();
+
+                for (const path of paths) {
+                    await assertFails(getDoc(doc(db, ...path)));
+                    await assertFails(setDoc(doc(db, ...path), { status: "normal" }));
+                    await assertFails(deleteDoc(doc(db, ...path)));
+                }
+                await assertFails(getDocs(collection(db, "storageHealthUnits")));
+                await assertFails(getDocs(query(
+                    collection(db, "storageHealthEvents"),
+                    where("workspaceId", "==", WORKSPACE_ID)
+                )));
+            }
+        }
+    );
+
     await env.cleanup();
 });

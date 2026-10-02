@@ -125,7 +125,7 @@
     "test:app-check": "node --test tests/firebase-app-check-config.test.mjs",
     "test:app-check:live": "node scripts/verify-live-app-check.mjs --env all",
     "test:functions-app-check": "node --test tests/functions-app-check-enforcement.test.mjs",
-    "test:backend-authorization": "node --test functions/test/authorization.test.js functions/test/billingAccount.test.js functions/test/getAccountsAndUnits.test.js functions/test/workerClockIncidents.test.js functions/test/workerSwapRequests.test.js tests/backend-authorization-wiring.test.mjs tests/desvinculacion-marcador.test.mjs",
+    "test:backend-authorization": "node --test functions/test/authorization.test.js functions/test/billingAccount.test.js functions/test/getAccountsAndUnits.test.js functions/test/storageHealthAdmin.test.js functions/test/workerClockIncidents.test.js functions/test/workerSwapRequests.test.js tests/backend-authorization-wiring.test.mjs tests/desvinculacion-marcador.test.mjs",
     "test:messaging": "node --test tests/messaging-regression.test.mjs",
     "test:notification-badge": "node --test tests/notification-badge.test.mjs",
     "test:hhee-detalle": "node --test tests/hhee-detalle-turnos.test.mjs",

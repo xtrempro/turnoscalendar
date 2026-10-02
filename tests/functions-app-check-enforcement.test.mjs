@@ -4,7 +4,8 @@ import test from "node:test";
 
 const callableSources = [
     "functions/index.js",
-    "functions/getAccountsAndUnits.js"
+    "functions/getAccountsAndUnits.js",
+    "functions/storageHealthFunctions.js"
 ].map(file => ({
     file,
     source: readFileSync(file, "utf8")

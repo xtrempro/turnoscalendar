@@ -278,7 +278,79 @@ function legacyListReadable(entry = {}) {
   });
 }
 
+// Misma codificacion que js/firebasePartialState.js (encodePartialStateItemKey):
+// la clave de cada registro dentro de un fragmento sale de su id.
+function encodeShardItemKey(id) {
+  return encodeURIComponent(String(id || "")).replace(/\./g, "%2E");
+}
+
+/**
+ * Integridad de los fragmentos de la bitacora (auditLogShards): un fragmento
+ * sin mapa `items`, un registro que no se puede interpretar (JSON roto, no es
+ * objeto o no tiene id), un registro guardado bajo una clave que no es la de su
+ * id, y un mismo id en mas de un fragmento. Todo eso es incidencia: antes un
+ * registro roto se descartaba en silencio y la comparacion lo veia "faltante"
+ * solo si el formato viejo aun lo tenia.
+ *
+ * @param {Array<{id: string, data: Object}>} shards
+ */
+function auditShardIntegrity(shards = []) {
+  const malformed = [];
+  const unparseable = [];
+  const mismatched = [];
+  const seen = new Map();
+  let records = 0;
+
+  (shards || []).forEach(({ id: shardId, data }) => {
+    const items = data?.items;
+
+    if (!items || typeof items !== "object" || Array.isArray(items)) {
+      malformed.push(String(shardId));
+      return;
+    }
+
+    Object.entries(items).forEach(([key, raw]) => {
+      let log = null;
+
+      try {
+        log = typeof raw === "string" ? JSON.parse(raw) : raw;
+      } catch {
+        log = null;
+      }
+
+      const id = log && typeof log === "object" && !Array.isArray(log)
+        ? String(log.id ?? "").trim()
+        : "";
+
+      if (!id) {
+        unparseable.push(`${shardId}/${key}`);
+        return;
+      }
+
+      records++;
+      if (encodeShardItemKey(id) !== key) mismatched.push(`${shardId}/${key}`);
+      seen.set(id, [...(seen.get(id) || []), String(shardId)]);
+    });
+  });
+
+  const duplicates = [...seen.entries()]
+    .filter(([, where]) => where.length > 1)
+    .map(([id]) => id);
+
+  return {
+    shards: (shards || []).length,
+    records,
+    malformed: malformed.slice(0, 20),
+    unparseable: unparseable.slice(0, 20),
+    mismatched: mismatched.slice(0, 20),
+    duplicates: duplicates.slice(0, 20),
+    issues: malformed.length + unparseable.length + mismatched.length + duplicates.length
+  };
+}
+
 module.exports = {
+  auditShardIntegrity,
+  encodeShardItemKey,
   legacyListReadable,
   FIRESTORE_DOCUMENT_LIMIT_BYTES,
   WARNING_RATIO,

@@ -320,10 +320,6 @@ import {
 import { startRrhhSummaryBackgroundPublisher } from "./rrhhSummaryPublisher.js";
 import { startLeaveConflictWatch } from "./leaveConflicts.js";
 import {
-    clearServerStorageNotice,
-    loadServerStorageNotice
-} from "./storageHealthNotice.js";
-import {
     startFirebaseReplacementRequestSync,
     stopFirebaseReplacementRequestSync
 } from "./firebaseReplacementRequests.js";
@@ -16983,7 +16979,6 @@ initFirebaseShell({
             stopFirebaseAppStateSync();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseAuditLogShardShadowSync();
-            clearServerStorageNotice();
             stopFirebaseAuditLogShardReader();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
@@ -17218,8 +17213,6 @@ initFirebaseShell({
             // el estado ya hidratado, no con el del entorno anterior. Solo que
             // ahora se agenda en vez de bloquear.
             void estadoHidratado.then(() => {
-                // Lo que midio la revision diaria del servidor (solo el dueno).
-                void loadServerStorageNotice(workspace);
                 void startFirebaseReplacementRecordShadowSync(workspace)
                     .catch(error => {
                         console.warn(
@@ -17330,7 +17323,6 @@ initFirebaseShell({
             stopWatchingIncomingTransferBalances();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseAuditLogShardShadowSync();
-            clearServerStorageNotice();
             stopFirebaseAuditLogShardReader();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();

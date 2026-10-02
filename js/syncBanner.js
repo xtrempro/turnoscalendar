@@ -46,12 +46,6 @@ const LOCK_COPY = {
 
 let banner = null;
 let bloqueado = "";
-let storageHealthMessage = "";
-let storageHealthLevel = "";
-// El aviso que deja la revision diaria del servidor (storageHealthNotice.js).
-// Va aparte del local: la alerta local se apaga sola cuando los documentos que
-// ve esta sesion estan sanos, y eso no puede tapar lo que midio el servidor.
-let serverStorageMessage = "";
 let lockReason = "";
 let lockNode = null;
 let lockTitle = null;
@@ -211,20 +205,6 @@ function render() {
         return;
     }
 
-    if (storageHealthMessage) {
-        node.textContent = storageHealthMessage;
-        node.className = `sync-blocked-banner is-storage-${storageHealthLevel}`;
-        node.hidden = false;
-        return;
-    }
-
-    if (serverStorageMessage) {
-        node.textContent = serverStorageMessage;
-        node.className = "sync-blocked-banner is-storage-warning";
-        node.hidden = false;
-        return;
-    }
-
     node.hidden = true;
 }
 
@@ -265,31 +245,6 @@ export function handleSyncStatus(detail) {
         servidorSinRespuesta = false;
         navegadorSinRed = false;
         vigilarCaida();
-        render();
-        return;
-    }
-
-    if (tipo === "server-storage-health") {
-        serverStorageMessage = String(detail.message || "");
-        render();
-        return;
-    }
-
-    if (tipo === "app-state-document-health") {
-        const level = String(detail.level || "healthy");
-
-        if (level === "healthy") {
-            storageHealthMessage = "";
-            storageHealthLevel = "";
-        } else {
-            const key = String(detail.storageKey || "datos compartidos");
-            const percent = Math.max(0, Number(detail.percent) || 0);
-
-            storageHealthLevel = level;
-            storageHealthMessage = level === "critical"
-                ? `Almacenamiento critico (${percent}%): ${key} requiere mantenimiento antes de continuar creciendo.`
-                : `Almacenamiento en observacion (${percent}%): ${key} se acerca a su limite.`;
-        }
         render();
         return;
     }
