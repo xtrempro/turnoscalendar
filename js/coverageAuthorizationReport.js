@@ -109,9 +109,11 @@ function pageHTML(row, monthDate) {
     </section>`;
 }
 
-export function buildCoverageAuthorizationReportHTML(rows, monthDate) {
+// includeEmpty: la hoja del trabajador en la PWA se muestra aunque el mes no
+// tenga horas extras (el supervisor solo imprime a quienes si las tienen).
+export function buildCoverageAuthorizationReportHTML(rows, monthDate, options = {}) {
     const pages = (Array.isArray(rows) ? rows : [])
-        .filter(hasCoverageAuthorizationOvertime)
+        .filter(row => options.includeEmpty || hasCoverageAuthorizationOvertime(row))
         .map(row => pageHTML(row, monthDate))
         .join("");
 

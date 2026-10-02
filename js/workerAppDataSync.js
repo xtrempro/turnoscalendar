@@ -57,9 +57,9 @@ import { getWorkerBlockedDays } from "./workerAvailability.js";
 import {
     buildWorkerHheeMonthSummary,
     buildWorkerHheeSummaries,
-    buildWorkerReportPreviewHTML,
     createAttendanceMarksReader
 } from "./hoursReport.js";
+import { buildWorkerMonthlyReport } from "./coverageAuthorizationRows.js";
 import { fetchHolidays, getCachedHolidays } from "./holidays.js";
 import { getTurnoColorConfig } from "./turnoColors.js";
 import { withManualBalance } from "./balanceUtils.js";
@@ -1280,11 +1280,12 @@ async function buildOvertimeSummaries(profile, schedule, previousPayload = null)
 // el documento de Firestore ni gastar CPU, se generan AUTOMATICAMENTE solo el
 // mes actual y el anterior. Los demas meses se entregan a pedido del trabajador
 // (boton "Solicitar informe" en la PWA -> workerRequests type "report_request").
-async function buildWorkerReports(profile) {
+async function buildWorkerReports(profile, workspaceName = "") {
     return measurePerformance(
         "worker-app:build-reports",
         async () => {
             const reports = {};
+            const validations = {};
             const today = new Date();
             const months = [
                 new Date(today.getFullYear(), today.getMonth(), 1),
@@ -1296,12 +1297,20 @@ async function buildWorkerReports(profile) {
                 const month = date.getMonth();
 
                 try {
-                    const html = await buildWorkerReportPreviewHTML(
+                    // Anexo 2 (o reporte de horas a honorarios) y la huella de
+                    // horas para el visto bueno: lo mismo que el servidor.
+                    const report = await buildWorkerMonthlyReport(
                         profile,
-                        new Date(year, month, 1)
+                        new Date(year, month, 1),
+                        { workspaceName }
                     );
 
-                    if (html) reports[`${year}-${month}`] = html;
+                    const monthKey = `${year}-${month}`;
+
+                    if (report.html) reports[monthKey] = report.html;
+                    // Este mapa se persiste con merge: omitir la clave dejaria
+                    // vigente la huella del Anexo 2 publicado anteriormente.
+                    validations[monthKey] = report.validation || null;
                 } catch (error) {
                     console.warn(
                         "No se pudo construir el reporte para la app del trabajador.",
@@ -1310,7 +1319,7 @@ async function buildWorkerReports(profile) {
                 }
             }
 
-            return reports;
+            return { reports, validations };
         },
         {
             profile: profile?.name || "",
@@ -2156,7 +2165,8 @@ async function refreshWorkerReportsCold({
             return;
         }
 
-        const reportsByMonth = await buildWorkerReports(profile);
+        const { reports: reportsByMonth, validations: reportValidationByMonth } =
+            await buildWorkerReports(profile, workspace?.name || "");
         const { db, firestoreModule } = await getFirebaseServices();
 
         await firestoreModule.setDoc(
@@ -2169,6 +2179,7 @@ async function refreshWorkerReportsCold({
             ),
             {
                 reportsByMonth,
+                reportValidationByMonth,
                 reportsByMonthStatus: "fresh",
                 reportsByMonthUpdatedAtISO: new Date().toISOString(),
                 updatedAt: firestoreModule.serverTimestamp()

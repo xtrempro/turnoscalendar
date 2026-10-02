@@ -33,6 +33,7 @@ const { profilesFromState } = require("./getAccountsAndUnitsCore");
 const {
   createWorkerMedicalEquipmentReportHandler
 } = require("./medicalEquipmentReports");
+const { approveMonthlyHoursHandler } = require("./hoursValidation");
 const {
   findCompatibleReplacementCandidates
 } = require("./linkedReplacementSearch");
@@ -4835,6 +4836,20 @@ exports.createWorkerMedicalEquipmentReport = onCall(
     HttpsError,
     serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
     storageBucket: () => admin.storage().bucket()
+  })
+);
+
+// Visto bueno del trabajador a sus horas del mes (Anexo 2): solo por aqui,
+// con la identidad del enlace y la huella publicada por la unidad.
+exports.approveMonthlyHours = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => approveMonthlyHoursHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()
   })
 );
 

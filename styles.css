@@ -29951,3 +29951,122 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
     .swx-scan__drop { height: 240px; }
     .swx-scan__foot .swx-link { flex-basis: 100%; }
 }
+
+/* Visto bueno de horas (menu Horas extras, hoursValidationPanel.js). */
+.hh-v2 .hh-validation {
+    padding: 0 0 14px;
+}
+
+.hh-validation__count {
+    font-weight: 800;
+    font-size: 0.86rem;
+    color: var(--text-muted);
+}
+
+.hh-validation__hint,
+.hh-validation__empty {
+    margin: 0;
+    padding: 0 20px 10px;
+    color: var(--text-muted);
+    font-size: 0.84rem;
+}
+
+.hh-validation__list {
+    display: grid;
+    gap: 6px;
+    padding: 0 14px;
+}
+
+.hh-validation__retry {
+    margin: 0 20px 12px;
+}
+
+.hh-validation__row {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr) auto minmax(150px, auto);
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--border, rgba(15, 23, 42, 0.12));
+    border-radius: 12px;
+    background: var(--surface, #fff);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.hh-validation__row:hover {
+    border-color: rgba(37, 99, 235, 0.35);
+}
+
+.hh-validation__dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #cbd5e1;
+}
+
+.hh-validation__name {
+    font-weight: 800;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.hh-validation__hours {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+
+.hh-validation__status {
+    display: grid;
+    justify-items: end;
+    font-size: 0.82rem;
+    font-weight: 800;
+    color: #64748b;
+}
+
+.hh-validation__status small {
+    font-weight: 600;
+    opacity: 0.8;
+}
+
+.hh-validation__row.is-validated {
+    border-color: rgba(34, 197, 94, 0.45);
+    background: rgba(34, 197, 94, 0.08);
+}
+
+.hh-validation__row.is-validated .hh-validation__dot {
+    background: #22c55e;
+}
+
+.hh-validation__row.is-validated .hh-validation__status {
+    color: #15803d;
+}
+
+.hh-validation__row.is-changed {
+    border-color: rgba(245, 158, 11, 0.5);
+    background: rgba(245, 158, 11, 0.09);
+}
+
+.hh-validation__row.is-changed .hh-validation__dot {
+    background: #f59e0b;
+}
+
+.hh-validation__row.is-changed .hh-validation__status {
+    color: #b45309;
+}
+
+@media (max-width: 720px) {
+    .hh-validation__row {
+        grid-template-columns: 12px minmax(0, 1fr);
+    }
+
+    .hh-validation__hours,
+    .hh-validation__status {
+        grid-column: 2;
+        justify-items: start;
+    }
+}

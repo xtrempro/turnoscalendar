@@ -2695,5 +2695,60 @@ test("reglas modulares de Firestore y Storage", async t => {
         }
     );
 
+    await t.test(
+        "visto bueno de horas: solo la Cloud Function escribe; lee quien ve Horas extras y cada trabajador el suyo",
+        async () => {
+            const noHours = env.authenticatedContext("no-hours", { email: "no-hours@example.com" });
+            const stateA = ["workspaces", WORKSPACE_ID, "hoursValidations", "worker-a_2026-08"];
+            const stateB = ["workspaces", WORKSPACE_ID, "hoursValidations", "worker-b_2026-08"];
+            const eventA = [...stateA, "events", "e1"];
+            const record = uid => ({ uid, monthKey: "2026-08", signature: "v1-abcd1234", validatedAtMillis: 1 });
+
+            await env.withSecurityRulesDisabled(async context => {
+                const db = context.firestore();
+
+                await setDoc(doc(db, "workspaces", WORKSPACE_ID, "members", "no-hours"), {
+                    role: "member",
+                    permissions: permissions([], ["hours"])
+                });
+                await setDoc(doc(db, ...stateA), record("worker-a"));
+                await setDoc(doc(db, ...stateB), record("worker-b"));
+                await setDoc(doc(db, ...eventA), { ...record("worker-a"), type: "validated" });
+            });
+
+            // Nadie escribe desde un cliente: ni el trabajador, ni el dueno,
+            // ni un supervisor (no pueden fabricar ni alterar un visto bueno).
+            for (const context of [workerA, owner, viewer, noHours, outsider]) {
+                const db = context.firestore();
+
+                await assertFails(setDoc(doc(db, ...stateA), record("worker-a")));
+                await assertFails(updateDoc(doc(db, ...stateA), { signature: "v1-falsa", totalDay: 999 }));
+                await assertFails(deleteDoc(doc(db, ...stateA)));
+                await assertFails(setDoc(doc(db, ...stateB), record("worker-b")));
+                await assertFails(setDoc(doc(db, ...eventA), { type: "validated" }));
+            }
+
+            // El trabajador lee el suyo (exista o no), nunca el de otro.
+            await assertSucceeds(getDoc(doc(workerA.firestore(), ...stateA)));
+            await assertSucceeds(getDoc(doc(workerA.firestore(), "workspaces", WORKSPACE_ID, "hoursValidations", "worker-a_2026-09")));
+            await assertFails(getDoc(doc(workerA.firestore(), ...stateB)));
+            await assertFails(getDoc(doc(workerA.firestore(), "workspaces", WORKSPACE_ID, "hoursValidations", "worker-a_2026-08x")));
+            await assertFails(getDoc(doc(workerA.firestore(), ...eventA)));
+            await assertFails(getDocs(query(
+                collection(workerA.firestore(), "workspaces", WORKSPACE_ID, "hoursValidations"),
+                where("monthKey", "==", "2026-08")
+            )));
+
+            // Quien ve el menu Horas extras lee el mes; sin ese menu, no.
+            await assertSucceeds(getDocs(query(
+                collection(viewer.firestore(), "workspaces", WORKSPACE_ID, "hoursValidations"),
+                where("monthKey", "==", "2026-08")
+            )));
+            await assertSucceeds(getDoc(doc(owner.firestore(), ...eventA)));
+            await assertFails(getDoc(doc(noHours.firestore(), ...stateA)));
+            await assertFails(getDoc(doc(outsider.firestore(), ...stateA)));
+        }
+    );
+
     await env.cleanup();
 });

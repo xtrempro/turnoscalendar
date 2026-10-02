@@ -43,10 +43,10 @@ import {
     linkedDocChanged,
     withoutVolatileFields
 } from "./serverLinkedDocs.js";
+import { buildWorkerMonthlyReport } from "./coverageAuthorizationRows.js";
 import {
     buildWorkerHheeSummaries,
     buildWorkerHheeMonthSummary,
-    buildWorkerReportPreviewHTML,
     buildWorkerClockMarkModifications,
     createAttendanceMarksReader
 } from "./hoursReport.js";
@@ -649,8 +649,12 @@ async function computeOvertimeSummaries(profile, schedule) {
 
 // ───────── Reportes imprimibles (mes actual + anterior) ─────────
 
-async function buildWorkerReports(profile, today = new Date()) {
+// El reporte de cada mes es el Anexo 2 (no honorarios) o el reporte de horas
+// (honorarios), y junto a el va la huella de horas que el trabajador puede
+// validar con su visto bueno (ver coverageAuthorizationRows.js).
+async function buildWorkerReports(profile, today = new Date(), workspaceName = "") {
     const reports = {};
+    const validations = {};
     const months = [
         new Date(today.getFullYear(), today.getMonth(), 1),
         new Date(today.getFullYear(), today.getMonth() - 1, 1)
@@ -661,14 +665,24 @@ async function buildWorkerReports(profile, today = new Date()) {
         const month = date.getMonth();
 
         try {
-            const html = await buildWorkerReportPreviewHTML(profile, new Date(year, month, 1));
-            if (html) reports[`${year}-${month}`] = html;
+            const report = await buildWorkerMonthlyReport(
+                profile,
+                new Date(year, month, 1),
+                { workspaceName }
+            );
+
+            const monthKey = `${year}-${month}`;
+
+            if (report.html) reports[monthKey] = report.html;
+            // Las proyecciones se guardan con merge. El null elimina la huella
+            // util de un Anexo 2 anterior si el perfil pasa a honorarios.
+            validations[monthKey] = report.validation || null;
         } catch (error) {
             console.warn("No se pudo construir el reporte (servidor).", error);
         }
     }
 
-    return reports;
+    return { reports, validations };
 }
 
 // ───────── Saldos de permisos por año ─────────
@@ -1068,7 +1082,8 @@ export async function buildFullProjection(
     const leaveBalances = leaveBalancesByYear[String(today.getFullYear())];
     const overtimeSummaries = await computeOvertimeSummaries(profile, schedule);
     const clockMarkModifications = await buildWorkerClockMarkModifications(profile);
-    const reportsByMonth = await buildWorkerReports(profile, today);
+    const { reports: reportsByMonth, validations: reportValidationByMonth } =
+        await buildWorkerReports(profile, today, workspace.name || link.workspaceName || "");
     const { exceptions, exceptionsStart, exceptionsEnd } =
         computeProfileExceptions(profile, today);
     const effectiveProfile =
@@ -1170,6 +1185,9 @@ export async function buildFullProjection(
         clockMarkModifications,
         reportsByMonth,
         reportsByMonthStatus: "fresh",
+        // Huella de las horas del Anexo 2 por mes: la PWA la envia al dar el
+        // visto bueno y el supervisor la compara con la actual.
+        reportValidationByMonth,
         swapLimit: buildSwapLimit(profile.name, today),
         updatedAtISO: new Date().toISOString()
     };

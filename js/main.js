@@ -374,6 +374,20 @@ import {
     hasCoverageAuthorizationOvertime
 } from "./coverageAuthorizationReport.js";
 import {
+    buildCoverageAuthorizationRow,
+    isCoverageAuthorizationCandidate
+} from "./coverageAuthorizationRows.js";
+import {
+    buildHoursValidationRows,
+    hoursValidationMonthKey,
+    hoursValidationPanelHTML
+} from "./hoursValidationPanel.js";
+import {
+    stopHoursValidationsWatch,
+    watchHoursValidations
+} from "./hoursValidationStore.js";
+import { getWorkerAppLinks } from "./workerAppLinks.js";
+import {
     initHoursCharts,
     renderHoursCharts
 } from "./hoursCharts.js";
@@ -6921,6 +6935,7 @@ function renderDashboardState() {
     if (activeView === "hours") {
         renderProfileHoursSummary(profile);
         renderHheeProfiles();
+        scheduleHoursValidationRender();
     }
 
     if (DOM.profileEditorHint) {
@@ -7261,6 +7276,10 @@ async function setActiveShortcut(targetId, options = {}) {
 
     if (previousView === "log" && nextView !== "log") {
         stopAuditLogShardView();
+    }
+
+    if (previousView === "hours" && nextView !== "hours") {
+        stopHoursValidationPanel();
     }
 
     if (
@@ -7685,6 +7704,118 @@ function renderHheeProfiles() {
         DOM.hheeProfiles.appendChild(item);
     });
 }
+
+// Visto bueno de horas del mes (menu Horas extras). Recorre a todos los
+// trabajadores con el calculo del Anexo 2, asi que va diferido, solo con la
+// vista abierta, y descarta la vuelta si cambio el mes mientras calculaba.
+let hoursValidationTimer = null;
+let hoursValidationRun = 0;
+
+function stopHoursValidationPanel() {
+    clearTimeout(hoursValidationTimer);
+    hoursValidationTimer = null;
+    hoursValidationRun += 1;
+    stopHoursValidationsWatch();
+}
+
+function retryHoursValidationPanel() {
+    stopHoursValidationsWatch();
+    scheduleHoursValidationRender(0);
+}
+
+function scheduleHoursValidationRender(delay = 300) {
+    if (document.body.dataset.activeView !== "hours") return;
+
+    clearTimeout(hoursValidationTimer);
+    hoursValidationTimer = setTimeout(() => {
+        void renderHoursValidationPanel();
+    }, delay);
+}
+
+async function renderHoursValidationPanel() {
+    const host = document.getElementById("hheeValidationPanel");
+
+    if (!host || document.body.dataset.activeView !== "hours") return;
+
+    const run = ++hoursValidationRun;
+    const monthDate = new Date(
+        profileRotationMiniDate.getFullYear(),
+        profileRotationMiniDate.getMonth(),
+        1
+    );
+    const monthLabel = formatMonthHeading(monthDate);
+
+    if (!host.dataset.month || host.dataset.month !== monthLabel) {
+        host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">Calculando…</p>`;
+    }
+
+    // Los vistos buenos del mes (escucha en vivo: uno nuevo repinta).
+    const watched = watchHoursValidations(
+        getActiveWorkspace()?.id || "",
+        hoursValidationMonthKey(monthDate),
+        () => scheduleHoursValidationRender(200)
+    );
+
+    if (!watched.loaded) {
+        host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">Cargando vistos buenos…</p>`;
+        return;
+    }
+
+    if (watched.error) {
+        host.dataset.month = monthLabel;
+        host.innerHTML = `
+            <div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div>
+            <p class="hh-validation__hint">No se pudieron leer los vistos buenos.</p>
+            <button class="secondary-button hh-validation__retry" type="button" data-hours-validation-retry>Reintentar</button>`;
+        return;
+    }
+
+    const uidsByProfile = new Map();
+
+    getWorkerAppLinks().forEach(link => {
+        const name = link.profile?.name;
+
+        if (!name || !link.uid) return;
+        uidsByProfile.set(name, [...(uidsByProfile.get(name) || []), link.uid]);
+    });
+
+    try {
+        const rows = await buildHoursValidationRows(monthDate, {
+            workspaceName: getActiveWorkspace()?.name || "",
+            validations: watched.docs,
+            linkUidsForProfile: profile => uidsByProfile.get(profile.name) || []
+        });
+
+        if (run !== hoursValidationRun) return;
+
+        host.dataset.month = monthLabel;
+        host.innerHTML = hoursValidationPanelHTML(rows, monthLabel);
+    } catch (error) {
+        console.warn("No se pudo armar el visto bueno de horas.", error);
+        if (run === hoursValidationRun) {
+            host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">No se pudo calcular el listado.</p>`;
+        }
+    }
+}
+
+document.addEventListener("click", event => {
+    const retry = event.target.closest?.("[data-hours-validation-retry]");
+
+    if (retry) {
+        retryHoursValidationPanel();
+        return;
+    }
+
+    const row = event.target.closest?.("[data-hours-validation-profile]");
+
+    if (!row) return;
+
+    void selectProfileByName(row.dataset.hoursValidationProfile);
+});
+
+// Un visto bueno nuevo o un cambio de horas: se rehace (debounce largo, para
+// no recalcular con cada tecla del supervisor).
+window.addEventListener("proturnos:persistenceChanged", () => scheduleHoursValidationRender(1500));
 
 function renderClockMarksProfiles() {
     if (!DOM.clockMarksProfiles) return;
@@ -8172,88 +8303,27 @@ async function printTensConsolidatedReport(date) {
     }
 }
 
-function coverageSchedule(record) {
-    const from = record?.coverFrom || record?.shiftFrom || "";
-    const until = record?.coverUntil || record?.shiftUntil || "";
-    return from && until ? `${from} A ${until}` : "";
-}
-
 async function printCoverageAuthorizationReport(date) {
     if (!ensureCanDownloadReports()) return;
 
     const monthDate = new Date(date.getFullYear(), date.getMonth(), 1);
-    const effectiveDate = new Date(date.getFullYear(), date.getMonth() + 1, 0);
     const profiles = getProfiles();
-    const profileByName = new Map(profiles.map(profile => [profile.name, profile]));
-    const replacements = getReplacements().filter(record =>
-        !record?.canceled &&
-        String(record?.date || "").startsWith(
-            `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}-`
-        )
+    const replacements = getReplacements();
+    // El mismo calculo que el Anexo 2 que ve cada trabajador en la PWA (ver
+    // coverageAuthorizationRows.js): lo que imprime la unidad y lo que el
+    // trabajador valida no pueden diferir.
+    const candidates = profiles.filter(profile =>
+        isCoverageAuthorizationCandidate(profile, monthDate)
     );
-    const candidates = profiles.filter(profile => !isHonorariaContractType(
-        getContractTypeAt(profile.name, effectiveDate) || profile.contractType
-    ));
 
     try {
-        const rows = await Promise.all(candidates.map(async profile => {
-            const summary = await buildWorkerHheeMonthSummary(profile, monthDate);
-            const calendarByIso = new Map(
-                (summary?.calendarDays || []).map(day => [day.iso, day])
-            );
-            const recordsByIso = new Map();
-            replacements
-                .filter(record => record.worker === profile.name)
-                .forEach(record => {
-                    const records = recordsByIso.get(record.date) || [];
-                    records.push(record);
-                    recordsByIso.set(record.date, records);
-                });
-            const days = (summary?.extraShifts || []).map(extra => {
-                const records = recordsByIso.get(extra.iso) || [];
-                const replacedNames = [...new Set(records
-                    .map(record => record.replaced)
-                    .filter(Boolean))];
-                const replacedRuts = [...new Set(replacedNames
-                    .map(name => profileByName.get(name)?.rut || "")
-                    .filter(Boolean))];
-                const motives = [...new Set(records
-                    .map(record => record.replaced
-                        ? record.absenceType || "Ausencia"
-                        : record.reason || record.absenceType || "")
-                    .filter(Boolean))];
-                const schedules = [...new Set(records
-                    .map(coverageSchedule)
-                    .filter(Boolean))];
-                const calendar = calendarByIso.get(extra.iso) || {};
-
-                return {
-                    iso: extra.iso,
-                    baseShift: calendar.baseShift || "",
-                    workedShift: extra.turno || calendar.workedShift || "",
-                    schedule: schedules.join(" / "),
-                    dayHours: extra.d,
-                    festiveHours: extra.n,
-                    replacedName: replacedNames.join(" / "),
-                    replacedRut: replacedRuts.join(" / "),
-                    reason: records.length ? "" : extra.backing,
-                    motive: motives.join(" / ") || extra.backing || ""
-                };
-            });
-            const effectiveProfile =
-                getCompensationProfileAt(profile.name, effectiveDate) || profile;
-
-            return {
-                name: profile.name,
-                rut: profile.rut || "",
-                contractType: effectiveProfile.contractType || profile.contractType || "",
-                unit: getActiveWorkspace()?.name || "",
-                estamento: effectiveProfile.estamento || profile.estamento || "",
-                rotationType: getRotativa(profile.name)?.type || "",
-                shiftAssigned: getShiftAssigned(profile.name, effectiveDate),
-                days
-            };
-        }));
+        const rows = await Promise.all(candidates.map(profile =>
+            buildCoverageAuthorizationRow(profile, monthDate, {
+                workspaceName: getActiveWorkspace()?.name || "",
+                profiles,
+                replacements
+            })
+        ));
         const printableRows = rows
             .filter(hasCoverageAuthorizationOvertime)
             .sort((a, b) => a.name.localeCompare(b.name, "es"));
@@ -16337,6 +16407,8 @@ setCalendarSelectionHandler(async ({ cell: celda, date: fecha }) => {
 });
 
 window.addEventListener("proturnos:workerRequestsChanged", () => {
+    scheduleHoursValidationRender(600);
+
     if (document.body.dataset.activeView === "requests") {
         renderWorkerRequestsPanel();
     } else {
@@ -16976,6 +17048,7 @@ initFirebaseShell({
     userName: DOM.authUserName,
     onAuthChange: async user => {
         if (!user) {
+            stopHoursValidationPanel();
             stopFirebaseAppStateSync();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseAuditLogShardShadowSync();
@@ -17002,6 +17075,9 @@ initFirebaseShell({
     },
     onWorkspaceChange: async (workspace, changeOptions = {}) => {
         const generacion = ++workspaceChangeGeneration;
+
+        // La escucha anterior esta asociada a la unidad que se deja.
+        stopHoursValidationPanel();
 
         startFirebaseAuditLogShardReader(workspace);
         const refrescarVistasDelEntorno = () => {

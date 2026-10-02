@@ -80,7 +80,7 @@ import {
     getWorkerAppLinkForProfile,
     notifyWorkerApp
 } from "./workerAppDataSync.js";
-import { buildWorkerReportPreviewHTML } from "./hoursReport.js";
+import { buildWorkerMonthlyReport } from "./coverageAuthorizationRows.js";
 import { normalizeText } from "./stringUtils.js";
 
 const REQUEST_TYPE_LABELS = {
@@ -1124,12 +1124,19 @@ async function applyReportRequest(request, profileName) {
     }
 
     let html = "";
+    let validation = null;
 
     try {
-        html = await buildWorkerReportPreviewHTML(
+        // Anexo 2 (o el reporte de horas, a honorarios): lo mismo que publica
+        // la Cloud Function para el mes actual y el anterior.
+        const report = await buildWorkerMonthlyReport(
             profile,
-            new Date(year, month, 1)
+            new Date(year, month, 1),
+            { workspaceName: workspace.name || "" }
         );
+
+        html = report.html;
+        validation = report.validation;
     } catch (error) {
         console.warn("No se pudo generar el informe solicitado.", error);
 
@@ -1159,6 +1166,11 @@ async function applyReportRequest(request, profileName) {
             ),
             {
                 reportsByMonth: { [`${year}-${month}`]: html },
+                // La escritura usa merge; null invalida una huella anterior si
+                // este mes ahora corresponde a un reporte de honorarios.
+                reportValidationByMonth: {
+                    [`${year}-${month}`]: validation || null
+                },
                 updatedAt: firestoreModule.serverTimestamp()
             },
             { merge: true }

@@ -38,6 +38,7 @@ function compare(a, b) {
 function fakeFirestore(seed = {}) {
   const docs = new Map(Object.entries(seed));
   const stats = { reads: 0, writes: 0 };
+  let autoIds = 0;
 
   const snapshotOf = docPath => {
     const exists = docs.has(docPath);
@@ -83,7 +84,8 @@ function fakeFirestore(seed = {}) {
 
   function collection(collectionPath) {
     const make = state => ({
-      doc: id => docRef(`${collectionPath}/${id}`),
+      // Sin id, uno automatico (como el Admin SDK).
+      doc: (id = `auto${++autoIds}`) => docRef(`${collectionPath}/${id}`),
       where(field, op, value) {
         return make({ ...state, filters: [...state.filters, { field, op, value }] });
       },
