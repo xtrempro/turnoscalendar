@@ -1,5 +1,5 @@
 // Cubrir un cupo de la Brecha RRHH: el supervisor puede dejar un comentario
-// (con los motivos predefinidos de las horas extras) que queda en el reporte
+// (con sus propios motivos predefinidos, no los de horas extras) que queda en el reporte
 // del trabajador. El motivo interno ("Completar rotativa de ...") no cambia:
 // es el que deja a la persona con los TITULARES, nunca en una columna de
 // motivo de HHEE.
@@ -180,8 +180,22 @@ test("el cuadro se pide solo al cubrir un CUPO, fuera del estado ocupado, y el c
     assert.match(calendar, /comment: rota \? cupoComment : "",\s*keyDay,/, "preasignacion");
     assert.match(calendar, /comment: rota \? cupoComment : "",\s*keyDay,\s*turno: neededTurn,\s*absenceType: rota \? "" : absenceType,\s*source: rota/, "cobertura directa");
     assert.match(calendar, /comment: String\(preassignment\.comment \|\| ""\)\.trim\(\),\s*absenceType: "Motivo manual"/, "al confirmar la preasignacion");
-    // Usa los motivos predefinidos de las horas extras y su editor.
-    assert.match(calendar, /export function openCupoCoverReasonDialog[\s\S]*getManualExtraReasonPresets\(\)[\s\S]*openManualExtraReasonPresetsDialog\(\)/);
+    // Motivos PROPIOS de los cupos (no los de horas extras), con sus dos de
+    // partida, editables y compartidos entre supervisores de la unidad.
+    const dialog = calendar.slice(
+        calendar.indexOf("export function openCupoCoverReasonDialog"),
+        calendar.indexOf("function openShiftAttendanceDialog(")
+    );
+
+    assert.match(calendar, /CUPO_COVER_REASON_PRESETS_KEY = "cupoCoverReasonPresets"/);
+    assert.match(calendar, /"Cubre cupo disponible por renuncia de funcionario",\s*"Cubre cupo disponible por funcionario que se cambia de unidad"/);
+    assert.match(dialog, /getCupoCoverReasonPresets\(\)/);
+    assert.doesNotMatch(dialog, /getManualExtraReasonPresets/);
+    assert.match(dialog, /openManualExtraReasonPresetsDialog\(\s*CUPO_COVER_REASON_PRESETS_KEY,\s*getCupoCoverReasonPresets\(\)\s*\)/);
+
+    const modules = await readFile(new URL("../js/firebaseStateModules.js", import.meta.url), "utf8");
+
+    assert.match(modules, /\["cupoCoverReasonPresets", "turnos"\]/);
     // El reporte del trabajador (detalle del dia y registro de reemplazos).
     assert.equal((report.match(/withCupoComment\(record\.reason/g) || []).length, 2);
 });

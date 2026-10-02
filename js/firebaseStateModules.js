@@ -37,6 +37,8 @@ const EXACT_KEY_MODULES = new Map([
     ["noCoverageReasonPresets", "turnos"],
     // Comentarios predefinidos al quitar a alguien de un turno aceptado.
     ["shiftAttendanceCommentPresets", "turnos"],
+    // Motivos predefinidos al cubrir un cupo de la Brecha RRHH.
+    ["cupoCoverReasonPresets", "turnos"],
     ["turnoColorConfig", "turnos"],
     // La tanda de colores de la programacion. Se comparte porque la
     // programacion se imprime y se reparte: los colores son una decision de la

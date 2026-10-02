@@ -368,6 +368,14 @@ const DEFAULT_NO_COVERAGE_REASON_PRESETS = [
     "Turno sin demanda asistencial",
     "Cobertura resuelta con otra unidad"
 ];
+// Motivos al cubrir un cupo de la Brecha RRHH. Lista PROPIA, no la de horas
+// extras: un cupo se cubre porque falta alguien en la dotacion ("renuncia",
+// "se cambio de unidad"), no por una tarea. Cada supervisor agrega el resto.
+const CUPO_COVER_REASON_PRESETS_KEY = "cupoCoverReasonPresets";
+const DEFAULT_CUPO_COVER_REASON_PRESETS = [
+    "Cubre cupo disponible por renuncia de funcionario",
+    "Cubre cupo disponible por funcionario que se cambia de unidad"
+];
 const SHIFT_ATTENDANCE_PRESETS_KEY = "shiftAttendanceCommentPresets";
 // Solo casos en que el turno NO se hizo: llegar atrasado o retirarse antes no
 // es motivo para quitarlo (el turno se trabajo; eso lo mide el reloj control).
@@ -8073,6 +8081,13 @@ function openNoCoverageReasonDialog(profileName, keyDay) {
     });
 }
 
+function getCupoCoverReasonPresets() {
+    return getReasonPresets(
+        CUPO_COVER_REASON_PRESETS_KEY,
+        DEFAULT_CUPO_COVER_REASON_PRESETS
+    );
+}
+
 function getShiftAttendancePresets() {
     return getReasonPresets(
         SHIFT_ATTENDANCE_PRESETS_KEY,
@@ -8086,8 +8101,8 @@ function getShiftAttendancePresets() {
  * se editan con el lapiz, igual que los motivos de HHEE.
  */
 /**
- * Al cubrir un cupo de la Brecha RRHH: comentario del supervisor (con los
- * mismos motivos predefinidos de las horas extras), que queda en el reporte
+ * Al cubrir un cupo de la Brecha RRHH: comentario del supervisor (con sus
+ * propios motivos predefinidos, ver CUPO_COVER_REASON_PRESETS_KEY), que queda en el reporte
  * del trabajador. Es aparte del motivo interno del registro ("Completar
  * rotativa de ..."), que es el que lo deja con los titulares y descuenta el
  * cupo: el comentario nunca lo reemplaza.
@@ -8105,7 +8120,7 @@ export function openCupoCoverReasonDialog({ worker, keyDay, label, turnoLabel, p
         let settled = false;
 
         const presetsHTML = () => {
-            const presets = getManualExtraReasonPresets();
+            const presets = getCupoCoverReasonPresets();
 
             if (!presets.length) {
                 return `<small>Sin motivos predefinidos.</small>`;
@@ -8152,7 +8167,7 @@ export function openCupoCoverReasonDialog({ worker, keyDay, label, turnoLabel, p
                     <textarea
                         rows="3"
                         data-cupo-reason-comment
-                        placeholder="Ej: Campana de Invierno, Estacion de Trabajo"
+                        placeholder="Ej: Cubre cupo disponible por renuncia de funcionario"
                     ></textarea>
                     <div class="replacement-dialog-toolbar" data-cupo-reason-preset-list>
                         ${presetsHTML()}
@@ -8215,7 +8230,10 @@ export function openCupoCoverReasonDialog({ worker, keyDay, label, turnoLabel, p
         backdrop
             .querySelector("[data-action='edit-cupo-reason-presets']")
             ?.addEventListener("click", async () => {
-                const saved = await openManualExtraReasonPresetsDialog();
+                const saved = await openManualExtraReasonPresetsDialog(
+                    CUPO_COVER_REASON_PRESETS_KEY,
+                    getCupoCoverReasonPresets()
+                );
 
                 if (!saved) return;
 
