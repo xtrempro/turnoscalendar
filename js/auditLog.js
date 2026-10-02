@@ -1543,6 +1543,33 @@ export function getAuditLogs() {
     return normalizeLogs(asRecordList(getJSON(KEY, [])));
 }
 
+// Permisos aplicados EN ESTA SESION (esta pestana). Si dos supervisores aplican
+// permisos distintos al mismo trabajador el mismo dia casi a la vez, cada
+// pestana valida contra lo que tiene y los dos se guardan; leaveConflicts.js
+// anula el que llego segundo, y solo lo hace la sesion que lo aplico.
+const leaveLogsAppliedHere = new Set();
+
+export function leaveLogsAppliedInThisSession() {
+    if (!leaveLogsAppliedHere.size) return [];
+
+    return getAuditLogs().filter(log =>
+        leaveLogsAppliedHere.has(log.id) && !log.canceledAt
+    );
+}
+
+export function forgetSessionLeaveLog(logId) {
+    leaveLogsAppliedHere.delete(String(logId || ""));
+}
+
+// El tipo de permiso de un registro de la bitacora y sus dias (claves del
+// calendario) cuando el registro los trae.
+export function leaveLogUndoInfo(log) {
+    return {
+        type: getLeaveUndoType(log),
+        keys: normalizeKeyList(log?.meta?.keys)
+    };
+}
+
 export function addAuditLog(category, action, details = "", meta = {}) {
     const def = categoryDef(category);
     const logs = getAuditLogs();
@@ -1595,6 +1622,10 @@ export function addAuditLog(category, action, details = "", meta = {}) {
     }
 
     setJSON(KEY, trimLogs(logs));
+
+    if (entry.category === AUDIT_CATEGORY.LEAVE_ABSENCE && canUndoAuditLog(entry)) {
+        leaveLogsAppliedHere.add(entry.id);
+    }
 
     if (document.body.dataset.activeView === "log") {
         renderAuditLogPanel();

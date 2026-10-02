@@ -313,6 +313,7 @@ import {
     stopFirebaseAuditLogShardShadowSync
 } from "./firebaseAuditLogShards.js";
 import { startRrhhSummaryBackgroundPublisher } from "./rrhhSummaryPublisher.js";
+import { startLeaveConflictWatch } from "./leaveConflicts.js";
 import {
     startFirebaseReplacementRequestSync,
     stopFirebaseReplacementRequestSync
@@ -16907,6 +16908,9 @@ initSystemSettings({
     }
 });
 initPlansUI({ button: DOM.plansBtn });
+// Dos permisos distintos el mismo dia aplicados casi a la vez desde dos
+// sesiones: prevalece el primero (ver js/leaveConflicts.js).
+startLeaveConflictWatch();
 handleWebpayReturn();
 initSupervisorMessages({
     button: DOM.floatingMessagesBtn,
