@@ -7,8 +7,12 @@ import {
 } from "./auditLogShardStore.js";
 import { encodePartialStateItemKey } from "./firebasePartialState.js";
 import { recordPerformanceEvent } from "./performanceMonitor.js";
+import { cacheFirebaseAuditLogShardEntries } from "./firebaseAuditLogShardReader.js";
 
-const SHADOW_STORAGE = "shards-shadow-v1";
+const SHADOW_STORAGE_MODES = new Set([
+    "shards-shadow-v1",
+    "shards-read-v1"
+]);
 const RETRY_MAX_DELAY_MS = 30000;
 const WRITE_GROUP_BATCH_SIZE = 100;
 
@@ -176,7 +180,7 @@ export async function startFirebaseAuditLogShardShadowSync(workspace) {
 
     if (
         !workspace?.id ||
-        workspace.auditLogStorage !== SHADOW_STORAGE ||
+        !SHADOW_STORAGE_MODES.has(workspace.auditLogStorage) ||
         !canEditMenu("log") ||
         typeof window === "undefined"
     ) {
@@ -198,6 +202,8 @@ export async function startFirebaseAuditLogShardShadowSync(workspace) {
         const groups = groupAuditLogsByShard(upserts);
 
         if (!groups.length) return;
+
+        cacheFirebaseAuditLogShardEntries(upserts);
 
         void enqueueWrite(workspace.id, groups, expectedGeneration)
             .catch(() => undefined);

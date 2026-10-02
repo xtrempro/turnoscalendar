@@ -1,4 +1,4 @@
-const AUDIT_LOG_SHARD_COUNT = 4;
+export const AUDIT_LOG_SHARD_COUNT = 4;
 
 function stableValue(value) {
     if (Array.isArray(value)) return value.map(stableValue);
@@ -24,14 +24,35 @@ function hashString(value) {
     return hash >>> 0;
 }
 
+function utcDay(value) {
+    const timestamp = Date.parse(String(value || ""));
+
+    if (!Number.isFinite(timestamp)) return "";
+
+    return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+export function auditLogTimestampFromId(logId) {
+    const match = /^(\d{13})(?:_|$)/.exec(String(logId || "").trim());
+    const timestamp = Number(match?.[1] || NaN);
+
+    if (!Number.isSafeInteger(timestamp)) return "";
+
+    const date = new Date(timestamp);
+
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+export function auditLogUtcMonth(value) {
+    return utcDay(value).slice(0, 7);
+}
+
 export function auditLogShardLocation(log = {}) {
     const id = String(log.id || "").trim();
-    const createdAt = String(log.createdAt || "").trim();
-    const match = /^(\d{4}-\d{2}-\d{2})/.exec(createdAt);
+    const day = utcDay(log.createdAt);
 
-    if (!id || !match) return null;
+    if (!id || !day) return null;
 
-    const day = match[1];
     const shard = hashString(id) % AUDIT_LOG_SHARD_COUNT;
 
     return {
@@ -41,6 +62,13 @@ export function auditLogShardLocation(log = {}) {
         shard,
         documentId: `${day}_${shard}`
     };
+}
+
+export function auditLogShardLocationFromId(logId, createdAt = "") {
+    const id = String(logId || "").trim();
+    const inferredCreatedAt = createdAt || auditLogTimestampFromId(id);
+
+    return auditLogShardLocation({ id, createdAt: inferredCreatedAt });
 }
 
 export function diffAuditLogShardUpserts(previous = [], next = []) {

@@ -7,6 +7,10 @@ const main = readFileSync("js/main.js", "utf8");
 const shell = readFileSync("js/firebaseShell.js", "utf8");
 const workspaces = readFileSync("js/workspaces.js", "utf8");
 const auditShards = readFileSync("js/firebaseAuditLogShards.js", "utf8");
+const auditShardReader = readFileSync(
+    "js/firebaseAuditLogShardReader.js",
+    "utf8"
+);
 
 test("la marca de reemplazos viaja desde el documento de unidad", () => {
     assert.match(
@@ -40,10 +44,38 @@ test("las unidades nuevas nacen con bitacora fragmentada en sombra", () => {
         workspaces,
         /const workspace = \{[\s\S]*?auditLogStorage: "shards-shadow-v1"/
     );
-    assert.match(auditShards, /const SHADOW_STORAGE = "shards-shadow-v1"/);
+    assert.match(auditShards, /"shards-shadow-v1"/);
+    assert.match(auditShards, /"shards-read-v1"/);
     assert.match(
         auditShards,
-        /workspace\.auditLogStorage !== SHADOW_STORAGE/
+        /SHADOW_STORAGE_MODES\.has\(workspace\.auditLogStorage\)/
+    );
+});
+
+test("el lector fragmentado se configura sin leer al arrancar", () => {
+    const start = auditShardReader.indexOf(
+        "export function startFirebaseAuditLogShardReader"
+    );
+    const end = auditShardReader.indexOf(
+        "export async function watchFirebaseAuditLogShardMonth",
+        start
+    );
+    const block = auditShardReader.slice(start, end);
+
+    assert.notEqual(start, -1);
+    assert.doesNotMatch(block, /getFirebaseServices|getDocs|getDoc|onSnapshot/);
+    assert.match(
+        auditShardReader,
+        /where\("month", "==", normalizedMonth\)/
+    );
+    assert.match(
+        auditShardReader,
+        /auditLogShardLocationFromId\(id, createdAt\)/
+    );
+    assert.match(auditShardReader, /expectedWatchGeneration/);
+    assert.match(
+        main,
+        /if \(!auditLogShardReadEnabled\(\)\) \{[\s\S]*?hydrateDeferredStateModule\("log"\)/
     );
 });
 

@@ -1,7 +1,8 @@
 # Auditoria de almacenamiento Firestore
 
-Este cambio prepara una migracion compatible. No cambia aun la fuente oficial
-de lectura y no elimina datos automaticamente.
+Esta migracion mantiene compatibilidad por unidad y no elimina datos
+automaticamente. La fuente de lectura del menu LOG cambia solo al activar la
+marca explicita `shards-read-v1`.
 
 ## Estado medido el 2026-10-01
 
@@ -17,9 +18,10 @@ de lectura y no elimina datos automaticamente.
 
 ## Garantias de esta fase
 
-- El formato antiguo sigue siendo la fuente oficial.
+- El formato antiguo sigue siendo la fuente oficial salvo en el menu LOG de
+  una unidad marcada `shards-read-v1`.
 - La bitacora fragmentada solo escribe si la unidad tiene
-  `auditLogStorage: "shards-shadow-v1"`.
+  `auditLogStorage: "shards-shadow-v1"` o `"shards-read-v1"`.
 - Los reemplazos nuevos guardan `date` y `month` sin cambiar la lectura actual.
 - Los scripts que pueden escribir son dry-run por defecto, exigen identificar
   exactamente la unidad y crean un respaldo antes de modificar datos.
@@ -29,13 +31,42 @@ de lectura y no elimina datos automaticamente.
   mismo estado logico.
 - Compactar tombstones requiere ademas `--compatibility-window-closed`.
 
+## Lectura fragmentada
+
+- `shards-shadow-v1` conserva la lectura antigua y duplica las escrituras.
+- `shards-read-v1` mantiene esa doble escritura, pero el menu LOG lee los
+  fragmentos del mes seleccionado.
+- Configurar el lector al entrar a una unidad no ejecuta consultas. La primera
+  consulta ocurre al abrir LOG y observa solo el mes elegido.
+- La ubicacion puntual se deduce del milisegundo inicial del `logId`. Los IDs
+  deterministas que no contienen fecha requieren tambien `createdAt`; nunca se
+  recorren meses para encontrarlos.
+- Tanto el backfill como las consultas usan dias y meses UTC. Esto incluye las
+  ultimas horas de Chile que UTC ya considera del dia o mes siguiente.
+- Salir de LOG, cambiar de unidad o cerrar sesion cancela el listener mensual.
+- El formato antiguo sigue activo durante la ventana de compatibilidad para
+  permisos, reemplazos, conflictos y clientes que aun no recibieron la version
+  nueva.
+
+## Prueba en test del 2026-10-01
+
+- Urgencia Adulto quedo exacta: 700 registros fragmentados, sin faltantes,
+  diferencias ni duplicados.
+- Los 150 documentos conservaron 61 registros que la poda ya habia retirado
+  del formato antiguo.
+- Dos pares de escrituras simultaneas cayeron en el mismo fragmento y ambos
+  registros persistieron.
+- Se comprobaron altas, modificaciones, poda y concurrencia antes de preparar
+  `shards-read-v1`.
+
 ## Orden de activacion propuesto
 
 1. Revisar este commit y desplegar primero reglas y aplicacion.
 2. Activar `shards-shadow-v1` solo en una unidad de prueba.
 3. Ejecutar el backfill de bitacora en dry-run y luego con `--apply`.
 4. Comparar formato antiguo y fragmentado durante una ventana acordada.
-5. Incorporar la lectura fragmentada en otro cambio; no esta incluida aqui.
+5. Activar `shards-read-v1` primero en la unidad de prueba y comprobar meses,
+   deshacer y escrituras desde dos sesiones.
 6. Retirar `value` documento por documento solo cuando la verificacion sea
    segura.
 7. Compactar tombstones unicamente despues de cerrar la ventana de
@@ -61,4 +92,5 @@ usa `npm.cmd run cleanup:entry-legacy` y tambien es dry-run por defecto.
 - Revisar la reconstruccion logica antes de retirar `value`.
 - Revisar la precondicion de concurrencia y el respaldo de cada script con
   `--apply`.
-- Confirmar que no existe aun ningun cambio de lectura ni borrado automatico.
+- Confirmar que `shards-read-v1` no consulta al arrancar, limita la lectura al
+  mes UTC elegido y no ejecuta ningun borrado automatico.

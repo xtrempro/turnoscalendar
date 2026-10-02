@@ -20,6 +20,15 @@ import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { showConfirm } from "./dialogs.js";
+import { auditLogUtcMonth } from "./auditLogShardStore.js";
+import {
+    auditLogShardReadEnabled,
+    getCachedAuditLogShardEntries,
+    getCachedAuditLogShardEntry,
+    getCachedAuditLogShardMonth,
+    stopFirebaseAuditLogShardMonthWatch,
+    watchFirebaseAuditLogShardMonth
+} from "./firebaseAuditLogShardReader.js";
 
 const KEY = "auditLog";
 const MAX_LOGS = 1500;
@@ -68,6 +77,8 @@ const selectedCategories = new Set();
 let expandedLogId = "";
 let leaveApplicationLogCacheRaw = null;
 let leaveApplicationLogCache = [];
+let requestedShardMonth = "";
+let shardMonthError = "";
 
 export const AUDIT_CATEGORY = {
     TURN_CHANGES: "turn_changes",
@@ -187,6 +198,10 @@ function logMonthValue(log) {
     if (Number.isNaN(date.getTime())) return "";
 
     return monthValue(date);
+}
+
+function shardLogMonthValue(log) {
+    return auditLogUtcMonth(log?.createdAt);
 }
 
 function isoToDateKey(value) {
@@ -822,25 +837,50 @@ export function equivalentActiveLeaveLogs(logs, sourceLog) {
 }
 
 function cancelEquivalentLeaveLogs(sourceLog, cancellation) {
-    const logs = getAuditLogs();
+    const localLogs = getAuditLogs();
+    const availableLogs = new Map(
+        getCachedAuditLogShardEntries().map(log => [log.id, log])
+    );
+
+    localLogs.forEach(log => availableLogs.set(log.id, log));
+
     const matchingIds = new Set(
-        equivalentActiveLeaveLogs(logs, sourceLog).map(log => log.id)
+        equivalentActiveLeaveLogs(
+            [...availableLogs.values()],
+            sourceLog
+        ).map(log => log.id)
     );
 
     if (!matchingIds.size) return;
 
-    setJSON(KEY, trimLogs(logs.map(log =>
-        matchingIds.has(log.id)
-            ? { ...log, ...cancellation }
-            : log
-    )));
+    const nextLogs = new Map(localLogs.map(log => [log.id, log]));
+
+    matchingIds.forEach(id => {
+        const current = nextLogs.get(id) || availableLogs.get(id);
+
+        if (current) nextLogs.set(id, { ...current, ...cancellation });
+    });
+
+    setJSON(KEY, trimLogs([...nextLogs.values()]));
 }
 
 function updateLog(logId, updater) {
     const logs = getAuditLogs();
-    const nextLogs = logs.map(log =>
-        log.id === logId ? updater(log) : log
-    );
+    const index = logs.findIndex(log => log.id === logId);
+    const current = index >= 0
+        ? logs[index]
+        : getCachedAuditLogShardEntry(logId);
+
+    if (!current) return;
+
+    const updated = updater(current);
+    const nextLogs = logs.slice();
+
+    if (index >= 0) {
+        nextLogs[index] = updated;
+    } else {
+        nextLogs.push(updated);
+    }
 
     setJSON(KEY, trimLogs(nextLogs));
 }
@@ -1426,12 +1466,56 @@ function cancelLinkedReplacementRequests(replacements, sourceLog) {
     }
 }
 
-function sortedLogs() {
-    return getAuditLogs()
+function sortLogs(logs) {
+    return normalizeLogs(logs)
         .slice()
         .sort((a, b) =>
             String(b.createdAt).localeCompare(String(a.createdAt))
         );
+}
+
+function selectedMonthLogs() {
+    if (!auditLogShardReadEnabled()) {
+        return sortLogs(getAuditLogs()).filter(log =>
+            logMonthValue(log) === selectedMonth
+        );
+    }
+
+    const archived = getCachedAuditLogShardMonth(selectedMonth);
+    const merged = new Map(
+        (archived || []).map(log => [log.id, log])
+    );
+
+    // Durante la convivencia el estado antiguo sigue recibiendo el mismo
+    // cambio. Si la escritura local aun no fue confirmada por el snapshot del
+    // fragmento, esa copia evita que el LOG parpadee hacia atras.
+    getAuditLogs()
+        .filter(log => shardLogMonthValue(log) === selectedMonth)
+        .forEach(log => merged.set(log.id, log));
+
+    return sortLogs([...merged.values()]);
+}
+
+function ensureSelectedShardMonth() {
+    if (
+        !auditLogShardReadEnabled() ||
+        requestedShardMonth === selectedMonth
+    ) {
+        return;
+    }
+
+    requestedShardMonth = selectedMonth;
+    void watchFirebaseAuditLogShardMonth(selectedMonth).catch(() => {
+        if (requestedShardMonth === selectedMonth) {
+            requestedShardMonth = "";
+        }
+    });
+}
+
+export function stopAuditLogShardView() {
+    requestedShardMonth = "";
+    shardMonthError = "";
+    stopFirebaseAuditLogShardMonthWatch();
 }
 
 function latestForCategory(logs, category) {
@@ -1527,16 +1611,6 @@ function entryHTML(log) {
     `;
 }
 
-function filterLogsBySelectedMonth(logs) {
-    if (!selectedMonth) {
-        selectedMonth = monthValue();
-    }
-
-    return logs.filter(log =>
-        logMonthValue(log) === selectedMonth
-    );
-}
-
 export { trimLogs as trimAuditLogs };
 
 export function getAuditLogs() {
@@ -1575,13 +1649,14 @@ export function addAuditLog(category, action, details = "", meta = {}) {
     const logs = getAuditLogs();
     const actor = getCurrentActor();
     const auditEntryId = String(meta.auditEntryId || "").trim();
+    const createdAt = new Date();
     const entryMeta = { ...meta };
 
     delete entryMeta.auditEntryId;
 
     const entry = {
         id: auditEntryId ||
-            `${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            `${createdAt.getTime()}_${Math.random().toString(36).slice(2)}`,
         category: def.key,
         action: String(action || def.title),
         details: String(details || ""),
@@ -1589,7 +1664,7 @@ export function addAuditLog(category, action, details = "", meta = {}) {
             meta.profile !== undefined
                 ? String(meta.profile || "")
                 : (getCurrentProfile() || ""),
-        createdAt: new Date().toISOString(),
+        createdAt: createdAt.toISOString(),
         actor,
         actorName: actor.name,
         meta: {
@@ -1637,7 +1712,8 @@ export function addAuditLog(category, action, details = "", meta = {}) {
 }
 
 export async function undoAuditLogEntry(logId, options = {}) {
-    const log = getAuditLogs().find(item => item.id === logId);
+    const log = getAuditLogs().find(item => item.id === logId) ||
+        getCachedAuditLogShardEntry(logId);
 
     if (!log || !canUndoAuditLog(log)) return { ok: false };
 
@@ -1701,11 +1777,17 @@ export function renderAuditLogPanel() {
     if (!box) return;
 
     if (!selectedMonth) {
-        selectedMonth = monthValue();
+        selectedMonth = auditLogShardReadEnabled()
+            ? auditLogUtcMonth(new Date().toISOString())
+            : monthValue();
     }
 
-    const allLogs = sortedLogs();
-    const logs = filterLogsBySelectedMonth(allLogs);
+    ensureSelectedShardMonth();
+
+    const logs = selectedMonthLogs();
+    const shardMonthPending =
+        auditLogShardReadEnabled() &&
+        getCachedAuditLogShardMonth(selectedMonth) === null;
     const activeCategories = Array.from(selectedCategories);
     const visibleLogs = activeCategories.length
         ? logs.filter(log => selectedCategories.has(log.category))
@@ -1734,7 +1816,20 @@ export function renderAuditLogPanel() {
                 <h4>Detalle de registros</h4>
                 <span>${visibleLogs.length} de ${logs.length} registros del mes</span>
             </div>
-            ${visibleLogs.length
+            ${shardMonthError === selectedMonth
+                ? `
+                    <div class="empty-state empty-state--compact">
+                        No se pudo cargar el archivo completo del mes. Se muestran los registros recientes disponibles.
+                    </div>
+                `
+                : ""}
+            ${shardMonthPending
+                ? `
+                    <div class="empty-state empty-state--compact">
+                        Cargando registros del mes...
+                    </div>
+                `
+                : visibleLogs.length
                 ? visibleLogs.map(entryHTML).join("")
                 : `
                     <div class="empty-state empty-state--compact">
@@ -1750,7 +1845,13 @@ export function renderAuditLogPanel() {
 
     if (filter) {
         filter.onchange = () => {
-            selectedMonth = filter.value || monthValue();
+            selectedMonth = filter.value || (
+                auditLogShardReadEnabled()
+                    ? auditLogUtcMonth(new Date().toISOString())
+                    : monthValue()
+            );
+            requestedShardMonth = "";
+            shardMonthError = "";
             renderAuditLogPanel();
         };
     }
@@ -1811,4 +1912,23 @@ export function renderAuditLogPanel() {
 
 if (typeof window !== "undefined") {
     window.renderAuditLogPanel = renderAuditLogPanel;
+    window.addEventListener(
+        "proturnos:auditLogShardMonthChanged",
+        event => {
+            if (
+                document.body.dataset.activeView === "log" &&
+                event?.detail?.month === selectedMonth
+            ) {
+                if (Object.prototype.hasOwnProperty.call(
+                    event.detail,
+                    "error"
+                )) {
+                    shardMonthError = event.detail.error
+                        ? selectedMonth
+                        : "";
+                }
+                renderAuditLogPanel();
+            }
+        }
+    );
 }

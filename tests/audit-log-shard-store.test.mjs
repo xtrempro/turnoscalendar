@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     auditLogShardLocation,
+    auditLogShardLocationFromId,
+    auditLogTimestampFromId,
+    auditLogUtcMonth,
     auditLogsFromShardDocuments,
     diffAuditLogShardUpserts,
     groupAuditLogsByShard
@@ -16,6 +19,52 @@ test("cada registro cae en un fragmento diario estable", () => {
     assert.deepEqual(first, second);
     assert.equal(first.month, "2026-10");
     assert.match(first.documentId, /^2026-10-01_[0-3]$/);
+});
+
+test("la fecha del fragmento usa UTC incluso si el ISO trae hora de Chile", () => {
+    const location = auditLogShardLocation(log(
+        "a",
+        "2026-09-30T22:30:00-03:00"
+    ));
+
+    assert.equal(location.day, "2026-10-01");
+    assert.equal(location.month, "2026-10");
+    assert.equal(auditLogUtcMonth("2026-09-30T22:30:00-03:00"), "2026-10");
+});
+
+test("un id normal permite ubicar un solo documento sin conocer createdAt", () => {
+    const timestamp = Date.parse("2026-10-01T01:30:00.000Z");
+    const id = `${timestamp}_abc123`;
+    const location = auditLogShardLocationFromId(id);
+
+    assert.equal(auditLogTimestampFromId(id), "2026-10-01T01:30:00.000Z");
+    assert.equal(location.day, "2026-10-01");
+    assert.match(location.documentId, /^2026-10-01_[0-3]$/);
+});
+
+test("un id determinista exige createdAt como respaldo", () => {
+    const id = "memo_leave_cancel_abc_12";
+
+    assert.equal(auditLogShardLocationFromId(id), null);
+    assert.equal(
+        auditLogShardLocationFromId(
+            id,
+            "2026-10-01T01:30:00.000Z"
+        ).day,
+        "2026-10-01"
+    );
+});
+
+test("createdAt conocido manda sobre la fecha deducida del id", () => {
+    const id = `${Date.parse("2026-09-30T23:59:59.999Z")}_limite`;
+
+    assert.equal(
+        auditLogShardLocationFromId(
+            id,
+            "2026-10-01T00:00:00.001Z"
+        ).day,
+        "2026-10-01"
+    );
 });
 
 test("solo escribe altas y modificaciones; la poda no borra el archivo", () => {

@@ -312,6 +312,11 @@ import {
     startFirebaseAuditLogShardShadowSync,
     stopFirebaseAuditLogShardShadowSync
 } from "./firebaseAuditLogShards.js";
+import {
+    auditLogShardReadEnabled,
+    startFirebaseAuditLogShardReader,
+    stopFirebaseAuditLogShardReader
+} from "./firebaseAuditLogShardReader.js";
 import { startRrhhSummaryBackgroundPublisher } from "./rrhhSummaryPublisher.js";
 import { startLeaveConflictWatch } from "./leaveConflicts.js";
 import {
@@ -379,7 +384,8 @@ import {
     AUDIT_CATEGORY,
     getCurrentActor,
     getLeaveApplicationInfo,
-    renderAuditLogPanel
+    renderAuditLogPanel,
+    stopAuditLogShardView
 } from "./auditLog.js";
 import {
     fetchHolidays,
@@ -7253,6 +7259,10 @@ async function setActiveShortcut(targetId, options = {}) {
     const previousView = document.body.dataset.activeView || "turnos";
     const nextView = getViewForTarget(targetId);
 
+    if (previousView === "log" && nextView !== "log") {
+        stopAuditLogShardView();
+    }
+
     if (
         options.skipProfileDraftGuard !== true &&
         previousView === "profile" &&
@@ -7301,11 +7311,13 @@ async function setActiveShortcut(targetId, options = {}) {
             // Se pinta ya con lo que haya y se repinta cuando llegue: esperar
             // dejaria la vista en blanco.
             renderAuditLogPanel();
-            void hydrateDeferredStateModule("log").then(() => {
-                if (document.body.dataset.activeView === "log") {
-                    renderAuditLogPanel();
-                }
-            }).catch(() => {});
+            if (!auditLogShardReadEnabled()) {
+                void hydrateDeferredStateModule("log").then(() => {
+                    if (document.body.dataset.activeView === "log") {
+                        renderAuditLogPanel();
+                    }
+                }).catch(() => {});
+            }
         }
 
         if (nextView === "requests") {
@@ -16967,6 +16979,7 @@ initFirebaseShell({
             stopFirebaseAppStateSync();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseAuditLogShardShadowSync();
+            stopFirebaseAuditLogShardReader();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();
@@ -16989,6 +17002,8 @@ initFirebaseShell({
     },
     onWorkspaceChange: async (workspace, changeOptions = {}) => {
         const generacion = ++workspaceChangeGeneration;
+
+        startFirebaseAuditLogShardReader(workspace);
         const refrescarVistasDelEntorno = () => {
             syncWorkspaceStateViews();
 
@@ -17308,6 +17323,7 @@ initFirebaseShell({
             stopWatchingIncomingTransferBalances();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseAuditLogShardShadowSync();
+            stopFirebaseAuditLogShardReader();
             stopFirebaseReplacementRequestSync();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();

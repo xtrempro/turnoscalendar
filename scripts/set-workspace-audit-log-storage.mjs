@@ -20,11 +20,11 @@ const APPLY = args.includes("--apply");
 if (
     !WORKSPACE_ID ||
     !EXPECTED_NAME ||
-    !["shards-shadow-v1", "legacy"].includes(VALUE)
+    !["shards-shadow-v1", "shards-read-v1", "legacy"].includes(VALUE)
 ) {
     throw new Error(
         "Usa --workspace, --expected-name y " +
-        "--value shards-shadow-v1|legacy."
+        "--value shards-shadow-v1|shards-read-v1|legacy."
     );
 }
 
