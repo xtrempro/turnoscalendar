@@ -134,7 +134,8 @@ const TIMELINE_FOREGROUND_INITIAL_LIMIT = 5;
 const TIMELINE_INITIAL_BATCH_SIZE = 5;
 const TIMELINE_INCREMENTAL_BATCH_SIZE = 5;
 const TIMELINE_VISIBLE_BATCH_SIZE = 1;
-const TIMELINE_CACHE_VERSION = 5;
+// 6: la clave de fila pasa a ser id|nombre (ver timelineWorkerId).
+const TIMELINE_CACHE_VERSION = 6;
 const TIMELINE_CACHE_PREFIX = "proturnos_ui_cache_timeline_";
 const TIMELINE_ROW_CACHE_PREFIX = "proturnos_ui_cache_timeline_row_";
 const TIMELINE_METRICS_CACHE_PREFIX = "proturnos_ui_cache_timeline_metrics_";
@@ -224,14 +225,20 @@ function timelineWorkspaceId() {
     return String(getActiveWorkspace?.()?.id || "local");
 }
 
+// La clave de la fila. Lleva el id Y el nombre: si dos perfiles quedan con el
+// mismo id (un RUT repetido, paso el 2026-10-01 en Imagenologia), cada uno sigue
+// teniendo su fila. Con solo el id se mezclaban: una persona desaparecia, la
+// otra salia dos veces y en cada refresco se agregaba otra fila.
 function timelineWorkerId(profile) {
-    return String(
+    const id = String(
         profile?.id ||
         profile?.workerId ||
         profile?.uid ||
-        profile?.name ||
         ""
     );
+    const name = String(profile?.name || "");
+
+    return id && name ? `${id}|${name}` : id || name;
 }
 
 function timelineFiltersSignature(selectedKeys) {

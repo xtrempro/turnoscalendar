@@ -20,5 +20,9 @@ test("el timeline no pide de nuevo el motivo en un dia de cambio de turno", () =
 });
 
 test("el cambio invalida las filas antiguas que conservaban el signo", () => {
-    assert.match(timeline, /const TIMELINE_CACHE_VERSION = 5/);
+    // Desde la 5 las filas viejas quedan invalidadas; versiones posteriores
+    // (6: clave de fila id|nombre) tambien lo cumplen.
+    const version = Number(/const TIMELINE_CACHE_VERSION = (\d+)/.exec(timeline)?.[1]);
+
+    assert.ok(version >= 5, `version de cache ${version}`);
 });

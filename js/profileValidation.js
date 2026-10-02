@@ -28,6 +28,28 @@ import {
     normalizeReplacementRotationMode
 } from "./replacementRotation.js";
 
+function rutKey(value) {
+    return String(value || "").replace(/[^0-9kK]/g, "").toUpperCase();
+}
+
+/**
+ * El perfil (otro) que ya tiene ese RUT, o null.
+ *
+ * El id de un perfil sale de su RUT: dos perfiles con el mismo RUT quedan con el
+ * mismo id y el timeline y la sincronizacion los confunden. Paso el 2026-10-01
+ * en Imagenologia: una reemplazante se creo con el RUT de otra trabajadora.
+ */
+export function findDuplicateRutProfile(profiles = [], rut = "", originalName = "") {
+    const key = rutKey(rut);
+
+    if (!key) return null;
+
+    return (profiles || []).find(profile =>
+        profile?.name !== originalName &&
+        rutKey(profile?.rut) === key
+    ) || null;
+}
+
 /**
  * Valida el borrador actual. No muestra nada; devuelve el resultado.
  * @returns {{ok: true} | {ok: false, message: string, focusRut?: boolean}}
@@ -275,6 +297,23 @@ export function validateProfileDraft() {
         return {
             ok: false,
             message: rutMessage,
+            focusRut: true
+        };
+    }
+
+    const duplicateRutProfile = findDuplicateRutProfile(
+        getProfiles(),
+        profileDraft.rut,
+        profileDraft.mode === PROFILE_MODE.EDIT
+            ? profileDraft.originalName
+            : ""
+    );
+
+    if (duplicateRutProfile) {
+        return {
+            ok: false,
+            message:
+                `El RUT ${profileDraft.rut} ya pertenece a ${duplicateRutProfile.name} en esta unidad. Revisa el RUT: cada trabajador tiene el suyo.`,
             focusRut: true
         };
     }

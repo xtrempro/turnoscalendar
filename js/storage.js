@@ -1616,13 +1616,35 @@ function honorariaHourlyRateForDate(profile, profileData, date){
 }
 
 export function saveProfiles(profiles, options = {}){
+    // El id de un perfil NUEVO sale de su RUT: si ese id ya esta en uso (un RUT
+    // repetido), se le agrega un sufijo. Dos perfiles con el mismo id se
+    // confunden en el timeline y en la sincronizacion. Los que ya tienen id lo
+    // conservan: cambiarlo en silencio rompe sus referencias.
+    const usedIds = new Set(
+        (profiles || [])
+            .map(profile => normalizeProfileId(profile?.id))
+            .filter(Boolean)
+    );
+    const uniqueNewId = profile => {
+        const base = createProfileId(profile);
+
+        if (normalizeProfileId(profile?.id)) return base;
+
+        let candidate = base;
+        let suffix = 2;
+
+        while (usedIds.has(candidate)) candidate = `${base}_${suffix++}`;
+
+        usedIds.add(candidate);
+        return candidate;
+    };
     const normalized = (profiles || []).map(profile => {
         const { unit, ...profileWithoutUnit } = profile || {};
         const estamento = normalizeEstamento(profile.estamento);
 
         return {
             ...profileWithoutUnit,
-            id: createProfileId(profile),
+            id: uniqueNewId(profile),
             estamento,
             profession: normalizeProfession(
                 profile.profession,
