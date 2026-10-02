@@ -28,6 +28,10 @@ const EVENT_ID_RE = /^[A-Za-z0-9_-]{1,160}$/;
 class StorageHealthInputError extends Error {}
 
 function num(value) {
+  // Sin dato sigue siendo sin dato: Number(null) y Number("") dan 0, y un 0
+  // se leia como "ya sobre 85%" o como la fecha 1970.
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
+
   const number = Number(value);
 
   return Number.isFinite(number) ? number : null;

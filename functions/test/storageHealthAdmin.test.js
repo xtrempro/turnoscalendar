@@ -348,3 +348,25 @@ test("resumen: una unidad eliminada sale del panel y de los conteos, aun antes d
 
   assert.equal(history.measurements.length, 1);
 });
+
+test("sin dato sigue siendo sin dato: null no se convierte en 0 (ni dias al 85% ni fechas 1970)", async () => {
+  const { db, handlers } = setup(seedUnits());
+
+  // Primera medicion: sin crecimiento previo, sin alertas ni recuperaciones en w2.
+  await runStorageHealthCheck({ db, now: DAY1, log: silentLog });
+
+  const overview = await handlers.overview({ auth: auth.admin, data: {} });
+  const urgencia = overview.units.find(unit => unit.workspaceId === "w2");
+  const imagenologia = overview.units.find(unit => unit.workspaceId === "w1");
+
+  assert.equal(urgencia.lastAlertAtMillis, null);
+  assert.equal(urgencia.lastRecoveryAtMillis, null);
+  assert.equal(imagenologia.largest.bytesPerDay, null, "sin medicion previa no hay crecimiento");
+  assert.equal(imagenologia.largest.daysToCritical, null);
+  assert.equal(imagenologia.lastRecoveryAtMillis, null);
+  assert.equal(urgencia.monitoring.failedAtMillis, null);
+
+  const history = await handlers.history({ auth: auth.admin, data: { workspaceId: "w2" } });
+
+  assert.equal(history.measurements[0].metrics.shardDocuments, 0, "un 0 real se conserva");
+});
