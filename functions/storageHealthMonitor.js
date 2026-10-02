@@ -460,8 +460,14 @@ async function registerEvents(db, events, { workspaceId, workspaceName, date, no
  * funcion murio a mitad), los reintentos mandan ESE MISMO lote con la misma
  * Idempotency-Key y EXACTAMENTE el mismo cuerpo, aunque entretanto cambien
  * STORAGE_ALERT_EMAIL o MAIL_FROM (Resend rechaza una clave reutilizada con
- * otro cuerpo); los eventos nuevos esperan al lote siguiente. Si nunca se llego
- * al proveedor ("skipped_*"), el lote se suelta y el proximo se arma de nuevo.
+ * otro cuerpo); los eventos nuevos esperan al lote siguiente.
+ *
+ * Un lote solo se suelta sin "sent" si es NUEVO y su primer intento termino en
+ * "skipped_*": ahi se sabe que nunca llego al proveedor. Un lote que ya estaba
+ * abierto (su primer intento fue ambiguo) se conserva intacto ante CUALQUIER
+ * resultado distinto de "sent", incluido un "skipped_*" de un reintento (p. ej.
+ * falto la clave un rato): el correo original pudo haber salido, y soltarlo
+ * cambiaria la clave y podria duplicarlo.
  */
 async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = logger }) {
   const controlRef = db.doc(CONTROL_DOC);
@@ -479,9 +485,11 @@ async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = log
       String(a.data.eventId).localeCompare(String(b.data.eventId)));
   let batch;
   let message;
+  let reusedOutbox = false;
 
   if (outbox?.batchId && Array.isArray(outbox.eventIds) && outbox.subject && outbox.text) {
     // Reintento del lote abierto: mismos eventos, misma clave, mismo cuerpo.
+    reusedOutbox = true;
     const snaps = await Promise.all(outbox.eventIds.map(id => db.doc(`${EVENTS}/${id}`).get()));
 
     batch = snaps
@@ -587,8 +595,9 @@ async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = log
 
   await controlRef.set({
     lastDelivery: delivery,
-    // Solo un resultado ambiguo deja el lote abierto para repetirlo identico.
-    ...(status === "failed" ? {} : { outbox: null })
+    // Se cierra con "sent"; un lote NUEVO tambien con "skipped_*" (nunca llego
+    // al proveedor). Todo lo demas lo deja abierto para repetirlo identico.
+    ...(sent || (!reusedOutbox && status.startsWith("skipped_")) ? { outbox: null } : {})
   }, { merge: true });
   (sent ? log.info : log.warn)("storage health: entrega", delivery);
 

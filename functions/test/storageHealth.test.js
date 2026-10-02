@@ -890,3 +890,65 @@ test("outbox: el reintento manda el MISMO cuerpo HTTP y la misma clave aunque ca
   assert.match(next.text, /Urgencia/);
   assert.ok(events(db).every(event => event.delivery.status === "sent"));
 });
+
+test("outbox abierto: un reintento sin API key o sin emisor NO lo suelta; al volver la clave se repite identico", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  const requests = [];
+  const resend = responses => async (url, init) => {
+    requests.push({ key: init.headers["Idempotency-Key"], body: init.body });
+    const next = responses.shift();
+
+    if (next instanceof Error) throw next;
+    return next;
+  };
+  const config = { to: "tecnico@turnoplus.cl", from: "TurnoPlus <noreply@turnoplus.cl>" };
+
+  // 1: respuesta perdida (ambigua): el lote queda abierto.
+  await run(db, DAY1, { sendAlert: createStorageAlertSender({ ...config, apiKey: "re_test", fetchImpl: resend([new Error("socket hang up")]) }) });
+
+  const opened = db.docs.get("storageHealthControl/state").outbox;
+
+  assert.ok(opened?.body, "outbox abierto");
+
+  // Entra un evento nuevo mientras tanto.
+  db.docs.set("workspaces/w2", { name: "Urgencia" });
+  db.docs.set("workspaces/w2/stateModules/log/entries/auditLog", bigAuditLog(Math.round(MiB * 0.72)));
+
+  // 2: reintento con la API key ausente un rato.
+  const withoutKey = await run(db, DAY1 + DAY, { sendAlert: createStorageAlertSender({ ...config, apiKey: "", fetchImpl: resend([]) }) });
+
+  assert.equal(withoutKey.delivery.status, "skipped_no_api_key");
+  assert.deepEqual(db.docs.get("storageHealthControl/state").outbox, opened, "el outbox sigue intacto");
+
+  // 3: reintento sin emisor (sendAlert ausente).
+  const withoutSender = await run(db, DAY1 + 2 * DAY, { sendAlert: null });
+
+  assert.equal(withoutSender.delivery.status, "skipped_no_sender");
+  assert.deepEqual(db.docs.get("storageHealthControl/state").outbox, opened, "sigue intacto");
+  assert.equal(requests.length, 1, "ninguno de esos reintentos llego al proveedor");
+
+  // 4: vuelve la clave: mismo cuerpo y misma Idempotency-Key que el primer intento.
+  await run(db, DAY1 + 3 * DAY, {
+    sendAlert: createStorageAlertSender({ ...config, apiKey: "re_test", fetchImpl: resend([{ ok: true, json: async () => ({ id: "r1" }) }, { ok: true, json: async () => ({ id: "r2" }) }]) })
+  });
+
+  assert.equal(requests[1].key, requests[0].key, "misma Idempotency-Key");
+  assert.equal(requests[1].body, requests[0].body, "mismo cuerpo HTTP completo");
+  assert.doesNotMatch(JSON.parse(requests[1].body).text, /Urgencia/);
+  assert.equal(db.docs.get("storageHealthControl/state").outbox, null, "cerrado al confirmarse");
+});
+
+test("outbox nuevo: si su primer intento es skipped_* se suelta (nunca llego al proveedor)", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+
+  await run(db, DAY1, { sendAlert: createStorageAlertSender({ to: "t@turnoplus.cl", from: "x", apiKey: "", fetchImpl: async () => { throw new Error("no debe llamarse"); } }) });
+  assert.equal(db.docs.get("storageHealthControl/state").outbox, null);
+  await run(db, DAY1 + DAY, { sendAlert: null });
+  assert.equal(db.docs.get("storageHealthControl/state").outbox, null);
+});
