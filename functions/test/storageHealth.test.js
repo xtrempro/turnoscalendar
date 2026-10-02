@@ -826,3 +826,67 @@ test("una unidad eliminada se marca como tal y conserva su historial", async () 
 
   assert.equal(again.removedUnits, 0, "se marca una sola vez");
 });
+
+test("outbox: el reintento manda el MISMO cuerpo HTTP y la misma clave aunque cambien destinatario y remitente", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  const requests = [];
+  const resend = responses => async (url, init) => {
+    requests.push({ url, key: init.headers["Idempotency-Key"], body: init.body });
+    const next = responses.shift();
+
+    if (next instanceof Error) throw next;
+    return next;
+  };
+
+  // 1er intento: Resend recibe la solicitud pero la respuesta se pierde.
+  const before = createStorageAlertSender({
+    to: "tecnico-viejo@turnoplus.cl",
+    from: "TurnoPlus <viejo@turnoplus.cl>",
+    apiKey: "re_test",
+    fetchImpl: resend([new Error("socket hang up")])
+  });
+
+  await run(db, DAY1, { sendAlert: before });
+
+  const outbox = db.docs.get("storageHealthControl/state").outbox;
+
+  assert.equal(typeof outbox.body, "string", "el cuerpo completo queda en el outbox antes del intento");
+  assert.equal(outbox.body, requests[0].body);
+
+  // Entre medio cambian STORAGE_ALERT_EMAIL y MAIL_FROM, y entra otro evento.
+  db.docs.set("workspaces/w2", { name: "Urgencia" });
+  db.docs.set("workspaces/w2/stateModules/log/entries/auditLog", bigAuditLog(Math.round(MiB * 0.72)));
+
+  const after = createStorageAlertSender({
+    to: "tecnico-nuevo@turnoplus.cl",
+    from: "TurnoPlus <nuevo@turnoplus.cl>",
+    apiKey: "re_test",
+    fetchImpl: resend([{ ok: true, json: async () => ({ id: "resend-1" }) }, { ok: true, json: async () => ({ id: "resend-2" }) }])
+  });
+
+  await run(db, DAY1 + DAY, { sendAlert: after });
+
+  assert.equal(requests[1].key, requests[0].key, "misma Idempotency-Key");
+  assert.equal(requests[1].body, requests[0].body, "mismo cuerpo HTTP completo");
+
+  const retried = JSON.parse(requests[1].body);
+
+  assert.deepEqual(retried.to, ["tecnico-viejo@turnoplus.cl"]);
+  assert.equal(retried.from, "TurnoPlus <viejo@turnoplus.cl>");
+  assert.doesNotMatch(retried.text, /Urgencia/);
+  assert.equal(db.docs.get("storageHealthControl/state").outbox, null, "lote cerrado al confirmarse");
+
+  // El lote SIGUIENTE ya usa la configuracion nueva.
+  await run(db, DAY1 + 2 * DAY, { sendAlert: after });
+
+  const next = JSON.parse(requests[2].body);
+
+  assert.notEqual(requests[2].key, requests[0].key);
+  assert.deepEqual(next.to, ["tecnico-nuevo@turnoplus.cl"]);
+  assert.equal(next.from, "TurnoPlus <nuevo@turnoplus.cl>");
+  assert.match(next.text, /Urgencia/);
+  assert.ok(events(db).every(event => event.delivery.status === "sent"));
+});

@@ -453,11 +453,13 @@ async function registerEvents(db, events, { workspaceId, workspaceName, date, no
  * Manda los eventos con entrega pendiente. Solo un exito del proveedor los
  * marca "sent"; cualquier otro resultado los deja pendientes para la proxima.
  *
- * Outbox: antes de llamar al proveedor, el lote (ids, asunto y texto EXACTOS)
- * queda en storageHealthControl/state.outbox. Mientras el resultado sea
+ * Outbox: antes de llamar al proveedor, el lote queda en
+ * storageHealthControl/state.outbox con sus ids y el CUERPO HTTP COMPLETO ya
+ * serializado (from, to, subject, text). Mientras el resultado sea
  * ambiguo ("failed": error del proveedor, red caida o respuesta perdida, o la
  * funcion murio a mitad), los reintentos mandan ESE MISMO lote con la misma
- * Idempotency-Key y el mismo cuerpo (Resend rechaza una clave reutilizada con
+ * Idempotency-Key y EXACTAMENTE el mismo cuerpo, aunque entretanto cambien
+ * STORAGE_ALERT_EMAIL o MAIL_FROM (Resend rechaza una clave reutilizada con
  * otro cuerpo); los eventos nuevos esperan al lote siguiente. Si nunca se llego
  * al proveedor ("skipped_*"), el lote se suelta y el proximo se arma de nuevo.
  */
@@ -488,7 +490,9 @@ async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = log
     message = {
       idempotencyKey: `storage-health-${outbox.batchId}`,
       subject: outbox.subject,
-      text: outbox.text
+      text: outbox.text,
+      // El cuerpo guardado manda: no se vuelve a leer la configuracion.
+      body: typeof outbox.body === "string" ? outbox.body : null
     };
   } else {
     if (!pending.length) return { status: "none", events: 0, remaining: 0 };
@@ -511,13 +515,16 @@ async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = log
         "Detalle: TurnoPlus-Admin > Salud del sistema."
       ].join("\n")
     };
-    // El lote queda guardado ANTES de llamar al proveedor.
+    // El cuerpo HTTP completo (con from y to de la configuracion de ESTE
+    // momento) queda guardado ANTES de llamar al proveedor.
+    message.body = typeof sendAlert?.buildBody === "function" ? sendAlert.buildBody(message) : null;
     await controlRef.set({
       outbox: {
         batchId,
         eventIds: ids,
         subject: message.subject,
         text: message.text,
+        body: message.body,
         createdAtMillis: now
       }
     }, { merge: true });
@@ -1131,10 +1138,20 @@ async function sendStorageHealthTestAlert({ db, now = Date.now(), sendAlert, req
  * proveedor y lo dice; cualquier otro resultado es "failed".
  */
 function createStorageAlertSender({ to, apiKey, from, fetchImpl = fetch }) {
-  return async ({ subject, text, idempotencyKey = "" }) => {
-    const recipient = String(to || "").trim();
+  const recipient = String(to || "").trim();
 
-    if (!recipient) return { status: "skipped_no_recipient" };
+  // El cuerpo HTTP completo de Resend. null sin destinatario (no hay nada que
+  // mandar). Lo guarda el outbox para repetirlo identico.
+  function buildBody({ subject, text }) {
+    return recipient ? JSON.stringify({ from, to: [recipient], subject, text }) : null;
+  }
+
+  const send = async ({ subject, text, idempotencyKey = "", body = null }) => {
+    // Un cuerpo ya guardado se manda tal cual: su destinatario y remitente son
+    // los del primer intento, no los de la configuracion actual.
+    const payload = typeof body === "string" && body ? body : buildBody({ subject, text });
+
+    if (!payload) return { status: "skipped_no_recipient" };
     if (!apiKey) return { status: "skipped_no_api_key" };
 
     try {
@@ -1146,7 +1163,7 @@ function createStorageAlertSender({ to, apiKey, from, fetchImpl = fetch }) {
           "Content-Type": "application/json",
           ...(idempotencyKey ? { "Idempotency-Key": String(idempotencyKey).slice(0, 256) } : {})
         },
-        body: JSON.stringify({ from, to: [recipient], subject, text })
+        body: payload
       });
 
       if (!response.ok) return { status: "failed", error: `Resend ${response.status}` };
@@ -1164,6 +1181,10 @@ function createStorageAlertSender({ to, apiKey, from, fetchImpl = fetch }) {
       return { status: "failed", error: cleanError(error) };
     }
   };
+
+  send.buildBody = buildBody;
+
+  return send;
 }
 
 module.exports = {
