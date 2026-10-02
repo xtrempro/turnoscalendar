@@ -646,7 +646,10 @@ async function runStorageHealthCheck({
   let shardDocuments = 0;
   let eventsCreated = 0;
   let unitsWithAuditIssues = 0;
+  // Incidencias de version de la bitacora, por tipo (ver checkAuditLogVersions).
+  let unitsWithAuditLogVersionIssues = 0;
   let unitsWithUnversionedLogs = 0;
+  let unitsWithWriterMismatch = 0;
 
   for (const workspaceDoc of workspaces.docs) {
     const workspaceId = workspaceDoc.id;
@@ -721,12 +724,15 @@ async function runStorageHealthCheck({
       });
 
       if (measured.auditLogVersions?.issues > 0) {
-        unitsWithUnversionedLogs++;
+        unitsWithAuditLogVersionIssues++;
+        if (measured.auditLogVersions.unversionedRecent > 0) unitsWithUnversionedLogs++;
+        if (measured.auditLogVersions.writerMismatch.length > 0) unitsWithWriterMismatch++;
         // Solo Cloud Logging y TurnoPlus-Admin: ni eventos ni correos.
-        log.warn("storage health: registros de bitacora sin version reciente", {
+        log.warn("storage health: incidencias de version de bitacora", {
           workspaceId,
           workspaceName: name,
           unversionedRecent: measured.auditLogVersions.unversionedRecent,
+          writerMismatchCount: measured.auditLogVersions.writerMismatch.length,
           unversionedIds: measured.auditLogVersions.unversionedIds,
           writerMismatch: measured.auditLogVersions.writerMismatch,
           recentBuilds: measured.auditLogVersions.recentBuilds
@@ -904,7 +910,9 @@ async function runStorageHealthCheck({
     incompleteIds,
     complete: incomplete.length === 0,
     unitsWithAuditIssues,
+    unitsWithAuditLogVersionIssues,
     unitsWithUnversionedLogs,
+    unitsWithWriterMismatch,
     removedUnits: removedUnits.length,
     measuredDocuments,
     documentsRead,

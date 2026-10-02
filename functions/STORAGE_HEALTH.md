@@ -65,7 +65,7 @@ La revisión calcula `auditLogVersions` por unidad, fuera de `audits`, así que 
 - **Recientes sin versión:** registros sin `writer` creados después de la adopción y dentro de los últimos 7 días. Indican una pestaña abierta con un build anterior. Pasados los 7 días el aviso desaparece solo.
 - **Metadatos distintos entre formatos** para un mismo id.
 
-Se ve en TurnoPlus-Admin, como indicador en la tabla y en el detalle de la unidad, y en Cloud Logging (`storage health: registros de bitacora sin version reciente`). Nunca se muestra a owners ni supervisores.
+Se ve en TurnoPlus-Admin y en Cloud Logging (`storage health: incidencias de version de bitacora`). En Admin, la tabla muestra el total de incidencias de versión y el detalle separa "sin versión" de "metadatos distintos". El resumen diario también los cuenta por separado (`unitsWithUnversionedLogs`, `unitsWithWriterMismatch`, `unitsWithAuditLogVersionIssues`). Nunca se muestra a owners ni supervisores.
 
 ## Costo
 

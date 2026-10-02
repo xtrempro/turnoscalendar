@@ -1044,15 +1044,45 @@ test("monitor: una escritura reciente sin version va a Cloud Logging y al inform
   });
   const report = db.docs.get("storageHealthReports/2026-10-10/units/w1");
   const state = db.docs.get("storageHealthUnits/w1");
-  const versionWarning = warnings.find(item => /sin version/.test(item.message));
+  const versionWarning = warnings.find(item => item.message === "storage health: incidencias de version de bitacora");
 
   assert.deepEqual(report.auditLogVersions.unversionedIds, ["pestana-vieja"], "el historico no cuenta");
   assert.equal(state.overview.auditLogVersions.unversionedRecent, 1);
   assert.equal(summary.unitsWithUnversionedLogs, 1);
+  assert.equal(summary.unitsWithWriterMismatch, 0);
+  assert.equal(summary.unitsWithAuditLogVersionIssues, 1);
   assert.ok(versionWarning, "queda en Cloud Logging");
   assert.deepEqual(versionWarning.data.unversionedIds, ["pestana-vieja"]);
   assert.equal(state.status, "normal", "no cambia el estado de la unidad");
   assert.ok(!report.audits.some(audit => audit.kind === "auditLogVersions"), "no entra a las auditorias que generan eventos");
   assert.equal(events(db).length, 0, "sin eventos");
   assert.equal(mail.sent.length, 0, "sin correos");
+});
+
+test("monitor: solo metadatos distintos entre formatos NO cuenta como 'sin version'", async () => {
+  const encode = id => encodeURIComponent(id).replace(/\./g, "%2E");
+  const legacyLog = vlog("x", "2026-10-09T10:00:00Z", { writer: writer("build-a") });
+  const shardLog = vlog("x", "2026-10-09T10:00:00Z", { writer: writer("build-b") });
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    [AUDIT_PATH]: { storageKey: "auditLog", container: "array", items: { [encode("x")]: JSON.stringify(legacyLog) }, deletedItems: {} },
+    "workspaces/w1/auditLogShards/2026-10-09_0": { items: { [encode("x")]: JSON.stringify(shardLog) } }
+  });
+  const warnings = [];
+  const summary = await runStorageHealthCheck({
+    db,
+    now: NOW_V,
+    log: { info() {}, error() {}, warn: (message, data) => warnings.push({ message, data }) }
+  });
+  const versions = db.docs.get("storageHealthReports/2026-10-10/units/w1").auditLogVersions;
+  const warning = warnings.find(item => item.message === "storage health: incidencias de version de bitacora");
+
+  assert.equal(versions.unversionedRecent, 0);
+  assert.deepEqual(versions.writerMismatch, ["x"]);
+  assert.equal(summary.unitsWithUnversionedLogs, 0, "no hay registros sin version");
+  assert.equal(summary.unitsWithWriterMismatch, 1);
+  assert.equal(summary.unitsWithAuditLogVersionIssues, 1);
+  assert.equal(warning.data.unversionedRecent, 0);
+  assert.equal(warning.data.writerMismatchCount, 1);
+  assert.equal(db.docs.get("storageHealthUnits/w1").overview.auditLogVersions.writerMismatch, 1);
 });
