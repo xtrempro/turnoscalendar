@@ -6,6 +6,7 @@
 // campos: nada de claves de idempotencia, ni el estado interno de seguimiento
 // (tracked / baseline), ni secretos.
 
+const { FieldPath } = require("firebase-admin/firestore");
 const {
   CONTROL_DOC,
   EVENTS,
@@ -18,14 +19,11 @@ const DEFAULT_HISTORY_LIMIT = 14;
 const MAX_HISTORY_LIMIT = 30;
 const DEFAULT_EVENTS_LIMIT = 25;
 const MAX_EVENTS_LIMIT = 50;
-// Eventos de UNA unidad que se leen para ordenarlos en memoria (sin indice
-// compuesto). Las transiciones son pocas; si alguna vez se acerca a esto, toca
-// crear el indice workspaceId + detectedAtMillis.
-const MAX_UNIT_EVENTS_SCAN = 500;
 const MAX_DOCUMENTS_PER_MEASUREMENT = 80;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const WORKSPACE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const EVENT_ID_RE = /^[A-Za-z0-9_-]{1,160}$/;
 
 class StorageHealthInputError extends Error {}
 
@@ -272,7 +270,27 @@ async function getStorageHealthOverviewData({ db, notifications = {}, now = Date
     db.doc(CONTROL_DOC).get(),
     db.collection(EVENTS).where("deliveryPending", "==", true).limit(201).get()
   ]);
-  const rows = unitsSnap.docs.map(doc => doc.data() || {});
+  const allRows = unitsSnap.docs.map(doc => ({ workspaceId: doc.id, ...(doc.data() || {}) }));
+  // Una unidad borrada sale del panel aunque la revision aun no la marque:
+  // se cruza contra las unidades que existen hoy. Su historial (informes y
+  // eventos) se conserva y sigue disponible por getStorageHealthHistory.
+  const exists = await Promise.all(allRows.map(async row => {
+    if (row.status === "deleted") return false;
+    try {
+      return (await db.doc(`workspaces/${row.workspaceId}`).get()).exists;
+    } catch {
+      return true;
+    }
+  }));
+  const rows = allRows.filter((row, index) => exists[index]);
+  const removedUnits = allRows
+    .filter((row, index) => !exists[index])
+    .slice(0, 50)
+    .map(row => ({
+      workspaceId: text(row.workspaceId, 128),
+      workspaceName: text(row.workspaceName, 200),
+      deletedDetectedAtMillis: num(row.deletedDetectedAtMillis)
+    }));
   const ownerUids = new Set(rows.map(row => String(row.ownerUid || "")).filter(Boolean));
   const accounts = await readAccounts(db, ownerUids);
   const units = rows
@@ -313,6 +331,7 @@ async function getStorageHealthOverviewData({ db, notifications = {}, now = Date
       startedAtMillis: num(lock.startedAtMillis)
     } : null,
     counts: { total: units.length, ...counts },
+    removedUnits,
     auditIssues: units.filter(unit =>
       [unit.auditLog, unit.auditLogShards, unit.replacements].some(audit => audit?.issues > 0)).length,
     notifications: {
@@ -357,7 +376,7 @@ function optionalDate(value, field) {
  * @param {string} [params.toDate] AAAA-MM-DD, inclusive
  * @param {string} [params.cursor] la fecha desde la que seguir (exclusiva)
  * @param {number} [params.limit] dias por pagina (max 30)
- * @param {number} [params.eventsBeforeMillis] cursor de eventos (exclusivo)
+ * @param {string} [params.eventsCursor] id del ultimo evento recibido (exclusivo)
  * @param {number} [params.eventsLimit] eventos por pagina (max 50)
  */
 async function getStorageHealthHistoryData({ db, params = {} }) {
@@ -372,7 +391,11 @@ async function getStorageHealthHistoryData({ db, params = {} }) {
   const cursor = optionalDate(params.cursor, "cursor");
   const limit = boundedInt(params.limit, DEFAULT_HISTORY_LIMIT, MAX_HISTORY_LIMIT);
   const eventsLimit = boundedInt(params.eventsLimit, DEFAULT_EVENTS_LIMIT, MAX_EVENTS_LIMIT);
-  const eventsBefore = num(params.eventsBeforeMillis);
+  const eventsCursor = params.eventsCursor ? String(params.eventsCursor) : null;
+
+  if (eventsCursor && !EVENT_ID_RE.test(eventsCursor)) {
+    throw new StorageHealthInputError("Cursor de eventos invalido.");
+  }
   const includeEvents = params.includeEvents !== false;
   const includeMeasurements = params.includeMeasurements !== false;
 
@@ -411,28 +434,25 @@ async function getStorageHealthHistoryData({ db, params = {} }) {
   let nextEventsCursor = null;
 
   if (includeEvents) {
-    let rows;
+    // Paginacion por id de documento: es unico, asi que nunca salta ni repite
+    // eventos aunque muchos compartan el mismo milisegundo, y no necesita
+    // indice compuesto (igualdad + __name__ lo resuelven los indices de un
+    // campo). Firestore solo recorre __name__ en orden ASCENDENTE, por eso el
+    // id empieza con la fecha invertida (eventIdPrefix): ascendente = mas
+    // reciente primero, por dia. Dentro de una pagina se reordena por hora.
+    let query = db.collection(EVENTS);
 
-    if (workspaceId) {
-      const snap = await db.collection(EVENTS)
-        .where("workspaceId", "==", workspaceId)
-        .limit(MAX_UNIT_EVENTS_SCAN)
-        .get();
+    if (workspaceId) query = query.where("workspaceId", "==", workspaceId);
+    query = query.orderBy(FieldPath.documentId());
+    if (eventsCursor) query = query.startAfter(eventsCursor);
 
-      rows = snap.docs
-        .map(doc => doc.data() || {})
-        .filter(row => eventsBefore === null || Number(row.detectedAtMillis || 0) < eventsBefore)
-        .sort((a, b) => Number(b.detectedAtMillis || 0) - Number(a.detectedAtMillis || 0))
-        .slice(0, eventsLimit + 1);
-    } else {
-      let query = db.collection(EVENTS).orderBy("detectedAtMillis", "desc");
+    const docs = (await query.limit(eventsLimit + 1).get()).docs;
+    const page = docs.slice(0, eventsLimit);
 
-      if (eventsBefore !== null) query = query.where("detectedAtMillis", "<", eventsBefore);
-      rows = (await query.limit(eventsLimit + 1).get()).docs.map(doc => doc.data() || {});
-    }
-
-    events = rows.slice(0, eventsLimit).map(sanitizeEvent);
-    nextEventsCursor = rows.length > eventsLimit ? events[events.length - 1].detectedAtMillis : null;
+    events = page
+      .map(doc => sanitizeEvent({ eventId: doc.id, ...(doc.data() || {}) }))
+      .sort((a, b) => Number(b.detectedAtMillis || 0) - Number(a.detectedAtMillis || 0));
+    nextEventsCursor = docs.length > eventsLimit ? page[page.length - 1].id : null;
   }
 
   return {

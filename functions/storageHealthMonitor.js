@@ -87,12 +87,13 @@ const MANUAL_MIN_INTERVAL_MS = { full: 10 * 60 * 1000, deliveries: 2 * 60 * 1000
 const TEST_ALERT_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
 class StorageHealthBusyError extends Error {
-  constructor(reason, retryAfterMs = null) {
+  constructor(reason, retryAfterMs = null, lockMode = null) {
     super(reason === "running"
       ? "Ya hay una revision en curso."
       : "Se ejecuto hace muy poco; espera antes de repetir.");
     this.reason = reason;
     this.retryAfterMs = retryAfterMs;
+    this.lockMode = lockMode;
   }
 }
 
@@ -124,8 +125,17 @@ function cleanError(error) {
     .slice(0, 300);
 }
 
+// Prefijo de los ids de evento: la fecha INVERTIDA (99999999 - AAAAMMDD), asi
+// el orden ascendente por id (el unico que Firestore recorre por __name__) es
+// "mas reciente primero". Sigue siendo deterministico: no rompe la idempotencia.
+function eventIdPrefix(date) {
+  const compact = Number(String(date).replace(/-/g, ""));
+
+  return `${String(99999999 - compact).padStart(8, "0")}_${date}`;
+}
+
 function eventIdFor({ workspaceId, type, subject, from, to, date }) {
-  return `${date}_${hash([workspaceId, type, subject, from, to, date].join("|"))}`;
+  return `${eventIdPrefix(date)}_${hash([workspaceId, type, subject, from, to, date].join("|"))}`;
 }
 
 function alreadyExists(error) {
@@ -442,30 +452,84 @@ async function registerEvents(db, events, { workspaceId, workspaceName, date, no
 /**
  * Manda los eventos con entrega pendiente. Solo un exito del proveedor los
  * marca "sent"; cualquier otro resultado los deja pendientes para la proxima.
+ *
+ * Outbox: antes de llamar al proveedor, el lote (ids, asunto y texto EXACTOS)
+ * queda en storageHealthControl/state.outbox. Mientras el resultado sea
+ * ambiguo ("failed": error del proveedor, red caida o respuesta perdida, o la
+ * funcion murio a mitad), los reintentos mandan ESE MISMO lote con la misma
+ * Idempotency-Key y el mismo cuerpo (Resend rechaza una clave reutilizada con
+ * otro cuerpo); los eventos nuevos esperan al lote siguiente. Si nunca se llego
+ * al proveedor ("skipped_*"), el lote se suelta y el proximo se arma de nuevo.
  */
 async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = logger }) {
+  const controlRef = db.doc(CONTROL_DOC);
+  const controlSnap = await controlRef.get();
+  const outbox = controlSnap.exists ? controlSnap.data()?.outbox || null : null;
   const snap = await db
     .collection(EVENTS)
     .where("deliveryPending", "==", true)
     .limit(MAX_PENDING_SCAN)
     .get();
   const pending = snap.docs
-    .map(doc => ({ ref: db.doc(`${EVENTS}/${doc.id}`), data: doc.data() || {} }))
+    .map(doc => ({ ref: db.doc(`${EVENTS}/${doc.id}`), data: { eventId: doc.id, ...(doc.data() || {}) } }))
     .sort((a, b) =>
       Number(a.data.detectedAtMillis || 0) - Number(b.data.detectedAtMillis || 0) ||
       String(a.data.eventId).localeCompare(String(b.data.eventId)));
+  let batch;
+  let message;
 
-  if (!pending.length) return { status: "none", events: 0, remaining: 0 };
+  if (outbox?.batchId && Array.isArray(outbox.eventIds) && outbox.subject && outbox.text) {
+    // Reintento del lote abierto: mismos eventos, misma clave, mismo cuerpo.
+    const snaps = await Promise.all(outbox.eventIds.map(id => db.doc(`${EVENTS}/${id}`).get()));
 
-  const batch = pending.slice(0, MAX_EVENTS_PER_MESSAGE);
-  const remaining = pending.length - batch.length;
-  const ids = batch.map(item => item.data.eventId).sort();
-  const idempotencyKey = `storage-health-${hash(ids.join(","))}`;
+    batch = snaps
+      .filter(item => item.exists)
+      .map(item => ({ ref: db.doc(`${EVENTS}/${item.id}`), data: { eventId: item.id, ...(item.data() || {}) } }));
+    message = {
+      idempotencyKey: `storage-health-${outbox.batchId}`,
+      subject: outbox.subject,
+      text: outbox.text
+    };
+  } else {
+    if (!pending.length) return { status: "none", events: 0, remaining: 0 };
 
-  // Antes de llamar al proveedor queda constancia del intento, pero NO como
-  // entregado: si la funcion muere aqui, la proxima revision lo reintenta con
-  // la misma Idempotency-Key.
+    batch = pending.slice(0, MAX_EVENTS_PER_MESSAGE);
+
+    const remainingNow = pending.length - batch.length;
+    const ids = batch.map(item => item.data.eventId);
+    const batchId = `${now}_${hash(ids.join(","))}`;
+
+    message = {
+      idempotencyKey: `storage-health-${batchId}`,
+      subject: `TurnoPlus: almacenamiento (${batch.length} aviso(s))`,
+      text: [
+        "Revision del almacenamiento de Firestore (aviso tecnico).",
+        "",
+        ...batch.map(item => item.data.line),
+        ...(remainingNow > 0 ? ["", `Y ${remainingNow} aviso(s) mas pendientes para el proximo correo.`] : []),
+        "",
+        "Detalle: TurnoPlus-Admin > Salud del sistema."
+      ].join("\n")
+    };
+    // El lote queda guardado ANTES de llamar al proveedor.
+    await controlRef.set({
+      outbox: {
+        batchId,
+        eventIds: ids,
+        subject: message.subject,
+        text: message.text,
+        createdAtMillis: now
+      }
+    }, { merge: true });
+  }
+
+  const inBatch = new Set(batch.map(item => item.data.eventId));
+  const remaining = pending.filter(item => !inBatch.has(item.data.eventId)).length;
+  const idempotencyKey = message.idempotencyKey;
+
+  // Constancia del intento, pero NO como entregado.
   for (const item of batch) {
+    if (item.data.deliveryPending === false) continue;
     await item.ref.set({
       delivery: { status: "sending", lastAttemptAtMillis: now, idempotencyKey }
     }, { merge: true });
@@ -477,18 +541,7 @@ async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = log
     result = { status: "skipped_no_sender" };
   } else {
     try {
-      result = await sendAlert({
-        idempotencyKey,
-        subject: `TurnoPlus: almacenamiento (${batch.length} aviso(s))`,
-        text: [
-          "Revision del almacenamiento de Firestore (aviso tecnico).",
-          "",
-          ...batch.map(item => item.data.line),
-          ...(remaining > 0 ? ["", `Y ${remaining} aviso(s) mas pendientes para el proximo correo.`] : []),
-          "",
-          "Detalle: TurnoPlus-Admin > Salud del sistema."
-        ].join("\n")
-      });
+      result = await sendAlert(message);
     } catch (error) {
       result = { status: "failed", error: cleanError(error) };
     }
@@ -500,6 +553,9 @@ async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = log
 
   for (const item of batch) {
     const previous = item.data.delivery || {};
+
+    // Un evento que ya salio en otro lote no se toca.
+    if (item.data.deliveryPending === false) continue;
 
     await item.ref.set({
       deliveryPending: !sent,
@@ -522,7 +578,11 @@ async function deliverPendingEvents({ db, sendAlert, now = Date.now(), log = log
     error: sent ? null : cleanError(result?.error || status)
   };
 
-  await db.doc(CONTROL_DOC).set({ lastDelivery: delivery }, { merge: true });
+  await controlRef.set({
+    lastDelivery: delivery,
+    // Solo un resultado ambiguo deja el lote abierto para repetirlo identico.
+    ...(status === "failed" ? {} : { outbox: null })
+  }, { merge: true });
   (sent ? log.info : log.warn)("storage health: entrega", delivery);
 
   return delivery;
@@ -745,6 +805,30 @@ async function runStorageHealthCheck({
     }
   }
 
+  // Unidades que ya no existen: su estado vigente se retira del panel, pero se
+  // conserva (con su historial de informes y eventos) marcado como eliminado.
+  const activeIds = new Set(workspaces.docs.map(item => item.id));
+  const removedUnits = [];
+
+  try {
+    const statesSnap = await db.collection(UNITS).get();
+
+    for (const stateDoc of statesSnap.docs) {
+      const data = stateDoc.data() || {};
+
+      if (activeIds.has(stateDoc.id) || data.status === "deleted") continue;
+
+      removedUnits.push(stateDoc.id);
+      await db.doc(`${UNITS}/${stateDoc.id}`).set({
+        status: "deleted",
+        deletedDetectedAtMillis: now,
+        alerts: { documents: [], audits: [] }
+      }, { merge: true });
+    }
+  } catch (error) {
+    log.error("storage health: no se pudieron revisar las unidades eliminadas", { error: cleanError(error) });
+  }
+
   if (lines.length) log.warn("storage health: transiciones", { lines });
 
   let delivery;
@@ -770,6 +854,7 @@ async function runStorageHealthCheck({
     incompleteIds,
     complete: incomplete.length === 0,
     unitsWithAuditIssues,
+    removedUnits: removedUnits.length,
     measuredDocuments,
     documentsRead,
     shardDocuments,
@@ -831,7 +916,7 @@ async function acquireLock(db, { now, runId, trigger, mode }) {
     const lock = control.lock;
 
     if (lock && Number(lock.expiresAtMillis || 0) > now) {
-      throw new StorageHealthBusyError("running", Number(lock.expiresAtMillis) - now);
+      throw new StorageHealthBusyError("running", Number(lock.expiresAtMillis) - now, lock.mode || null);
     }
 
     const lastManual = Number(control.lastManual?.[mode] || 0);
@@ -853,7 +938,15 @@ async function acquireLock(db, { now, runId, trigger, mode }) {
       const control = snap.exists ? snap.data() || {} : {};
 
       if (control.lock?.runId === runId) {
-        transaction.set(ref, { lock: null, lastRun }, { merge: true });
+        transaction.set(ref, {
+          lock: null,
+          lastRun,
+          // La ultima revision COMPLETA que termino bien: la programada la usa
+          // para saber si la del dia ya se hizo mientras esperaba el candado.
+          ...(mode === "full" && lastRun.ok
+            ? { lastFullRun: { runId, date: chileDate(now), startedAtMillis: now, trigger } }
+            : {})
+        }, { merge: true });
       }
     });
   };
@@ -914,6 +1007,56 @@ async function runStorageHealthCheckLocked({
   }
 }
 
+const SCHEDULE_MAX_WAIT_MS = 4 * 60 * 1000;
+const SCHEDULE_POLL_MS = 20 * 1000;
+
+/**
+ * La revision programada del dia. Si el candado esta tomado (una manual
+ * completa o un reintento de entregas) ESPERA a que se suelte y entonces
+ * corre; solo se da por hecha si mientras esperaba termino bien una revision
+ * COMPLETA de hoy. Si el candado sigue tomado al agotar la espera, falla: el
+ * programador la reintenta (retryCount en storageHealthFunctions.js) en vez de
+ * omitir el dia en silencio.
+ */
+async function runScheduledStorageHealthCheck({
+  db,
+  sendAlert = null,
+  log = logger,
+  now = () => Date.now(),
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  maxWaitMs = SCHEDULE_MAX_WAIT_MS,
+  pollMs = SCHEDULE_POLL_MS
+}) {
+  const startedAt = now();
+  const today = chileDate(startedAt);
+  let waited = false;
+
+  for (;;) {
+    if (waited) {
+      const controlSnap = await db.doc(CONTROL_DOC).get();
+      const last = controlSnap.exists ? controlSnap.data()?.lastFullRun : null;
+
+      if (last?.date === today && Number(last.startedAtMillis) >= startedAt - LOCK_TTL_MS) {
+        log.info("storage health: la revision del dia ya la hizo otra ejecucion completa", { runId: last.runId });
+        return { skipped: "full_run_done", runId: last.runId };
+      }
+    }
+
+    try {
+      return await runStorageHealthCheckLocked({ db, now: now(), sendAlert, log, trigger: "schedule", mode: "full" });
+    } catch (error) {
+      if (!(error instanceof StorageHealthBusyError) || error.reason !== "running") throw error;
+      if (now() - startedAt >= maxWaitMs) {
+        throw new Error(`storage health: candado ocupado (${error.lockMode || "?"}) tras ${Math.round(maxWaitMs / 1000)} s; queda para el reintento`);
+      }
+
+      log.warn("storage health: candado ocupado, la programada espera", { lockMode: error.lockMode });
+      await sleep(pollMs);
+      waited = true;
+    }
+  }
+}
+
 /**
  * Correo de prueba: solo al destinatario tecnico configurado. Queda como
  * evento "test" (sin reintentos) para verlo en el historial.
@@ -933,7 +1076,7 @@ async function sendStorageHealthTestAlert({ db, now = Date.now(), sendAlert, req
   });
 
   const date = chileDate(now);
-  const eventId = `${date}_test_${hash(`${now}|${requestedBy || ""}`)}`;
+  const eventId = `${eventIdPrefix(date)}_test_${hash(`${now}|${requestedBy || ""}`)}`;
   let result;
 
   try {
@@ -1033,9 +1176,11 @@ module.exports = {
   UNITS,
   chileDate,
   cleanError,
+  eventIdPrefix,
   createStorageAlertSender,
   deliverPendingEvents,
   runStorageHealthCheck,
+  runScheduledStorageHealthCheck,
   runStorageHealthCheckLocked,
   sendStorageHealthTestAlert
 };

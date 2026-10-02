@@ -6,7 +6,7 @@ Es una revisión técnica. Supervisores y dueños de unidad no ven nada en la ap
 
 | Función | Tipo | Región |
 | --- | --- | --- |
-| `checkStorageHealth` | programada, todos los días a las 05:30 (America/Santiago) | us-central1 |
+| `checkStorageHealth` | programada, todos los días a las 05:30 (America/Santiago). Si el candado está tomado, espera hasta 4 min; si sigue tomado, falla y Cloud Scheduler la reintenta (3 veces, cada ≥ 5 min) | us-central1 |
 | `getStorageHealthOverview` | callable, solo admin global | southamerica-west1 |
 | `getStorageHealthHistory` | callable, solo admin global; paginada (máx. 30 días y 50 eventos por llamada) | southamerica-west1 |
 | `runStorageHealthCheckNow` | callable, solo admin global. Modo `full` (máx. 1 cada 10 min) o `deliveries` (máx. 1 cada 2 min); tiene un candado | southamerica-west1 |
@@ -21,7 +21,9 @@ La revisión solo **lee** las unidades. Escribe únicamente en estas colecciones
 - `storageHealthReports/{fecha}`: resumen del día.
 - `storageHealthReports/{fecha}/units/{unidad}`: detalle del día por unidad.
 - `storageHealthRuns/{runId}`: cada ejecución.
-- `storageHealthControl/state`: candado, frecuencia y última entrega.
+- `storageHealthControl/state`: candado, frecuencia, última entrega, el lote de correo abierto (`outbox`) y la última revisión completa (`lastFullRun`).
+
+Las unidades que ya no existen se marcan `status: "deleted"`. Salen del panel y de los conteos, y el resumen las cruza contra `workspaces` aunque la revisión aún no las haya marcado. Sus informes y eventos se conservan.
 
 ## Variables
 
@@ -44,8 +46,9 @@ En el proyecto test, `RESEND_API_KEY` tiene un valor provisorio, así que el env
 
 - Una transición se registra una sola vez por día. Repetir la revisión ese mismo día no la duplica.
 - Un evento queda como `sent` únicamente cuando Resend responde 2xx. Con cualquier otro resultado sigue pendiente y se reintenta en la próxima revisión, o con **Reintentar entregas** desde Admin.
-- Cada envío lleva una `Idempotency-Key` calculada a partir de los ids de los eventos, y Resend la recuerda durante 24 horas.
+- **Outbox.** Antes de llamar al proveedor, el lote queda guardado en `storageHealthControl/state.outbox`: sus ids y el asunto y texto exactos. Si el resultado es ambiguo (`failed`: error del proveedor, red caída, respuesta perdida o la función se cae a mitad de camino), los reintentos mandan **ese mismo lote** con la misma `Idempotency-Key` y el mismo cuerpo. Resend rechaza una clave reutilizada con otro cuerpo y recuerda la clave durante 24 horas. Los eventos nuevos esperan al lote siguiente. Si nunca se llegó al proveedor (`skipped_*`), el lote se suelta.
 - Cada correo lleva hasta 50 eventos. Los que no caben salen en el correo siguiente.
+- El historial pagina los eventos por id de documento (`eventsCursor` = id del último recibido). El id es único, así que no salta ni repite eventos aunque muchos tengan el mismo milisegundo. Firestore solo recorre `__name__` en orden **ascendente**, por eso el id empieza con la fecha invertida (`99999999 − AAAAMMDD`, luego la fecha y un hash): el orden ascendente queda "más reciente primero". No necesita índice compuesto: la igualdad por `workspaceId` más el orden por `__name__` se resuelve con los índices de un solo campo (verificado en el emulador).
 
 ## Costo
 

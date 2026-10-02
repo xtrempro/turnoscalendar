@@ -19,6 +19,7 @@ const {
   MAX_HEALTHY_TRACKED_PER_UNIT,
   StorageHealthBusyError,
   createStorageAlertSender,
+  runScheduledStorageHealthCheck,
   runStorageHealthCheck,
   runStorageHealthCheckLocked,
   sendStorageHealthTestAlert
@@ -202,7 +203,7 @@ test("cruzar el 85 % crea UN evento, se entrega una vez y mide el crecimiento", 
   assert.equal(first.changes, 1);
   assert.equal(mail.sent.length, 1);
   assert.match(mail.sent[0].text, /CRITICO .*Imagenologia log\/auditLog/);
-  assert.match(mail.sent[0].idempotencyKey, /^storage-health-[0-9a-f]{32}$/);
+  assert.match(mail.sent[0].idempotencyKey, /^storage-health-\d+_[0-9a-f]{32}$/);
 
   const [event] = events(db);
 
@@ -683,4 +684,145 @@ test("solo una respuesta exitosa cuenta como enviado; lleva Idempotency-Key", as
 
   assert.equal(thrown.status, "failed");
   assert.doesNotMatch(thrown.error, /re_clave/);
+});
+
+// --- Regresiones de la auditoria de 066807d ---------------------------------
+
+test("outbox: tras una respuesta perdida se repite EL MISMO lote, aunque entren eventos nuevos", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    "workspaces/w2": { name: "Urgencia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  // 1: el proveedor envio pero la respuesta se perdio (falla ambigua).
+  const mail = recorder(count => (count === 1 ? new Error("socket hang up") : "sent"));
+
+  await run(db, DAY1, mail);
+
+  assert.ok(db.docs.get("storageHealthControl/state").outbox, "el lote queda abierto");
+
+  // Antes del reintento aparece otro evento.
+  db.docs.set("workspaces/w2/stateModules/log/entries/auditLog", bigAuditLog(Math.round(MiB * 0.72)));
+  await run(db, DAY1 + DAY, mail);
+
+  assert.equal(mail.sent[1].idempotencyKey, mail.sent[0].idempotencyKey, "misma clave");
+  assert.equal(mail.sent[1].text, mail.sent[0].text, "mismo cuerpo (Resend rechaza otro cuerpo con la misma clave)");
+  assert.doesNotMatch(mail.sent[1].text, /Urgencia/);
+  assert.equal(db.docs.get("storageHealthControl/state").outbox, null, "lote cerrado al confirmarse");
+
+  const urgencia = events(db).find(event => event.workspaceId === "w2");
+
+  assert.equal(urgencia.deliveryPending, true, "el evento nuevo espera su lote");
+
+  await run(db, DAY1 + 2 * DAY, mail);
+
+  assert.equal(mail.sent.length, 3);
+  assert.notEqual(mail.sent[2].idempotencyKey, mail.sent[0].idempotencyKey);
+  assert.match(mail.sent[2].text, /Urgencia/);
+  assert.doesNotMatch(mail.sent[2].text, /Imagenologia/, "lo ya enviado no se repite");
+  assert.ok(events(db).every(event => event.delivery.status === "sent"));
+});
+
+test("outbox: si nunca se llego al proveedor (skipped), el lote se suelta y el siguiente suma lo nuevo", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    "workspaces/w2": { name: "Urgencia" },
+    [AUDIT_PATH]: bigAuditLog(Math.round(MiB * 0.86))
+  });
+  const mail = recorder(count => (count === 1 ? "skipped_no_api_key" : "sent"));
+
+  await run(db, DAY1, mail);
+  assert.equal(db.docs.get("storageHealthControl/state").outbox, null);
+
+  db.docs.set("workspaces/w2/stateModules/log/entries/auditLog", bigAuditLog(Math.round(MiB * 0.72)));
+  await run(db, DAY1 + DAY, mail);
+
+  assert.match(mail.sent[1].text, /Imagenologia/);
+  assert.match(mail.sent[1].text, /Urgencia/);
+});
+
+test("programada: espera a que se suelte un candado de entregas y hace la revision completa", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    "storageHealthControl/state": { lock: { runId: "r", mode: "deliveries", trigger: "manual", expiresAtMillis: DAY1 + 10 * 60 * 1000 } }
+  });
+  let clock = DAY1;
+  const sleeps = [];
+  const result = await runScheduledStorageHealthCheck({
+    db,
+    log: silentLog,
+    now: () => clock,
+    sleep: async ms => {
+      sleeps.push(ms);
+      clock += ms;
+      // El reintento de entregas termina.
+      db.docs.set("storageHealthControl/state", { lock: null, lastRun: { mode: "deliveries", ok: true } });
+    }
+  });
+
+  assert.equal(sleeps.length, 1);
+  assert.equal(result.units, 1, "corrio la revision completa");
+  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w1"));
+  assert.equal(db.docs.get("storageHealthControl/state").lastFullRun.date, "2026-10-02");
+});
+
+test("programada: si mientras esperaba termino una completa de hoy, esa cuenta como la del dia", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    "storageHealthControl/state": { lock: { runId: "manual", mode: "full", trigger: "manual", expiresAtMillis: DAY1 + 10 * 60 * 1000 } }
+  });
+  let clock = DAY1;
+  const result = await runScheduledStorageHealthCheck({
+    db,
+    log: silentLog,
+    now: () => clock,
+    sleep: async ms => {
+      clock += ms;
+      db.docs.set("storageHealthControl/state", {
+        lock: null,
+        lastFullRun: { runId: "manual", date: "2026-10-02", startedAtMillis: DAY1 - 60 * 1000, trigger: "manual" }
+      });
+    }
+  });
+
+  assert.deepEqual(result, { skipped: "full_run_done", runId: "manual" });
+});
+
+test("programada: si el candado no se suelta, falla (para que el programador reintente) en vez de omitir el dia", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    "storageHealthControl/state": { lock: { runId: "r", mode: "deliveries", expiresAtMillis: DAY1 + 60 * 60 * 1000 } }
+  });
+  let clock = DAY1;
+
+  await assert.rejects(
+    runScheduledStorageHealthCheck({ db, log: silentLog, now: () => clock, sleep: async ms => { clock += ms; } }),
+    /candado ocupado \(deliveries\)/
+  );
+  assert.ok(!db.docs.has("storageHealthReports/2026-10-02"), "no se dio por hecha");
+});
+
+test("una unidad eliminada se marca como tal y conserva su historial", async () => {
+  const db = fakeFirestore({
+    "workspaces/w1": { name: "Imagenologia" },
+    "workspaces/w2": { name: "Urgencia" },
+    "workspaces/w2/stateModules/log/entries/auditLog": bigAuditLog(Math.round(MiB * 0.86))
+  });
+
+  await run(db, DAY1, recorder());
+  [...db.docs.keys()].filter(key => key.startsWith("workspaces/w2")).forEach(key => db.docs.delete(key));
+
+  const summary = await run(db, DAY1 + DAY, recorder());
+  const state = db.docs.get("storageHealthUnits/w2");
+
+  assert.equal(summary.units, 1);
+  assert.equal(summary.removedUnits, 1);
+  assert.equal(state.status, "deleted");
+  assert.equal(state.deletedDetectedAtMillis, DAY1 + DAY);
+  assert.deepEqual(state.alerts, { documents: [], audits: [] });
+  assert.ok(db.docs.has("storageHealthReports/2026-10-02/units/w2"), "historial conservado");
+
+  const again = await run(db, DAY1 + 2 * DAY, recorder());
+
+  assert.equal(again.removedUnits, 0, "se marca una sola vez");
 });

@@ -28,7 +28,11 @@ function getField(data, field) {
 function compare(a, b) {
   if (typeof a === "number" && typeof b === "number") return a - b;
 
-  return String(a).localeCompare(String(b));
+  // Firestore ordena los textos por bytes, no por idioma.
+  const left = String(a);
+  const right = String(b);
+
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function fakeFirestore(seed = {}) {
@@ -84,7 +88,13 @@ function fakeFirestore(seed = {}) {
         return make({ ...state, filters: [...state.filters, { field, op, value }] });
       },
       orderBy(field, direction = "asc") {
-        return make({ ...state, order: { field, direction } });
+        // FieldPath.documentId() se ordena por el id del documento.
+        const byName = String(field) === "__name__";
+
+        return make({ ...state, order: { field: byName ? "__name__" : field, direction } });
+      },
+      startAfter(value) {
+        return make({ ...state, after: value });
       },
       limit(count) {
         return make({ ...state, max: count });
@@ -107,10 +117,16 @@ function fakeFirestore(seed = {}) {
         });
         if (state.order) {
           const { field, direction } = state.order;
+          const valueOf = row => (field === "__name__" ? row.id : getField(row.data(), field));
 
-          rows = rows.filter(row => getField(row.data(), field) !== undefined);
-          rows.sort((a, b) => compare(getField(a.data(), field), getField(b.data(), field)));
+          rows = rows.filter(row => valueOf(row) !== undefined);
+          rows.sort((a, b) => compare(valueOf(a), valueOf(b)));
           if (direction === "desc") rows.reverse();
+          if (state.after !== undefined) {
+            rows = rows.filter(row => direction === "desc"
+              ? compare(valueOf(row), state.after) < 0
+              : compare(valueOf(row), state.after) > 0);
+          }
         }
         rows = rows.slice(0, state.max);
         stats.reads += Math.max(1, rows.length);
@@ -133,7 +149,7 @@ function fakeFirestore(seed = {}) {
       }
     });
 
-    return make({ filters: [], order: null, max: Infinity });
+    return make({ filters: [], order: null, after: undefined, max: Infinity });
   }
 
   // Transacciones en serie: suficiente para probar el candado (cada

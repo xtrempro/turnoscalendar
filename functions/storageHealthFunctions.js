@@ -24,6 +24,7 @@ const {
   StorageHealthBusyError,
   cleanError,
   createStorageAlertSender,
+  runScheduledStorageHealthCheck,
   runStorageHealthCheckLocked,
   sendStorageHealthTestAlert
 } = require("./storageHealthMonitor");
@@ -211,7 +212,9 @@ const sendStorageHealthTestAlert_ = onCall(
 );
 
 // Revision diaria: tamano de cada documento de estado, crecimiento,
-// comparacion de formatos en migracion e integridad de los fragmentos.
+// comparacion de formatos en migracion e integridad de los fragmentos. Si el
+// candado esta tomado espera; si no logra correr, falla y el programador la
+// reintenta (nunca se omite el dia en silencio).
 const checkStorageHealth = onSchedule(
   {
     schedule: "every day 05:30",
@@ -219,25 +222,17 @@ const checkStorageHealth = onSchedule(
     region: "us-central1",
     memory: "1GiB",
     timeoutSeconds: 540,
+    retryCount: 3,
+    minBackoffSeconds: 300,
     secrets: [RESEND_API_KEY]
   },
   async () => {
     const { recipient, apiKey, from } = readNotificationConfig();
 
-    try {
-      await runStorageHealthCheckLocked({
-        db: admin.firestore(),
-        sendAlert: createStorageAlertSender({ to: recipient, apiKey, from }),
-        trigger: "schedule"
-      });
-    } catch (error) {
-      if (error instanceof StorageHealthBusyError) {
-        // Hay una manual en curso: esa es la revision del dia.
-        logger.warn("storage health: revision programada omitida", { reason: error.reason });
-        return;
-      }
-      throw error;
-    }
+    await runScheduledStorageHealthCheck({
+      db: admin.firestore(),
+      sendAlert: createStorageAlertSender({ to: recipient, apiKey, from })
+    });
   }
 );
 

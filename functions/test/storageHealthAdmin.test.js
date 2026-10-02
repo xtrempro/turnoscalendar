@@ -6,7 +6,7 @@ const { HttpsError } = require("firebase-functions/v2/https");
 
 const { createAdminGuard } = require("../lib/adminAuthorization");
 const { createStorageHealthHandlers } = require("../storageHealthFunctions");
-const { runStorageHealthCheck } = require("../storageHealthMonitor");
+const { eventIdPrefix, runStorageHealthCheck } = require("../storageHealthMonitor");
 const { MAX_HISTORY_LIMIT, MAX_EVENTS_LIMIT } = require("../storageHealthAdmin");
 const { fakeFirestore } = require("./helpers/fakeFirestore");
 
@@ -194,13 +194,29 @@ test("historial: eventos de la unidad paginados, con intentos de entrega", async
   assert.equal(page.measurements.length, 0);
   assert.equal(page.events.length, 4);
   assert.ok(page.events[0].detectedAtMillis > page.events[3].detectedAtMillis);
-  assert.equal(page.events[0].delivery.status, "failed");
-  assert.equal(page.events[0].delivery.lastError, "Resend 500");
+  // El primer lote fallo y sigue abierto (outbox): los eventos nuevos esperan.
+  assert.equal(page.events[0].delivery.status, "pending");
+
+  const all = [...page.events];
+  let cursor = page.nextEventsCursor;
+
+  while (cursor) {
+    const next = await handlers.history({ auth: auth.admin, data: { workspaceId: "w1", eventsLimit: 4, includeMeasurements: false, eventsCursor: cursor } });
+
+    all.push(...next.events);
+    cursor = next.nextEventsCursor;
+  }
+
+  const oldest = all.sort((a, b) => a.detectedAtMillis - b.detectedAtMillis)[0];
+
+  assert.equal(oldest.delivery.status, "failed");
+  assert.equal(oldest.delivery.lastError, "Resend 500");
+  assert.equal(oldest.delivery.attempts, 6, "el mismo lote se reintento cada dia");
   assert.ok(page.nextEventsCursor);
 
   const rest = await handlers.history({
     auth: auth.admin,
-    data: { workspaceId: "w1", eventsLimit: 4, includeMeasurements: false, eventsBeforeMillis: page.nextEventsCursor }
+    data: { workspaceId: "w1", eventsLimit: 4, includeMeasurements: false, eventsCursor: page.nextEventsCursor }
   });
 
   assert.equal(rest.events.length, 2);
@@ -249,4 +265,86 @@ test("correo de prueba sin destinatario configurado: no sale y lo dice", async (
   const result = await handlers.testAlert({ auth: auth.admin, data: {} });
 
   assert.equal(result.status, "skipped_no_recipient");
+});
+
+// --- Regresiones de la auditoria de 066807d ---------------------------------
+
+test("historial: 20 eventos del mismo milisegundo se paginan sin saltos ni repetidos", async () => {
+  const seed = { "workspaces/w1": { name: "Grande" } };
+
+  for (let index = 0; index < 20; index++) {
+    seed[`workspaces/w1/stateModules/turnos/entries/k${index}`] = { storageKey: `k${index}`, value: "x".repeat(Math.round(MiB * 0.72)) };
+  }
+
+  const { db, handlers } = setup(seed);
+
+  await runStorageHealthCheck({ db, now: DAY1, log: silentLog });
+
+  const first = await handlers.history({ auth: auth.admin, data: { workspaceId: "w1", eventsLimit: 15, includeMeasurements: false } });
+  const second = await handlers.history({ auth: auth.admin, data: { workspaceId: "w1", eventsLimit: 15, includeMeasurements: false, eventsCursor: first.nextEventsCursor } });
+  const ids = [...first.events, ...second.events].map(event => event.eventId);
+
+  assert.equal(first.events.length, 15);
+  assert.equal(second.events.length, 5);
+  assert.equal(second.nextEventsCursor, null);
+  assert.equal(new Set(ids).size, 20, "sin repetidos");
+  assert.ok(first.events.every(event => event.detectedAtMillis === DAY1));
+});
+
+test("historial: mas de 500 eventos de una unidad siguen siendo alcanzables", async () => {
+  const seed = { "workspaces/w1": { name: "Imagenologia" } };
+
+  for (let index = 0; index < 520; index++) {
+    const day = new Date(DAY1 - Math.floor(index / 10) * DAY).toISOString().slice(0, 10);
+    const id = `${eventIdPrefix(day)}_${String(index).padStart(32, "0")}`;
+
+    seed[`storageHealthEvents/${id}`] = { eventId: id, workspaceId: "w1", type: "audit", line: `e${index}`, detectedAtMillis: DAY1 - Math.floor(index / 10) * DAY, delivery: {} };
+  }
+  seed["storageHealthEvents/2026-10-02_otra"] = { eventId: "2026-10-02_otra", workspaceId: "w2", detectedAtMillis: DAY1, delivery: {} };
+
+  const { handlers } = setup(seed);
+  const seen = new Set();
+  let cursor = null;
+  let pages = 0;
+  const firstPage = await handlers.history({ auth: auth.admin, data: { workspaceId: "w1", eventsLimit: 10, includeMeasurements: false } });
+
+  assert.ok(firstPage.events.every(event => event.detectedAtMillis === DAY1), "la primera pagina es la mas reciente");
+
+  do {
+    const page = await handlers.history({ auth: auth.admin, data: { workspaceId: "w1", eventsLimit: 50, includeMeasurements: false, ...(cursor ? { eventsCursor: cursor } : {}) } });
+
+    page.events.forEach(event => {
+      assert.equal(event.workspaceId, "w1");
+      seen.add(event.eventId);
+    });
+    cursor = page.nextEventsCursor;
+    pages++;
+  } while (cursor && pages < 20);
+
+  assert.equal(seen.size, 520);
+  assert.equal(pages, 11);
+
+  await assert.rejects(
+    handlers.history({ auth: auth.admin, data: { eventsCursor: "../x" } }),
+    error => error instanceof HttpsError && error.code === "invalid-argument"
+  );
+});
+
+test("resumen: una unidad eliminada sale del panel y de los conteos, aun antes de la revision", async () => {
+  const { db, handlers } = setup(seedUnits());
+
+  await runStorageHealthCheck({ db, now: DAY1, log: silentLog });
+  [...db.docs.keys()].filter(key => key.startsWith("workspaces/w1")).forEach(key => db.docs.delete(key));
+
+  const overview = await handlers.overview({ auth: auth.admin, data: {} });
+
+  assert.deepEqual(overview.units.map(unit => unit.workspaceId), ["w2"]);
+  assert.deepEqual(overview.counts, { total: 1, normal: 1, warning: 0, critical: 0, incomplete: 0 });
+  assert.equal(overview.status, "normal");
+  assert.deepEqual(overview.removedUnits.map(unit => unit.workspaceId), ["w1"]);
+
+  // Su historial sigue disponible.
+  const history = await handlers.history({ auth: auth.admin, data: { workspaceId: "w1" } });
+
+  assert.equal(history.measurements.length, 1);
 });
