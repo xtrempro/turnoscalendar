@@ -23,6 +23,7 @@ import { showConfirm } from "./dialogs.js";
 import { auditLogDisplayMonth } from "./auditLogShardStore.js";
 import {
     auditLogShardReadEnabled,
+    getAuditLogShardEntryCacheVersion,
     getCachedAuditLogShardEntries,
     getCachedAuditLogShardEntry,
     getCachedAuditLogShardMonth,
@@ -460,21 +461,58 @@ function sortedLeaveApplicationLogs() {
     return leaveApplicationLogCache;
 }
 
+// Los permisos aplicados vigentes: los de la bitacora local mas los que solo
+// quedan en los fragmentos (los ya podados de la local).
+//
+// Se guarda en cache: el timeline la consulta por cada casilla con permiso, y
+// rehacerla en cada llamada la hacia ~4 veces mas lenta (2026-10-02). Se rehace
+// solo si cambia la bitacora local o lo que se trajo de los fragmentos.
+//
+// Para un mismo id manda la bitacora LOCAL (la autoritativa mientras conviven
+// los dos formatos): la copia del fragmento puede venir atrasada, y un permiso
+// que otra sesion acaba de anular volvia a salir vigente.
+let availableLeaveLogsCache = null;
+let availableLeaveLogsRaw = null;
+let availableLeaveLogsShardVersion = -1;
+
 function availableLeaveApplicationLogs() {
-    const logs = new Map(
-        sortedLeaveApplicationLogs().map(log => [String(log.id || ""), log])
-    );
+    const raw = getRaw(KEY, "[]");
+    const shardVersion = getAuditLogShardEntryCacheVersion();
 
-    getCachedAuditLogShardEntries()
-        .filter(log =>
+    if (
+        availableLeaveLogsCache &&
+        raw === availableLeaveLogsRaw &&
+        shardVersion === availableLeaveLogsShardVersion
+    ) {
+        return availableLeaveLogsCache;
+    }
+
+    const active = sortedLeaveApplicationLogs();
+    const shardLogs = getCachedAuditLogShardEntries();
+
+    if (!shardLogs.length) {
+        availableLeaveLogsCache = active;
+    } else {
+        const localIds = new Set(
+            getAuditLogs().map(log => String(log?.id || ""))
+        );
+        const archived = shardLogs.filter(log =>
             log?.category === AUDIT_CATEGORY.LEAVE_ABSENCE &&
-            !log?.canceledAt
-        )
-        .forEach(log => logs.set(String(log.id || ""), log));
+            !log?.canceledAt &&
+            !localIds.has(String(log?.id || ""))
+        );
 
-    return [...logs.values()].sort((a, b) =>
-        String(b.createdAt).localeCompare(String(a.createdAt))
-    );
+        availableLeaveLogsCache = archived.length
+            ? [...active, ...normalizeLogs(archived)].sort((a, b) =>
+                String(b.createdAt).localeCompare(String(a.createdAt))
+            )
+            : active;
+    }
+
+    availableLeaveLogsRaw = raw;
+    availableLeaveLogsShardVersion = shardVersion;
+
+    return availableLeaveLogsCache;
 }
 
 function normalizeKeyList(value) {

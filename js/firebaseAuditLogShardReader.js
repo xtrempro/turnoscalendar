@@ -21,6 +21,13 @@ let resolveMonthFirstSnapshot = null;
 let rejectMonthFirstSnapshot = null;
 const monthCache = new Map();
 const entryCache = new Map();
+// Sube cada vez que cambia entryCache: auditLog.js guarda en cache la lista de
+// permisos combinada y la rehace solo cuando esto (o la bitacora) cambia.
+let entryCacheVersion = 0;
+
+export function getAuditLogShardEntryCacheVersion() {
+    return entryCacheVersion;
+}
 
 function validMonth(month) {
     return /^\d{4}-(0[1-9]|1[0-2])$/.test(String(month || ""));
@@ -31,6 +38,8 @@ function rememberLogs(logs = []) {
         const id = String(log?.id || "").trim();
         if (id) entryCache.set(id, log);
     });
+
+    if (logs.length) entryCacheVersion++;
 
     return logs;
 }
@@ -88,6 +97,7 @@ export function cacheFirebaseAuditLogShardEntries(logs = []) {
         if (!id || !validMonth(month)) return;
 
         entryCache.set(id, log);
+        entryCacheVersion++;
 
         monthCache.forEach((cached, cachedMonth) => {
             const withoutPrevious = cached.filter(item => item.id !== id);
@@ -146,6 +156,7 @@ export function stopFirebaseAuditLogShardReader() {
     readEnabled = false;
     monthCache.clear();
     entryCache.clear();
+    entryCacheVersion++;
 }
 
 // Solo configura el lector. No consulta Firestore hasta que LOG pide un mes o
