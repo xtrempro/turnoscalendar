@@ -239,13 +239,13 @@ test("el respaldo del trabajador llega al memorandum sin completarlo", () => {
 test("cada permiso que genera memorandum manda sus dias", () => {
     // Sin esto el memorandum solo sabe el rango, y las casillas de un permiso
     // con saltos quedan mal asociadas.
-    assert.match(leaveEngine, /sourceType: "admin",\s*\n\s*keys\s*\n/);
-    assert.match(leaveEngine, /sourceType: "legal",\s*\n\s*keys: nuevos\s*\n/);
-    assert.match(leaveEngine, /sourceType: "comp",\s*\n\s*keys: nuevos\s*\n/);
-    assert.match(leaveEngine, /sourceType: "unpaid_leave",\s*\n\s*keys\s*\n/);
+    assert.match(leaveEngine, /sourceType: "admin",\s*\n\s*keys,\s*\n\s*logId:/);
+    assert.match(leaveEngine, /sourceType: "legal",\s*\n\s*keys: nuevos,\s*\n\s*logId:/);
+    assert.match(leaveEngine, /sourceType: "comp",\s*\n\s*keys: nuevos,\s*\n\s*logId:/);
+    assert.match(leaveEngine, /sourceType: "unpaid_leave",\s*\n\s*keys,\s*\n\s*logId:/);
     assert.match(
         leaveEngine,
-        /: "half_admin_afternoon",\s*\n\s*keys: \[key\]\s*\n/
+        /: "half_admin_afternoon",\s*\n\s*keys: \[key\],\s*\n\s*logId:/
     );
 });
 

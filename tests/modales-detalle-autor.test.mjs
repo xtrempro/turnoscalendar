@@ -160,11 +160,31 @@ test("el detalle de un permiso espera la bitacora diferida", () => {
     );
     assert.ok(
         detailBlock.indexOf('await hydrateDeferredStateModule("log")') <
-        detailBlock.indexOf("getLeaveApplicationInfo({"),
+        detailBlock.indexOf("loadLeaveApplicationInfo({"),
         "la bitacora debe llegar antes de buscar el permiso"
+    );
+    assert.match(
+        detailBlock,
+        /await loadLeaveApplicationInfo\(\{[\s\S]*?\.\.\.reference/
     );
     assert.match(
         calendar,
         /await openLeaveDetailDialog\(\{\s*\n\s*profile: profileName/
+    );
+});
+
+test("el permiso archivado usa el logId del memorandum o reemplazo", async () => {
+    assert.match(calendar, /function leaveAuditReferenceForDay\(/);
+    assert.match(calendar, /if \(memo\?\.logId\)/);
+    assert.match(calendar, /String\(item\?\.leaveLogId \|\| ""\)\.trim\(\)/);
+
+    const auditReader = await read("../js/firebaseAuditLogShardReader.js");
+    assert.match(
+        auditReader,
+        /export async function readFirebaseAuditLogShardEntry/
+    );
+    assert.match(
+        auditLog,
+        /await readFirebaseAuditLogShardEntry\(logId, createdAt\)/
     );
 });

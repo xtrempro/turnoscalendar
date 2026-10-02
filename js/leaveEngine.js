@@ -603,7 +603,7 @@ export async function aplicarAdministrativo(fecha, cantidad = 1, options = {}){
         saveAbsences(absences);
     }
 
-    addAuditLog(
+    const applicationLog = addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
         "Aplic\u00f3 P. Administrativo",
         `${currentProfile}: ${cantidad} d\u00eda desde ${formatKey(keyFromDate(fecha))}.`,
@@ -623,7 +623,8 @@ export async function aplicarAdministrativo(fecha, cantidad = 1, options = {}){
         startKey: keys[0],
         endKey: keys[keys.length - 1],
         sourceType: "admin",
-        keys
+        keys,
+        logId: applicationLog?.id || ""
     });
 
     return true;
@@ -661,7 +662,7 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
     clearStaleNoCoverage(currentProfile, [key]);
     saveAdminDays(admin);
 
-    addAuditLog(
+    const applicationLog = addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
         tipo === "M"
             ? "Aplic\u00f3 1/2 ADM Ma\u00f1ana"
@@ -689,7 +690,8 @@ export async function aplicarHalfAdministrativo(fecha, tipo="M"){
         sourceType: tipo === "M"
             ? "half_admin_morning"
             : "half_admin_afternoon",
-        keys: [key]
+        keys: [key],
+        logId: applicationLog?.id || ""
     });
 
     return true;
@@ -867,7 +869,7 @@ export async function aplicarLegal(fecha, cantidad, options = {}){
         saveAbsences(absences);
     }
 
-    addAuditLog(
+    const applicationLog = addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
         "Aplic\u00f3 F. Legal",
         `${getCurrentProfile()}: ${cantidad} d\u00eda(s) h\u00e1biles desde ${formatKey(startKey)}.`,
@@ -887,7 +889,8 @@ export async function aplicarLegal(fecha, cantidad, options = {}){
         startKey,
         endKey: nuevos[nuevos.length - 1],
         sourceType: "legal",
-        keys: nuevos
+        keys: nuevos,
+        logId: applicationLog?.id || ""
     });
 
     return true;
@@ -1034,7 +1037,7 @@ export async function aplicarComp(fecha, cantidad = 10, options = {}){
         saveAbsences(absences);
     }
 
-    addAuditLog(
+    const applicationLog = addAuditLog(
         AUDIT_CATEGORY.LEAVE_ABSENCE,
         "Aplic\u00f3 F. Compensatorio",
         `${getCurrentProfile()}: bloque de ${total} d\u00eda(s) h\u00e1biles desde ${formatKey(startKey)}.`,
@@ -1054,7 +1057,8 @@ export async function aplicarComp(fecha, cantidad = 10, options = {}){
         startKey,
         endKey: nuevos[nuevos.length - 1],
         sourceType: "comp",
-        keys: nuevos
+        keys: nuevos,
+        logId: applicationLog?.id || ""
     });
 
     return true;
@@ -1480,7 +1484,8 @@ export async function aplicarLicencia(
             startKey,
             endKey: keys[keys.length - 1],
             sourceType: "unpaid_leave",
-            keys
+            keys,
+            logId: applicationLog?.id || ""
         });
     }
 

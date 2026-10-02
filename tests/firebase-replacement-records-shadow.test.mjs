@@ -66,11 +66,23 @@ test("el lector fragmentado se configura sin leer al arrancar", () => {
     assert.doesNotMatch(block, /getFirebaseServices|getDocs|getDoc|onSnapshot/);
     assert.match(
         auditShardReader,
-        /where\("month", "==", normalizedMonth\)/
+        /where\("day", ">=", range\.startDay\)/
+    );
+    assert.match(
+        auditShardReader,
+        /where\("day", "<", range\.endDayExclusive\)/
+    );
+    assert.match(
+        auditShardReader,
+        /auditLogDisplayMonth\(log\?\.createdAt\) === month/
     );
     assert.match(
         auditShardReader,
         /auditLogShardLocationFromId\(id, createdAt\)/
+    );
+    assert.match(
+        auditShardReader,
+        /export async function readFirebaseAuditLogShardMonth/
     );
     assert.match(auditShardReader, /expectedWatchGeneration/);
     assert.match(

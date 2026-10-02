@@ -418,8 +418,8 @@ export function createLeaveMemoTask({
     // startKey..endKey no alcanza para saber que casilla pertenece a este
     // memorandum. Cuando no llega, la busqueda cae al rango.
     keys = [],
-    // Solo la licencia medica: el id de su registro del LOG. Sus documentos son
-    // los respaldos de ese registro (leaveAttachments).
+    // Referencia estable al registro que aplico el permiso. Las licencias usan
+    // ademas este id para sus respaldos en leaveAttachments.
     logId = ""
 } = {}) {
     if (!profile || !typeLabel || !startKey) return null;

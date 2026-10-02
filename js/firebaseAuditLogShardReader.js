@@ -1,9 +1,10 @@
 import { getFirebaseServices } from "./firebaseClient.js";
 import { canViewMenu } from "./workspacePermissions.js";
 import {
+    auditLogDisplayMonth,
     auditLogsFromShardDocuments,
-    auditLogShardLocationFromId,
-    auditLogUtcMonth
+    auditLogShardDayRangeForDisplayMonth,
+    auditLogShardLocationFromId
 } from "./auditLogShardStore.js";
 import { encodePartialStateItemKey } from "./firebasePartialState.js";
 
@@ -82,7 +83,7 @@ export function cacheFirebaseAuditLogShardEntries(logs = []) {
 
     (Array.isArray(logs) ? logs : []).forEach(log => {
         const id = String(log?.id || "").trim();
-        const month = auditLogUtcMonth(log?.createdAt);
+        const month = auditLogDisplayMonth(log?.createdAt);
 
         if (!id || !validMonth(month)) return;
 
@@ -109,6 +110,23 @@ export function cacheFirebaseAuditLogShardEntries(logs = []) {
             monthCache.get(watchedMonth)?.length || 0
         );
     }
+}
+
+function shardMonthQuery(firestoreModule, shards, month) {
+    const range = auditLogShardDayRangeForDisplayMonth(month);
+
+    if (!range) return null;
+
+    return firestoreModule.query(
+        shards,
+        firestoreModule.where("day", ">=", range.startDay),
+        firestoreModule.where("day", "<", range.endDayExclusive)
+    );
+}
+
+function logsForDisplayMonth(documents, month) {
+    return auditLogsFromShardDocuments(documents)
+        .filter(log => auditLogDisplayMonth(log?.createdAt) === month);
 }
 
 export function stopFirebaseAuditLogShardMonthWatch() {
@@ -181,10 +199,13 @@ export async function watchFirebaseAuditLogShardMonth(month) {
         workspaceId,
         "auditLogShards"
     );
-    const monthQuery = firestoreModule.query(
+    const monthQuery = shardMonthQuery(
+        firestoreModule,
         shards,
-        firestoreModule.where("month", "==", normalizedMonth)
+        normalizedMonth
     );
+
+    if (!monthQuery) return [];
 
     watchedMonth = normalizedMonth;
     monthFirstSnapshot = new Promise((resolve, reject) => {
@@ -204,8 +225,9 @@ export async function watchFirebaseAuditLogShardMonth(month) {
                 return;
             }
 
-            const logs = rememberLogs(auditLogsFromShardDocuments(
-                snapshot.docs.map(item => item.data())
+            const logs = rememberLogs(logsForDisplayMonth(
+                snapshot.docs.map(item => item.data()),
+                normalizedMonth
             ));
 
             monthCache.set(normalizedMonth, logs);
@@ -238,6 +260,59 @@ export async function watchFirebaseAuditLogShardMonth(month) {
     );
 
     return monthFirstSnapshot;
+}
+
+export async function readFirebaseAuditLogShardMonth(month) {
+    const normalizedMonth = String(month || "");
+
+    if (!auditLogShardReadEnabled() || !validMonth(normalizedMonth)) {
+        return [];
+    }
+
+    const cached = getCachedAuditLogShardMonth(normalizedMonth);
+    if (cached) return cached;
+
+    const expectedGeneration = generation;
+    const workspaceId = activeWorkspaceId;
+    const { db, firestoreModule } = await getFirebaseServices();
+
+    if (
+        expectedGeneration !== generation ||
+        workspaceId !== activeWorkspaceId
+    ) {
+        return [];
+    }
+
+    const shards = firestoreModule.collection(
+        db,
+        "workspaces",
+        workspaceId,
+        "auditLogShards"
+    );
+    const monthQuery = shardMonthQuery(
+        firestoreModule,
+        shards,
+        normalizedMonth
+    );
+
+    if (!monthQuery) return [];
+
+    const snapshot = await firestoreModule.getDocs(monthQuery);
+
+    if (
+        expectedGeneration !== generation ||
+        workspaceId !== activeWorkspaceId
+    ) {
+        return [];
+    }
+
+    const logs = rememberLogs(logsForDisplayMonth(
+        snapshot.docs.map(item => item.data()),
+        normalizedMonth
+    ));
+
+    monthCache.set(normalizedMonth, logs);
+    return logs.slice();
 }
 
 export async function readFirebaseAuditLogShardEntry(

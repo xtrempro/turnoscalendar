@@ -20,12 +20,14 @@ import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { showConfirm } from "./dialogs.js";
-import { auditLogUtcMonth } from "./auditLogShardStore.js";
+import { auditLogDisplayMonth } from "./auditLogShardStore.js";
 import {
     auditLogShardReadEnabled,
     getCachedAuditLogShardEntries,
     getCachedAuditLogShardEntry,
     getCachedAuditLogShardMonth,
+    readFirebaseAuditLogShardEntry,
+    readFirebaseAuditLogShardMonth,
     stopFirebaseAuditLogShardMonthWatch,
     watchFirebaseAuditLogShardMonth
 } from "./firebaseAuditLogShardReader.js";
@@ -186,22 +188,11 @@ function formatTimestamp(value) {
 }
 
 function monthValue(date = new Date()) {
-    return [
-        date.getFullYear(),
-        String(date.getMonth() + 1).padStart(2, "0")
-    ].join("-");
+    return auditLogDisplayMonth(date.toISOString());
 }
 
 function logMonthValue(log) {
-    const date = new Date(log.createdAt);
-
-    if (Number.isNaN(date.getTime())) return "";
-
-    return monthValue(date);
-}
-
-function shardLogMonthValue(log) {
-    return auditLogUtcMonth(log?.createdAt);
+    return auditLogDisplayMonth(log?.createdAt);
 }
 
 function isoToDateKey(value) {
@@ -469,6 +460,23 @@ function sortedLeaveApplicationLogs() {
     return leaveApplicationLogCache;
 }
 
+function availableLeaveApplicationLogs() {
+    const logs = new Map(
+        sortedLeaveApplicationLogs().map(log => [String(log.id || ""), log])
+    );
+
+    getCachedAuditLogShardEntries()
+        .filter(log =>
+            log?.category === AUDIT_CATEGORY.LEAVE_ABSENCE &&
+            !log?.canceledAt
+        )
+        .forEach(log => logs.set(String(log.id || ""), log));
+
+    return [...logs.values()].sort((a, b) =>
+        String(b.createdAt).localeCompare(String(a.createdAt))
+    );
+}
+
 function normalizeKeyList(value) {
     const source = Array.isArray(value)
         ? value
@@ -640,7 +648,7 @@ export function getLeaveApplicationInfo({
         return null;
     }
 
-    const log = sortedLeaveApplicationLogs()
+    const log = availableLeaveApplicationLogs()
         .find(item =>
             sameProfileName(logProfileName(item), profile) &&
             getLeaveUndoType(item) === normalizedType &&
@@ -673,10 +681,36 @@ export function getLeaveApplicationInfo({
     };
 }
 
+export async function loadLeaveApplicationInfo(options = {}) {
+    let info = getLeaveApplicationInfo(options);
+
+    if (info || !auditLogShardReadEnabled()) return info;
+
+    const logId = String(options.logId || "").trim();
+    const createdAt = String(options.createdAt || "").trim();
+
+    if (logId) {
+        await readFirebaseAuditLogShardEntry(logId, createdAt)
+            .catch(() => null);
+        info = getLeaveApplicationInfo(options);
+        if (info) return info;
+    }
+
+    const createdMonth = auditLogDisplayMonth(createdAt);
+
+    if (createdMonth) {
+        await readFirebaseAuditLogShardMonth(createdMonth)
+            .catch(() => []);
+        info = getLeaveApplicationInfo(options);
+    }
+
+    return info;
+}
+
 export function getActiveLeaveLogId(profile, keyDay) {
     if (!profile || !keyDay) return "";
 
-    const log = sortedLeaveApplicationLogs().find(item => {
+    const log = availableLeaveApplicationLogs().find(item => {
         const type = getLeaveUndoType(item);
 
         return (
@@ -1490,7 +1524,7 @@ function selectedMonthLogs() {
     // cambio. Si la escritura local aun no fue confirmada por el snapshot del
     // fragmento, esa copia evita que el LOG parpadee hacia atras.
     getAuditLogs()
-        .filter(log => shardLogMonthValue(log) === selectedMonth)
+        .filter(log => logMonthValue(log) === selectedMonth)
         .forEach(log => merged.set(log.id, log));
 
     return sortLogs([...merged.values()]);
@@ -1778,7 +1812,7 @@ export function renderAuditLogPanel() {
 
     if (!selectedMonth) {
         selectedMonth = auditLogShardReadEnabled()
-            ? auditLogUtcMonth(new Date().toISOString())
+            ? auditLogDisplayMonth(new Date().toISOString())
             : monthValue();
     }
 
@@ -1847,7 +1881,7 @@ export function renderAuditLogPanel() {
         filter.onchange = () => {
             selectedMonth = filter.value || (
                 auditLogShardReadEnabled()
-                    ? auditLogUtcMonth(new Date().toISOString())
+                    ? auditLogDisplayMonth(new Date().toISOString())
                     : monthValue()
             );
             requestedShardMonth = "";

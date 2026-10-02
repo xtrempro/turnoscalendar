@@ -1,4 +1,11 @@
 export const AUDIT_LOG_SHARD_COUNT = 4;
+export const AUDIT_LOG_DISPLAY_TIME_ZONE = "America/Santiago";
+
+const displayMonthFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: AUDIT_LOG_DISPLAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit"
+});
 
 function stableValue(value) {
     if (Array.isArray(value)) return value.map(stableValue);
@@ -47,6 +54,40 @@ export function auditLogUtcMonth(value) {
     return utcDay(value).slice(0, 7);
 }
 
+export function auditLogDisplayMonth(value) {
+    const timestamp = Date.parse(String(value || ""));
+
+    if (!Number.isFinite(timestamp)) return "";
+
+    const parts = Object.fromEntries(
+        displayMonthFormatter
+            .formatToParts(new Date(timestamp))
+            .map(part => [part.type, part.value])
+    );
+
+    return parts.year && parts.month
+        ? `${parts.year}-${parts.month}`
+        : "";
+}
+
+// Los documentos siguen ubicados por dia UTC. Un mes chileno puede alcanzar
+// las primeras horas UTC del dia 1 del mes siguiente, por lo que se consulta
+// ese dia adicional y luego se filtran los registros por America/Santiago.
+export function auditLogShardDayRangeForDisplayMonth(month) {
+    const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(month || ""));
+
+    if (!match) return null;
+
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+    const nextMonthPlusOneDay = new Date(Date.UTC(year, monthIndex + 1, 2));
+
+    return {
+        startDay: `${match[1]}-${match[2]}-01`,
+        endDayExclusive: nextMonthPlusOneDay.toISOString().slice(0, 10)
+    };
+}
+
 export function auditLogShardLocation(log = {}) {
     const id = String(log.id || "").trim();
     const day = utcDay(log.createdAt);
@@ -66,7 +107,7 @@ export function auditLogShardLocation(log = {}) {
 
 export function auditLogShardLocationFromId(logId, createdAt = "") {
     const id = String(logId || "").trim();
-    const inferredCreatedAt = createdAt || auditLogTimestampFromId(id);
+    const inferredCreatedAt = auditLogTimestampFromId(id) || createdAt;
 
     return auditLogShardLocation({ id, createdAt: inferredCreatedAt });
 }

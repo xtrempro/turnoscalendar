@@ -176,6 +176,7 @@ import {
     AUDIT_CATEGORY,
     cancelContractsForCanceledLeave,
     getLeaveApplicationInfo,
+    loadLeaveApplicationInfo,
     getClockMarkAuditInfo,
     getNoCoverageAuditInfo,
     getPreassignmentAuditInfo,
@@ -4218,6 +4219,45 @@ function leaveCancellationKeysForDay({
     return contiguousLeaveKeysForDay(sourceMap, type, keyDay);
 }
 
+function leaveAuditReferenceForDay({ profile, keyDay, type } = {}) {
+    const memo = findLeaveMemoForDay({
+        profile,
+        leaveType: type,
+        keyDay
+    });
+
+    if (memo?.logId) {
+        return {
+            logId: String(memo.logId),
+            createdAt: String(memo.createdAt || "")
+        };
+    }
+
+    const isoDate = keyToISODate(keyDay);
+    const replacement = getReplacements()
+        .filter(item =>
+            replacementActive(item) &&
+            String(item?.replaced || "") === String(profile || "") &&
+            String(item?.date || "") === isoDate &&
+            String(item?.leaveLogId || "").trim()
+        )
+        .sort((a, b) =>
+            String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
+        )[0];
+
+    if (replacement) {
+        return {
+            logId: String(replacement.leaveLogId),
+            createdAt: String(replacement.createdAt || "")
+        };
+    }
+
+    return {
+        logId: "",
+        createdAt: String(memo?.createdAt || "")
+    };
+}
+
 function leaveApplicationHoverTitle(
     profileName,
     keyDay,
@@ -4609,7 +4649,12 @@ function dayDocumentsTarget(profile, keyDay, maps = null) {
                 absences
             )
         });
-        const logId = String(info?.logId || "");
+        const reference = leaveAuditReferenceForDay({
+            profile,
+            keyDay,
+            type
+        });
+        const logId = String(info?.logId || reference.logId || "");
 
         // Sin registro en el LOG no hay a que colgar el archivo: la licencia se
         // aplico antes del LOG actual o su registro fue evicto.
@@ -4775,12 +4820,18 @@ async function openLeaveDetailDialog({
     }
 
     const label = leaveLabelForType(type);
+    const reference = leaveAuditReferenceForDay({
+        profile,
+        keyDay,
+        type
+    });
     const info = type === "half_admin"
         ? null
-        : getLeaveApplicationInfo({
+        : await loadLeaveApplicationInfo({
             profile,
             keyDay,
             type,
+            ...reference,
             sourceMap: leaveSourceMapForType(
                 type,
                 admin,
@@ -6108,12 +6159,18 @@ async function cancelReplacedProfileLeave(profileName, keyDay) {
         comp,
         absences
     );
+    const reference = leaveAuditReferenceForDay({
+        profile: profileName,
+        keyDay,
+        type
+    });
     const info = type === "half_admin"
         ? null
-        : getLeaveApplicationInfo({
+        : await loadLeaveApplicationInfo({
             profile: profileName,
             keyDay,
             type,
+            ...reference,
             sourceMap
         });
     const cancelKeys = leaveCancellationKeysForDay({

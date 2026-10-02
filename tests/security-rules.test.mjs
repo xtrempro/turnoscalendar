@@ -761,6 +761,16 @@ test("reglas modulares de Firestore y Storage", async t => {
 
             await assertSucceeds(setDoc(ownerRef, payload));
             await assertSucceeds(getDoc(ownerRef));
+            await assertSucceeds(getDocs(query(
+                collection(
+                    owner.firestore(),
+                    "workspaces",
+                    WORKSPACE_ID,
+                    "auditLogShards"
+                ),
+                where("day", ">=", "2026-10-01"),
+                where("day", "<", "2026-11-02")
+            )));
             await assertFails(setDoc(
                 doc(profileEditor.firestore(), ...path),
                 payload

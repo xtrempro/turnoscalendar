@@ -40,9 +40,12 @@ marca explicita `shards-read-v1`.
   consulta ocurre al abrir LOG y observa solo el mes elegido.
 - La ubicacion puntual se deduce del milisegundo inicial del `logId`. Los IDs
   deterministas que no contienen fecha requieren tambien `createdAt`; nunca se
-  recorren meses para encontrarlos.
-- Tanto el backfill como las consultas usan dias y meses UTC. Esto incluye las
-  ultimas horas de Chile que UTC ya considera del dia o mes siguiente.
+  recorren meses para encontrarlos. Los permisos usan esa referencia desde su
+  memorandum o reemplazo y, para datos historicos sin `logId`, consultan solo
+  el mes en que se creo el memorandum.
+- Los fragmentos y el backfill mantienen dias UTC. El menu agrupa y filtra por
+  `America/Santiago`: consulta tambien el primer dia UTC del mes siguiente para
+  que una accion nocturna del ultimo dia siga apareciendo en el mes chileno.
 - Salir de LOG, cambiar de unidad o cerrar sesion cancela el listener mensual.
 - El formato antiguo sigue activo durante la ventana de compatibilidad para
   permisos, reemplazos, conflictos y clientes que aun no recibieron la version

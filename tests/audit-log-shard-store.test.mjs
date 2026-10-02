@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+    auditLogDisplayMonth,
     auditLogShardLocation,
+    auditLogShardDayRangeForDisplayMonth,
     auditLogShardLocationFromId,
     auditLogTimestampFromId,
     auditLogUtcMonth,
@@ -32,6 +34,32 @@ test("la fecha del fragmento usa UTC incluso si el ISO trae hora de Chile", () =
     assert.equal(auditLogUtcMonth("2026-09-30T22:30:00-03:00"), "2026-10");
 });
 
+test("el mes visible usa hora de Chile sin mover el fragmento UTC", () => {
+    const createdAt = "2026-10-01T01:30:00.000Z";
+    const location = auditLogShardLocation(log("a", createdAt));
+
+    assert.equal(location.month, "2026-10");
+    assert.equal(auditLogDisplayMonth(createdAt), "2026-09");
+    assert.deepEqual(
+        auditLogShardDayRangeForDisplayMonth("2026-09"),
+        {
+            startDay: "2026-09-01",
+            endDayExclusive: "2026-10-02"
+        }
+    );
+});
+
+test("el rango chileno funciona al cambiar de ano", () => {
+    assert.deepEqual(
+        auditLogShardDayRangeForDisplayMonth("2026-12"),
+        {
+            startDay: "2026-12-01",
+            endDayExclusive: "2027-01-02"
+        }
+    );
+    assert.equal(auditLogShardDayRangeForDisplayMonth("2026-13"), null);
+});
+
 test("un id normal permite ubicar un solo documento sin conocer createdAt", () => {
     const timestamp = Date.parse("2026-10-01T01:30:00.000Z");
     const id = `${timestamp}_abc123`;
@@ -55,7 +83,7 @@ test("un id determinista exige createdAt como respaldo", () => {
     );
 });
 
-test("createdAt conocido manda sobre la fecha deducida del id", () => {
+test("la fecha deducida del id manda y createdAt respalda ids deterministas", () => {
     const id = `${Date.parse("2026-09-30T23:59:59.999Z")}_limite`;
 
     assert.equal(
@@ -63,7 +91,7 @@ test("createdAt conocido manda sobre la fecha deducida del id", () => {
             id,
             "2026-10-01T00:00:00.001Z"
         ).day,
-        "2026-10-01"
+        "2026-09-30"
     );
 });
 
