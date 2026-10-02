@@ -151,7 +151,8 @@ import {
     setReplacementCoverWindow,
     turnoToCode,
     turnoReplacementLabel,
-    workerHasAbsence
+    workerHasAbsence,
+    isRotaGapMotive
 } from "./replacements.js";
 import {
     excludeReplacementContractDate,
@@ -7116,6 +7117,33 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                 return;
             }
 
+            // Cupo de la Brecha RRHH: comentario del supervisor para el
+            // reporte del trabajador. Tambien fuera del estado ocupado (es una
+            // pregunta), y cancelarlo no cubre nada.
+            let cupoComment = "";
+
+            // Solo un CUPO de la Brecha: el mismo modo `rota` se usa para
+            // sumar a alguien a la columna de un motivo de HHEE, y ahi el
+            // motivo ya es el de esa columna.
+            if (
+                rota &&
+                isRotaGapMotive(rota.motive) &&
+                !requestMode &&
+                !button.dataset.workerWorkspaceId
+            ) {
+                const answer = await openCupoCoverReasonDialog({
+                    worker: coveringWorker,
+                    keyDay,
+                    label: rota.label,
+                    turnoLabel: TURNO_LABEL[neededTurn] || "",
+                    preassign: preassignMode
+                });
+
+                if (answer === null) return;
+
+                cupoComment = answer;
+            }
+
             await withBusyState(async () => {
                 if (typeof window.pushUndoState === "function") {
                     window.pushUndoState(
@@ -7145,6 +7173,9 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                         // confirmar queda como respaldo del turno).
                         replaced: rota ? "" : profileName,
                         reason: rota ? rota.motive : "",
+                        // Comentario del cupo: aparte del motivo, que es el
+                        // que lo deja con los titulares.
+                        comment: rota ? cupoComment : "",
                         keyDay,
                         turno: neededTurn,
                         absenceType: rota ? "" : absenceType,
@@ -7249,6 +7280,7 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                         // un turno extra, y el motivo va en `reason`.
                         replaced: rota ? "" : profileName,
                         reason: rota ? rota.motive : "",
+                        comment: rota ? cupoComment : "",
                         keyDay,
                         turno: neededTurn,
                         absenceType: rota ? "" : absenceType,
@@ -8053,6 +8085,159 @@ function getShiftAttendancePresets() {
  * el texto al guardar, o null con "No registrar". Los comentarios predefinidos
  * se editan con el lapiz, igual que los motivos de HHEE.
  */
+/**
+ * Al cubrir un cupo de la Brecha RRHH: comentario del supervisor (con los
+ * mismos motivos predefinidos de las horas extras), que queda en el reporte
+ * del trabajador. Es aparte del motivo interno del registro ("Completar
+ * rotativa de ..."), que es el que lo deja con los titulares y descuenta el
+ * cupo: el comentario nunca lo reemplaza.
+ *
+ * Resuelve el texto (puede ser "" con "Cubrir sin comentario"), o null si se
+ * cancela: entonces no se cubre nada.
+ */
+export function openCupoCoverReasonDialog({ worker, keyDay, label, turnoLabel, preassign = false }) {
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+        const previousFocus =
+            document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : null;
+        let settled = false;
+
+        const presetsHTML = () => {
+            const presets = getManualExtraReasonPresets();
+
+            if (!presets.length) {
+                return `<small>Sin motivos predefinidos.</small>`;
+            }
+
+            return presets.map(preset => `
+                <button
+                    class="ghost-button"
+                    type="button"
+                    data-cupo-reason-preset="${escapeHTML(preset)}"
+                >
+                    ${escapeHTML(preset)}
+                </button>
+            `).join("");
+        };
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.dataset.cupoCoverReasonDialog = "true";
+        backdrop.innerHTML = `
+            <section class="turn-change-dialog replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="cupoCoverReasonTitle">
+                <strong id="cupoCoverReasonTitle">Motivo para cubrir el cupo</strong>
+                <p>
+                    <b>${escapeHTML(worker)}</b> ${preassign ? "queda preasignado para" : "cubre"} el cupo de
+                    <b>${escapeHTML(label || "la Brecha")}</b>${turnoLabel ? ` en el turno <b>${escapeHTML(turnoLabel)}</b>` : ""}
+                    del ${escapeHTML(formatDisplayDate(isoFromKeyDay(keyDay)))}.
+                    El comentario queda en su reporte; el turno sigue con los titulares.
+                </p>
+                <div class="extra-reason-field">
+                    <div class="overtime-backup-subsection__head">
+                        <span>Comentario</span>
+                        <button
+                            class="icon-button icon-button--small"
+                            type="button"
+                            data-action="edit-cupo-reason-presets"
+                            title="Editar motivos predefinidos"
+                            aria-label="Editar motivos predefinidos"
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <textarea
+                        rows="3"
+                        data-cupo-reason-comment
+                        placeholder="Ej: Campana de Invierno, Estacion de Trabajo"
+                    ></textarea>
+                    <div class="replacement-dialog-toolbar" data-cupo-reason-preset-list>
+                        ${presetsHTML()}
+                    </div>
+                </div>
+                <div class="turn-change-dialog__actions">
+                    <button class="secondary-button" type="button" data-action="cancel">
+                        Cancelar
+                    </button>
+                    <button class="secondary-button" type="button" data-action="skip">
+                        Cubrir sin comentario
+                    </button>
+                    <button class="primary-button" type="button" data-action="save">
+                        Guardar y cubrir
+                    </button>
+                </div>
+            </section>
+        `;
+
+        const textarea = backdrop.querySelector("[data-cupo-reason-comment]");
+        const finish = result => {
+            if (settled) return;
+
+            settled = true;
+            document.removeEventListener("keydown", onKeydown, true);
+            backdrop.remove();
+
+            if (previousFocus?.isConnected) previousFocus.focus();
+
+            resolve(result);
+        };
+
+        function onKeydown(event) {
+            if (event.key !== "Escape") return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            finish(null);
+        }
+
+        backdrop
+            .querySelector("[data-action='cancel']")
+            ?.addEventListener("click", () => finish(null));
+        backdrop
+            .querySelector("[data-action='skip']")
+            ?.addEventListener("click", () => finish(""));
+        backdrop
+            .querySelector("[data-action='save']")
+            ?.addEventListener("click", () => {
+                const comment = String(textarea?.value || "").trim();
+
+                if (!comment) {
+                    textarea?.focus();
+                    textarea?.classList.add("is-invalid");
+                    return;
+                }
+
+                finish(comment);
+            });
+        backdrop
+            .querySelector("[data-action='edit-cupo-reason-presets']")
+            ?.addEventListener("click", async () => {
+                const saved = await openManualExtraReasonPresetsDialog();
+
+                if (!saved) return;
+
+                const host = backdrop.querySelector("[data-cupo-reason-preset-list]");
+
+                if (host) host.innerHTML = presetsHTML();
+            });
+        backdrop.addEventListener("click", event => {
+            const preset = event.target.closest("[data-cupo-reason-preset]");
+
+            if (!preset) return;
+
+            appendManualExtraReasonPreset(textarea, preset.dataset.cupoReasonPreset);
+            textarea?.classList.remove("is-invalid");
+        });
+
+        document.addEventListener("keydown", onKeydown, true);
+        document.body.appendChild(backdrop);
+        textarea?.focus();
+    });
+}
+
 function openShiftAttendanceDialog({ worker, keyDay, turnoLabel, replaced }) {
     return new Promise(resolve => {
         const backdrop = document.createElement("div");
@@ -9266,6 +9451,7 @@ async function confirmStandalonePreassignment(preassignment, keyDay) {
             keyDay,
             turno: Number(turno) || 0,
             reason: motivo,
+            comment: String(preassignment.comment || "").trim(),
             absenceType: "Motivo manual",
             source: "manual_extra",
             addsShift: false

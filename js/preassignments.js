@@ -37,6 +37,9 @@ export function addPreassignment(data = {}) {
         // todavia no existe: se convierte en respaldo al confirmar. Puede
         // quedar vacio y definirse despues.
         reason: String(data.reason || "").trim(),
+        // Comentario de un cupo de la Brecha RRHH (ver saveReplacement); pasa
+        // al respaldo al confirmar.
+        comment: String(data.comment || "").trim(),
         absenceType: data.absenceType || "",
         overtimeHours: data.overtimeHours || null,
         diurnoLongCoverage: Boolean(data.diurnoLongCoverage),

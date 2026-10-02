@@ -1276,6 +1276,13 @@ export function replacementCoverageRecordId(data, isoDate) {
     return `coverage:${date}:${replaced.toUpperCase()}:${windowId}`;
 }
 
+// Motivo con que se guarda quien cubre un cupo de la Brecha RRHH (lo arma
+// weeklyRotaMotive en staffing.js). Un turno con este motivo completa la
+// rotativa: va con los titulares, no a una columna de motivo de HHEE.
+export function isRotaGapMotive(reason) {
+    return /^Completar rotativa de /i.test(String(reason || "").trim());
+}
+
 export function saveReplacement(data) {
     const date = parseKey(data.keyDay);
     const isoDate = isoFromKey(data.keyDay);
@@ -1305,6 +1312,10 @@ export function saveReplacement(data) {
         worker: data.worker,
         replaced: data.replaced || "",
         reason: String(data.reason || "").trim(),
+        // Comentario del supervisor al cubrir un cupo de la Brecha RRHH. Va
+        // aparte de `reason`: el motivo interno ("Completar rotativa de ...")
+        // es el que lo deja con los titulares y descuenta el cupo.
+        comment: String(data.comment || "").trim(),
         source: data.source || "replacement",
         addsShift: data.addsShift !== false,
         date: isoDate,

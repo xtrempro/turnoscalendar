@@ -123,7 +123,8 @@ test("clockMarkSummary usa 'a las', clasifica y reetiqueta el motivo", async () 
     assert.match(report, /Salida a las \$\{segmentMark\.exitTime\}/);
     assert.match(report, /classifyClockMarkSegment\(/);
     assert.match(report, /details\.push\("Recuperación de horas"\)/);
-    assert.match(report, /Motivo horas extras: \$\{record\.reason/);
+    // El motivo, mas el comentario de un cupo de la Brecha si lo tiene.
+    assert.match(report, /Motivo horas extras: \$\{withCupoComment\(record\.reason/);
 });
 
 test("el '?' de horas extra usa el neto (extra - deficit), no el crudo", async () => {

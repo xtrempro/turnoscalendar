@@ -291,6 +291,14 @@ function getSwapDetail(profileName, keyDay, swaps) {
     return details.join(" | ");
 }
 
+// El comentario que el supervisor dejo al cubrir un cupo de la Brecha RRHH va
+// junto al motivo en el reporte del trabajador.
+export function withCupoComment(text, record) {
+    const comment = String(record?.comment || "").trim();
+
+    return comment ? `${text} — ${comment}` : text;
+}
+
 function replacementDetail(profileName, keyDay) {
     const records = getReplacementsForWorkerShift(profileName, keyDay);
 
@@ -308,7 +316,7 @@ function replacementDetail(profileName, keyDay) {
                 : `Reemplaza a ${record.replaced} por ${record.absenceType || "ausencia"}`;
         }
 
-        return `Motivo horas extras: ${record.reason || record.absenceType || "sin detalle"}`;
+        return `Motivo horas extras: ${withCupoComment(record.reason || record.absenceType || "sin detalle", record)}`;
     }).join(" | ");
 }
 
@@ -2770,7 +2778,7 @@ function buildReplacementLogRows(profileName, year, month, holidays) {
                 reemplaza: record.replaced || "",
                 motivo: record.replaced
                     ? record.absenceType || "Ausencia"
-                    : record.reason || record.absenceType || "Sin detalle"
+                    : withCupoComment(record.reason || record.absenceType || "Sin detalle", record)
             };
         });
 }

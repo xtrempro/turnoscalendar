@@ -60,7 +60,7 @@ import { isBusinessDay } from "./calculations.js";
 import { isShiftUncovered } from "./home.js";
 import { ensureRotaGapShifts } from "./staffing.js";
 import { getPreassignments, setPreassignmentReason } from "./preassignments.js";
-import { cancelPreassignment, confirmPreassignment } from "./replacements.js";
+import { cancelPreassignment, confirmPreassignment, isRotaGapMotive } from "./replacements.js";
 import { canEditTarget } from "./workspacePermissions.js";
 import { showAlert, showChoice, showConfirm, showPrompt } from "./dialogs.js";
 import { pushHistory } from "./history.js";
@@ -375,8 +375,10 @@ function applyPreassignments(rowsByKey, profiles, initials) {
             }
 
             if (isBrechaMotive(reason)) {
+                const comment = String(record.comment || "").trim();
+
                 person.brecha = true;
-                person.coverDetail = reason;
+                person.coverDetail = comment ? `${reason} — ${comment}` : reason;
                 row.cupos[slot].splice(0, 1);
                 row.slots[slot].push(person);
                 return;
@@ -402,7 +404,7 @@ function applyPreassignments(rowsByKey, profiles, initials) {
 // El motivo con que se guarda quien cubre un cupo de la Brecha RRHH (ver
 // weeklyRotaMotive en staffing.js).
 function isBrechaMotive(reason) {
-    return /^Completar rotativa de /i.test(String(reason || ""));
+    return isRotaGapMotive(reason);
 }
 
 function extraRecordFor(name, iso, slot, ctx) {
@@ -598,9 +600,11 @@ export async function buildMonthlyCalendar(
                 // Quien cubre un cupo de la Brecha RRHH completa la rotativa:
                 // va con los titulares, en rojo, no en una columna de motivo.
                 if (isBrechaMotive(recordReason)) {
+                    const comment = String(extraRecord.comment || "").trim();
+
                     person.covering = true;
                     person.brecha = true;
-                    person.coverDetail = recordReason;
+                    person.coverDetail = comment ? `${recordReason} — ${comment}` : recordReason;
                     // Para quitarlo: se anula su registro.
                     person.extraId = String(extraRecord.id || "");
                     person.extraSource = String(extraRecord.source || "");
