@@ -7660,6 +7660,9 @@ window.offerManualExtraRemoval = (profileName, keyDay) =>
 // (aplica el turno y deja el motivo como respaldo), igual que este calendario.
 window.confirmStandalonePreassignment = (preassignment, keyDay) =>
     confirmStandalonePreassignment(preassignment, keyDay);
+// El Calendario Mensual pide aqui el comentario al soltar en un "+Cupo" a
+// alguien de una columna de motivo (el mismo cuadro que al cubrirlo con clic).
+window.openCupoCoverReasonDialog = options => openCupoCoverReasonDialog(options);
 
 /**
  * Un trabajador a reemplazo toma UN turno de `replaced`, que tiene mas dias en

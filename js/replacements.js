@@ -760,17 +760,20 @@ function removeManualExtraTurnFromCalendar(record) {
  * ausente). Lo usa el Calendario Mensual al arrastrar a alguien de un motivo a
  * otro. Solo cambia el texto: el turno y sus horas quedan igual.
  */
-export function setManualExtraReason(replacementId, reason) {
-    return setManualExtraReasons([replacementId], reason)[0] || null;
+export function setManualExtraReason(replacementId, reason, options = {}) {
+    return setManualExtraReasons([replacementId], reason, options)[0] || null;
 }
 
 /**
  * Lo mismo para varios a la vez (renombrar el motivo de una columna entera del
  * Calendario Mensual): UNA sola escritura de la lista, no una por trabajador.
  *
+ * `options.comment`: el comentario de un cupo de la Brecha (al soltar a
+ * alguien de una columna de motivo en un "+Cupo"); va aparte del motivo.
+ *
  * @returns {Object[]} los reemplazos actualizados.
  */
-export function setManualExtraReasons(replacementIds, reason) {
+export function setManualExtraReasons(replacementIds, reason, options = {}) {
     const ids = new Set(
         (Array.isArray(replacementIds) ? replacementIds : [])
             .map(id => String(id || ""))
@@ -793,7 +796,13 @@ export function setManualExtraReasons(replacementIds, reason) {
             return replacement;
         }
 
-        const next = { ...replacement, reason: nextReason };
+        const next = {
+            ...replacement,
+            reason: nextReason,
+            ...(options.comment !== undefined
+                ? { comment: String(options.comment || "").trim() }
+                : {})
+        };
 
         updated.push(next);
 

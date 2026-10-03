@@ -199,3 +199,50 @@ test("el cuadro se pide solo al cubrir un CUPO, fuera del estado ocupado, y el c
     // El reporte del trabajador (detalle del dia y registro de reemplazos).
     assert.equal((report.match(/withCupoComment\(record\.reason/g) || []).length, 2);
 });
+
+test("soltar en un +Cupo a alguien de una columna de motivo: pasa a titulares con su comentario", async () => {
+    const { setManualExtraReason } = await import("../js/replacements.js");
+
+    saveReplacement({
+        worker: "Pablo Ignacio Rojas Aravena",
+        keyDay: "2026-9-1",
+        turno: 1,
+        replaced: "",
+        reason: "Apoyo clinico TC",
+        source: "rota_gap"
+    });
+
+    const antes = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+    const apoyo = antes.rows[0].extras.day["Apoyo clinico TC"]?.[0];
+
+    assert.ok(apoyo?.extraId, "parte en la columna de su motivo");
+    assert.ok(setManualExtraReason(apoyo.extraId, MOTIVE, { comment: ` ${COMMENT} ` }));
+
+    const stored = getJSON("replacements", []).at(-1);
+
+    assert.equal(stored.reason, MOTIVE);
+    assert.equal(stored.comment, COMMENT);
+
+    const despues = await mensual.buildMonthlyCalendar(new Date(2026, 9, 1), TM);
+    const pablo = despues.rows[0].slots.day.find(person => person.name === "Pablo Ignacio Rojas Aravena");
+
+    assert.equal(pablo?.brecha, true, "con los titulares, como quien cubre el cupo");
+    assert.equal(pablo.coverDetail, `${MOTIVE} — ${COMMENT}`);
+    assert.deepEqual(despues.rows[0].extras.day, {}, "sale de la columna de motivo");
+
+    // Mover entre columnas de motivo (sin options) no toca el comentario.
+    assert.ok(setManualExtraReason(apoyo.extraId, "Ris Pacs"));
+    assert.equal(getJSON("replacements", []).at(-1).comment, COMMENT);
+});
+
+test("el arrastre a un +Cupo pide el mismo cuadro y cancelar no cambia nada", async () => {
+    const source = await readFile(new URL("../js/monthlyCalendar.js", import.meta.url), "utf8");
+    const calendar = await readFile(new URL("../js/calendar.js", import.meta.url), "utf8");
+    const drop = source.slice(source.indexOf("async function dropOnCupo("), source.indexOf("async function onDrop("));
+
+    assert.match(calendar, /window\.openCupoCoverReasonDialog = options => openCupoCoverReasonDialog\(options\);/);
+    assert.match(source, /function cupoDropFor\(event\)[\s\S]*?data-mcal-col="titulares"[\s\S]*?cupos\?\.\[dragState\.slot\]\?\.\[0\]/);
+    assert.match(drop, /window\.openCupoCoverReasonDialog\?\.\(/);
+    assert.match(drop, /if \(comment === null \|\| comment === undefined\) return;\s*pushHistory\(\);/);
+    assert.match(drop, /setManualExtraReason\(moving\.extraId, cupo\.motive, \{ comment \}\)/);
+});

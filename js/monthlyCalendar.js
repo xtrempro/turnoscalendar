@@ -11,7 +11,7 @@
 // Por eso los tres muestran siempre lo mismo.
 
 import { escapeHTML } from "./htmlUtils.js";
-import { TURNO } from "./constants.js";
+import { TURNO, TURNO_LABEL } from "./constants.js";
 import {
     getProfiles,
     getRotativa,
@@ -1556,7 +1556,31 @@ async function removeCover(person, keyDay) {
 
 let dragState = null;
 
+// Un "+Cupo" de la Brecha en Titulares (mismo dia y tramo) tambien recibe a
+// quien se arrastra desde una columna de motivo: es cubrir ese cupo con el.
+function cupoDropFor(event) {
+    const cell = event.target.closest('[data-mcal-slot][data-mcal-col="titulares"]');
+
+    if (
+        !cell ||
+        !dragState ||
+        cell.dataset.mcalKey !== dragState.keyDay ||
+        cell.dataset.mcalSlot !== dragState.slot
+    ) {
+        return null;
+    }
+
+    const row = lastModel?.rows.find(item => item.keyDay === dragState.keyDay);
+    const cupo = row?.cupos?.[dragState.slot]?.[0];
+
+    return cupo ? { cell, cupo } : null;
+}
+
 function dropTargetFor(event) {
+    const cupoDrop = cupoDropFor(event);
+
+    if (cupoDrop) return cupoDrop.cell;
+
     const cell = event.target.closest("[data-mcal-drop-reason]");
 
     if (
@@ -1605,13 +1629,42 @@ function onDragOver(event) {
 }
 
 function onDragLeave(event) {
-    event.target.closest("[data-mcal-drop-reason]")
+    event.target.closest('[data-mcal-drop-reason], [data-mcal-col="titulares"]')
         ?.classList.remove("is-drop-target");
+}
+
+// Soltar en un "+Cupo": el mismo cuadro de comentario que al cubrirlo con
+// clic; su apoyo pasa a ser el de ese cupo (motivo "Completar rotativa de...",
+// que lo deja con los titulares) y cancelar no cambia nada.
+async function dropOnCupo(moving, cupo) {
+    const comment = await window.openCupoCoverReasonDialog?.({
+        worker: moving.name,
+        keyDay: moving.keyDay,
+        label: cupo.label,
+        turnoLabel: TURNO_LABEL[cupo.turno] || ""
+    });
+
+    if (comment === null || comment === undefined) return;
+
+    pushHistory();
+
+    if (setManualExtraReason(moving.extraId, cupo.motive, { comment })) {
+        addAuditLog(
+            AUDIT_CATEGORY.CALENDAR,
+            "Cubrio un cupo de la Brecha",
+            `${moving.name}: el ${moving.keyDay} pasa de "${moving.reason}" a cubrir el cupo "${cupo.motive}"${comment ? ` (${comment})` : ""} (Calendario Mensual).`,
+            { profile: moving.name, keyDay: moving.keyDay }
+        );
+    }
+
+    await renderMonthlyCalendarPanel();
 }
 
 async function onDrop(event) {
     const cell = dropTargetFor(event);
     const panel = event.currentTarget;
+
+    const cupoDrop = cupoDropFor(event);
 
     clearDropHighlights(panel);
 
@@ -1620,6 +1673,12 @@ async function onDrop(event) {
     event.preventDefault();
 
     const moving = dragState;
+
+    if (cupoDrop) {
+        dragState = null;
+        await dropOnCupo(moving, cupoDrop.cupo);
+        return;
+    }
     const nextReason = cell.dataset.mcalDropReason;
 
     dragState = null;
