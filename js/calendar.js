@@ -1,4 +1,5 @@
 import { escapeHTML } from "./htmlUtils.js";
+import { uniqueMotives } from "./motives.js";
 import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
 import { showChoice, showConfirm } from "./dialogs.js";
 import {
@@ -7848,7 +7849,8 @@ function getNoCoverageReasonPresets() {
 }
 
 function manualExtraReasonPresetButtonsHTML(sectionId) {
-    const presets = getManualExtraReasonPresets();
+    // Sin repetidos escritos distinto ("Apoyo TC" / "APOYO TC").
+    const presets = uniqueMotives(getManualExtraReasonPresets());
 
     if (!presets.length) {
         return `
@@ -8538,38 +8540,50 @@ function extraReasonDialogHTML({
                         <span>${escapeHTML(section.label)}</span>
                         <small class="overtime-backup-state" data-section-state="${escapeHTML(section.id)}">Falta</small>
                     </div>
-                    <div class="replacement-candidate-list">
-                        ${items}
-                    </div>
-                    <div class="extra-reason-field">
-                        <div class="overtime-backup-subsection__head">
-                            <span>Motivo manual para ${escapeHTML(section.label)}</span>
+                    <!-- Dos columnas: a la izquierda la ausencia compatible y el
+                         motivo escrito; a la derecha los motivos predefinidos,
+                         con su propio scroll. Apilado, el motivo y sus botones
+                         quedaban bajo el borde del modal. -->
+                    <div class="overtime-backup-subsection__cols">
+                        <div class="overtime-backup-subsection__main">
+                            <span class="overtime-backup-subsection__label">Ausencia compatible</span>
+                            <div class="replacement-candidate-list">
+                                ${items}
+                            </div>
+                            <div class="extra-reason-field">
+                                <span class="overtime-backup-subsection__label">Motivo manual para ${escapeHTML(section.label)}</span>
+                                <textarea rows="2" data-manual-reason="${escapeHTML(section.id)}" placeholder="Ej: Campana de Invierno, Estacion de Trabajo"></textarea>
+                            </div>
                             <button
-                                class="icon-button icon-button--small"
+                                class="overtime-backup-skip"
                                 type="button"
-                                data-manual-reason-presets-edit
-                                title="Editar motivos predefinidos"
-                                aria-label="Editar motivos predefinidos"
+                                data-skip-section="${escapeHTML(section.id)}"
+                                aria-pressed="false"
                             >
-                                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                                    <path d="M12 20h9"></path>
-                                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
-                                </svg>
+                                Sin motivo a&uacute;n
                             </button>
                         </div>
-                        <textarea rows="2" data-manual-reason="${escapeHTML(section.id)}" placeholder="Ej: Campana de Invierno, Estacion de Trabajo"></textarea>
-                        <div class="replacement-dialog-toolbar" data-manual-reason-presets="${escapeHTML(section.id)}">
-                            ${manualExtraReasonPresetButtonsHTML(section.id)}
+                        <div class="overtime-backup-subsection__presets">
+                            <div class="overtime-backup-subsection__head">
+                                <span class="overtime-backup-subsection__label">Motivos predefinidos</span>
+                                <button
+                                    class="icon-button icon-button--small"
+                                    type="button"
+                                    data-manual-reason-presets-edit
+                                    title="Editar motivos predefinidos"
+                                    aria-label="Editar motivos predefinidos"
+                                >
+                                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                        <path d="M12 20h9"></path>
+                                        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="replacement-dialog-toolbar" data-manual-reason-presets="${escapeHTML(section.id)}">
+                                ${manualExtraReasonPresetButtonsHTML(section.id)}
+                            </div>
                         </div>
                     </div>
-                    <button
-                        class="overtime-backup-skip"
-                        type="button"
-                        data-skip-section="${escapeHTML(section.id)}"
-                        aria-pressed="false"
-                    >
-                        Sin motivo a&uacute;n
-                    </button>
                 </div>
             `;
         })

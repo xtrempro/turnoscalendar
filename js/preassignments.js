@@ -8,7 +8,8 @@ import { getJSON, setJSON } from "./persistence.js";
 import { isoFromKey } from "./dateUtils.js";
 import { getTurnoComponentes, turnoDesdeComponentes } from "./rulesEngine.js";
 import { TURNO } from "./constants.js";
-import { asRecordList } from "./storage.js";
+import { asRecordList, getReplacements } from "./storage.js";
+import { motiveToSave } from "./motives.js";
 
 const STORAGE_KEY = "preassignments";
 
@@ -36,7 +37,10 @@ export function addPreassignment(data = {}) {
         // respaldo (`manual_extra`) porque el respaldo es de un turno que
         // todavia no existe: se convierte en respaldo al confirmar. Puede
         // quedar vacio y definirse despues.
-        reason: String(data.reason || "").trim(),
+        // Con la forma que ya existe si es un motivo escrito distinto.
+        reason: data.replaced
+            ? String(data.reason || "").trim()
+            : motiveToSave(data.reason, getReplacements(), getPreassignments()),
         // Comentario de un cupo de la Brecha RRHH (ver saveReplacement); pasa
         // al respaldo al confirmar.
         comment: String(data.comment || "").trim(),
@@ -89,7 +93,9 @@ export function setPreassignmentReason(id, reason) {
 
     if (!item) return false;
 
-    item.reason = String(reason || "").trim();
+    item.reason = item.replaced
+        ? String(reason || "").trim()
+        : motiveToSave(reason, getReplacements(), list);
     savePreassignments(list);
 
     return true;

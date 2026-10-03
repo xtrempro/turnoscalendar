@@ -46,7 +46,7 @@ import {
 } from "./auditLog.js";
 import { getWorkerAppLinkForProfile } from "./workerAppLinks.js";
 import { releaseLeaveHoldsForCoverage } from "./leaveHold.js";
-import { removePreassignment } from "./preassignments.js";
+import { getPreassignments, removePreassignment } from "./preassignments.js";
 import { isHonorariaProfile } from "./contracts.js";
 import {
     coverageGapsFromRecords,
@@ -54,6 +54,7 @@ import {
     normalizeCoverTime
 } from "./shiftCoverage.js";
 import { getLeaveCancellationBarrier } from "./leaveCancellationBarrier.js";
+import { motiveToSave } from "./motives.js";
 
 function formatNotificationDate(value) {
     const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -779,7 +780,13 @@ export function setManualExtraReasons(replacementIds, reason, options = {}) {
             .map(id => String(id || ""))
             .filter(Boolean)
     );
-    const nextReason = String(reason || "").trim();
+    // Los que se renombran no cuentan como forma existente: renombrar sirve
+    // justamente para corregir como esta escrito.
+    const nextReason = motiveToSave(
+        reason,
+        getReplacements().filter(item => !ids.has(String(item?.id || ""))),
+        getPreassignments()
+    );
 
     if (!ids.size || !nextReason) return [];
 
@@ -1320,7 +1327,12 @@ export function saveReplacement(data) {
         requestGroupId: data.requestGroupId || "",
         worker: data.worker,
         replaced: data.replaced || "",
-        reason: String(data.reason || "").trim(),
+        // Un motivo de HHEE escrito distinto a uno que ya existe ("APOYO
+        // IMAGENOLOGIA -2" / "Apoyo Imagenología - 2") se guarda como el que
+        // existe: si no, son dos motivos para la app (ver motives.js).
+        reason: ["manual_extra", "rota_gap"].includes(data.source) && !data.replaced
+            ? motiveToSave(data.reason, replacements, getPreassignments())
+            : String(data.reason || "").trim(),
         // Comentario del supervisor al cubrir un cupo de la Brecha RRHH. Va
         // aparte de `reason`: el motivo interno ("Completar rotativa de ...")
         // es el que lo deja con los titulares y descuenta el cupo.

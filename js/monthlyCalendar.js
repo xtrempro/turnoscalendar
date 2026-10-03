@@ -65,6 +65,21 @@ import { canEditTarget } from "./workspacePermissions.js";
 import { showAlert, showChoice, showConfirm, showPrompt } from "./dialogs.js";
 import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
+import { buildMotiveCanon, canonicalMotive, motiveKey, usedExtraMotives } from "./motives.js";
+
+// Un motivo escrito de varias formas ("APOYO IMAGENOLOGIA -2", "Apoyo
+// Imagenología - 2") es UNO: una columna, una entrada en el "+", un horario
+// mas usado. Se muestra con su forma mas usada (ver motives.js). Se arma al
+// calcular el mes y al leer la historia.
+let motiveCanon = new Map();
+
+function refreshMotiveCanon() {
+    motiveCanon = buildMotiveCanon(usedExtraMotives(getReplacements(), getPreassignments()));
+}
+
+function canonReason(value) {
+    return canonicalMotive(value, motiveCanon);
+}
 
 const PANEL_ID = "monthlyCalendarPanel";
 const WEEKDAY_INITIALS = ["D", "L", "M", "M", "J", "V", "S"];
@@ -355,7 +370,7 @@ function applyPreassignments(rowsByKey, profiles, initials) {
         if (!row || !inGroup.has(name)) return;
 
         const turnSlots = slotsOf(record.turno);
-        const reason = String(record.reason || "").trim();
+        const reason = canonReason(record.reason);
 
         // Un Diurno preasignado con motivo de HHEE va en Dia (ver arriba).
         if (reason && !isBrechaMotive(reason) && DIURNO_STATES.has(Number(record.turno))) {
@@ -560,6 +575,8 @@ export async function buildMonthlyCalendar(
     const rows = [];
     let sliceStart = nowMs();
 
+    refreshMotiveCanon();
+
     for (let dayNumber = 1; dayNumber <= days; dayNumber++) {
         const date = new Date(year, monthIndex, dayNumber);
         const keyDay = keyFor(date);
@@ -644,7 +661,7 @@ export async function buildMonthlyCalendar(
                     ? extraRecordFor(name, row.iso, slot, ctx)
                     : null;
                 const recordReason = extraRecord
-                    ? String(extraRecord.reason).trim()
+                    ? canonReason(extraRecord.reason)
                     : "";
 
                 // Quien cubre un cupo de la Brecha RRHH completa la rotativa:
@@ -818,8 +835,10 @@ export function extraHistory(year, monthIndex, group) {
     const current = year * 12 + monthIndex;
     const bySlot = { day: new Map(), night: new Map() };
 
+    refreshMotiveCanon();
+
     getReplacements().forEach(item => {
-        const reason = String(item?.reason || "").trim();
+        const reason = canonReason(item?.reason);
 
         // Los de la Brecha van con los titulares: no son un motivo de columna.
         if (isBrechaMotive(reason)) return;
@@ -1869,7 +1888,7 @@ export function predominantDaySchedule(reason, monthDate, {
         const date = String(record?.date || "");
 
         if (
-            String(record?.reason || "").trim() !== target ||
+            motiveKey(record?.reason) !== motiveKey(target) ||
             date < startIso ||
             date > endIso
         ) {
@@ -2428,7 +2447,7 @@ async function addHistoricalColumn(slot) {
         const known = [
             ...model.extraColumns[slot],
             ...(model.historyReasons?.[slot] || []).map(item => item.reason)
-        ].find(item => item.toLocaleLowerCase("es") === reason.toLocaleLowerCase("es"));
+        ].find(item => motiveKey(item) === motiveKey(reason));
 
         if (known) reason = known;
     }

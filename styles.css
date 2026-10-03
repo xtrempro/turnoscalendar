@@ -11023,7 +11023,8 @@ body.theme-light .replacement-candidate-warning {
    con el scroll y habia que bajar hasta el fondo para guardar, incluso con un
    solo tramo que respaldar. */
 .overtime-backup-dialog {
-    width: min(560px, 100%);
+    /* Ancho para las dos columnas de cada tramo (ver __cols). */
+    width: min(860px, 100%);
     max-height: min(86vh, 760px);
     display: flex;
     flex-direction: column;
@@ -11034,7 +11035,77 @@ body.theme-light .replacement-candidate-warning {
    se reparten en dos columnas, en vez de uno debajo del otro fuera de la
    pantalla. */
 .overtime-backup-dialog--split {
-    width: min(900px, 100%);
+    width: min(1040px, 100%);
+}
+
+/* Cada tramo en dos columnas: ausencia compatible y motivo escrito a la
+   izquierda; los motivos predefinidos a la derecha, con su propio scroll. */
+.overtime-backup-subsection__cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.overtime-backup-subsection__main,
+.overtime-backup-subsection__presets {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+}
+
+.overtime-backup-subsection__label {
+    color: var(--text-soft);
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.overtime-backup-subsection .overtime-backup-subsection__presets .replacement-dialog-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    max-height: 300px;
+    margin: 0;
+}
+
+.overtime-backup-subsection__main .replacement-candidate-list {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.overtime-backup-subsection__main .empty-state {
+    width: 100%;
+    min-height: 0;
+    padding: 14px;
+}
+
+.overtime-backup-subsection__main .overtime-backup-skip {
+    justify-self: start;
+    margin-top: 0;
+}
+
+.overtime-backup-subsection__presets .replacement-dialog-toolbar button {
+    justify-content: flex-start;
+    min-height: 36px;
+    text-align: left;
+    white-space: normal;
+}
+
+/* Con dos tramos, cada uno ya es una columna: adentro se apilan. */
+.overtime-backup-dialog--split .overtime-backup-subsection__cols {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.overtime-backup-dialog--split .overtime-backup-subsection .overtime-backup-subsection__presets .replacement-dialog-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-height: 168px;
+}
+
+@media (max-width: 720px) {
+    .overtime-backup-subsection__cols {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .overtime-backup-subsection .overtime-backup-subsection__presets .replacement-dialog-toolbar {
+        max-height: 168px;
+    }
 }
 
 .overtime-backup-body {
