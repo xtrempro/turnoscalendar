@@ -228,9 +228,36 @@ test("un error al leer vistos buenos se muestra como error y permite reintentar"
         render.indexOf("if (watched.error)") < render.indexOf("buildHoursValidationRows"),
         "el error corta antes de pintar trabajadores pendientes"
     );
-    assert.match(retry, /stopHoursValidationsWatch\(\)/);
+    assert.match(retry, /stopHoursValidationPanel\(\)/);
+    assert.match(retry, /renderHoursValidationLoading\(profileRotationMiniDate\)/);
     assert.match(retry, /scheduleHoursValidationRender\(0\)/);
     assert.match(main, /\[data-hours-validation-retry\][\s\S]*?retryHoursValidationPanel\(\)/);
+});
+
+test("al cambiar de mes vacia de inmediato el visto bueno anterior y muestra carga", async () => {
+    const [main, styles] = await Promise.all([
+        readFile(new URL("../js/main.js", import.meta.url), "utf8"),
+        readFile(new URL("../styles.css", import.meta.url), "utf8")
+    ]);
+    const setMonth = main.match(/function setHoursMonthFromValue\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
+    const changeMonth = main.match(/function changeHoursMonth\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
+    const prepare = main.match(/function prepareHoursValidationMonthChange\(\)[\s\S]*?\n}/)?.[0] || "";
+    const loading = main.match(/function renderHoursValidationLoading\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
+    const render = main.match(/async function renderHoursValidationPanel\(\)[\s\S]*?\n}/)?.[0] || "";
+
+    assert.match(setMonth, /prepareHoursValidationMonthChange\(\)/);
+    assert.match(changeMonth, /prepareHoursValidationMonthChange\(\)/);
+    assert.ok(
+        changeMonth.indexOf("prepareHoursValidationMonthChange()") < changeMonth.indexOf("renderDashboardState()"),
+        "limpia el panel antes del repintado costoso del mes"
+    );
+    assert.match(prepare, /stopHoursValidationPanel\(\)/);
+    assert.match(prepare, /renderHoursValidationLoading\(profileRotationMiniDate/);
+    assert.match(loading, /aria-busy/);
+    assert.match(loading, /hoursValidationLoadingHTML/);
+    assert.match(render, /hoursValidationMonthKey\(profileRotationMiniDate\) !== monthKey/);
+    assert.match(styles, /\.hh-validation__loading\s*\{/);
+    assert.match(styles, /\.hh-validation__spinner\s*\{[\s\S]*?animation:\s*app-busy-spin/);
 });
 
 test("supervisor y PWA usan el mismo calculo; el visto bueno vive en hoursValidations, no en Solicitudes", async () => {

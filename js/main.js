@@ -1244,6 +1244,7 @@ function setHoursMonthFromValue(value) {
 
     profileRotationMiniDate = nextDate;
     syncHoursMonthControls(true);
+    prepareHoursValidationMonthChange();
     renderDashboardState();
 }
 
@@ -1255,6 +1256,7 @@ function changeHoursMonth(offset) {
     );
 
     syncHoursMonthControls(true);
+    prepareHoursValidationMonthChange();
     renderDashboardState();
 }
 
@@ -7711,6 +7713,28 @@ function renderHheeProfiles() {
 let hoursValidationTimer = null;
 let hoursValidationRun = 0;
 
+function hoursValidationLoadingHTML(monthDate, message = "Cargando vistos buenos…") {
+    const monthLabel = formatMonthHeading(monthDate);
+
+    return `
+        <div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div>
+        <div class="hh-validation__loading" role="status">
+            <span class="hh-validation__spinner" aria-hidden="true"></span>
+            <span>${escapeHTML(message)}</span>
+        </div>`;
+}
+
+function renderHoursValidationLoading(monthDate = profileRotationMiniDate, message) {
+    const host = document.getElementById("hheeValidationPanel");
+
+    if (!host || document.body.dataset.activeView !== "hours") return;
+
+    host.dataset.month = hoursValidationMonthKey(monthDate);
+    host.dataset.state = "loading";
+    host.setAttribute("aria-busy", "true");
+    host.innerHTML = hoursValidationLoadingHTML(monthDate, message);
+}
+
 function stopHoursValidationPanel() {
     clearTimeout(hoursValidationTimer);
     hoursValidationTimer = null;
@@ -7718,8 +7742,16 @@ function stopHoursValidationPanel() {
     stopHoursValidationsWatch();
 }
 
+function prepareHoursValidationMonthChange() {
+    if (document.body.dataset.activeView !== "hours") return;
+
+    stopHoursValidationPanel();
+    renderHoursValidationLoading(profileRotationMiniDate, "Actualizando vistos buenos…");
+}
+
 function retryHoursValidationPanel() {
-    stopHoursValidationsWatch();
+    stopHoursValidationPanel();
+    renderHoursValidationLoading(profileRotationMiniDate);
     scheduleHoursValidationRender(0);
 }
 
@@ -7743,26 +7775,29 @@ async function renderHoursValidationPanel() {
         profileRotationMiniDate.getMonth(),
         1
     );
+    const monthKey = hoursValidationMonthKey(monthDate);
     const monthLabel = formatMonthHeading(monthDate);
 
-    if (!host.dataset.month || host.dataset.month !== monthLabel) {
-        host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">Calculando…</p>`;
+    if (!host.dataset.month || host.dataset.month !== monthKey) {
+        renderHoursValidationLoading(monthDate);
     }
 
     // Los vistos buenos del mes (escucha en vivo: uno nuevo repinta).
     const watched = watchHoursValidations(
         getActiveWorkspace()?.id || "",
-        hoursValidationMonthKey(monthDate),
+        monthKey,
         () => scheduleHoursValidationRender(200)
     );
 
     if (!watched.loaded) {
-        host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">Cargando vistos buenos…</p>`;
+        renderHoursValidationLoading(monthDate);
         return;
     }
 
     if (watched.error) {
-        host.dataset.month = monthLabel;
+        host.dataset.month = monthKey;
+        host.dataset.state = "error";
+        host.removeAttribute("aria-busy");
         host.innerHTML = `
             <div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div>
             <p class="hh-validation__hint">No se pudieron leer los vistos buenos.</p>
@@ -7786,13 +7821,23 @@ async function renderHoursValidationPanel() {
             linkUidsForProfile: profile => uidsByProfile.get(profile.name) || []
         });
 
-        if (run !== hoursValidationRun) return;
+        if (
+            run !== hoursValidationRun ||
+            hoursValidationMonthKey(profileRotationMiniDate) !== monthKey
+        ) return;
 
-        host.dataset.month = monthLabel;
+        host.dataset.month = monthKey;
+        host.dataset.state = "ready";
+        host.removeAttribute("aria-busy");
         host.innerHTML = hoursValidationPanelHTML(rows, monthLabel);
     } catch (error) {
         console.warn("No se pudo armar el visto bueno de horas.", error);
-        if (run === hoursValidationRun) {
+        if (
+            run === hoursValidationRun &&
+            hoursValidationMonthKey(profileRotationMiniDate) === monthKey
+        ) {
+            host.dataset.state = "error";
+            host.removeAttribute("aria-busy");
             host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">No se pudo calcular el listado.</p>`;
         }
     }

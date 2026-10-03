@@ -29971,6 +29971,28 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
     font-size: 0.84rem;
 }
 
+.hh-validation__loading {
+    min-height: 116px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 18px 20px 28px;
+    color: var(--text-muted);
+    font-size: 0.86rem;
+    font-weight: 750;
+}
+
+.hh-validation__spinner {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    border: 3px solid rgba(var(--brand-blue-rgb), 0.18);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: app-busy-spin 0.7s linear infinite;
+}
+
 .hh-validation__list {
     display: grid;
     gap: 6px;
