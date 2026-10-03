@@ -83,6 +83,36 @@ function roundExtra(value) {
     );
 }
 
+export function applyMonthlyOvertimeAdjustments({
+    mode,
+    hheeDiurnas,
+    hheeNocturnas,
+    clockAbsences = {},
+    baseShiftRemovals = {}
+} = {}) {
+    // En modo agregado las horas trabajadas ya salen de los intervalos reales
+    // del marcaje. Descontar otra vez sus deficits duplica la rebaja.
+    if (mode === "aggregate") {
+        return {
+            d: roundExtra(hheeDiurnas),
+            n: roundExtra(hheeNocturnas)
+        };
+    }
+
+    return {
+        d: roundExtra(
+            (Number(hheeDiurnas) || 0) -
+            (Number(clockAbsences.d) || 0) -
+            (Number(baseShiftRemovals.d) || 0)
+        ),
+        n: roundExtra(
+            (Number(hheeNocturnas) || 0) -
+            (Number(clockAbsences.n) || 0) -
+            (Number(baseShiftRemovals.n) || 0)
+        )
+    };
+}
+
 function roundSignedExtra(value) {
     const rounded =
         Math.round((Number(value) || 0) * 2) / 2;
@@ -867,7 +897,7 @@ function calculateAdjustedBusinessHours(
     return roundMonthlyBusinessHours(Math.max(0, total));
 }
 
-function calculateAggregateExtras(totalD, totalN, horasHabiles) {
+export function calculateAggregateExtras(totalD, totalN, horasHabiles) {
     const remainingDay = horasHabiles - totalD;
 
     if (remainingDay < 0) {
@@ -1823,6 +1853,10 @@ function calculatePaymentSegments({
                 carryIn
             );
 
+    // Los segmentos agregados ya se construyen con los intervalos reales del
+    // marcaje. No se agregan deficits otra vez al distribuir el pago.
+    if (mode === "aggregate") return segments;
+
     return [
         ...segments,
         ...calculateClockAbsenceSegments(
@@ -1967,12 +2001,16 @@ function buildStats({
         maps
     );
 
-    hheeDiurnas = roundSignedExtra(
-        hheeDiurnas - clockAbsences.d - baseShiftRemovals.d
-    );
-    hheeNocturnas = roundSignedExtra(
-        hheeNocturnas - clockAbsences.n - baseShiftRemovals.n
-    );
+    const adjustedExtras = applyMonthlyOvertimeAdjustments({
+        mode,
+        hheeDiurnas,
+        hheeNocturnas,
+        clockAbsences,
+        baseShiftRemovals
+    });
+
+    hheeDiurnas = adjustedExtras.d;
+    hheeNocturnas = adjustedExtras.n;
 
     const returnTransferEnabled =
         isHheeReturnTransferEnabled(nombre, y, m);

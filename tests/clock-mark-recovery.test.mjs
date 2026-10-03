@@ -106,8 +106,8 @@ test("el reporte resta el deficit del marcaje sin recortarlo dentro del dia", as
     // El recorte por dia (Math.max(0, ...)) perdia las horas programadas no
     // trabajadas que no cabian en el excedente de ESE dia: una Noche completa
     // ausente descontaba solo lo que alcanzaba a cubrir el excedente y el
-    // reporte quedaba por encima del timeline. El sobrante debe bajar el total
-    // del mes, aunque el mes termine en negativo.
+    // reporte quedaba por encima del timeline. El detalle conserva todo el
+    // descuento; el total mensual lo limita a cero el motor de horas.
     assert.match(body, /d: grossExtraHours\.d - clockDeficitHours\.d/);
     assert.match(body, /n: grossExtraHours\.n - clockDeficitHours\.n/);
     assert.doesNotMatch(body, /Math\.max\(0, grossExtraHours/);

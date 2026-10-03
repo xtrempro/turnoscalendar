@@ -54,7 +54,11 @@ globalThis.document = {
 globalThis.alert = () => {};
 globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
 
-const { calcularHorasMesPerfil } = await import("../js/hoursEngine.js");
+const {
+    applyMonthlyOvertimeAdjustments,
+    calcularHorasMesPerfil,
+    calculateAggregateExtras
+} = await import("../js/hoursEngine.js");
 const {
     buildNoAssignmentReportPreviewHTML,
     buildWorkerHheeMonthSummary
@@ -116,7 +120,12 @@ async function surfaces(state) {
     return {
         motor: { d: round(stats.hheeDiurnas), n: round(stats.hheeNocturnas) },
         pwa: { d: round(pwa?.hheeDiurnas), n: round(pwa?.hheeNocturnas) },
-        panel: { d: round(panel.d), n: round(panel.n) }
+        // El panel conserva la linea negativa "Descuento por marcaje" como
+        // detalle, pero su total mensual tampoco puede bajar de cero.
+        panel: {
+            d: round(Math.max(0, panel.d)),
+            n: round(Math.max(0, panel.n))
+        }
     };
 }
 
@@ -159,16 +168,49 @@ test("salir 1 h antes del turno EXTRA descuenta esa hora", async () => {
     );
 });
 
-test("el descuento puede dejar el mes en negativo", async () => {
-    // Decision de negocio: no se recorta en cero. Un mes sin HH.EE en que ademas
-    // se sale antes queda con saldo negativo y se arrastra a la vista.
+test("el descuento nunca deja las HH.EE del mes en negativo", async () => {
+    // El deficit queda visible en el detalle del marcaje, pero no constituye
+    // una deuda de horas extras ni puede producir un pago negativo.
     assertAgree(
         await surfaces({
             [`baseData_${NAME}`]: { [dayKey(17)]: TURNO.LARGA },
             [`data_${NAME}`]: { [dayKey(17)]: TURNO.LARGA },
             ...withMark(17, "larga", { exitTime: "19:00" })
         }),
-        { d: -1, n: 0 }
+        { d: 0, n: 0 }
+    );
+});
+
+test("Natalia: el modo agregado usa la base mensual sin doble descuento", () => {
+    const initial = calculateAggregateExtras(99, 101, 141);
+
+    assert.deepEqual(initial, {
+        hheeDiurnas: 0,
+        hheeNocturnas: 59
+    });
+    assert.deepEqual(
+        applyMonthlyOvertimeAdjustments({
+            mode: "aggregate",
+            hheeDiurnas: initial.hheeDiurnas,
+            hheeNocturnas: initial.hheeNocturnas,
+            clockAbsences: { d: 16, n: 23 }
+        }),
+        { d: 0, n: 59 }
+    );
+});
+
+test("la valorizacion agregada tampoco vuelve a agregar deficits", async () => {
+    const source = await import("node:fs/promises").then(({ readFile }) =>
+        readFile(new URL("../js/hoursEngine.js", import.meta.url), "utf8")
+    );
+    const start = source.indexOf("function calculatePaymentSegments(");
+    const end = source.indexOf("function calculatePreviousCarryIn(", start);
+    const block = source.slice(start, end);
+
+    assert.match(block, /if \(mode === "aggregate"\) return segments;/);
+    assert.ok(
+        block.indexOf('if (mode === "aggregate") return segments;') <
+        block.indexOf("...calculateClockAbsenceSegments(")
     );
 });
 
