@@ -2429,6 +2429,38 @@ body.theme-dark .mcal-chip.is-preassigned {
     min-width: 0;
 }
 
+/* Turno de un apoyo de Dia (Larga, Diurno u horario personalizado). */
+.mcal-schedule-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.mcal-schedule-dialog > p {
+    margin: 4px 0 18px;
+}
+
+.mcal-schedule-dialog .app-dialog__choices {
+    margin-bottom: 4px;
+}
+
+.mcal-schedule-error {
+    margin: 12px 0 0;
+    color: var(--red);
+    font-size: 0.86rem;
+    font-weight: 700;
+}
+
+.mcal-schedule-error[hidden] {
+    display: none;
+}
+
+.mcal-schedule-actions {
+    display: grid;
+    margin-top: 22px;
+}
+
 .mcal-dialog-list button {
     min-height: 38px;
     padding: 8px 14px;

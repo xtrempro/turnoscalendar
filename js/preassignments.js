@@ -40,6 +40,11 @@ export function addPreassignment(data = {}) {
         // Comentario de un cupo de la Brecha RRHH (ver saveReplacement); pasa
         // al respaldo al confirmar.
         comment: String(data.comment || "").trim(),
+        // Horario personalizado de un apoyo con motivo (Calendario Mensual):
+        // pasa al respaldo y al marcaje al confirmar.
+        ...(data.coverFrom && data.coverUntil
+            ? { coverFrom: String(data.coverFrom), coverUntil: String(data.coverUntil) }
+            : {}),
         absenceType: data.absenceType || "",
         overtimeHours: data.overtimeHours || null,
         diurnoLongCoverage: Boolean(data.diurnoLongCoverage),

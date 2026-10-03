@@ -6503,10 +6503,17 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
     // dejo el hueco (ver offerSplitShiftCoverage).
     const coverWindow = options.coverWindow || null;
     const shiftWindow = options.shiftWindow || null;
-    const coverWindowPayload = coverWindow
+    // Horario personalizado de un apoyo con motivo (Calendario Mensual): no
+    // tapa el tramo de nadie, es el horario en que vendra. Se guarda y se
+    // escribe en su marcaje igual que un tramo, pero no cambia el cuadro.
+    const rotaWindow = rota?.window?.from && rota?.window?.until
+        ? rota.window
+        : null;
+    const savedWindow = coverWindow || rotaWindow;
+    const coverWindowPayload = savedWindow
         ? {
-            coverFrom: coverWindow.from,
-            coverUntil: coverWindow.until,
+            coverFrom: savedWindow.from,
+            coverUntil: savedWindow.until,
             shiftFrom: shiftWindow?.from || "",
             shiftUntil: shiftWindow?.until || ""
         }
@@ -7078,7 +7085,7 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
         const applyCandidate = async (button, options = {}) => {
             // El tramo del reparto pisa al del cuadro: cada uno de los dos
             // elegidos guarda el suyo, y los dos juntos tapan el turno.
-            const appliedWindow = options.coverWindow || coverWindow;
+            const appliedWindow = options.coverWindow || coverWindow || rotaWindow;
             const coveringWorker = button.dataset.worker;
 
             // Reemplazante (tipo contrato reemplazo) sin contrato vigente ese
@@ -7212,6 +7219,11 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                         keyDay,
                         turno: neededTurn,
                         absenceType: rota ? "" : absenceType,
+                        // Horario personalizado: se escribe en su marcaje
+                        // al confirmar.
+                        ...(rotaWindow
+                            ? { coverFrom: rotaWindow.from, coverUntil: rotaWindow.until }
+                            : {}),
                         ...replacementCoverageFromDataset(
                             button.dataset
                         )
@@ -9491,6 +9503,16 @@ async function confirmStandalonePreassignment(preassignment, keyDay) {
     // El motivo anotado en la reserva pasa a ser el respaldo del turno, que es
     // lo que el reporte de horas extra va a buscar. Asi, definido al
     // preasignar, al confirmar queda todo listo de una.
+    // Horario personalizado de la reserva (apoyo con motivo del Calendario
+    // Mensual): pasa al respaldo y a su marcaje, como al asignarlo directo.
+    const presetWindow = preassignment.coverFrom && preassignment.coverUntil
+        ? { from: preassignment.coverFrom, until: preassignment.coverUntil }
+        : null;
+
+    if (presetWindow) {
+        writeCoverWindowClockMark(worker, keyDay, date, presetWindow, holidays);
+    }
+
     if (motivo) {
         saveReplacement({
             worker,
@@ -9500,7 +9522,10 @@ async function confirmStandalonePreassignment(preassignment, keyDay) {
             comment: String(preassignment.comment || "").trim(),
             absenceType: "Motivo manual",
             source: "manual_extra",
-            addsShift: false
+            addsShift: false,
+            ...(presetWindow
+                ? { coverFrom: presetWindow.from, coverUntil: presetWindow.until }
+                : {})
         });
         return;
     }

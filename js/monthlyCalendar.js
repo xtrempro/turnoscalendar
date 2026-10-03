@@ -318,8 +318,11 @@ const CODE_SLOTS = {
     L: ["day"],
     HM: ["day"],
     HT: ["day"],
+    // El Diurno no es turno de titulares, pero un Diurno DE MAS con motivo
+    // si es apoyo de Dia (su columna de motivo).
+    D: ["day"],
     N: ["night"],
-    "D+N": ["night"],
+    "D+N": ["day", "night"],
     "24": ["day", "night"],
     "18": ["day", "night"]
 };
@@ -353,6 +356,11 @@ function applyPreassignments(rowsByKey, profiles, initials) {
 
         const turnSlots = slotsOf(record.turno);
         const reason = String(record.reason || "").trim();
+
+        // Un Diurno preasignado con motivo de HHEE va en Dia (ver arriba).
+        if (reason && !isBrechaMotive(reason) && DIURNO_STATES.has(Number(record.turno))) {
+            turnSlots.day = true;
+        }
         const replaced = String(record.replaced || "");
 
         ["day", "night"].forEach(slot => {
@@ -388,7 +396,10 @@ function applyPreassignments(rowsByKey, profiles, initials) {
                 (row.extras[slot][reason] ||= []).push({
                     ...person,
                     covering: false,
-                    extraReason: reason
+                    extraReason: reason,
+                    half: slot === "day"
+                        ? extraScheduleLabel(record) || person.half
+                        : person.half
                 });
                 return;
             }
@@ -453,7 +464,7 @@ function personTitle(person) {
     }
 
     if (person.extraReason) {
-        return `${person.name} — apoyo extra: ${person.extraReason}`;
+        return `${person.name} — apoyo extra: ${person.extraReason}${person.half ? ` (${person.half})` : ""}`;
     }
 
     if (!person.covering) return person.name;
@@ -472,6 +483,31 @@ function slotsOf(state) {
         day: DAY_STATES.has(value),
         night: NIGHT_STATES.has(value)
     };
+}
+
+// Turnos con tramo Diurno (08 a 17): no ocupan Titulares, pero un Diurno de
+// mas con motivo de HHEE va a la columna de ese motivo, en Dia.
+const DIURNO_STATES = new Set([TURNO.DIURNO, TURNO.DIURNO_NOCHE]);
+
+// "09:30"-"15:00" -> "9:30–15": cabe bajo las iniciales.
+function compactTime(value) {
+    const [hour, minute] = String(value || "").split(":");
+
+    return `${Number(hour)}${minute && minute !== "00" ? `:${minute}` : ""}`;
+}
+
+/**
+ * Lo que se anota bajo las iniciales de un apoyo de Dia: "D" si viene a
+ * Diurno y su horario si es personalizado (el que se le programo).
+ */
+function extraScheduleLabel(record) {
+    if (record?.coverFrom && record?.coverUntil) {
+        return `${compactTime(record.coverFrom)}–${compactTime(record.coverUntil)}`;
+    }
+
+    const code = String(record?.turno ?? "");
+
+    return code === "D" || Number(code) === TURNO.DIURNO ? "D" : "";
 }
 
 const SLICE_MS = 12;
@@ -579,6 +615,20 @@ export async function buildMonthlyCalendar(
                 isReplacementProfile(name, keyDay) &&
                 hasContractForDate(name, keyDay);
 
+            // Un Diurno (o un horario personalizado) de mas con motivo de HHEE
+            // es apoyo de Dia aunque no sea turno de titulares: antes no se
+            // veia en ninguna columna. Su propio Diurno no cuenta.
+            if (
+                !realSlots.day &&
+                !byContract &&
+                DIURNO_STATES.has(real) &&
+                !DIURNO_STATES.has(Number(own) || TURNO.LIBRE) &&
+                !ownSlots.day &&
+                extraRecordFor(name, row.iso, "day", ctx)
+            ) {
+                realSlots.day = true;
+            }
+
             ["day", "night"].forEach(slot => {
                 if (!realSlots[slot]) return;
 
@@ -619,6 +669,10 @@ export async function buildMonthlyCalendar(
                         ...person,
                         covering: false,
                         extraReason: reason,
+                        // Diurno o su horario personalizado, bajo las iniciales.
+                        half: slot === "day"
+                            ? extraScheduleLabel(extraRecord) || person.half
+                            : person.half,
                         // Para moverlo a otro motivo arrastrandolo.
                         extraId: String(extraRecord.id || ""),
                         // manual_extra se quita en el calendario (el turno
@@ -1748,6 +1802,312 @@ function slotDateLabel(keyDay) {
     });
 }
 
+/* =========================================================
+   Turno de un apoyo de Dia: Larga, Diurno o un horario personalizado. Se
+   pregunta antes del modal de sugerencias (la Noche va directo a 12 horas) y
+   parte con el horario que mas se ha usado en ese motivo.
+========================================================= */
+
+const LARGA_WINDOW = { from: "08:00", until: "20:00" };
+
+// Fin del Diurno ese dia: 16:00 el viernes, 17:00 el resto.
+function diurnoWindowFor(keyDay) {
+    return {
+        from: "08:00",
+        until: dateFromKey(keyDay).getDay() === 5 ? "16:00" : "17:00"
+    };
+}
+
+function scheduleKey(schedule) {
+    return schedule.kind === "custom"
+        ? `custom|${schedule.from}|${schedule.until}`
+        : schedule.kind;
+}
+
+/**
+ * El horario de Dia de un registro de apoyo (reemplazo o preasignacion), o
+ * null si no es de Dia (Noche, 24, medios turnos).
+ */
+function dayScheduleOfRecord(record) {
+    const code = typeof record?.turno === "number"
+        ? turnoToCode(record.turno)
+        : String(record?.turno ?? "");
+
+    if (code !== "L" && code !== "D") return null;
+
+    if (record.coverFrom && record.coverUntil) {
+        return { kind: "custom", from: record.coverFrom, until: record.coverUntil };
+    }
+
+    return { kind: code === "L" ? "larga" : "diurno" };
+}
+
+/**
+ * El horario predominante de un motivo: entre quienes vinieron (o estan
+ * preasignados) por el en el mes visible y los 3 anteriores. Empate: el mas
+ * reciente. Sin nadie: Larga.
+ */
+export function predominantDaySchedule(reason, monthDate, {
+    replacements = getReplacements(),
+    preassignments = getPreassignments()
+} = {}) {
+    const target = String(reason || "").trim();
+    const start = new Date(monthDate.getFullYear(), monthDate.getMonth() - HISTORY_MONTHS, 1);
+    const end = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
+    const startIso = isoFor(start);
+    const endIso = isoFor(end);
+    const tally = new Map();
+
+    [
+        ...(replacements || []).filter(record =>
+            replacementActive(record) &&
+            EXTRA_SOURCES.has(record.source) &&
+            !record.replaced
+        ),
+        ...(preassignments || []).filter(record => !record?.replaced)
+    ].forEach(record => {
+        const date = String(record?.date || "");
+
+        if (
+            String(record?.reason || "").trim() !== target ||
+            date < startIso ||
+            date > endIso
+        ) {
+            return;
+        }
+
+        const schedule = dayScheduleOfRecord(record);
+
+        if (!schedule) return;
+
+        const key = scheduleKey(schedule);
+        const entry = tally.get(key) || { schedule, count: 0, last: "" };
+
+        entry.count += 1;
+        if (date > entry.last) entry.last = date;
+        tally.set(key, entry);
+    });
+
+    const best = [...tally.values()].sort((a, b) =>
+        b.count - a.count || b.last.localeCompare(a.last)
+    )[0];
+
+    return best ? best.schedule : { kind: "larga" };
+}
+
+/**
+ * Lo que se guarda: el turno (Larga o Diurno) y, si es personalizado, el
+ * horario. Un horario personalizado se apoya en el Diurno si cabe en el, y si
+ * no en la Larga; el marcaje lleva la entrada y salida programadas. Si es
+ * justo el horario de uno de los dos, es ese turno sin mas.
+ */
+export function dayScheduleToShift(schedule, keyDay) {
+    const diurno = diurnoWindowFor(keyDay);
+
+    if (schedule.kind === "diurno") return { turno: TURNO.DIURNO, window: null };
+    if (schedule.kind !== "custom") return { turno: TURNO.LARGA, window: null };
+
+    const { from, until } = schedule;
+
+    if (from === LARGA_WINDOW.from && until === LARGA_WINDOW.until) {
+        return { turno: TURNO.LARGA, window: null };
+    }
+
+    if (from === diurno.from && until === diurno.until) {
+        return { turno: TURNO.DIURNO, window: null };
+    }
+
+    return {
+        turno: from >= diurno.from && until <= diurno.until
+            ? TURNO.DIURNO
+            : TURNO.LARGA,
+        window: { from, until }
+    };
+}
+
+function scheduleLabel(schedule, keyDay) {
+    if (schedule.kind === "custom") return `${schedule.from} a ${schedule.until}`;
+
+    const window = schedule.kind === "diurno" ? diurnoWindowFor(keyDay) : LARGA_WINDOW;
+
+    return `${schedule.kind === "diurno" ? "Diurno" : "Larga"} (${window.from} a ${window.until})`;
+}
+
+// Un cuadro con Aceptar y la X de cerrar. `onAccept(dialog)` devuelve el valor
+// (o undefined si falta corregir algo); cerrar resuelve null.
+function openAcceptDialog({ title, subtitle, bodyHTML, onAccept, onReady }) {
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+        const previousFocus = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        let settled = false;
+        const onKeydown = event => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                finish(null);
+            }
+        };
+        const finish = value => {
+            if (settled) return;
+            settled = true;
+            document.removeEventListener("keydown", onKeydown);
+            backdrop.remove();
+            previousFocus?.focus?.();
+            resolve(value);
+        };
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.innerHTML = `
+            <form class="turn-change-dialog clock-mark-dialog clock-mark-dialog--simple mcal-schedule-dialog" role="dialog" aria-modal="true" aria-labelledby="mcalScheduleTitle">
+                <div class="mcal-schedule-head">
+                    <strong id="mcalScheduleTitle">${escapeHTML(title)}</strong>
+                    <button type="button" class="replacement-dialog-close" data-mcal-schedule-close aria-label="Cerrar">×</button>
+                </div>
+                <p>${escapeHTML(subtitle)}</p>
+                ${bodyHTML}
+                <p class="mcal-schedule-error" data-mcal-schedule-error hidden></p>
+                <div class="mcal-schedule-actions">
+                    <button class="primary-button" type="submit">Aceptar</button>
+                </div>
+            </form>`;
+
+        backdrop.addEventListener("click", event => {
+            if (event.target === backdrop || event.target.closest("[data-mcal-schedule-close]")) {
+                finish(null);
+            }
+        });
+        backdrop.querySelector("form").addEventListener("submit", event => {
+            event.preventDefault();
+
+            const value = onAccept(backdrop);
+
+            if (value !== undefined) finish(value);
+        });
+        document.addEventListener("keydown", onKeydown);
+        document.body.appendChild(backdrop);
+        onReady?.(backdrop);
+    });
+}
+
+function showScheduleError(dialog, message) {
+    const error = dialog.querySelector("[data-mcal-schedule-error]");
+
+    if (!error) return;
+
+    error.textContent = message;
+    error.hidden = !message;
+}
+
+function timeInputsHTML(side, label, value) {
+    const [hour = "08", minute = "00"] = String(value || "").split(":");
+
+    return `
+        <div class="clock-mark-column">
+            <span>${label}</span>
+            <div class="clock-time-inputs">
+                <input class="clock-time-number" type="number" min="0" max="23" step="1" inputmode="numeric" value="${escapeHTML(hour)}" aria-label="${label} hora" data-mcal-time="${side}" data-unit="hour">
+                <span>:</span>
+                <input class="clock-time-number" type="number" min="0" max="59" step="1" inputmode="numeric" value="${escapeHTML(minute)}" aria-label="${label} minutos" data-mcal-time="${side}" data-unit="minute">
+            </div>
+        </div>`;
+}
+
+function readTime(dialog, side) {
+    const hour = Number(dialog.querySelector(`[data-mcal-time="${side}"][data-unit="hour"]`)?.value);
+    const minute = Number(dialog.querySelector(`[data-mcal-time="${side}"][data-unit="minute"]`)?.value);
+
+    if (
+        !Number.isInteger(hour) || !Number.isInteger(minute) ||
+        hour < 0 || hour > 23 || minute < 0 || minute > 59
+    ) {
+        return "";
+    }
+
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+// El horario personalizado: entrada y salida del mismo dia.
+function askCustomWindow({ reason, keyDay, initial }) {
+    const start = initial || diurnoWindowFor(keyDay);
+
+    return openAcceptDialog({
+        title: "Horario personalizado",
+        subtitle: `${reason} · ${slotDateLabel(keyDay)}`,
+        bodyHTML: `
+            <div class="clock-mark-row">
+                ${timeInputsHTML("from", "Entrada", start.from)}
+                ${timeInputsHTML("until", "Salida", start.until)}
+            </div>`,
+        onReady: dialog => {
+            dialog.querySelector('[data-mcal-time="from"][data-unit="hour"]')?.focus();
+        },
+        onAccept: dialog => {
+            const from = readTime(dialog, "from");
+            const until = readTime(dialog, "until");
+
+            if (!from || !until) {
+                showScheduleError(dialog, "Revisa las horas: entre 00:00 y 23:59.");
+                return undefined;
+            }
+
+            if (until <= from) {
+                showScheduleError(dialog, "La salida debe ser después de la entrada (el apoyo de Día no cruza la medianoche).");
+                return undefined;
+            }
+
+            return { kind: "custom", from, until };
+        }
+    });
+}
+
+/**
+ * Que turno viene a hacer un apoyo de Dia. Resuelve { turno, window } o null
+ * si se cierra.
+ */
+async function askDaySchedule({ reason, keyDay, monthDate }) {
+    const predominant = predominantDaySchedule(reason, monthDate);
+    const options = [
+        { kind: "larga", label: scheduleLabel({ kind: "larga" }, keyDay) },
+        { kind: "diurno", label: scheduleLabel({ kind: "diurno" }, keyDay) },
+        {
+            kind: "custom",
+            label: predominant.kind === "custom"
+                ? `Horario personalizado (${scheduleLabel(predominant, keyDay)})`
+                : "Horario personalizado"
+        }
+    ];
+    const kind = await openAcceptDialog({
+        title: "Turno del apoyo",
+        subtitle: `${reason} · ${slotDateLabel(keyDay)}`,
+        bodyHTML: `
+            <div class="app-dialog__choices" role="radiogroup" aria-label="Turno">
+                ${options.map(option => `
+                    <label class="app-dialog__choice">
+                        <input type="radio" name="mcalDaySchedule" value="${option.kind}"${option.kind === predominant.kind ? " checked" : ""}>
+                        <span class="app-dialog__choice-text">${escapeHTML(option.label)}${option.kind === predominant.kind ? `<small class="app-dialog__choice-hint">El más usado en este motivo</small>` : ""}</span>
+                    </label>`).join("")}
+            </div>`,
+        onReady: dialog => {
+            dialog.querySelector('input[name="mcalDaySchedule"]:checked')?.focus();
+        },
+        onAccept: dialog =>
+            dialog.querySelector('input[name="mcalDaySchedule"]:checked')?.value || "larga"
+    });
+
+    if (!kind) return null;
+
+    const schedule = kind === "custom"
+        ? await askCustomWindow({
+            reason,
+            keyDay,
+            initial: predominant.kind === "custom" ? predominant : null
+        })
+        : { kind };
+
+    return schedule ? dayScheduleToShift(schedule, keyDay) : null;
+}
+
 /**
  * Agregar a alguien a la columna de un motivo: el modal de sugerencias de
  * siempre, en su modo de turno extra con motivo (no reemplaza a nadie). Lo que
@@ -1779,14 +2139,27 @@ async function addToColumn(row, slot, column) {
 
     if (!reference) return;
 
+    // De Dia se pregunta el turno (Larga, Diurno o un horario); la Noche es
+    // siempre de 12 horas.
+    const shift = slot === "day"
+        ? await askDaySchedule({ reason, keyDay: row.keyDay, monthDate: ui.month })
+        : { turno: TURNO.NOCHE, window: null };
+
+    if (!shift) return;
+
+    const shiftText = shift.window
+        ? `de ${shift.window.from} a ${shift.window.until}`
+        : `en ${TURNO_LABEL[shift.turno]}`;
+
     await window.openReplacementDialog?.(reference.name, row.keyDay, {
         rota: {
             group: ui.group,
             estamento: reference.estamento,
             label: ui.group,
-            turno: slot === "day" ? TURNO.LARGA : TURNO.NOCHE,
+            turno: shift.turno,
+            window: shift.window,
             motive: reason,
-            description: `Agregar a alguien de ${slot === "day" ? "Día" : "Noche"} el ${slotDateLabel(row.keyDay)} por: ${reason}. No reemplaza a nadie: queda como horas extras con ese motivo.`
+            description: `Agregar a alguien de ${slot === "day" ? "Día" : "Noche"} el ${slotDateLabel(row.keyDay)} ${shiftText} por: ${reason}. No reemplaza a nadie: queda como horas extras con ese motivo.`
         }
     });
 }

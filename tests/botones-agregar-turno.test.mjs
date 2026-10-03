@@ -707,7 +707,7 @@ test("desde la casilla se vuelve al motivo si quedo pendiente", () => {
 test("al confirmar, el motivo anotado pasa a ser el respaldo del turno", () => {
     const bloque = calendar.slice(
         calendar.indexOf("async function confirmStandalonePreassignment(")
-    ).slice(0, 2200);
+    ).slice(0, 3200);
 
     assert.match(bloque, /const motivo = String\(preassignment\.reason \|\| ""\)\.trim\(\);/);
     assert.match(bloque, /if \(motivo\) \{[\s\S]{0,320}source: "manual_extra"/);
@@ -719,7 +719,7 @@ test("el respaldo del preasignado no agrega un turno por su cuenta", () => {
     // El turno ya lo puso addTurnToDay; este registro solo lo justifica.
     const bloque = calendar.slice(
         calendar.indexOf("async function confirmStandalonePreassignment(")
-    ).slice(0, 2200);
+    ).slice(0, 3200);
 
     assert.match(bloque, /addsShift: false/);
 });
