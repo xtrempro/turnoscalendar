@@ -210,3 +210,71 @@ test("el modal: consejos numerados, detalle, aplicar seleccionados o todo, y rec
     assert.match(source, /source: "manual_extra",\s*addsShift: false/);
     assert.match(calendar, /data-mcal-magic/);
 });
+
+test("horas extras: se pueden preasignar todas o solo las seleccionadas", async () => {
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+
+    // Botones solo en el consejo de horas extras.
+    assert.match(source, /data-magic-only="selected" data-magic-preassign[^>]*>Preasignar seleccionados/);
+    assert.match(source, /data-magic-only="all" data-magic-preassign[^>]*>Preasignar todo/);
+    assert.match(source, /"cover",\s*plan\.covers\.length,\s*\{ preassign: true \}/);
+    // La misma reserva del modal de sugerencias: un cupo lleva su motivo en
+    // `reason`, una ausencia a quien cubre en `replaced`.
+    assert.match(source, /if \(preassign\) \{\s*addPreassignment\(\{\s*worker,\s*replaced: item\.replaced \|\| "",\s*reason: item\.replaced \? "" : item\.cupo\?\.motive \|\| "",/);
+    assert.match(source, /applyCover\(item, worker, \{ preassign \}\)/);
+});
+
+test("etapa 2: si a un grupo le falta gente en varios turnos, alguien de Diurno pasa a ese grupo", async () => {
+    // Al grupo B le falta uno en la Larga del 3 y la Noche del 4 (y el 1, ya pasado).
+    const m = model(6, 3, (row, day) => {
+        const cupo = { group: "B", motive: "Completar rotativa de tecnicos del grupo B", turno: TURNO.LARGA, reference: "Molde" };
+
+        if (day === 1 || day === 3) {
+            row.slots.day.pop();
+            row.cupos.day.push(cupo);
+        }
+        if (day === 4) {
+            row.slots.night.pop();
+            row.cupos.night.push({ ...cupo, turno: TURNO.NOCHE });
+        }
+    });
+    let candidatesAsked = 0;
+    const plan = await planMonth(m, deps({}, {
+        minStartKey: "2026-9-2",
+        diurnoWorkers: () => ["Con permisos", "Libre de todo"],
+        firstTurnFor: (letter, keyDay) => (letter === "B" && keyDay === "2026-9-3" ? { firstTurn: "larga", label: "Largo" } : null),
+        affectedFrom: async name => (name === "Con permisos" ? [{ label: "F. Legal", count: 3 }] : []),
+        candidatesFor: async () => {
+            candidatesAsked += 1;
+            return [];
+        }
+    }));
+
+    assert.equal(plan.rotations.length, 1);
+    assert.deepEqual(
+        { ...plan.rotations[0], affected: undefined },
+        {
+            type: "rotation",
+            name: "Libre de todo",
+            group: "B",
+            startKey: "2026-9-3",
+            firstTurn: "larga",
+            firstTurnLabel: "Largo",
+            fills: 2,
+            affected: undefined,
+            alternatives: ["Con permisos"]
+        },
+        "quien pierde menos, desde el primer cupo que no ya paso"
+    );
+    // El cupo del 1 (ya pasado) sigue pidiendo horas extras; los del 3 y 4 no.
+    assert.equal(candidatesAsked, 1);
+});
+
+test("etapa 2: el modal lo aplica con el mismo cambio de grupo de Titulares de Turnos", async () => {
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+    const holders = await readFile(new URL("../js/shiftHolders.js", import.meta.url), "utf8");
+
+    assert.match(holders, /export async function applyGroupChange\(\{ profile, startISO, firstTurn, toLetter \}\)/);
+    assert.match(source, /await applyGroupChange\(\{\s*profile: item\.name,\s*startISO: isoOf\(item\.startKey\),\s*firstTurn: item\.firstTurn,\s*toLetter: item\.group\s*\}\)/);
+    assert.match(source, /se reescribe su calendario y se pierden/);
+});

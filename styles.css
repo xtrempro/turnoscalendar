@@ -2201,6 +2201,20 @@ body[data-active-view="home"] .secondary-grid {
     gap: 8px;
 }
 
+/* Preasignar (a la izquierda, en azul como los preasignados) | Aplicar. */
+.mcal-magic-actions-gap {
+    flex: 1 1 auto;
+}
+
+.mcal-magic-preassign {
+    border-color: rgba(59, 130, 246, 0.45);
+    color: #2563eb;
+}
+
+body.theme-dark .mcal-magic-preassign {
+    color: #93c5fd;
+}
+
 .mcal-magic-pending {
     margin-bottom: 12px;
     padding: 12px 16px;

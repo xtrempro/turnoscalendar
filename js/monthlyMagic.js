@@ -18,10 +18,12 @@ import {
 } from "./replacementCandidates.js";
 import { calcExtraHours } from "./calculations.js";
 import { fetchHolidays } from "./holidays.js";
-import { saveReplacement } from "./replacements.js";
+import { getAbsenceLabelForProfileDate, saveReplacement } from "./replacements.js";
+import { addPreassignment } from "./preassignments.js";
 import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
 import { showAlert } from "./dialogs.js";
+import { applyGroupChange, countAffectedFrom, firstTurnForColumnAt, loadLeaveHolidays } from "./shiftHolders.js";
 import { MOVE_TIERS, movesByWorker, orderMovesForApply, planMonth } from "./monthlyMagicPlan.js";
 
 const SLOT_LABEL = { day: "Día", night: "Noche" };
@@ -51,9 +53,28 @@ function rotationLabel(name) {
 }
 
 // Lo que el plan necesita leer de la pagina.
-function browserDeps(holidays, shouldContinue) {
+function isoOf(keyDay) {
+    const date = keyToDate(keyDay);
+
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function browserDeps(holidays, shouldContinue, groupNames = []) {
+    const tomorrow = new Date();
+
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
     return {
         shouldContinue,
+        // Etapa 2: quien hace Diurno en esta profesion puede pasar a un grupo.
+        diurnoWorkers: () => groupNames.filter(name =>
+            String(getRotativa(name)?.type || "") === "diurno" &&
+            !isHonorariaProfile(name)
+        ),
+        firstTurnFor: (letter, keyDay) => firstTurnForColumnAt(letter, keyToDate(keyDay)),
+        affectedFrom: async (name, keyDay) =>
+            countAffectedFrom(name, keyToDate(keyDay), await loadLeaveHolidays(name)),
+        minStartKey: `${tomorrow.getFullYear()}-${tomorrow.getMonth()}-${tomorrow.getDate()}`,
         canMoveSource: (name, keyDay) =>
             !isHonorariaProfile(name, keyDay) &&
             typeof window.shiftMoveDayBlockReason === "function" &&
@@ -156,7 +177,7 @@ function coverRowHTML(item, index) {
         </div>`;
 }
 
-function adviceHTML(number, title, text, body, kind, count) {
+function adviceHTML(number, title, text, body, kind, count, { preassign = false } = {}) {
     return `
         <section class="mcal-magic-advice" data-magic-advice="${kind}">
             <div class="mcal-magic-advice-head">
@@ -171,6 +192,10 @@ function adviceHTML(number, title, text, body, kind, count) {
                 <div class="mcal-magic-list">${body}</div>
             </details>
             <div class="mcal-magic-actions">
+                ${preassign ? `
+                <button class="secondary-button mcal-magic-preassign" type="button" data-magic-apply="${kind}" data-magic-only="selected" data-magic-preassign title="Quedan en azul, sin horas ni aviso a la app, hasta que se confirmen">Preasignar seleccionados</button>
+                <button class="secondary-button mcal-magic-preassign" type="button" data-magic-apply="${kind}" data-magic-only="all" data-magic-preassign title="Quedan en azul, sin horas ni aviso a la app, hasta que se confirmen">Preasignar todo</button>
+                <span class="mcal-magic-actions-gap"></span>` : ""}
                 <button class="secondary-button" type="button" data-magic-apply="${kind}" data-magic-only="selected">Aplicar seleccionados</button>
                 <button class="primary-button" type="button" data-magic-apply="${kind}" data-magic-only="all">Aplicar todo</button>
             </div>
@@ -195,14 +220,33 @@ export function planHTML(plan, monthLabel) {
         ));
     });
 
+    (plan.rotations || []).forEach((item, index) => {
+        const lost = item.affected?.length
+            ? ` Desde esa fecha se reescribe su calendario y se pierden: ${item.affected.map(entry => `${escapeHTML(entry.label)} (${entry.count})`).join(", ")}.`
+            : "";
+
+        advices.push(adviceHTML(
+            ++number,
+            `Pasar a ${escapeHTML(item.name)} de Diurno al grupo ${escapeHTML(item.group)}`,
+            `Al grupo ${escapeHTML(item.group)} le falta gente en ${item.fills} turnos de este mes desde el ${escapeHTML(dateLabel(item.startKey))}. ${escapeHTML(item.name)} hace rotativa diurna: pasa al 4to turno en ese grupo desde ese día, partiendo con ${escapeHTML(item.firstTurnLabel)}, y deja de hacer Diurno. No suma horas extras: es su nueva rotativa.${lost}${item.alternatives?.length ? ` Otras personas de Diurno: ${item.alternatives.map(escapeHTML).join(", ")}.` : ""}`,
+            `<label class="mcal-magic-row">
+                <input type="checkbox" data-magic-pick="rotation" value="${index}" checked>
+                <span>${escapeHTML(item.name)} → grupo ${escapeHTML(item.group)} desde el ${escapeHTML(dateLabel(item.startKey))} (${escapeHTML(item.firstTurnLabel)}), cubre ${item.fills} turnos del mes</span>
+            </label>`,
+            `rotation:${index}`,
+            1
+        ));
+    });
+
     if (plan.covers.length) {
         advices.push(adviceHTML(
             ++number,
             `Cubrir ${plan.covers.length} ${plan.covers.length === 1 ? "turno" : "turnos"} con horas extras`,
-            `${number > 1 ? "Lo que sigue faltando después de los consejos anteriores. " : ""}Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno.`,
+            `${number > 1 ? "Lo que sigue faltando después de los consejos anteriores. " : ""}Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno, y preasignarlos (en azul, sin horas ni aviso a la app hasta que se confirmen) en vez de asignarlos.`,
             plan.covers.map(coverRowHTML).join(""),
             "cover",
-            plan.covers.length
+            plan.covers.length,
+            { preassign: true }
         ));
     }
 
@@ -254,9 +298,31 @@ function applyMove(item) {
     return "";
 }
 
-function applyCover(item, worker) {
+function applyCover(item, worker, { preassign = false } = {}) {
     if (Number(getTurnoReal(worker, item.keyDay)) !== TURNO.LIBRE) {
         return `${worker} ya tiene turno el ${dateLabel(item.keyDay)}.`;
+    }
+
+    // Preasignar: la misma reserva del modal de sugerencias (en azul, sin
+    // horas ni proyeccion hasta que se confirma). Un cupo no cubre a nadie: su
+    // motivo va en `reason` y al confirmar queda como respaldo.
+    if (preassign) {
+        addPreassignment({
+            worker,
+            replaced: item.replaced || "",
+            reason: item.replaced ? "" : item.cupo?.motive || "",
+            comment: "",
+            keyDay: item.keyDay,
+            turno: item.turn,
+            absenceType: item.replaced ? getAbsenceLabelForProfileDate(item.replaced, item.keyDay) : ""
+        });
+        addAuditLog(
+            AUDIT_CATEGORY.CALENDAR,
+            "Preasigno turno con la ayuda del Calendario Mensual",
+            `${worker}: ${turnLabel(item.turn)} del ${item.keyDay} preasignado, ${item.replaced ? `cubre a ${item.replaced}` : `cupo de la Brecha (${item.cupo?.motive || ""})`}.`,
+            { profile: worker, keyDay: item.keyDay }
+        );
+        return "";
     }
 
     saveReplacement(item.replaced
@@ -296,7 +362,7 @@ function applyCover(item, worker) {
  * @param {Function} options.buildModel  () => Promise<model|null> del mes visible
  * @param {Function} options.onApplied   () => Promise, repinta el calendario
  */
-export async function openMonthlyMagic({ month, group, monthLabel, buildModel, onApplied }) {
+export async function openMonthlyMagic({ month, group, monthLabel, buildModel, onApplied, groupNames = [] }) {
     const backdrop = document.createElement("div");
     let plan = null;
     let runId = 0;
@@ -338,7 +404,7 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             return;
         }
 
-        const next = await planMonth(model, browserDeps(holidays, () => !closed && id === runId));
+        const next = await planMonth(model, browserDeps(holidays, () => !closed && id === runId, groupNames));
 
         if (closed || id !== runId || !next) return;
 
@@ -346,7 +412,7 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
         body.innerHTML = planHTML(plan, monthLabel);
     }
 
-    async function apply(kind, onlySelected) {
+    async function apply(kind, onlySelected, preassign = false) {
         if (!plan) return;
 
         const section = backdrop.querySelector(`[data-magic-advice="${CSS.escape(kind)}"]`);
@@ -364,11 +430,23 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
 
                 if (error) errors.push(`${move.name} (${dateLabel(move.sourceKey)}): ${error}`);
             });
+        } else if (kind.startsWith("rotation:")) {
+            for (const index of picked("rotation")) {
+                const item = plan.rotations[index];
+                const ok = await applyGroupChange({
+                    profile: item.name,
+                    startISO: isoOf(item.startKey),
+                    firstTurn: item.firstTurn,
+                    toLetter: item.group
+                });
+
+                if (!ok) errors.push(`${item.name}: no se pudo cambiar la rotativa.`);
+            }
         } else if (kind === "cover") {
             picked("cover").forEach(index => {
                 const item = plan.covers[index];
                 const worker = section.querySelector(`[data-magic-worker="${index}"]`)?.value || item.worker;
-                const error = applyCover(item, worker);
+                const error = applyCover(item, worker, { preassign });
 
                 if (error) errors.push(error);
             });
@@ -396,7 +474,11 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
 
         if (button) {
             button.disabled = true;
-            void apply(button.dataset.magicApply, button.dataset.magicOnly === "selected");
+            void apply(
+                button.dataset.magicApply,
+                button.dataset.magicOnly === "selected",
+                button.hasAttribute("data-magic-preassign")
+            );
         }
     });
     document.addEventListener("keydown", onKeydown);

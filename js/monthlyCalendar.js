@@ -2821,6 +2821,10 @@ function onPanelClick(event) {
             group: ui.group,
             monthLabel: `${MONTH_NAMES[ui.month.getMonth()]} ${ui.month.getFullYear()}`,
             buildModel: () => buildMonthlyCalendar(ui.month, ui.group),
+            // Etapa 2: quienes de esta profesion podrian pasar de Diurno a turno.
+            groupNames: monthProfiles(ui.month)
+                .filter(profile => isProfileActive(profile) && groupKeyFor(profile) === ui.group)
+                .map(profile => profile.name),
             onApplied: () => renderMonthlyCalendarPanel()
         });
         return;

@@ -965,6 +965,18 @@ export function setGroupChangeApplier(applier) {
 }
 
 /**
+ * El mismo cambio de grupo, sin su cuadro: lo usa la "Ayuda para cubrir" del
+ * Calendario Mensual para pasar a alguien de rotativa diurna a un grupo del
+ * 4to turno al que le falta gente. Devuelve false si no hay quien lo escriba.
+ */
+export async function applyGroupChange({ profile, startISO, firstTurn, toLetter }) {
+    if (!groupChangeApplier || !profile || !startISO || !firstTurn || !toLetter) return false;
+
+    await groupChangeApplier({ profile, startISO, firstTurn, toLetter });
+    return true;
+}
+
+/**
  * Cuadro de "pasar a otro grupo": el calendario del trabajador, la fecha desde
  * la que empieza en la nueva rotativa, y lo que se perderia.
  *

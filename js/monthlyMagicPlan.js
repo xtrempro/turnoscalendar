@@ -10,7 +10,10 @@
 //      (su Noche del 2 pasa al 3 y deja libre el 2 para su Noche del 1): se
 //      validan contra el calendario YA modificado por el plan. Si en el destino
 //      hay un ausente sin cubrir, lo cubre (sin horas extras: es su turno).
-//   2. Cubrir con horas extras lo que siga faltando (ausencias y cupos de la
+//   2. Pasar a turno a alguien de rotativa diurna: si a un grupo del 4to turno
+//      le sigue faltando gente en varios turnos, una persona de la profesion
+//      que hace Diurno entra a ese grupo desde el primero (cambio de rotativa).
+//   3. Cubrir con horas extras lo que siga faltando (ausencias y cupos de la
 //      Brecha): primero quien tiene menos horas extras en el mes, sin pasar el
 //      tope mensual, y despues el de grado mas alto (su hora extra cuesta menos).
 // El 24 invertido se evita siempre: solo aparece si no hay otra salida (y la
@@ -23,6 +26,10 @@ import { TURNO } from "./constants.js";
 import { moveShiftCreatesInvertedTwentyFour } from "./rulesEngine.js";
 
 export const SLOT_TURN = { day: TURNO.LARGA, night: TURNO.NOCHE };
+
+// Desde cuantos turnos sin cubrir de un mismo grupo conviene pasar a alguien
+// de Diurno a ese grupo (con uno solo, una hora extra es menos invasivo).
+export const ROTATION_MIN_CELLS = 2;
 
 // Cascada: quien se mueve primero.
 export const MOVE_TIERS = [
@@ -128,6 +135,10 @@ export function orderMovesForApply(moves) {
  *   extraHours(keyDay, turn) -> { d, n } que suma cubrirlo
  *   diurnalLimit               tope mensual de horas extras diurnas
  *   shouldContinue()           false para cortar (cambio de mes)
+ *   diurnoWorkers()            (opcional) quienes hacen Diurno en la profesion
+ *   firstTurnFor(letter, keyDay) -> { firstTurn, label } para entrar al grupo
+ *   affectedFrom(name, keyDay) -> Promise<[{ label, count }]> lo que se pierde
+ *   minStartKey                el primer dia en que se puede cambiar (manana)
  */
 export async function planMonth(model, deps) {
     const target = targetPerShift(model);
@@ -187,7 +198,7 @@ export async function planMonth(model, deps) {
         return gap.name;
     };
 
-    if (!target) return { target, moves, covers, unresolved, surplus: [] };
+    if (!target) return { target, moves, rotations: [], covers, unresolved, surplus: [] };
 
     // El mejor destino para el turno de `name` que sobra en (sourceKey, slot).
     function bestTarget(name, sourceKey, slot) {
@@ -295,8 +306,81 @@ export async function planMonth(model, deps) {
         }
     }
 
-    // 2. Horas extras para lo que siga faltando.
+    // 2. Pasar a turno a alguien de rotativa diurna: si a un grupo del 4to
+    // turno le sigue faltando gente en varios turnos del mes, una persona de
+    // la misma profesion que hace Diurno entra a ese grupo desde el primero
+    // de esos turnos (cambio de rotativa, no horas extras). Una persona por
+    // grupo, y nunca en una fecha ya pasada.
     const claimedCupos = new Map();
+    const rotations = [];
+
+    if (deps.diurnoWorkers) {
+        const byGroup = new Map();
+
+        rows.forEach(row => {
+            if (deps.minStartKey && dayIndex(row.keyDay) < dayIndex(deps.minStartKey)) return;
+
+            ["day", "night"].forEach(slot => {
+                const missing = target - cellCount(row.keyDay, slot);
+
+                (row.cupos?.[slot] || []).slice(0, Math.max(0, missing)).forEach(cupo => {
+                    const letter = String(cupo.group || "").trim();
+
+                    if (!letter) return;
+                    if (!byGroup.has(letter)) byGroup.set(letter, []);
+                    byGroup.get(letter).push({ keyDay: row.keyDay, slot });
+                });
+            });
+        });
+
+        const available = [...(deps.diurnoWorkers() || [])];
+
+        for (const [letter, cells] of [...byGroup.entries()].sort((a, b) => b[1].length - a[1].length)) {
+            if (cells.length < ROTATION_MIN_CELLS || !available.length) continue;
+
+            const startKey = cells[0].keyDay;
+            const first = deps.firstTurnFor(letter, startKey);
+
+            if (!first) continue;
+
+            const ranked = [];
+
+            for (const name of available) {
+                const affected = await deps.affectedFrom(name, startKey);
+
+                ranked.push({
+                    name,
+                    affected,
+                    lost: (affected || []).reduce((sum, item) => sum + (Number(item.count) || 0), 0)
+                });
+            }
+
+            ranked.sort((a, b) => a.lost - b.lost || a.name.localeCompare(b.name));
+
+            const pick = ranked[0];
+
+            available.splice(available.indexOf(pick.name), 1);
+            rotations.push({
+                type: "rotation",
+                name: pick.name,
+                group: letter,
+                startKey,
+                firstTurn: first.firstTurn,
+                firstTurnLabel: first.label,
+                fills: cells.length,
+                affected: pick.affected || [],
+                alternatives: ranked.slice(1, 4).map(item => item.name)
+            });
+            cells.forEach(cell => {
+                const id = cellId(cell.keyDay, cell.slot);
+
+                claimedCupos.set(id, (claimedCupos.get(id) || 0) + 1);
+                bump(cell.keyDay, cell.slot, 1);
+            });
+        }
+    }
+
+    // 3. Horas extras para lo que siga faltando.
 
     for (const row of rows) {
         for (const slot of ["day", "night"]) {
@@ -400,7 +484,7 @@ export async function planMonth(model, deps) {
         .filter(slot => cellCount(row.keyDay, slot) > target)
         .map(slot => ({ keyDay: row.keyDay, slot, extra: cellCount(row.keyDay, slot) - target })));
 
-    return { target, moves, covers, unresolved, surplus };
+    return { target, moves, rotations, covers, unresolved, surplus };
 }
 
 /**
