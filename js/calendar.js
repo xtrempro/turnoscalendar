@@ -1,7 +1,10 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
 import { showChoice, showConfirm } from "./dialogs.js";
-import { recordBaseShiftRemoval } from "./baseShiftRemovals.js";
+import {
+    getEditableBaseShift,
+    recordBaseShiftRemoval
+} from "./baseShiftRemovals.js";
 import {
     LEAVE_ATTACHMENT_ACCEPT,
     addLeaveAttachment,
@@ -5397,16 +5400,31 @@ function candidateStateLabel(candidate, pendingRequest) {
 }
 
 
+function getEditableCalendarBaseTurn(
+    profileName,
+    keyDay,
+    projectedBaseTurn
+) {
+    if (isReplacementProfile(profileName, keyDay)) return TURNO.LIBRE;
+
+    return getEditableBaseShift(profileName, keyDay, projectedBaseTurn);
+}
+
 function getManualExtraTurn(
     profileName,
     keyDay,
     profileData
 ) {
-    const baseWithSwaps = aplicarCambiosTurno(
+    const projectedBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
         getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
+    );
+    const baseWithSwaps = getEditableCalendarBaseTurn(
+        profileName,
+        keyDay,
+        projectedBaseTurn
     );
     const actualWithSwaps = aplicarCambiosTurno(
         profileName,
@@ -10687,9 +10705,11 @@ async function clickDia(
         baseTurno,
         { includeReplacements: false }
     );
-    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
-        ? TURNO.LIBRE
-        : projectedBaseTurn;
+    const effectiveBaseTurn = getEditableCalendarBaseTurn(
+        profileName,
+        keyDay,
+        projectedBaseTurn
+    );
     const directEditTurn = getProtectedDirectEditTurn(
         profileName,
         keyDay,
@@ -10836,9 +10856,11 @@ export function canAddTurnToDay(profileName, keyDay, turnoElegido, context = {})
         baseTurno,
         { includeReplacements: false }
     );
-    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
-        ? TURNO.LIBRE
-        : projectedBaseTurn;
+    const effectiveBaseTurn = getEditableCalendarBaseTurn(
+        profileName,
+        keyDay,
+        projectedBaseTurn
+    );
 
     return getAddTurnResult(
         profileName,
@@ -10869,9 +10891,11 @@ function manualExtraForDay(profileName, keyDay) {
     // El contrato proyecta la jornada, pero no la vuelve una rotativa base
     // protegida. Guardar 0 en el dia permite retirar ese turno sin tocar el
     // contrato ni el resto de su periodo.
-    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
-        ? TURNO.LIBRE
-        : projectedBaseTurn;
+    const effectiveBaseTurn = getEditableCalendarBaseTurn(
+        profileName,
+        keyDay,
+        projectedBaseTurn
+    );
     const actual = getActualState(profileName, keyDay);
 
     return {
@@ -11289,9 +11313,11 @@ export function addTurnToDay(profileName, keyDay, turnoElegido, options = {}) {
         baseTurno,
         { includeReplacements: false }
     );
-    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
-        ? TURNO.LIBRE
-        : projectedBaseTurn;
+    const effectiveBaseTurn = getEditableCalendarBaseTurn(
+        profileName,
+        keyDay,
+        projectedBaseTurn
+    );
     const result = getAddTurnResult(
         profileName,
         keyDay,
@@ -11347,9 +11373,11 @@ export function addPreassignedTurnToDay(
         getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
     );
-    const effectiveBaseTurn = isReplacementProfile(profileName, keyDay)
-        ? TURNO.LIBRE
-        : projectedBaseTurn;
+    const effectiveBaseTurn = getEditableCalendarBaseTurn(
+        profileName,
+        keyDay,
+        projectedBaseTurn
+    );
     const result = getAddTurnResult(
         profileName,
         keyDay,

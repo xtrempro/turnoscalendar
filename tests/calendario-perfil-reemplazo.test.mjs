@@ -25,6 +25,6 @@ test("el hover enumera todos los titulares de contratos superpuestos", () => {
 test("la edicion trata la rotativa de Reemplazo como base Libre", () => {
     assert.match(
         calendar,
-        /isReplacementProfile\(profileName, keyDay\)\s*\n\s*\? TURNO\.LIBRE\s*\n\s*: projectedBaseTurn/
+        /function getEditableCalendarBaseTurn\([\s\S]{0,220}if \(isReplacementProfile\(profileName, keyDay\)\) return TURNO\.LIBRE;/
     );
 });

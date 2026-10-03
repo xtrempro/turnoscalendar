@@ -45,8 +45,10 @@ const {
 const {
     recordBaseShiftRemoval,
     getBaseShiftRemoval,
+    getEditableBaseShift,
     clearBaseShiftRemoval
 } = await import("../js/baseShiftRemovals.js");
+const { getAddTurnResult } = await import("../js/turnEngine.js");
 const { calcularHorasMesPerfil } = await import("../js/hoursEngine.js");
 const { stateModuleForKey } = await import("../js/firebaseStateModules.js");
 const { TURNO } = await import("../js/constants.js");
@@ -148,6 +150,52 @@ test("si el turno se vuelve a poner, el descuento desaparece solo", () => {
 
     assert.equal(after.hheeDiurnas, before.hheeDiurnas);
     assert.equal(after.hheeNocturnas, before.hheeNocturnas);
+});
+
+test("quitar la base libera la casilla para agregar una rotativa especial", () => {
+    seed({ assigned: true });
+
+    removeBaseLarga();
+
+    const editableBase = getEditableBaseShift(
+        PROFILE,
+        LARGA_KEY,
+        TURNO.LARGA
+    );
+    const result = getAddTurnResult(
+        PROFILE,
+        LARGA_KEY,
+        TURNO.NOCHE,
+        true,
+        {
+            effectiveBaseTurn: editableBase,
+            actualState: TURNO.LIBRE,
+            replacementTurn: TURNO.LIBRE
+        }
+    );
+
+    assert.equal(editableBase, TURNO.LIBRE);
+    assert.equal(result.allowed, true);
+    assert.equal(result.nextVisibleTurn, TURNO.NOCHE);
+    assert.ok(getBaseShiftRemoval(PROFILE, LARGA_KEY));
+});
+
+test("todos los caminos de edicion respetan la base quitada", () => {
+    const calendar = readFileSync(
+        new URL("../js/calendar.js", import.meta.url),
+        "utf8"
+    );
+
+    assert.match(
+        calendar,
+        /function getEditableCalendarBaseTurn\([\s\S]{0,320}getEditableBaseShift\(profileName, keyDay, projectedBaseTurn\)/
+    );
+
+    const uses = calendar.match(/getEditableCalendarBaseTurn\(/g) || [];
+
+    // Definicion + visor de extras + edicion directa + iluminacion + deteccion
+    // de extras + guardado normal + preasignacion.
+    assert.equal(uses.length, 7);
 });
 
 test("en el modo agregado el dia quitado ya resta lo trabajado: no se descuenta dos veces", () => {

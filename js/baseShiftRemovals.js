@@ -31,6 +31,12 @@ export function getBaseShiftRemoval(profileName, keyDay) {
     return getBaseShiftRemovals(profileName)[keyDay] || null;
 }
 
+export function getEditableBaseShift(profileName, keyDay, baseShift) {
+    if (getBaseShiftRemoval(profileName, keyDay)) return 0;
+
+    return Number(baseShift) || 0;
+}
+
 export function recordBaseShiftRemoval(
     profileName,
     keyDay,
