@@ -193,9 +193,11 @@ test("todos los caminos de edicion respetan la base quitada", () => {
 
     const uses = calendar.match(/getEditableCalendarBaseTurn\(/g) || [];
 
-    // Definicion + visor de extras + edicion directa + iluminacion + deteccion
-    // de extras + guardado normal + preasignacion.
-    assert.equal(uses.length, 7);
+    // Definicion + edicion directa + iluminacion + deteccion de extras +
+    // guardado normal + preasignacion. El visor de extras usa la base
+    // contractual con getEditableBaseShift: un Reemplazo no puede convertir
+    // todo lo heredado en HH.EE sin respaldo.
+    assert.equal(uses.length, 6);
 });
 
 test("en el modo agregado el dia quitado ya resta lo trabajado: no se descuenta dos veces", () => {

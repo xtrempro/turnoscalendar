@@ -188,3 +188,10 @@ test("el permiso archivado usa el logId del memorandum o reemplazo", async () =>
         /await readFirebaseAuditLogShardEntry\(logId, createdAt\)/
     );
 });
+
+test("un permiso anterior al log usa la fecha del memorandum sin inventar autor", () => {
+    assert.match(calendar, /fallbackCreatedAt: String\(memo\?\.createdAt \|\| ""\)/);
+    assert.match(auditLog, /function historicalLeaveApplicationInfo\(createdAt\)/);
+    assert.match(auditLog, /actorName: "No registrado"/);
+    assert.match(auditLog, /return info \|\| historicalInfo;/);
+});

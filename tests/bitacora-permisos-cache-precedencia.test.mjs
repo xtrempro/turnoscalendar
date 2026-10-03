@@ -28,7 +28,11 @@ globalThis.document = {
 };
 
 const { setJSON } = await import("../js/persistence.js");
-const { getLeaveApplicationInfo, AUDIT_CATEGORY } = await import("../js/auditLog.js");
+const {
+    getLeaveApplicationInfo,
+    loadLeaveApplicationInfo,
+    AUDIT_CATEGORY
+} = await import("../js/auditLog.js");
 const {
     cacheFirebaseAuditLogShardEntries,
     stopFirebaseAuditLogShardReader
@@ -82,4 +86,19 @@ test("la cache se rehace cuando cambia la bitacora local", () => {
     setJSON("auditLog", [legalLog({ canceledAt: "2026-10-01T21:41:08.779Z" })]);
 
     assert.equal(info(), null);
+});
+
+test("un permiso historico sin log conserva la fecha del memorandum", async () => {
+    const result = await loadLeaveApplicationInfo({
+        profile: PROFILE,
+        keyDay: DAY,
+        type: "legal",
+        fallbackCreatedAt: "2026-09-25T12:04:39.825Z"
+    });
+
+    assert.equal(result?.logId, "");
+    assert.equal(result?.canUndo, false);
+    assert.equal(result?.createdAt, "2026-09-25T12:04:39.825Z");
+    assert.notEqual(result?.createdAtLabel, "Sin registro");
+    assert.equal(result?.actorName, "No registrado");
 });

@@ -720,10 +720,34 @@ export function getLeaveApplicationInfo({
     };
 }
 
+function historicalLeaveApplicationInfo(createdAt) {
+    const timestamp = String(createdAt || "").trim();
+    const date = new Date(timestamp);
+
+    if (!timestamp || Number.isNaN(date.getTime())) return null;
+
+    return {
+        logId: "",
+        canUndo: false,
+        createdAt: timestamp,
+        createdAtLabel: formatTimestamp(timestamp),
+        actorName: "No registrado",
+        actorEmail: "",
+        keys: [],
+        amount: 0,
+        date: "",
+        leaveType: ""
+    };
+}
+
 export async function loadLeaveApplicationInfo(options = {}) {
     let info = getLeaveApplicationInfo(options);
+    const historicalInfo = historicalLeaveApplicationInfo(
+        options.fallbackCreatedAt
+    );
 
-    if (info || !auditLogShardReadEnabled()) return info;
+    if (info) return info;
+    if (!auditLogShardReadEnabled()) return historicalInfo;
 
     const logId = String(options.logId || "").trim();
     const createdAt = String(options.createdAt || "").trim();
@@ -743,7 +767,7 @@ export async function loadLeaveApplicationInfo(options = {}) {
         info = getLeaveApplicationInfo(options);
     }
 
-    return info;
+    return info || historicalInfo;
 }
 
 export function getActiveLeaveLogId(profile, keyDay) {

@@ -28,3 +28,22 @@ test("la edicion trata la rotativa de Reemplazo como base Libre", () => {
         /function getEditableCalendarBaseTurn\([\s\S]{0,220}if \(isReplacementProfile\(profileName, keyDay\)\) return TURNO\.LIBRE;/
     );
 });
+
+test("el respaldo conserva la base heredada del contrato de Reemplazo", () => {
+    const start = calendar.indexOf("function getManualExtraTurn(");
+    const end = calendar.indexOf("function getPendingManualExtraTurn(", start);
+    const block = calendar.slice(start, end);
+
+    assert.match(
+        block,
+        /const baseWithSwaps = getEditableBaseShift\(\s*profileName,\s*keyDay,\s*projectedBaseTurn\s*\)/
+    );
+    assert.doesNotMatch(block, /getEditableCalendarBaseTurn\(/);
+});
+
+test("un Reemplazo sin rotativa propia pinta sus tramos manuales como extra", () => {
+    assert.match(
+        calendar,
+        /const manualExtra = Boolean\(\s*manualExtraTurn &&[\s\S]{0,180}\(shiftAssigned \|\| isReplacementWorkDay\)\s*\)/
+    );
+});

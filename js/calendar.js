@@ -4241,7 +4241,8 @@ function leaveAuditReferenceForDay({ profile, keyDay, type } = {}) {
     if (memo?.logId) {
         return {
             logId: String(memo.logId),
-            createdAt: String(memo.createdAt || "")
+            createdAt: String(memo.createdAt || ""),
+            fallbackCreatedAt: String(memo.createdAt || "")
         };
     }
 
@@ -4266,7 +4267,10 @@ function leaveAuditReferenceForDay({ profile, keyDay, type } = {}) {
 
     return {
         logId: "",
-        createdAt: String(memo?.createdAt || "")
+        createdAt: "",
+        // Los permisos anteriores al enlace estable con el LOG no permiten
+        // recuperar al autor, pero el memorandum conserva cuando se aplicaron.
+        fallbackCreatedAt: String(memo?.createdAt || "")
     };
 }
 
@@ -5421,7 +5425,10 @@ function getManualExtraTurn(
         getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
     );
-    const baseWithSwaps = getEditableCalendarBaseTurn(
+    // Para calcular HH.EE manda la jornada contractual. Un perfil Reemplazo
+    // puede editar sus dias como si la base fuera Libre, pero lo que hereda del
+    // titular ya esta respaldado por el contrato y no es un extra manual.
+    const baseWithSwaps = getEditableBaseShift(
         profileName,
         keyDay,
         projectedBaseTurn
@@ -11916,13 +11923,16 @@ async function renderCalendarImpl(options = {}) {
                 keyDay,
                 data
             );
+        const manualExtraTurn = getManualExtraTurn(
+            activeProfile,
+            keyDay,
+            data
+        );
         const manualExtra = Boolean(
-            shiftAssigned &&
-            getManualExtraTurn(
-                activeProfile,
-                keyDay,
-                data
-            )
+            manualExtraTurn &&
+            // Los reemplazantes pueden no tener rotativa propia: su contrato
+            // proyecta la base y los tramos agregados siguen siendo extras.
+            (shiftAssigned || isReplacementWorkDay)
         );
         // El marcaje se hizo sobre el turno del dia. Si despues le quitaron el
         // turno, la marca quedo huerfana: no se dibuja el reloj (no hay turno
