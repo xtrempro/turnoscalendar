@@ -2,16 +2,19 @@
 // turnos de Titulares con la MISMA cantidad de gente, gastando lo menos posible.
 //
 // En orden, y cada paso cuenta con que los anteriores se aplican:
-//   1. Emparejar Dia y Noche el mismo dia: si un tramo sobra y el otro falta,
-//      el turno de un titular pasa de Larga a Noche (o al reves).
-//   2. Mover turnos: un titular que sobra en un turno (supernumerario) se mueve
-//      a un turno al que le falta gente, en otro dia del mes. Si alli hay un
-//      ausente sin cubrir, lo cubre (sin horas extras: es su propio turno).
-//   3. Cubrir con horas extras lo que siga faltando (ausencias y cupos de la
+//   1. Mover turnos: el turno de un titular que sobra (supernumerario) pasa a
+//      un turno al que le falta gente, otro dia o el mismo (de Larga a Noche).
+//      Va en CASCADA por tipo de trabajador: primero los de 3er turno, despues
+//      los de 4to turno con contrato de reemplazo y al final los de 4to turno a
+//      contrata o planta. Los movimientos de una misma persona se encadenan
+//      (su Noche del 2 pasa al 3 y deja libre el 2 para su Noche del 1): se
+//      validan contra el calendario YA modificado por el plan. Si en el destino
+//      hay un ausente sin cubrir, lo cubre (sin horas extras: es su turno).
+//   2. Cubrir con horas extras lo que siga faltando (ausencias y cupos de la
 //      Brecha): primero quien tiene menos horas extras en el mes, sin pasar el
 //      tope mensual, y despues el de grado mas alto (su hora extra cuesta menos).
-// El 24 invertido se evita siempre: solo aparece si no hay otra salida, y
-// marcado.
+// El 24 invertido se evita siempre: solo aparece si no hay otra salida (y la
+// unidad lo permite), marcado. Un movimiento nunca arma un 24.
 //
 // No lee ni escribe nada por su cuenta: todo llega por `deps`, para que el
 // mismo plan se pueda probar sin la pagina.
@@ -20,6 +23,13 @@ import { TURNO } from "./constants.js";
 import { moveShiftCreatesInvertedTwentyFour } from "./rulesEngine.js";
 
 export const SLOT_TURN = { day: TURNO.LARGA, night: TURNO.NOCHE };
+
+// Cascada: quien se mueve primero.
+export const MOVE_TIERS = [
+    { id: 1, label: "3er turno" },
+    { id: 2, label: "4to turno con contrato de reemplazo" },
+    { id: 3, label: "4to turno a contrata o planta" }
+];
 
 // Tramos de Titulares que ocupa un turno (los mismos del Calendario Mensual).
 export function slotsOfTurn(turn) {
@@ -80,19 +90,44 @@ function isOwnShift(person) {
 }
 
 /**
+ * Orden para aplicar los movimientos de una persona: el que libera un dia va
+ * antes que el que llega a ese dia (si no, el segundo encontraria el dia
+ * ocupado y armaria un 24).
+ */
+export function orderMovesForApply(moves) {
+    const pending = [...(moves || [])];
+    const ordered = [];
+
+    while (pending.length) {
+        const index = pending.findIndex(move => !pending.some(other =>
+            other !== move &&
+            other.name === move.name &&
+            other.sourceKey === move.targetKey &&
+            other.sourceKey !== other.targetKey
+        ));
+        const next = pending.splice(index === -1 ? 0 : index, 1)[0];
+
+        ordered.push(next);
+    }
+
+    return ordered;
+}
+
+/**
  * @param {Object} model   el del Calendario Mensual (buildMonthlyCalendar)
  * @param {Object} deps
- *   canMoveSource(name, keyDay)                      -> bool
- *   targetBlock(name, keyDay, { sourceKey, destinationTurn }) -> "" o motivo
- *   turnAt(name, keyDay)  turno real del dia (numero)
+ *   tierOf(name, keyDay)       1 | 2 | 3 (cascada) o 0 si no se mueve
+ *   canMoveSource(name, keyDay) su turno base L/N, sin cambios ni marcajes
+ *   dayBlock(name, keyDay)     "" o motivo (permiso, ausencia, marcaje...)
+ *   allowInverted              la unidad permite el 24 invertido
+ *   turnAt(name, keyDay)       turno real del dia (numero)
  *   baseTurn(name, keyDay)
- *   neededTurnFor(absentName, keyDay)                -> turno a cubrir
- *   candidatesFor({ reference, keyDay, turn })       -> Promise<[{ name,
- *       hheeD, hheeN, isFree, blockedDay, isForced, isLinked, needsContract,
- *       grade }]>
+ *   neededTurnFor(absentName, keyDay)
+ *   candidatesFor({ reference, keyDay, turn }) -> Promise<[{ name, hheeD,
+ *       hheeN, isFree, blockedDay, isForced, isLinked, needsContract, grade }]>
  *   extraHours(keyDay, turn) -> { d, n } que suma cubrirlo
- *   diurnalLimit  tope mensual de horas extras diurnas
- *   shouldContinue()  false para cortar (cambio de mes)
+ *   diurnalLimit               tope mensual de horas extras diurnas
+ *   shouldContinue()           false para cortar (cambio de mes)
  */
 export async function planMonth(model, deps) {
     const target = targetPerShift(model);
@@ -100,11 +135,10 @@ export async function planMonth(model, deps) {
     const rowByKey = new Map(rows.map(row => [row.keyDay, row]));
     const count = new Map();
     const overlay = new Map();
-    const busy = new Map();
     const plannedHours = new Map();
     const claimedGaps = new Set();
-    const usedPeople = new Set();
-    const swaps = [];
+    // Dias que ya movio o recibio cada persona: no se vuelven a mover.
+    const touched = new Map();
     const moves = [];
     const covers = [];
     const unresolved = [];
@@ -113,11 +147,8 @@ export async function planMonth(model, deps) {
         ["day", "night"].forEach(slot => count.set(cellId(row.keyDay, slot), row.slots?.[slot]?.length || 0));
     });
 
-    const plannedTurn = (name, keyDay) => overlay.get(name)?.get(keyDay);
-    const turnAt = (name, keyDay, ignoreKey = "") => {
-        if (keyDay === ignoreKey) return TURNO.LIBRE;
-
-        const planned = plannedTurn(name, keyDay);
+    const turnAt = (name, keyDay) => {
+        const planned = overlay.get(name)?.get(keyDay);
 
         return planned !== undefined ? planned : Number(deps.turnAt(name, keyDay)) || TURNO.LIBRE;
     };
@@ -125,32 +156,23 @@ export async function planMonth(model, deps) {
         if (!overlay.has(name)) overlay.set(name, new Map());
         overlay.get(name).set(keyDay, turn);
     };
-    const markBusy = (name, keyDay) => {
-        if (!busy.has(name)) busy.set(name, new Set());
-        busy.get(name).add(keyDay);
+    const touch = (name, keyDay) => {
+        if (!touched.has(name)) touched.set(name, new Set());
+        touched.get(name).add(keyDay);
     };
-    // Un plan que toca el mismo dia o uno vecino del mismo trabajador se deja
-    // para la siguiente vuelta: las reglas (24, 24 invertido) se miden contra
-    // el calendario de hoy, no contra el plan.
-    const near = (name, keyDay) => {
-        const days = busy.get(name);
+    const isTouched = (name, keyDay) => Boolean(touched.get(name)?.has(keyDay));
+    // Contra el calendario CON el plan: el dia de origen ya quedo libre.
+    const inverted = (name, keyDay, turn, freedKey = "") => {
+        const around = offset => {
+            const key = offsetKey(keyDay, offset);
 
-        return Boolean(days) && [-1, 0, 1].some(offset => days.has(offsetKey(keyDay, offset)));
+            return key === freedKey ? TURNO.LIBRE : turnAt(name, key);
+        };
+
+        return moveShiftCreatesInvertedTwentyFour(turn, around(-1), around(1));
     };
-    const inverted = (name, keyDay, turn, ignoreKey = "") =>
-        moveShiftCreatesInvertedTwentyFour(
-            turn,
-            turnAt(name, offsetKey(keyDay, -1), ignoreKey),
-            turnAt(name, offsetKey(keyDay, 1), ignoreKey)
-        );
     const cellCount = (keyDay, slot) => count.get(cellId(keyDay, slot)) || 0;
     const bump = (keyDay, slot, delta) => count.set(cellId(keyDay, slot), cellCount(keyDay, slot) + delta);
-    const movable = (row, slot) => (row.slots?.[slot] || []).filter(person =>
-        isOwnShift(person) &&
-        !usedPeople.has(cellId(row.keyDay, person.name)) &&
-        !near(person.name, row.keyDay) &&
-        deps.canMoveSource(person.name, row.keyDay)
-    );
     // El ausente sin cubrir de ese turno que quedaria cubierto con `turn`.
     const claimGap = (keyDay, slot, turn) => {
         const row = rowByKey.get(keyDay);
@@ -165,116 +187,115 @@ export async function planMonth(model, deps) {
         return gap.name;
     };
 
-    if (!target) return { target, swaps, moves, covers, unresolved, surplus: [], deficit: [] };
+    if (!target) return { target, moves, covers, unresolved, surplus: [] };
 
-    // 1. Emparejar Dia y Noche el mismo dia.
-    rows.forEach(row => {
-        [["day", "night"], ["night", "day"]].forEach(([from, to]) => {
-            while (cellCount(row.keyDay, from) > target && cellCount(row.keyDay, to) < target) {
-                const destinationTurn = SLOT_TURN[to];
-                const options = movable(row, from)
-                    .filter(person => !deps.targetBlock(person.name, row.keyDay, {
-                        sourceKey: row.keyDay,
-                        destinationTurn
-                    }))
-                    .map(person => ({ person, inverted: inverted(person.name, row.keyDay, destinationTurn) }))
-                    .sort((a, b) => Number(a.inverted) - Number(b.inverted) || a.person.name.localeCompare(b.person.name));
-                const pick = options[0];
+    // El mejor destino para el turno de `name` que sobra en (sourceKey, slot).
+    function bestTarget(name, sourceKey, slot) {
+        const sourceTurn = Number(deps.baseTurn(name, sourceKey)) || SLOT_TURN[slot];
+        let best = null;
 
-                if (!pick) break;
+        for (const row of rows) {
+            for (const targetSlot of ["day", "night"]) {
+                if (cellCount(row.keyDay, targetSlot) >= target) continue;
 
-                const name = pick.person.name;
+                const targetKey = row.keyDay;
+                const sameDay = targetKey === sourceKey;
+                const destinationTurn = SLOT_TURN[targetSlot];
 
-                swaps.push({
-                    type: "swap",
-                    name,
-                    keyDay: row.keyDay,
-                    sourceTurn: Number(deps.baseTurn(name, row.keyDay)) || SLOT_TURN[from],
-                    destinationTurn,
-                    covers: claimGap(row.keyDay, to, destinationTurn),
-                    inverted: pick.inverted
-                });
-                usedPeople.add(cellId(row.keyDay, name));
-                setTurn(name, row.keyDay, destinationTurn);
-                markBusy(name, row.keyDay);
-                bump(row.keyDay, from, -1);
-                bump(row.keyDay, to, 1);
+                if (sameDay && targetSlot === slot) continue;
+                // El destino tiene que quedar libre para esa persona: nunca un 24.
+                if (!sameDay && turnAt(name, targetKey) !== TURNO.LIBRE) continue;
+                if (!sameDay && isTouched(name, targetKey)) continue;
+                if (!sameDay && deps.dayBlock(name, targetKey)) continue;
+
+                const isInverted = inverted(name, targetKey, destinationTurn, sourceKey);
+
+                if (isInverted && !deps.allowInverted) continue;
+
+                const backed =
+                    (row.gaps?.[targetSlot]?.length || 0) +
+                    (row.cupos?.[targetSlot]?.length || 0) > 0;
+                const score =
+                    (isInverted ? 1000 : 0) +
+                    Math.abs(dayIndex(targetKey) - dayIndex(sourceKey)) +
+                    (backed ? 0 : 3) +
+                    (sourceTurn !== destinationTurn ? 1 : 0);
+
+                if (!best || score < best.score) {
+                    best = { score, sourceTurn, targetKey, targetSlot, destinationTurn, inverted: isInverted };
+                }
             }
-        });
-    });
+        }
 
-    // 2. Mover turnos de donde sobran a donde faltan.
-    const deficitCells = () => rows.flatMap(row => ["day", "night"]
-        .filter(slot => cellCount(row.keyDay, slot) < target)
-        .map(slot => ({ row, slot })));
+        return best;
+    }
 
-    for (const row of rows) {
-        for (const slot of ["day", "night"]) {
-            while (cellCount(row.keyDay, slot) > target) {
-                if (deps.shouldContinue && !deps.shouldContinue()) return null;
+    // 1. Mover turnos, en cascada; varias vueltas porque un movimiento libera
+    // dias que habilitan otros de la misma persona.
+    for (const tier of MOVE_TIERS) {
+        let changed = true;
+        let passes = 0;
 
-                let best = null;
+        while (changed && passes < 8) {
+            changed = false;
+            passes += 1;
 
-                for (const person of movable(row, slot)) {
-                    const name = person.name;
-                    const sourceTurn = Number(deps.baseTurn(name, row.keyDay)) || SLOT_TURN[slot];
+            for (const row of rows) {
+                for (const slot of ["day", "night"]) {
+                    while (cellCount(row.keyDay, slot) > target) {
+                        if (deps.shouldContinue && !deps.shouldContinue()) return null;
 
-                    for (const cell of deficitCells()) {
-                        const targetKey = cell.row.keyDay;
+                        let best = null;
 
-                        if (targetKey === row.keyDay) continue;
-                        if (turnAt(name, targetKey) !== TURNO.LIBRE) continue;
-                        if ((Number(deps.baseTurn(name, targetKey)) || TURNO.LIBRE) !== TURNO.LIBRE) continue;
-                        if (near(name, targetKey)) continue;
+                        for (const person of row.slots?.[slot] || []) {
+                            const name = person.name;
 
-                        const destinationTurn = SLOT_TURN[cell.slot];
+                            if (!isOwnShift(person)) continue;
+                            if (deps.tierOf(name, row.keyDay) !== tier.id) continue;
+                            if (isTouched(name, row.keyDay)) continue;
+                            if (turnAt(name, row.keyDay) !== (Number(deps.baseTurn(name, row.keyDay)) || TURNO.LIBRE)) continue;
+                            if (!deps.canMoveSource(name, row.keyDay)) continue;
 
-                        if (deps.targetBlock(name, targetKey, { sourceKey: row.keyDay, destinationTurn })) continue;
+                            const option = bestTarget(name, row.keyDay, slot);
 
-                        const isInverted = inverted(name, targetKey, destinationTurn, row.keyDay);
-                        const backed =
-                            (cell.row.gaps?.[cell.slot]?.length || 0) +
-                            (cell.row.cupos?.[cell.slot]?.length || 0) > 0;
-                        const score =
-                            (isInverted ? 1000 : 0) +
-                            Math.abs(dayIndex(targetKey) - dayIndex(row.keyDay)) +
-                            (backed ? 0 : 3) +
-                            (sourceTurn !== destinationTurn ? 2 : 0);
-
-                        if (!best || score < best.score) {
-                            best = { score, name, sourceTurn, targetKey, slot: cell.slot, destinationTurn, inverted: isInverted };
+                            if (option && (!best || option.score < best.score || (option.score === best.score && name < best.name))) {
+                                best = { ...option, name };
+                            }
                         }
+
+                        if (!best) break;
+
+                        moves.push({
+                            type: "move",
+                            tier: tier.id,
+                            name: best.name,
+                            sourceKey: row.keyDay,
+                            sourceSlot: slot,
+                            sourceTurn: best.sourceTurn,
+                            targetKey: best.targetKey,
+                            targetSlot: best.targetSlot,
+                            destinationTurn: best.destinationTurn,
+                            sameDay: best.targetKey === row.keyDay,
+                            covers: claimGap(best.targetKey, best.targetSlot, best.destinationTurn),
+                            cupo: !rowByKey.get(best.targetKey)?.gaps?.[best.targetSlot]?.length &&
+                                Boolean(rowByKey.get(best.targetKey)?.cupos?.[best.targetSlot]?.length),
+                            inverted: best.inverted
+                        });
+
+                        if (best.targetKey !== row.keyDay) setTurn(best.name, row.keyDay, TURNO.LIBRE);
+                        setTurn(best.name, best.targetKey, best.destinationTurn);
+                        touch(best.name, row.keyDay);
+                        touch(best.name, best.targetKey);
+                        bump(row.keyDay, slot, -1);
+                        bump(best.targetKey, best.targetSlot, 1);
+                        changed = true;
                     }
                 }
-
-                if (!best) break;
-
-                moves.push({
-                    type: "move",
-                    name: best.name,
-                    sourceKey: row.keyDay,
-                    sourceSlot: slot,
-                    sourceTurn: best.sourceTurn,
-                    targetKey: best.targetKey,
-                    targetSlot: best.slot,
-                    destinationTurn: best.destinationTurn,
-                    covers: claimGap(best.targetKey, best.slot, best.destinationTurn),
-                    cupo: !rowByKey.get(best.targetKey)?.gaps?.[best.slot]?.length &&
-                        Boolean(rowByKey.get(best.targetKey)?.cupos?.[best.slot]?.length),
-                    inverted: best.inverted
-                });
-                usedPeople.add(cellId(row.keyDay, best.name));
-                setTurn(best.name, row.keyDay, TURNO.LIBRE);
-                setTurn(best.name, best.targetKey, best.destinationTurn);
-                markBusy(best.name, row.keyDay);
-                markBusy(best.name, best.targetKey);
-                bump(row.keyDay, slot, -1);
-                bump(best.targetKey, best.slot, 1);
             }
         }
     }
 
-    // 3. Horas extras para lo que siga faltando.
+    // 2. Horas extras para lo que siga faltando.
     const claimedCupos = new Map();
 
     for (const row of rows) {
@@ -312,8 +333,9 @@ export async function planMonth(model, deps) {
                         !candidate.isLinked &&
                         !candidate.blockedDay &&
                         !candidate.needsContract &&
+                        // Libre tambien con el plan (no le llega un turno movido).
                         turnAt(candidate.name, row.keyDay) === TURNO.LIBRE &&
-                        !near(candidate.name, row.keyDay)
+                        !isTouched(candidate.name, row.keyDay)
                     )
                     .map(candidate => {
                         const planned = plannedHours.get(candidate.name) || { d: 0, n: 0 };
@@ -328,7 +350,7 @@ export async function planMonth(model, deps) {
                             inverted: inverted(candidate.name, row.keyDay, turn)
                         };
                     })
-                    .filter(candidate => !candidate.overLimit)
+                    .filter(candidate => !candidate.overLimit && (!candidate.inverted || deps.allowInverted))
                     .sort((a, b) =>
                         Number(a.inverted) - Number(b.inverted) ||
                         a.hhee - b.hhee ||
@@ -368,7 +390,7 @@ export async function planMonth(model, deps) {
 
                 plannedHours.set(pick.name, { d: planned.d + (Number(adding.d) || 0), n: planned.n + (Number(adding.n) || 0) });
                 setTurn(pick.name, row.keyDay, turn);
-                markBusy(pick.name, row.keyDay);
+                touch(pick.name, row.keyDay);
                 slots.forEach(item => bump(row.keyDay, item, 1));
             }
         }
@@ -378,19 +400,30 @@ export async function planMonth(model, deps) {
         .filter(slot => cellCount(row.keyDay, slot) > target)
         .map(slot => ({ keyDay: row.keyDay, slot, extra: cellCount(row.keyDay, slot) - target })));
 
-    return { target, swaps, moves, covers, unresolved, surplus };
+    return { target, moves, covers, unresolved, surplus };
 }
 
-/** Los movimientos agrupados por trabajador (consejo "Mover N turnos de X"). */
+/**
+ * Los movimientos agrupados por persona, en el orden de la cascada (3er
+ * turno, 4to turno de reemplazo, 4to turno contrata/planta) y, dentro, de mas
+ * a menos movimientos.
+ */
 export function movesByWorker(moves) {
     const groups = new Map();
 
     (moves || []).forEach(move => {
-        if (!groups.has(move.name)) groups.set(move.name, []);
-        groups.get(move.name).push(move);
+        if (!groups.has(move.name)) groups.set(move.name, { name: move.name, tier: move.tier, items: [] });
+        groups.get(move.name).items.push(move);
     });
 
-    return [...groups.entries()]
-        .map(([name, items]) => ({ name, items }))
-        .sort((a, b) => b.items.length - a.items.length || a.name.localeCompare(b.name));
+    return [...groups.values()]
+        .map(group => ({
+            ...group,
+            items: [...group.items].sort((a, b) => dayIndex(a.sourceKey) - dayIndex(b.sourceKey))
+        }))
+        .sort((a, b) =>
+            (a.tier || 9) - (b.tier || 9) ||
+            b.items.length - a.items.length ||
+            a.name.localeCompare(b.name)
+        );
 }

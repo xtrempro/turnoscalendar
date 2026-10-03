@@ -6,7 +6,10 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
-import { getCompensationProfileAt, getRotativa } from "./storage.js";
+import { getCompensationProfileAt, getRotativa, getTurnChangeConfig } from "./storage.js";
+import { getJSON } from "./persistence.js";
+import { getHourReturn } from "./hourReturns.js";
+import { getClockMarks } from "./clockMarks.js";
 import { hasContractForDate, isHonorariaProfile, isReplacementProfile } from "./contracts.js";
 import {
     buildReplacementCandidates,
@@ -19,7 +22,7 @@ import { saveReplacement } from "./replacements.js";
 import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
 import { showAlert } from "./dialogs.js";
-import { movesByWorker, planMonth } from "./monthlyMagicPlan.js";
+import { MOVE_TIERS, movesByWorker, orderMovesForApply, planMonth } from "./monthlyMagicPlan.js";
 
 const SLOT_LABEL = { day: "Día", night: "Noche" };
 
@@ -55,10 +58,24 @@ function browserDeps(holidays, shouldContinue) {
             !isHonorariaProfile(name, keyDay) &&
             typeof window.shiftMoveDayBlockReason === "function" &&
             !window.shiftMoveDayBlockReason(name, keyDay, { source: true }),
-        targetBlock: (name, keyDay, options) =>
-            typeof window.shiftMoveDayBlockReason === "function"
-                ? window.shiftMoveDayBlockReason(name, keyDay, options)
-                : "No disponible",
+        // Cascada: 3er turno; 4to turno de reemplazo; 4to turno contrata/planta.
+        tierOf: (name, keyDay) => {
+            const type = String(getRotativa(name)?.type || "");
+
+            if (type === "3turno") return 1;
+            if (type === "4turno") return isReplacementProfile(name, keyDay) ? 2 : 3;
+            return 0;
+        },
+        // Lo que impide recibir un turno movido (la misma lista de "Mover turno").
+        dayBlock: (name, keyDay) => {
+            if (["admin_", "legal_", "comp_", "absences_"].some(prefix => getJSON(`${prefix}${name}`, {})?.[keyDay])) {
+                return "Permiso o ausencia";
+            }
+            if (getHourReturn(name, keyDay)) return "Devolución de horas";
+            if (getClockMarks(name)?.[keyDay]) return "Marcaje de reloj";
+            return "";
+        },
+        allowInverted: getTurnChangeConfig().allowInvertedTwentyFourHourShifts !== false,
         turnAt: (name, keyDay) => Number(getTurnoReal(name, keyDay)) || TURNO.LIBRE,
         baseTurn: (name, keyDay) => Number(getTurnoBase(name, keyDay)) || TURNO.LIBRE,
         neededTurnFor: (name, keyDay) => Number(getReplacementNeededTurn(name, keyDay)) || TURNO.LIBRE,
@@ -108,20 +125,13 @@ function coversText(item) {
     return "completa el turno";
 }
 
-function swapRowHTML(item, index) {
-    return `
-        <label class="mcal-magic-row">
-            <input type="checkbox" data-magic-pick="swap" value="${index}" checked>
-            <span><b>${escapeHTML(item.name)}</b> · ${escapeHTML(dateLabel(item.keyDay))}: de ${escapeHTML(turnLabel(item.sourceTurn))} a ${escapeHTML(turnLabel(item.destinationTurn))}${item.covers ? `, ${coversText(item)}` : ""}</span>
-            ${invertedTag(item)}
-        </label>`;
-}
-
 function moveRowHTML(item, index) {
     return `
         <label class="mcal-magic-row">
             <input type="checkbox" data-magic-pick="move" value="${index}" checked>
-            <span>${escapeHTML(dateLabel(item.sourceKey))} ${escapeHTML(turnLabel(item.sourceTurn))} → <b>${escapeHTML(dateLabel(item.targetKey))} ${escapeHTML(turnLabel(item.destinationTurn))}</b>, ${coversText(item)}</span>
+            <span>${item.sameDay
+                ? `${escapeHTML(dateLabel(item.sourceKey))}: de ${escapeHTML(turnLabel(item.sourceTurn))} a <b>${escapeHTML(turnLabel(item.destinationTurn))}</b> el mismo día`
+                : `${escapeHTML(dateLabel(item.sourceKey))} ${escapeHTML(turnLabel(item.sourceTurn))} → <b>${escapeHTML(dateLabel(item.targetKey))} ${escapeHTML(turnLabel(item.destinationTurn))}</b>`}, ${coversText(item)}</span>
             ${invertedTag(item)}
         </label>`;
 }
@@ -172,24 +182,13 @@ export function planHTML(plan, monthLabel) {
     const advices = [];
     let number = 0;
 
-    if (plan.swaps.length) {
-        advices.push(adviceHTML(
-            ++number,
-            `Emparejar Día y Noche (${plan.swaps.length})`,
-            "El mismo día sobra gente en un turno y falta en el otro: se cambia el turno de un titular de Larga a Noche (o al revés). No suma horas extras.",
-            plan.swaps.map(swapRowHTML).join(""),
-            "swap",
-            plan.swaps.length
-        ));
-    }
-
     groups.forEach(group => {
         const indexes = group.items.map(item => plan.moves.indexOf(item));
 
         advices.push(adviceHTML(
             ++number,
             `Mover ${group.items.length} ${group.items.length === 1 ? "turno" : "turnos"} de ${escapeHTML(group.name)}`,
-            `Trabajador de ${escapeHTML(rotationLabel(group.name))}: en ${group.items.length === 1 ? "uno de sus turnos" : `${group.items.length} de sus turnos`} de este mes queda como supernumerario. Se mueve a turnos donde falta gente (cupos o ausencias). No suma horas extras.`,
+            `${escapeHTML(MOVE_TIERS.find(tier => tier.id === group.tier)?.label || rotationLabel(group.name))}: en ${group.items.length === 1 ? "uno de sus turnos" : `${group.items.length} de sus turnos`} de este mes queda como supernumerario. Se mueve a turnos donde falta gente (cupos o ausencias). No suma horas extras.`,
             group.items.map((item, position) => moveRowHTML(item, indexes[position])).join(""),
             `move:${escapeHTML(group.name)}`,
             group.items.length
@@ -226,9 +225,8 @@ export function planHTML(plan, monthLabel) {
 
 /* ---------- aplicar ---------- */
 
-function applySwapOrMove(item) {
-    const targetKey = item.type === "swap" ? item.keyDay : item.targetKey;
-    const sourceKey = item.type === "swap" ? item.keyDay : item.sourceKey;
+function applyMove(item) {
+    const { sourceKey, targetKey } = item;
     const result = window.applyShiftMove?.({
         profile: item.name,
         sourceKey,
@@ -359,17 +357,12 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
 
         pushHistory();
 
-        if (kind === "swap") {
-            picked("swap").forEach(index => {
-                const error = applySwapOrMove(plan.swaps[index]);
+        if (kind.startsWith("move:")) {
+            // El que libera un dia va antes que el que llega a ese dia.
+            orderMovesForApply(picked("move").map(index => plan.moves[index])).forEach(move => {
+                const error = applyMove(move);
 
-                if (error) errors.push(`${plan.swaps[index].name}: ${error}`);
-            });
-        } else if (kind.startsWith("move:")) {
-            picked("move").forEach(index => {
-                const error = applySwapOrMove(plan.moves[index]);
-
-                if (error) errors.push(`${plan.moves[index].name} (${dateLabel(plan.moves[index].sourceKey)}): ${error}`);
+                if (error) errors.push(`${move.name} (${dateLabel(move.sourceKey)}): ${error}`);
             });
         } else if (kind === "cover") {
             picked("cover").forEach(index => {

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import { TURNO } from "../js/constants.js";
-import { planMonth, targetPerShift, movesByWorker } from "../js/monthlyMagicPlan.js";
+import { planMonth, targetPerShift, movesByWorker, orderMovesForApply } from "../js/monthlyMagicPlan.js";
 
 const person = name => ({ name });
 
@@ -38,8 +38,10 @@ function model(days, base, edit = () => {}) {
 // Calendario de mentira: turno real por persona y dia.
 function deps(turns = {}, extra = {}) {
     return {
+        tierOf: () => 3,
         canMoveSource: () => true,
-        targetBlock: () => "",
+        dayBlock: () => "",
+        allowInverted: true,
         turnAt: (name, keyDay) => turns[name]?.[keyDay] ?? TURNO.LIBRE,
         baseTurn: (name, keyDay) => turns[name]?.[keyDay] ?? TURNO.LIBRE,
         neededTurnFor: () => TURNO.LARGA,
@@ -62,54 +64,84 @@ test("la meta es la cantidad mas frecuente contando ausentes y cupos", () => {
     assert.equal(targetPerShift(m), 3);
 });
 
-test("1. sobra de Dia y falta de Noche el mismo dia: se empareja", async () => {
-    const m = model(3, 3, (row, day) => {
-        if (day === 2) {
-            row.slots.day.push(person("Eduardo"));
+test("el caso de EC: sus movimientos se encadenan y cubren los tres turnos que faltan", async () => {
+    // Sobra EC la Noche del 1 y del 2 y la Larga del 5; faltan la Larga del 2
+    // y las Noches del 3 y del 4.
+    const m = model(6, 3, (row, day) => {
+        if (day === 1 || day === 2) row.slots.night.push(person("EC"));
+        if (day === 5) row.slots.day.push(person("EC"));
+        if (day === 2) row.slots.day.pop();
+        if (day === 3 || day === 4) {
             row.slots.night.pop();
+            row.cupos.night.push({ motive: "Completar rotativa", turno: TURNO.NOCHE });
         }
     });
-    const turns = { Eduardo: { "2026-9-2": TURNO.LARGA } };
-    const plan = await planMonth(m, deps(turns));
+    const turns = { EC: { "2026-9-1": TURNO.NOCHE, "2026-9-2": TURNO.NOCHE, "2026-9-5": TURNO.LARGA } };
+    const plan = await planMonth(m, deps(turns, {
+        tierOf: name => (name === "EC" ? 1 : 3),
+        canMoveSource: name => name === "EC"
+    }));
+    const targets = plan.moves.map(move => `${move.sourceKey}>${move.targetKey}:${move.destinationTurn}`).sort();
 
-    assert.equal(plan.swaps.length, 1);
-    assert.equal(plan.swaps[0].keyDay, "2026-9-2");
-    assert.equal(plan.swaps[0].destinationTurn, TURNO.NOCHE);
-    assert.deepEqual(plan.moves, []);
-    assert.deepEqual(plan.covers, []);
+    assert.equal(plan.moves.length, 3);
+    assert.ok(plan.moves.every(move => move.name === "EC" && !move.inverted));
+    // La Larga del 2 se cubre con un turno de EC (su Noche del 2 pasa a Larga,
+    // el mismo dia) y sus otros dos van a las Noches del 3 y del 4.
+    assert.deepEqual(targets, [
+        "2026-9-1>2026-9-3:2",
+        "2026-9-2>2026-9-2:1",
+        "2026-9-5>2026-9-4:2"
+    ]);
+    assert.deepEqual(plan.covers, [], "sin horas extras");
+    assert.deepEqual(plan.surplus, []);
 });
 
-test("2. un supernumerario se mueve a donde falta y cubre al ausente; evita el 24 invertido", async () => {
-    const m = model(5, 3, (row, day) => {
-        if (day === 1) row.slots.day.push(person("Xavier"), person("Yanet"));
+test("cascada: primero 3er turno, despues 4to de reemplazo, al final 4to contrata/planta", async () => {
+    const m = model(3, 3, (row, day) => {
+        if (day === 1) row.slots.day.push(person("Planta"), person("Reemplazo"));
+        if (day === 3) row.slots.day.pop();
+    });
+    const turns = {
+        Planta: { "2026-9-1": TURNO.LARGA },
+        Reemplazo: { "2026-9-1": TURNO.LARGA }
+    };
+    const plan = await planMonth(m, deps(turns, {
+        tierOf: name => ({ Planta: 3, Reemplazo: 2 })[name] || 0,
+        canMoveSource: name => ["Planta", "Reemplazo"].includes(name)
+    }));
+
+    assert.equal(plan.moves.length, 1, "solo hacia falta uno");
+    assert.equal(plan.moves[0].name, "Reemplazo");
+    assert.equal(plan.moves[0].tier, 2);
+    assert.deepEqual(movesByWorker(plan.moves).map(group => group.name), ["Reemplazo"]);
+});
+
+test("un movimiento nunca arma un 24 y el 24 invertido es ultimo recurso (o nada si la unidad no lo permite)", async () => {
+    const build = () => model(5, 3, (row, day) => {
+        if (day === 1) row.slots.day.push(person("Xavier"));
         if (day === 4) {
-            row.slots.day = row.slots.day.slice(0, 1);
-            row.gaps.day.push({ name: "Ana" });
+            row.slots.day.pop();
             row.cupos.day.push({ motive: "Completar rotativa", turno: TURNO.LARGA });
         }
     });
-    // Xavier tiene Noche el 3: moverlo a la Larga del 4 seria un 24 invertido.
-    const turns = {
-        Xavier: { "2026-9-1": TURNO.LARGA, "2026-9-3": TURNO.NOCHE },
-        Yanet: { "2026-9-1": TURNO.LARGA }
-    };
-    // Solo ellos dos tienen ese turno como base (los demas no se pueden mover).
-    const plan = await planMonth(m, deps(turns, {
-        canMoveSource: name => ["Xavier", "Yanet"].includes(name)
-    }));
+    // Xavier con Noche el 3: su Larga del 1 al 4 seria un 24 invertido.
+    const turns = { Xavier: { "2026-9-1": TURNO.LARGA, "2026-9-3": TURNO.NOCHE } };
+    const only = { canMoveSource: name => name === "Xavier" };
+    const allowed = await planMonth(build(), deps(turns, only));
 
-    assert.equal(plan.moves.length, 2);
+    assert.equal(allowed.moves.length, 1);
+    assert.equal(allowed.moves[0].inverted, true, "marcado");
 
-    const [first, second] = plan.moves;
+    const forbidden = await planMonth(build(), deps(turns, { ...only, allowInverted: false }));
 
-    assert.equal(first.name, "Yanet", "primero quien no queda en 24 invertido");
-    assert.equal(first.targetKey, "2026-9-4");
-    assert.equal(first.covers, "Ana", "cubre al ausente");
-    assert.equal(first.inverted, false);
-    assert.equal(second.name, "Xavier");
-    assert.equal(second.inverted, true, "si no queda otra, va marcado");
-    assert.equal(second.covers, "", "el segundo llena el cupo");
-    assert.deepEqual(movesByWorker(plan.moves).map(group => group.name), ["Xavier", "Yanet"]);
+    assert.equal(forbidden.moves.length, 0);
+});
+
+test("al aplicar, el movimiento que libera un dia va antes que el que llega a ese dia", () => {
+    const llegaAl2 = { name: "EC", sourceKey: "2026-9-1", targetKey: "2026-9-2" };
+    const dejaEl2 = { name: "EC", sourceKey: "2026-9-2", targetKey: "2026-9-3" };
+
+    assert.deepEqual(orderMovesForApply([llegaAl2, dejaEl2]), [dejaEl2, llegaAl2]);
 });
 
 test("3. horas extras: menos HHEE primero, despues grado mas alto, sin pasar el tope", async () => {
@@ -168,7 +200,9 @@ test("el modal: consejos numerados, detalle, aplicar seleccionados o todo, y rec
     assert.match(source, /<summary>Ver detalle/);
     assert.match(source, /data-magic-only="selected">Aplicar seleccionados/);
     assert.match(source, /data-magic-only="all">Aplicar todo/);
-    // Al aplicar se repinta el calendario y se rehacen los consejos.
+    // Al aplicar se repinta el calendario y se rehacen los consejos; los
+    // movimientos van en el orden que permite encadenarlos.
+    assert.match(source, /orderMovesForApply\(picked\("move"\)/);
     assert.match(source, /await onApplied\?\.\(\);[\s\S]*await recompute\(\);/);
     // Mover usa el mismo movimiento del calendario; cubrir al ausente movido
     // no agrega otro turno.
