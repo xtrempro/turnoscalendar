@@ -65,6 +65,7 @@ import { canEditTarget } from "./workspacePermissions.js";
 import { showAlert, showChoice, showConfirm, showPrompt } from "./dialogs.js";
 import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
+import { openMonthlyMagic } from "./monthlyMagic.js";
 import { buildMotiveCanon, canonicalMotive, motiveKey, usedExtraMotives } from "./motives.js";
 
 // Un motivo escrito de varias formas ("APOYO IMAGENOLOGIA -2", "Apoyo
@@ -1092,6 +1093,7 @@ function panelHTML(model, groups) {
             <header class="mcal-head">
                 <div class="mcal-title">
                     <h2>Calendario Mensual</h2>
+                    ${canEdit ? `<button type="button" class="mcal-magic-button" data-mcal-magic title="Propone cómo dejar todos los turnos con la misma cantidad de gente: emparejar, mover turnos y cubrir con horas extras">✨ Ayuda para cubrir</button>` : ""}
                 </div>
                 <div class="mcal-controls">
                     <div class="mcal-filters" role="group" aria-label="Profesión">
@@ -1419,6 +1421,26 @@ async function applyLeave(profileName, option, date, amount) {
 }
 
 /**
+ * Si el turno de un titular se puede mover: es SU turno (no cubre ni es un
+ * apoyo), no es de honorarios, y pasa la misma regla del "Mover Turno" del
+ * calendario (Larga o Noche base, sin permisos, marcajes ni cambios). La usan
+ * el boton "Mover" de la lista y el "Mover turno" dentro de Quitar.
+ */
+function canMoveOwnShift(person, keyDay) {
+    return Boolean(
+        person &&
+        !person.covering &&
+        !person.extraReason &&
+        !person.brecha &&
+        !person.preassigned &&
+        !isHonorariaProfile(person.name, keyDay) &&
+        typeof window.applyShiftMove === "function" &&
+        typeof window.shiftMoveDayBlockReason === "function" &&
+        !window.shiftMoveDayBlockReason(person.name, keyDay, { source: true })
+    );
+}
+
+/**
  * Quitar a alguien que esta en su PROPIO turno: se le da un permiso. El hueco
  * que deja aparece como "+XX" para cubrirlo.
  */
@@ -1452,11 +1474,7 @@ async function removeWithLeave(person, keyDay) {
     }
 
     const options = await allowedLeaveOptions(name, keyDay);
-    // "Mover turno" solo si ese turno se puede mover (la misma regla del
-    // "Mover Turno" del calendario: Larga o Noche base, sin permisos, marcajes
-    // ni cambios).
-    const canMove = typeof window.shiftMoveDayBlockReason === "function" &&
-        !window.shiftMoveDayBlockReason(name, keyDay, { source: true });
+    const canMove = canMoveOwnShift(person, keyDay);
     // Con un boton extra el dialogo responde { action, value }.
     const decision = await showChoice(
         `¿Qué permiso se le da a ${name}? Solo aparecen los que admite este día.`,
@@ -2287,7 +2305,7 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
                                     : "Su turno"}</small>${person.preassigned ? `<em class="mcal-pre-badge">Preasignado · pendiente de confirmar</em>` : ""}</span>
                             ${!canEdit ? "" : person.preassigned
                                 ? `<span class="mcal-dialog-actions"><button class="primary-button" type="button" data-mcal-confirm-pre="${index}">Confirmar</button><button class="secondary-button" type="button" data-mcal-cancel-pre="${index}">Quitar preasignación</button></span>`
-                                : `<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button>`}
+                                : `<span class="mcal-dialog-actions mcal-dialog-actions--inline">${isTitulares && canMoveOwnShift(person, row.keyDay) ? `<button class="secondary-button" type="button" data-mcal-move="${index}">Mover</button>` : ""}<button class="secondary-button" type="button" data-mcal-remove="${index}">Quitar</button></span>`}
                         </li>
                     `).join("")}
                 </ul>
@@ -2360,6 +2378,19 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
 
         const removeButton = event.target.closest("[data-mcal-remove]");
         const coverButton = event.target.closest("[data-mcal-cover]");
+        const moveButton = event.target.closest("[data-mcal-move]");
+
+        // "Mover": lo mismo que "Mover turno" dentro de Quitar, sin pasar por
+        // el cuadro de permisos.
+        if (moveButton) {
+            const person = people[Number(moveButton.dataset.mcalMove)];
+
+            if (!person) return;
+
+            closeSlotDialog(backdrop, onKeydown);
+            startShiftMove(person, row.keyDay);
+            return;
+        }
 
         if (event.target.closest("[data-mcal-add]")) {
             closeSlotDialog(backdrop, onKeydown);
@@ -2781,6 +2812,17 @@ function onPanelClick(event) {
     if (filter) {
         ui.group = filter.dataset.mcalGroup;
         void renderMonthlyCalendarPanel();
+        return;
+    }
+
+    if (event.target.closest("[data-mcal-magic]") && lastModel) {
+        void openMonthlyMagic({
+            month: ui.month,
+            group: ui.group,
+            monthLabel: `${MONTH_NAMES[ui.month.getMonth()]} ${ui.month.getFullYear()}`,
+            buildModel: () => buildMonthlyCalendar(ui.month, ui.group),
+            onApplied: () => renderMonthlyCalendarPanel()
+        });
         return;
     }
 

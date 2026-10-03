@@ -2037,6 +2037,184 @@ body[data-active-view="home"] .secondary-grid {
     font-weight: 800;
 }
 
+/* "Ayuda para cubrir": junto al titulo, y su modal de consejos. */
+.mcal-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.mcal-magic-button {
+    padding: 6px 12px;
+    border: 1px solid rgba(var(--brand-blue-rgb), 0.35);
+    border-radius: 999px;
+    background: linear-gradient(135deg, rgba(var(--brand-blue-rgb), 0.12), rgba(168, 85, 247, 0.14));
+    color: var(--text-strong);
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.mcal-magic-button:hover {
+    border-color: rgba(var(--brand-blue-rgb), 0.6);
+}
+
+.turn-change-dialog.mcal-magic-dialog {
+    width: min(860px, calc(100vw - 32px));
+    max-height: min(88vh, 900px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mcal-magic-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding-right: 4px;
+}
+
+.mcal-magic-summary,
+.mcal-magic-note,
+.mcal-magic-loading,
+.mcal-magic-empty {
+    margin: 8px 0 14px;
+    color: var(--text-soft);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.mcal-magic-advice {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--panel-alt);
+}
+
+.mcal-magic-advice-head {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+}
+
+.mcal-magic-advice-head strong {
+    color: var(--text-strong);
+    font-size: 0.98rem;
+}
+
+.mcal-magic-advice-head p {
+    margin: 4px 0 0;
+    color: var(--text-soft);
+    font-size: 0.86rem;
+    line-height: 1.45;
+}
+
+.mcal-magic-number {
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 800;
+}
+
+.mcal-magic-advice summary {
+    cursor: pointer;
+    color: var(--accent);
+    font-size: 0.86rem;
+    font-weight: 800;
+}
+
+.mcal-magic-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 10px;
+    max-height: 320px;
+    overflow: auto;
+}
+
+.mcal-magic-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    font-size: 0.86rem;
+}
+
+.mcal-magic-row > span {
+    flex: 1 1 260px;
+    min-width: 0;
+}
+
+.mcal-magic-row input[type="checkbox"] {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    min-height: 0;
+    margin: 0;
+}
+
+.mcal-magic-row select {
+    flex: 1 1 260px;
+    min-height: 34px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--field);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.82rem;
+}
+
+.mcal-magic-row > .mcal-magic-tag {
+    flex: none;
+}
+
+.mcal-magic-tag {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 800;
+}
+
+.mcal-magic-tag.is-warn {
+    background: rgba(249, 115, 22, 0.16);
+    color: #c2410c;
+}
+
+.mcal-magic-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.mcal-magic-pending {
+    margin-bottom: 12px;
+    padding: 12px 16px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 14px;
+    font-size: 0.86rem;
+}
+
+.mcal-magic-pending ul {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    color: var(--text-soft);
+}
+
 .mcal-title p {
     margin: 0;
     max-width: 62ch;
@@ -2427,6 +2605,15 @@ body.theme-dark .mcal-chip.is-preassigned {
 .mcal-dialog-actions > button {
     flex: 1 1 0;
     min-width: 0;
+}
+
+/* Mover | Quitar de un titular: en la misma fila, a la derecha. */
+.mcal-dialog-actions.mcal-dialog-actions--inline {
+    grid-column: auto;
+}
+
+.mcal-dialog-actions--inline > button {
+    flex: 0 0 auto;
 }
 
 /* Turno de un apoyo de Dia (Larga, Diurno u horario personalizado). */

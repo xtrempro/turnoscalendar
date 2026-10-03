@@ -428,3 +428,14 @@ test("el menu existe, va con el permiso de Turnos y filtra de a una profesion", 
     assert.match(permisos, /monthlyCalendarPanel: "turnos"/);
     assert.match(fuente, /if \(!groups\.includes\(ui\.group\)\) ui\.group = groups\[0\] \|\| "";/);
 });
+
+test("titulares: boton Mover junto a Quitar, con la misma regla y el mismo movimiento", async () => {
+    const source = await readFile(new URL("../js/monthlyCalendar.js", import.meta.url), "utf8");
+
+    // Solo en Titulares y si el turno se puede mover.
+    assert.match(source, /isTitulares && canMoveOwnShift\(person, row\.keyDay\) \? `<button class="secondary-button" type="button" data-mcal-move="\$\{index\}">Mover<\/button>` : ""\}<button class="secondary-button" type="button" data-mcal-remove/);
+    // El "Mover turno" de Quitar usa la misma regla.
+    assert.match(source, /const canMove = canMoveOwnShift\(person, keyDay\);/);
+    // Y el boton arranca el mismo movimiento.
+    assert.match(source, /if \(moveButton\) \{[\s\S]{0,300}startShiftMove\(person, row\.keyDay\);/);
+});
