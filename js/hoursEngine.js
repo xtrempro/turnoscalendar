@@ -99,17 +99,30 @@ export function applyMonthlyOvertimeAdjustments({
         };
     }
 
+    let d =
+        (Number(hheeDiurnas) || 0) -
+        (Number(clockAbsences.d) || 0) -
+        (Number(baseShiftRemovals.d) || 0);
+    let n =
+        (Number(hheeNocturnas) || 0) -
+        (Number(clockAbsences.n) || 0) -
+        (Number(baseShiftRemovals.n) || 0);
+
+    // Se compara el TOTAL contra la base, no cada banda por separado: si al
+    // reasignar los turnos faltan Noches pero sobran Largas (o al reves), las
+    // horas que faltan en una banda descuentan las extra de la otra. Solo lo
+    // que sobra del total es hora extra, y el mes nunca queda en negativo.
+    if (d < 0 && n > 0) {
+        n = Math.max(0, n + d);
+        d = 0;
+    } else if (n < 0 && d > 0) {
+        d = Math.max(0, d + n);
+        n = 0;
+    }
+
     return {
-        d: roundExtra(
-            (Number(hheeDiurnas) || 0) -
-            (Number(clockAbsences.d) || 0) -
-            (Number(baseShiftRemovals.d) || 0)
-        ),
-        n: roundExtra(
-            (Number(hheeNocturnas) || 0) -
-            (Number(clockAbsences.n) || 0) -
-            (Number(baseShiftRemovals.n) || 0)
-        )
+        d: roundExtra(d),
+        n: roundExtra(n)
     };
 }
 
