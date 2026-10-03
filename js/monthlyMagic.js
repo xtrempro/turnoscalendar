@@ -200,7 +200,7 @@ export function planHTML(plan, monthLabel) {
         advices.push(adviceHTML(
             ++number,
             `Cubrir ${plan.covers.length} ${plan.covers.length === 1 ? "turno" : "turnos"} con horas extras`,
-            `Lo que sigue faltando después de los consejos anteriores. Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno.`,
+            `${number > 1 ? "Lo que sigue faltando después de los consejos anteriores. " : ""}Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno.`,
             plan.covers.map(coverRowHTML).join(""),
             "cover",
             plan.covers.length
@@ -218,7 +218,7 @@ export function planHTML(plan, monthLabel) {
         : "";
 
     return `
-        <p class="mcal-magic-summary">${escapeHTML(monthLabel)} · Meta: <b>${plan.target}</b> por turno en Titulares.${advices.length ? " Cada consejo cuenta con que se aplican los anteriores." : ""}</p>
+        <p class="mcal-magic-summary">${escapeHTML(monthLabel)} · Meta: <b>${plan.target}</b> por turno en Titulares.${advices.length > 1 ? " Cada consejo cuenta con que se aplican los anteriores." : ""}</p>
         ${advices.length ? advices.join("") : `<p class="mcal-magic-empty">Todos los turnos ya tienen ${plan.target} ${plan.target === 1 ? "persona" : "personas"}. No hay nada que ajustar.</p>`}
         ${pending}
         ${surplus}`;

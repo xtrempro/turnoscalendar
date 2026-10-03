@@ -2062,8 +2062,8 @@ body[data-active-view="home"] .secondary-grid {
 }
 
 .turn-change-dialog.mcal-magic-dialog {
-    width: min(860px, calc(100vw - 32px));
-    max-height: min(88vh, 900px);
+    width: min(1280px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -2137,7 +2137,7 @@ body[data-active-view="home"] .secondary-grid {
     display: grid;
     gap: 6px;
     margin-top: 10px;
-    max-height: 320px;
+    max-height: 60vh;
     overflow: auto;
 }
 
@@ -2167,7 +2167,7 @@ body[data-active-view="home"] .secondary-grid {
 }
 
 .mcal-magic-row select {
-    flex: 1 1 260px;
+    flex: 1 1 420px;
     min-height: 34px;
     padding: 4px 8px;
     border: 1px solid var(--border);
