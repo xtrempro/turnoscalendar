@@ -1,6 +1,7 @@
 // Calcula el color del dia como una pila de BANDAS (de arriba hacia abajo, en
 // orden cronologico):
-//   [incidencia de entrada] + [componentes del turno base] + [incidencia de salida]
+//   por componente: [incidencia de entrada] + [componente] + [incidencia de salida]
+//   (un D+N con la salida del Diurno modificada lleva su franja en el medio)
 //
 // Tamanos:
 //   - Cada incidencia de marcaje (extension/reduccion) ocupa un 15% FIJO de la
@@ -39,8 +40,9 @@ import {
 // estos minutos (el atraso cuenta desde el minuto 6 = mas de 5 min).
 const INCIDENT_GRACE_MINUTES = 5;
 
-// Porcentaje fijo de cada banda de incidencia.
+// Porcentaje fijo de cada banda de incidencia (y con mas de dos, mas angostas).
 const INCIDENT_PCT = 15;
+const INCIDENT_PCT_CROWDED = 10;
 
 // Codigo -> variable CSS base/extra + color de respaldo.
 const TURNO_VAR = {
@@ -191,10 +193,13 @@ export function getDayColorGradient(
 
     if (!comps || !comps.length) return null;
 
-    // Incidencias de entrada/salida con horas reales del marcaje (gracia 5 min).
-    let topIncident = null;
-    let bottomIncident = null;
-
+    // Incidencias de entrada/salida con horas reales del marcaje (gracia 5 min),
+    // por componente. Con un tramo por componente (D+N: diurno y noche) cada
+    // uno tiene las suyas, y las del MEDIO -salida del Diurno, entrada de la
+    // Noche- se ven entre los dos colores; antes solo se miraban la entrada
+    // del primero y la salida del ultimo, y un Diurno que salia antes dentro
+    // de un D+N no se veia (aunque las horas si lo descontaban).
+    const incidents = comps.map(() => ({ entry: null, exit: null }));
     const mark = getClockMark(profileName, keyDay);
 
     if (mark?.segments) {
@@ -206,48 +211,64 @@ export function getDayColorGradient(
             scheduledState,
             holidays
         );
+        const entryIncident = segment => {
+            const segmentMark = findClockMarkEntry(mark, segment);
+            const timing = segmentMark
+                ? getClockMarkTimingFlags(date, segment, segmentMark.value)
+                : null;
 
-        if (segments.length) {
-            const firstSeg = segments[0];
-            const lastSeg = segments[segments.length - 1];
-            const firstMark = findClockMarkEntry(mark, firstSeg);
-            const lastMark = findClockMarkEntry(mark, lastSeg);
+            if (!timing?.entry) return null;
 
-            if (firstMark) {
-                const timing = getClockMarkTimingFlags(date, firstSeg, firstMark.value);
-                if (timing.entry) {
-                    const diff = (firstSeg.start - timing.entry) / 60000;
-                    if (diff > INCIDENT_GRACE_MINUTES) topIncident = "extension";
-                    else if (diff < -INCIDENT_GRACE_MINUTES) topIncident = "reduction";
-                }
-            }
+            const diff = (segment.start - timing.entry) / 60000;
 
-            if (lastMark) {
-                const timing = getClockMarkTimingFlags(date, lastSeg, lastMark.value);
-                if (timing.exit) {
-                    const diff = (timing.exit - lastSeg.end) / 60000;
-                    if (diff > INCIDENT_GRACE_MINUTES) bottomIncident = "extension";
-                    else if (diff < -INCIDENT_GRACE_MINUTES) bottomIncident = "reduction";
-                }
-            }
+            if (diff > INCIDENT_GRACE_MINUTES) return "extension";
+            if (diff < -INCIDENT_GRACE_MINUTES) return "reduction";
+            return null;
+        };
+        const exitIncident = segment => {
+            const segmentMark = findClockMarkEntry(mark, segment);
+            const timing = segmentMark
+                ? getClockMarkTimingFlags(date, segment, segmentMark.value)
+                : null;
+
+            if (!timing?.exit) return null;
+
+            const diff = (timing.exit - segment.end) / 60000;
+
+            if (diff > INCIDENT_GRACE_MINUTES) return "extension";
+            if (diff < -INCIDENT_GRACE_MINUTES) return "reduction";
+            return null;
+        };
+
+        if (segments.length && segments.length === comps.length) {
+            segments.forEach((segment, index) => {
+                incidents[index].entry = entryIncident(segment);
+                incidents[index].exit = exitIncident(segment);
+            });
+        } else if (segments.length) {
+            // Un tramo que abarca varios componentes (24h, 18h, medio ADM):
+            // solo su entrada arriba y su salida abajo, como siempre.
+            incidents[0].entry = entryIncident(segments[0]);
+            incidents[incidents.length - 1].exit = exitIncident(segments[segments.length - 1]);
         }
     }
 
     // Componentes que pertenecen al turno base (los que no, son extra).
     const baseCodes = baseTurn ? getTurnoComponentes(baseTurn) : [];
 
-    // Reparto: cada incidencia = 15% fijo; el resto lo reparten los componentes.
-    const incidentCount = (topIncident ? 1 : 0) + (bottomIncident ? 1 : 0);
-    const baseRegion = 100 - incidentCount * INCIDENT_PCT;
+    // Reparto: cada incidencia = 15% fijo (10% si son mas de dos, para que el
+    // turno se siga viendo); el resto lo reparten los componentes.
+    const incidentCount = incidents.reduce(
+        (sum, item) => sum + (item.entry ? 1 : 0) + (item.exit ? 1 : 0),
+        0
+    );
+    const incidentPct = incidentCount > 2 ? INCIDENT_PCT_CROWDED : INCIDENT_PCT;
+    const baseRegion = 100 - incidentCount * incidentPct;
     const weightTotal = comps.reduce((sum, comp) => sum + (comp.weight || 1), 0);
 
     const bands = [];
 
-    if (topIncident) {
-        bands.push({ color: resolveColor(topIncident, false), pct: INCIDENT_PCT });
-    }
-
-    for (const comp of comps) {
+    comps.forEach((comp, index) => {
         const isExtra =
             Boolean(TURNO_VAR[comp.code]) &&
             (
@@ -264,15 +285,19 @@ export function getDayColorGradient(
                 ? options.extraColorOverride
                 : resolveColor(comp.code, isExtra);
 
+        if (incidents[index].entry) {
+            bands.push({ color: resolveColor(incidents[index].entry, false), pct: incidentPct });
+        }
+
         bands.push({
             color,
             pct: baseRegion * ((comp.weight || 1) / weightTotal)
         });
-    }
 
-    if (bottomIncident) {
-        bands.push({ color: resolveColor(bottomIncident, false), pct: INCIDENT_PCT });
-    }
+        if (incidents[index].exit) {
+            bands.push({ color: resolveColor(incidents[index].exit, false), pct: incidentPct });
+        }
+    });
 
     return gradientFromPercentBands(
         bands,

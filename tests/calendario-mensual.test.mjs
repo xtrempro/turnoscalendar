@@ -82,6 +82,27 @@ test("iniciales con la regla de la unidad", () => {
     const mapa = mensual.initialsMap(["Juan Vega", "Jose Vera"]);
 
     assert.notEqual(mapa.get("Juan Vega"), mapa.get("Jose Vera"));
+    assert.equal(mapa.get("Juan Vega"), "JuV", "sin palabra siguiente: la minuscula");
+
+    // Con palabra siguiente, primero su inicial.
+    const fr = mensual.initialsMap([
+        "Fernanda Andrea Romero Gonzalez",
+        "Felipe Ignacio Rodriguez Carrizo",
+        "Karla Maria Soto"
+    ]);
+
+    assert.equal(fr.get("Fernanda Andrea Romero Gonzalez"), "FRG");
+    assert.equal(fr.get("Felipe Ignacio Rodriguez Carrizo"), "FRC");
+    assert.equal(fr.get("Karla Maria Soto"), "KM", "sin empate no cambia");
+
+    // Si aun empatan, la minuscula de antes.
+    const empate = mensual.initialsMap([
+        "Fernanda Andrea Romero Gonzalez",
+        "Fabian Ignacio Rodriguez Garrido"
+    ]);
+
+    assert.equal(empate.get("Fernanda Andrea Romero Gonzalez"), "FeR");
+    assert.equal(empate.get("Fabian Ignacio Rodriguez Garrido"), "FaR");
 });
 
 test("dia y noche con quien corresponde, solo de la profesion elegida", async () => {

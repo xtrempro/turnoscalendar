@@ -154,7 +154,9 @@ export function workerInitials(name) {
 
 /**
  * Iniciales sin repetir dentro de un grupo: si dos personas comparten las
- * mismas, se agrega la segunda letra del primer nombre ("JaV" y "JoV").
+ * mismas, se agrega la inicial de la palabra siguiente ("FRG" y "FRC"); si con
+ * eso aun empatan, o no hay otra palabra, la segunda letra del primer nombre
+ * ("JaV" y "JoV").
  */
 export function initialsMap(names) {
     const byInitials = new Map();
@@ -173,11 +175,32 @@ export function initialsMap(names) {
             return;
         }
 
-        group.forEach(name => {
-            const words = nameWords(name);
-            const second = (words[0] || "").charAt(1).toLocaleLowerCase("es-CL");
+        // Primero, la inicial de la palabra que sigue ("Fernanda Andrea Romero
+        // Gonzalez" FR -> FRG; "Felipe Ignacio Rodriguez Carrizo" FR -> FRC).
+        const lowercase = name => {
+            const second = (nameWords(name)[0] || "").charAt(1).toLocaleLowerCase("es-CL");
 
-            result.set(name, `${key.charAt(0)}${second}${key.slice(1)}`);
+            return `${key.charAt(0)}${second}${key.slice(1)}`;
+        };
+        const extended = new Map(group.map(name => {
+            const words = nameWords(name);
+            // Las iniciales usan la penultima palabra (3+) o la ultima (2): la
+            // que sigue es la ultima, si queda una.
+            const next = words.length >= 3 ? words[words.length - 1] : "";
+
+            return [name, next ? key + next.charAt(0).toLocaleUpperCase("es-CL") : ""];
+        }));
+        const counts = new Map();
+
+        extended.forEach(value => {
+            if (value) counts.set(value, (counts.get(value) || 0) + 1);
+        });
+
+        // Si aun empatan (o no hay palabra siguiente), la minuscula de antes.
+        group.forEach(name => {
+            const value = extended.get(name);
+
+            result.set(name, value && counts.get(value) === 1 ? value : lowercase(name));
         });
     });
 
