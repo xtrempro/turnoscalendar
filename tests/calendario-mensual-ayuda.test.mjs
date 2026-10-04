@@ -217,11 +217,11 @@ test("horas extras: se pueden preasignar todas o solo las seleccionadas", async 
     // Botones solo en el consejo de horas extras.
     assert.match(source, /data-magic-only="selected" data-magic-preassign[^>]*>Preasignar seleccionados/);
     assert.match(source, /data-magic-only="all" data-magic-preassign[^>]*>Preasignar todo/);
-    assert.match(source, /"cover",\s*plan\.covers\.length,\s*\{ preassign: true \}/);
+    assert.match(source, /"cover",\s*plan\.covers\.length,\s*\{\s*preassign: true,/);
     // La misma reserva del modal de sugerencias: un cupo lleva su motivo en
     // `reason`, una ausencia a quien cubre en `replaced`.
     assert.match(source, /if \(preassign\) \{\s*addPreassignment\(\{\s*worker,\s*replaced: item\.replaced \|\| "",\s*reason: item\.replaced \? "" : item\.cupo\?\.motive \|\| "",/);
-    assert.match(source, /applyCover\(item, worker, \{ preassign \}\)/);
+    assert.match(source, /applyCover\(item, worker, \{ preassign, request \}\)/);
 });
 
 test("etapa 2: si a un grupo le falta gente en varios turnos, alguien de Diurno pasa a ese grupo", async () => {
@@ -277,4 +277,28 @@ test("etapa 2: el modal lo aplica con el mismo cambio de grupo de Titulares de T
     assert.match(holders, /export async function applyGroupChange\(\{ profile, startISO, firstTurn, toLetter \}\)/);
     assert.match(source, /await applyGroupChange\(\{\s*profile: item\.name,\s*startISO: isoOf\(item\.startKey\),\s*firstTurn: item\.firstTurn,\s*toLetter: item\.group\s*\}\)/);
     assert.match(source, /se reescribe su calendario y se pierden/);
+});
+
+test("un turno con solicitud pendiente en la app no se vuelve a proponer: queda esperando", async () => {
+    const m = model(3, 3, (row, day) => {
+        if (day === 2) {
+            row.slots.day.pop();
+            row.gaps.day.push({ name: "Bea" });
+        }
+    });
+    let asked = 0;
+    const plan = await planMonth(m, deps({}, {
+        pendingRequestFor: ({ replaced, keyDay }) =>
+            (replaced === "Bea" && keyDay === "2026-9-2" ? { worker: "Ana" } : null),
+        candidatesFor: async () => {
+            asked += 1;
+            return [];
+        }
+    }));
+
+    assert.deepEqual(plan.covers, []);
+    assert.equal(asked, 0);
+    assert.equal(plan.waiting.length, 1);
+    assert.equal(plan.waiting[0].worker, "Ana");
+    assert.deepEqual(plan.unresolved, []);
 });

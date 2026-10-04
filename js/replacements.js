@@ -1655,6 +1655,12 @@ function buildReplacementRequest(data) {
             "",
         replaced: data.replaced || "",
         replacedProfileId: replacedProfile?.id || "",
+        // Un cupo de la Brecha no reemplaza a nadie: lleva su motivo
+        // ("Completar rotativa de ...", que al aceptarse lo deja con los
+        // titulares) y una clave propia para no confundirse con otro cupo del
+        // mismo dia y turno. La app lo muestra por `absenceType`.
+        reason: String(data.reason || "").trim(),
+        cupoKey: String(data.cupoKey || ""),
         keyDay: data.keyDay,
         date: isoFromKey(data.keyDay),
         turno: turnoCode,
@@ -1693,7 +1699,7 @@ export function createReplacementRequest(data) {
     addAuditLog(
         AUDIT_CATEGORY.OVERTIME,
         "Creo solicitud de reemplazo",
-        `${request.worker}: solicitud para cubrir ${request.turnoLabel} de ${request.replaced} el ${request.date}. Canal: ${request.channel}.`,
+        `${request.worker}: solicitud para cubrir ${request.turnoLabel} ${request.replaced ? `de ${request.replaced}` : `(${request.reason})`} el ${request.date}. Canal: ${request.channel}.`,
         {
             profile: request.worker,
             requestId: request.id,
@@ -1830,6 +1836,11 @@ export function buildReplacementRequestWhatsAppUrl(request) {
 // del primer tercio seguian viendo la solicitud pendiente en su telefono- y dos
 // aceptaciones de oleadas distintas creaban DOS reemplazos para el mismo turno.
 function requestShiftKey(request) {
+    // Un cupo no tiene a quien cubrir: su turno es el del cupo.
+    if (!request.replaced && request.reason) {
+        return `cupo|${request.cupoKey || request.groupId || request.id}`;
+    }
+
     return [
         request.replaced,
         request.date,
@@ -1897,6 +1908,7 @@ export function applyAcceptedReplacementRequests() {
             (
                 replacement.requestId === winner.id ||
                 (
+                    Boolean(winner.replaced) &&
                     replacement.replaced === winner.replaced &&
                     replacement.date === winner.date &&
                     Number(replacement.turno) === Number(winnerTurno)
@@ -1904,7 +1916,21 @@ export function applyAcceptedReplacementRequests() {
             )
         );
 
-        if (!alreadyApplied) {
+        if (!alreadyApplied && !winner.replaced && winner.reason) {
+            // Cupo de la Brecha aceptado desde la app: el mismo registro que
+            // deja cubrirlo desde el modal (turno extra con el motivo del cupo).
+            saveReplacement({
+                worker: winner.worker,
+                replaced: "",
+                reason: winner.reason,
+                comment: "",
+                keyDay: winner.keyDay,
+                turno: winnerTurno,
+                source: "rota_gap",
+                requestId: winner.id,
+                requestGroupId: winner.groupId || winner.id
+            });
+        } else if (!alreadyApplied) {
             saveReplacement({
                 worker: winner.worker,
                 replaced: winner.replaced,

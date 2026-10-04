@@ -2215,6 +2215,16 @@ body.theme-dark .mcal-magic-preassign {
     color: #93c5fd;
 }
 
+/* Enviar solicitud a la app de los trabajadores. */
+.mcal-magic-request {
+    border-color: rgba(22, 163, 74, 0.45);
+    color: #15803d;
+}
+
+body.theme-dark .mcal-magic-request {
+    color: #86efac;
+}
+
 .mcal-magic-pending {
     margin-bottom: 12px;
     padding: 12px 16px;

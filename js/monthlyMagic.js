@@ -6,7 +6,13 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
-import { getCompensationProfileAt, getRotativa, getTurnChangeConfig } from "./storage.js";
+import {
+    getCompensationProfileAt,
+    getReplacementRequestConfig,
+    getReplacementRequests,
+    getRotativa,
+    getTurnChangeConfig
+} from "./storage.js";
 import { getJSON } from "./persistence.js";
 import { getHourReturn } from "./hourReturns.js";
 import { getClockMarks } from "./clockMarks.js";
@@ -18,7 +24,12 @@ import {
 } from "./replacementCandidates.js";
 import { calcExtraHours } from "./calculations.js";
 import { fetchHolidays } from "./holidays.js";
-import { getAbsenceLabelForProfileDate, saveReplacement } from "./replacements.js";
+import {
+    cancelReplacementRequest,
+    createReplacementRequest,
+    getAbsenceLabelForProfileDate,
+    saveReplacement
+} from "./replacements.js";
 import { addPreassignment } from "./preassignments.js";
 import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
@@ -75,6 +86,12 @@ function browserDeps(holidays, shouldContinue, groupNames = []) {
         affectedFrom: async (name, keyDay) =>
             countAffectedFrom(name, keyToDate(keyDay), await loadLeaveHolidays(name)),
         minStartKey: `${tomorrow.getFullYear()}-${tomorrow.getMonth()}-${tomorrow.getDate()}`,
+        pendingRequestFor: ({ replaced, keyDay, cupoKey }) =>
+            getReplacementRequests().find(request =>
+                request?.status === "pending" &&
+                request.keyDay === keyDay &&
+                (replaced ? request.replaced === replaced : request.cupoKey === cupoKey)
+            ) || null,
         canMoveSource: (name, keyDay) =>
             !isHonorariaProfile(name, keyDay) &&
             typeof window.shiftMoveDayBlockReason === "function" &&
@@ -177,7 +194,7 @@ function coverRowHTML(item, index) {
         </div>`;
 }
 
-function adviceHTML(number, title, text, body, kind, count, { preassign = false } = {}) {
+function adviceHTML(number, title, text, body, kind, count, { preassign = false, request = false } = {}) {
     return `
         <section class="mcal-magic-advice" data-magic-advice="${kind}">
             <div class="mcal-magic-advice-head">
@@ -195,6 +212,9 @@ function adviceHTML(number, title, text, body, kind, count, { preassign = false 
                 ${preassign ? `
                 <button class="secondary-button mcal-magic-preassign" type="button" data-magic-apply="${kind}" data-magic-only="selected" data-magic-preassign title="Quedan en azul, sin horas ni aviso a la app, hasta que se confirmen">Preasignar seleccionados</button>
                 <button class="secondary-button mcal-magic-preassign" type="button" data-magic-apply="${kind}" data-magic-only="all" data-magic-preassign title="Quedan en azul, sin horas ni aviso a la app, hasta que se confirmen">Preasignar todo</button>
+                ${request ? `
+                <button class="secondary-button mcal-magic-request" type="button" data-magic-apply="${kind}" data-magic-only="selected" data-magic-request title="Le llega a la app; si acepta, el turno queda asignado">Enviar solicitud seleccionados</button>
+                <button class="secondary-button mcal-magic-request" type="button" data-magic-apply="${kind}" data-magic-only="all" data-magic-request title="Le llega a la app; si acepta, el turno queda asignado">Enviar solicitud a todos</button>` : ""}
                 <span class="mcal-magic-actions-gap"></span>` : ""}
                 <button class="secondary-button" type="button" data-magic-apply="${kind}" data-magic-only="selected">Aplicar seleccionados</button>
                 <button class="primary-button" type="button" data-magic-apply="${kind}" data-magic-only="all">Aplicar todo</button>
@@ -242,14 +262,23 @@ export function planHTML(plan, monthLabel) {
         advices.push(adviceHTML(
             ++number,
             `Cubrir ${plan.covers.length} ${plan.covers.length === 1 ? "turno" : "turnos"} con horas extras`,
-            `${number > 1 ? "Lo que sigue faltando después de los consejos anteriores. " : ""}Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno, y preasignarlos (en azul, sin horas ni aviso a la app hasta que se confirmen) en vez de asignarlos.`,
+            `${number > 1 ? "Lo que sigue faltando después de los consejos anteriores. " : ""}Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno, y preasignarlos (en azul, sin horas ni aviso a la app hasta que se confirmen) o enviarles la solicitud a su app (si aceptan, el turno queda asignado) en vez de asignarlos.`,
             plan.covers.map(coverRowHTML).join(""),
             "cover",
             plan.covers.length,
-            { preassign: true }
+            {
+                preassign: true,
+                request: getReplacementRequestConfig().enableWorkerAcceptanceRequest !== false
+            }
         ));
     }
 
+    const waiting = plan.waiting?.length
+        ? `<section class="mcal-magic-pending">
+                <strong>Esperando respuesta en la app (${plan.waiting.length})</strong>
+                <ul>${plan.waiting.map(item => `<li>${escapeHTML(dateLabel(item.keyDay))} · ${escapeHTML(turnLabel(item.turn))} · ${item.replaced ? `cubre a ${escapeHTML(item.replaced)}` : "cupo de la Brecha"}: solicitud a ${escapeHTML(item.worker)}</li>`).join("")}</ul>
+            </section>`
+        : "";
     const pending = plan.unresolved.length
         ? `<section class="mcal-magic-pending">
                 <strong>Sin solución por ahora (${plan.unresolved.length})</strong>
@@ -263,6 +292,7 @@ export function planHTML(plan, monthLabel) {
     return `
         <p class="mcal-magic-summary">${escapeHTML(monthLabel)} · Meta: <b>${plan.target}</b> por turno en Titulares.${advices.length > 1 ? " Cada consejo cuenta con que se aplican los anteriores." : ""}</p>
         ${advices.length ? advices.join("") : `<p class="mcal-magic-empty">Todos los turnos ya tienen ${plan.target} ${plan.target === 1 ? "persona" : "personas"}. No hay nada que ajustar.</p>`}
+        ${waiting}
         ${pending}
         ${surplus}`;
 }
@@ -298,9 +328,36 @@ function applyMove(item) {
     return "";
 }
 
-function applyCover(item, worker, { preassign = false } = {}) {
+function applyCover(item, worker, { preassign = false, request = false } = {}) {
     if (Number(getTurnoReal(worker, item.keyDay)) !== TURNO.LIBRE) {
         return `${worker} ya tiene turno el ${dateLabel(item.keyDay)}.`;
+    }
+
+    // Solicitud a la app: le llega al trabajador y, si acepta, el turno se
+    // asigna solo (applyAcceptedReplacementRequests). Un cupo lleva su motivo.
+    if (request) {
+        const created = createReplacementRequest({
+            worker,
+            replaced: item.replaced || "",
+            keyDay: item.keyDay,
+            turno: item.turn,
+            absenceType: item.replaced
+                ? getAbsenceLabelForProfileDate(item.replaced, item.keyDay)
+                : item.cupo?.motive || "",
+            reason: item.replaced ? "" : item.cupo?.motive || "",
+            cupoKey: item.replaced ? "" : item.cupoKey || "",
+            scope: "compatible",
+            source: "replacement_request"
+        });
+
+        // Sin la app enlazada la solicitud iria por WhatsApp, uno por uno:
+        // eso queda para el modal de sugerencias.
+        if (created.channel !== "app") {
+            cancelReplacementRequest(created.id, "admin");
+            return `${worker} no tiene la app enlazada: no se le envió la solicitud.`;
+        }
+
+        return "";
     }
 
     // Preasignar: la misma reserva del modal de sugerencias (en azul, sin
@@ -412,7 +469,7 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
         body.innerHTML = planHTML(plan, monthLabel);
     }
 
-    async function apply(kind, onlySelected, preassign = false) {
+    async function apply(kind, onlySelected, preassign = false, request = false) {
         if (!plan) return;
 
         const section = backdrop.querySelector(`[data-magic-advice="${CSS.escape(kind)}"]`);
@@ -446,7 +503,7 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             picked("cover").forEach(index => {
                 const item = plan.covers[index];
                 const worker = section.querySelector(`[data-magic-worker="${index}"]`)?.value || item.worker;
-                const error = applyCover(item, worker, { preassign });
+                const error = applyCover(item, worker, { preassign, request });
 
                 if (error) errors.push(error);
             });
@@ -477,7 +534,8 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             void apply(
                 button.dataset.magicApply,
                 button.dataset.magicOnly === "selected",
-                button.hasAttribute("data-magic-preassign")
+                button.hasAttribute("data-magic-preassign"),
+                button.hasAttribute("data-magic-request")
             );
         }
     });

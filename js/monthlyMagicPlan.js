@@ -139,6 +139,8 @@ export function orderMovesForApply(moves) {
  *   firstTurnFor(letter, keyDay) -> { firstTurn, label } para entrar al grupo
  *   affectedFrom(name, keyDay) -> Promise<[{ label, count }]> lo que se pierde
  *   minStartKey                el primer dia en que se puede cambiar (manana)
+ *   pendingRequestFor({ replaced, keyDay, turn, cupoKey }) -> solicitud
+ *                              pendiente en la app de alguien, o null
  */
 export async function planMonth(model, deps) {
     const target = targetPerShift(model);
@@ -153,6 +155,8 @@ export async function planMonth(model, deps) {
     const moves = [];
     const covers = [];
     const unresolved = [];
+    // Turnos con una solicitud pendiente en la app de alguien.
+    const waiting = [];
 
     rows.forEach(row => {
         ["day", "night"].forEach(slot => count.set(cellId(row.keyDay, slot), row.slots?.[slot]?.length || 0));
@@ -198,7 +202,7 @@ export async function planMonth(model, deps) {
         return gap.name;
     };
 
-    if (!target) return { target, moves, rotations: [], covers, unresolved, surplus: [] };
+    if (!target) return { target, moves, rotations: [], covers, waiting, unresolved, surplus: [] };
 
     // El mejor destino para el turno de `name` que sobra en (sourceKey, slot).
     function bestTarget(name, sourceKey, slot) {
@@ -402,9 +406,33 @@ export async function planMonth(model, deps) {
                     : Number(cupo.turno) || SLOT_TURN[slot];
                 const slots = slotsOfTurn(turn).length ? slotsOfTurn(turn) : [slot];
                 const reference = gap ? gap.name : cupo.reference;
+                // La clave de ESTE cupo (puede haber dos el mismo turno): la
+                // usa la solicitud a la app para no confundirlos.
+                const cupoKey = cupo ? `${cupo.motive}|${row.keyDay}|${slot}|${cupoIndex}` : "";
 
                 if (gap) claimedGaps.add(cellId(row.keyDay, gap.name));
                 else claimedCupos.set(cellId(row.keyDay, slot), cupoIndex + 1);
+
+                // Ya se le pidio a alguien desde la app: se espera su respuesta.
+                const pending = deps.pendingRequestFor?.({
+                    replaced: gap?.name || "",
+                    keyDay: row.keyDay,
+                    turn,
+                    cupoKey
+                });
+
+                if (pending) {
+                    waiting.push({
+                        keyDay: row.keyDay,
+                        slot,
+                        turn,
+                        replaced: gap?.name || "",
+                        cupo: cupo || null,
+                        worker: pending.worker
+                    });
+                    slots.forEach(item => bump(row.keyDay, item, 1));
+                    continue;
+                }
 
                 const adding = deps.extraHours(row.keyDay, turn) || { d: 0, n: 0 };
                 const raw = reference
@@ -467,6 +495,7 @@ export async function planMonth(model, deps) {
                     inverted: pick.inverted,
                     replaced: gap?.name || "",
                     cupo: cupo || null,
+                    cupoKey,
                     alternatives: ranked.slice(1, 4).map(item => ({ name: item.name, hhee: item.hhee, grade: item.grade }))
                 });
 
@@ -484,7 +513,7 @@ export async function planMonth(model, deps) {
         .filter(slot => cellCount(row.keyDay, slot) > target)
         .map(slot => ({ keyDay: row.keyDay, slot, extra: cellCount(row.keyDay, slot) - target })));
 
-    return { target, moves, rotations, covers, unresolved, surplus };
+    return { target, moves, rotations, covers, waiting, unresolved, surplus };
 }
 
 /**
