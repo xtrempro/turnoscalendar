@@ -92,10 +92,17 @@ export function openGroupCells(model, group, startKey, target) {
     return (model?.rows || []).reduce((total, row) => {
         if (keyToDate(row.keyDay).getTime() < start) return total;
 
-        return total + ["day", "night"].filter(slot =>
-            (row.slots?.[slot]?.length || 0) < target &&
-            (row.cupos?.[slot] || []).some(cupo => String(cupo.group || "") === String(group))
-        ).length;
+        // Igual que el plan (monthlyMagicPlan.js, paso 2): cada cupo cuenta, y
+        // solo los que caben en lo que falta en ese turno. Dos cupos del grupo
+        // en la misma casilla son DOS turnos sin cubrir.
+        return total + ["day", "night"].reduce((sum, slot) => {
+            const missing = Math.max(0, target - (row.slots?.[slot]?.length || 0));
+
+            return sum + (row.cupos?.[slot] || [])
+                .slice(0, missing)
+                .filter(cupo => String(cupo.group || "") === String(group))
+                .length;
+        }, 0);
     }, 0);
 }
 

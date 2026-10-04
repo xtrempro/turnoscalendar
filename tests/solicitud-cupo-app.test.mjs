@@ -365,3 +365,44 @@ test("auditoria 3: el cambio de rotativa se revalida con la meta de ahora y al m
     // Otro supervisor cubrio uno: queda uno solo, ya no alcanza para cambiar la rotativa.
     assert.equal(rotationStillNeeded({ rows: [row(1, 3), row(2, 3), row(3, 3), row(4, 2, true)] }, item), false);
 });
+
+test("auditoria 4: dos cupos del grupo en la MISMA casilla cuentan como dos, igual que en el plan", async () => {
+    const { rotationStillNeeded } = await import("../js/monthlyMagic.js");
+    const { planMonth } = await import("../js/monthlyMagicPlan.js");
+    const cupo = { group: "B", motive: "Completar rotativa de tecnicos del grupo B", turno: TURNO.LARGA, reference: "Molde" };
+    const build = dayCountOn3 => ({
+        rows: [1, 2, 3, 4].map(day => ({
+            keyDay: `2026-9-${day}`,
+            slots: {
+                day: Array.from({ length: day === 3 ? dayCountOn3 : 3 }, (_, index) => ({ name: `P${day}-${index}` })),
+                night: Array.from({ length: 3 }, (_, index) => ({ name: `Q${day}-${index}` }))
+            },
+            gaps: { day: [], night: [] },
+            // El 3 de Dia: faltan dos del grupo B (dos cupos en la misma casilla).
+            cupos: { day: day === 3 ? [cupo, { ...cupo }].slice(0, 3 - dayCountOn3) : [], night: [] }
+        }))
+    });
+    const model = build(1);
+    const plan = await planMonth(model, {
+        tierOf: () => 3,
+        canMoveSource: () => false,
+        dayBlock: () => "",
+        allowInverted: true,
+        turnAt: () => TURNO.LIBRE,
+        baseTurn: () => TURNO.LIBRE,
+        neededTurnFor: () => TURNO.LARGA,
+        extraHours: () => ({ d: 12, n: 0 }),
+        diurnalLimit: 40,
+        candidatesFor: async () => [],
+        minStartKey: "2026-9-2",
+        diurnoWorkers: () => ["Diurna"],
+        firstTurnFor: () => ({ firstTurn: "larga", label: "Largo" }),
+        affectedFrom: async () => []
+    });
+    const item = plan.rotations[0];
+
+    assert.equal(item?.fills, 2, "el plan propone la rotativa por los dos cupos");
+    assert.equal(rotationStillNeeded(model, item), true, "y al aplicar, sin cambios, sigue haciendo falta");
+    // Otro supervisor cubre uno de los dos: queda un turno, ya no alcanza.
+    assert.equal(rotationStillNeeded(build(2), item), false);
+});
