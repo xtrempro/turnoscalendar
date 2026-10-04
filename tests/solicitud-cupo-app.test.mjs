@@ -406,3 +406,39 @@ test("auditoria 4: dos cupos del grupo en la MISMA casilla cuentan como dos, igu
     // Otro supervisor cubre uno de los dos: queda un turno, ya no alcanza.
     assert.equal(rotationStillNeeded(build(2), item), false);
 });
+
+test("mover turnos: el mes del trabajador muestra lo marcado y se repinta al desmarcar", async () => {
+    const { workerMonthHTML } = await import("../js/monthlyMagic.js");
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+
+    setJSON(`data_Ana`, { "2026-11-4": TURNO.LARGA });
+
+    const move = { name: "Ana", sourceKey: "2026-11-4", targetKey: "2026-11-2", destinationTurn: TURNO.LARGA };
+    const marked = workerMonthHTML("Ana", new Date(2026, 11, 1), [move]);
+    const unmarked = workerMonthHTML("Ana", new Date(2026, 11, 1), []);
+    const cell = (html, day) => html.match(new RegExp(`<span class="mcal-wcal-day[^"]*"[^>]*>\\s*<b>${day}</b>`))?.[0] || "";
+
+    assert.match(cell(marked, 2), /is-arriving/, "el 2 recibe la Larga");
+    assert.match(cell(marked, 4), /is-leaving/, "el 4 queda libre");
+    assert.doesNotMatch(cell(unmarked, 2), /is-arriving/);
+    assert.match(cell(unmarked, 4), /has-turn/, "sin marcar, el 4 sigue con su Larga");
+    // Al cambiar una casilla se repinta con lo marcado.
+    assert.match(source, /calendar\.innerHTML = workerMonthHTML\(section\.dataset\.magicWorkerName \|\| "", month, checked\);/);
+});
+
+test("pasar de Diurno a un grupo: un solo boton Aplicar, sin seleccionados", async () => {
+    const { planHTML } = await import("../js/monthlyMagic.js");
+    const html = planHTML({
+        target: 3,
+        moves: [],
+        rotations: [{ name: "Diurna", group: "C", startKey: "2026-11-2", firstTurn: "larga", firstTurnLabel: "Largo", fills: 3, affected: [], alternatives: [] }],
+        covers: [],
+        waiting: [],
+        unresolved: [],
+        surplus: []
+    }, "Diciembre 2026", new Date(2026, 11, 1));
+
+    assert.match(html, /data-magic-apply="rotation:0" data-magic-only="all">Aplicar</);
+    assert.doesNotMatch(html, /Aplicar seleccionados/);
+    assert.doesNotMatch(html, /type="checkbox" data-magic-pick="rotation"/);
+});

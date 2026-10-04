@@ -4,7 +4,7 @@
 // los consejos se rehacen: lo que se movio cambia lo que conviene despues.
 
 import { escapeHTML } from "./htmlUtils.js";
-import { TURNO, TURNO_LABEL } from "./constants.js";
+import { TURNO, TURNO_COLOR, TURNO_LABEL } from "./constants.js";
 import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
 import {
     getCompensationProfileAt,
@@ -294,9 +294,103 @@ function coverRowHTML(item, index) {
         </div>`;
 }
 
-function adviceHTML(number, title, text, body, kind, count, { preassign = false, request = false } = {}) {
+// Letra de cada turno en el calendario del trabajador.
+const TURN_SHORT = { 1: "L", 2: "N", 3: "24", 4: "D", 5: "D+N", 6: "½M", 7: "½T", 8: "18" };
+const WEEKDAYS = ["L", "M", "M", "J", "V", "S", "D"];
+
+/**
+ * El mes del trabajador como quedaria con los movimientos marcados: los dias
+ * que reciben un turno se destacan y los que quedan libres se marcan con el
+ * turno que tenian. Se repinta al marcar o desmarcar cada movimiento.
+ */
+export function workerMonthHTML(name, month, moves = []) {
+    const year = month.getFullYear();
+    const monthIndex = month.getMonth();
+    const days = new Date(year, monthIndex + 1, 0).getDate();
+    const offset = (new Date(year, monthIndex, 1).getDay() + 6) % 7;
+    const turns = new Map();
+    const arriving = new Set();
+    const leaving = new Map();
+    const keyOf = day => `${year}-${monthIndex}-${day}`;
+
+    for (let day = 1; day <= days; day++) {
+        turns.set(keyOf(day), Number(getTurnoReal(name, keyOf(day))) || TURNO.LIBRE);
+    }
+
+    (moves || []).forEach(move => {
+        if (move.targetKey !== move.sourceKey && turns.has(move.sourceKey)) {
+            leaving.set(move.sourceKey, turns.get(move.sourceKey));
+            turns.set(move.sourceKey, TURNO.LIBRE);
+        }
+    });
+    (moves || []).forEach(move => {
+        if (!turns.has(move.targetKey)) return;
+
+        turns.set(move.targetKey, Number(move.destinationTurn) || TURNO.LIBRE);
+        arriving.add(move.targetKey);
+        leaving.delete(move.targetKey);
+    });
+
+    const cells = Array.from({ length: offset }, () => `<span class="mcal-wcal-day is-empty"></span>`);
+
+    for (let day = 1; day <= days; day++) {
+        const key = keyOf(day);
+        const turn = turns.get(key);
+        const color = turn ? TURNO_COLOR[turn] || "#64748b" : "";
+        const before = leaving.get(key);
+        const classes = [
+            "mcal-wcal-day",
+            turn ? "has-turn" : "",
+            arriving.has(key) ? "is-arriving" : "",
+            before ? "is-leaving" : ""
+        ].filter(Boolean).join(" ");
+
+        cells.push(`
+            <span class="${classes}"${color ? ` style="--wcal-color:${color}"` : ""} title="${escapeHTML(dateLabel(key))}${turn ? `: ${escapeHTML(turnLabel(turn))}` : ""}${arriving.has(key) ? " (llega con el movimiento)" : ""}${before ? ` (se mueve su ${escapeHTML(turnLabel(before))})` : ""}">
+                <b>${day}</b>
+                <small>${turn ? escapeHTML(TURN_SHORT[turn] || "") : before ? `<s>${escapeHTML(TURN_SHORT[before] || "")}</s>` : ""}</small>
+            </span>`);
+    }
+
     return `
+        <div class="mcal-wcal" aria-label="Calendario de ${escapeHTML(name)} con los movimientos marcados">
+            <strong class="mcal-wcal-title">Así quedaría su mes</strong>
+            <div class="mcal-wcal-grid">
+                ${WEEKDAYS.map(day => `<span class="mcal-wcal-weekday">${day}</span>`).join("")}
+                ${cells.join("")}
+            </div>
+            <p class="mcal-wcal-legend"><span class="mcal-wcal-key is-arriving"></span> recibe un turno <span class="mcal-wcal-key is-leaving"></span> queda libre</p>
+        </div>`;
+}
+
+function adviceHTML(number, title, text, body, kind, count, {
+    preassign = false,
+    request = false,
+    single = false,
+    side = "",
+    worker = ""
+} = {}) {
+    // Una sola opcion (pasar a alguien de Diurno a un grupo): sin casillas ni
+    // "seleccionados", un solo Aplicar.
+    if (single) {
+        return `
         <section class="mcal-magic-advice" data-magic-advice="${kind}">
+            <div class="mcal-magic-advice-head">
+                <span class="mcal-magic-number">${number}</span>
+                <div>
+                    <strong>${title}</strong>
+                    <p>${text}</p>
+                </div>
+            </div>
+            ${body}
+            <div class="mcal-magic-actions">
+                <button class="primary-button" type="button" data-magic-apply="${kind}" data-magic-only="all">Aplicar</button>
+            </div>
+        </section>`;
+    }
+
+    return `
+        <section class="mcal-magic-advice" data-magic-advice="${kind}"${worker ? ` data-magic-worker-name="${escapeHTML(worker)}"` : ""}>
             <div class="mcal-magic-advice-head">
                 <span class="mcal-magic-number">${number}</span>
                 <div>
@@ -306,7 +400,9 @@ function adviceHTML(number, title, text, body, kind, count, { preassign = false,
             </div>
             <details>
                 <summary>Ver detalle (${count})</summary>
-                <div class="mcal-magic-list">${body}</div>
+                ${side
+                    ? `<div class="mcal-magic-movegrid"><div class="mcal-magic-list">${body}</div><aside class="mcal-magic-side" data-magic-cal>${side}</aside></div>`
+                    : `<div class="mcal-magic-list">${body}</div>`}
             </details>
             <div class="mcal-magic-actions">
                 ${preassign ? `
@@ -322,7 +418,7 @@ function adviceHTML(number, title, text, body, kind, count, { preassign = false,
         </section>`;
 }
 
-export function planHTML(plan, monthLabel) {
+export function planHTML(plan, monthLabel, month = null) {
     const groups = movesByWorker(plan.moves);
     const advices = [];
     let number = 0;
@@ -336,7 +432,13 @@ export function planHTML(plan, monthLabel) {
             `${escapeHTML(MOVE_TIERS.find(tier => tier.id === group.tier)?.label || rotationLabel(group.name))}: en ${group.items.length === 1 ? "uno de sus turnos" : `${group.items.length} de sus turnos`} de este mes queda como supernumerario. Se mueve a turnos donde falta gente (cupos o ausencias). No suma horas extras.`,
             group.items.map((item, position) => moveRowHTML(item, indexes[position])).join(""),
             `move:${escapeHTML(group.name)}`,
-            group.items.length
+            group.items.length,
+            {
+                // Su mes con todos los movimientos marcados (se repinta al
+                // desmarcar alguno).
+                side: month ? workerMonthHTML(group.name, month, group.items) : "",
+                worker: group.name
+            }
         ));
     });
 
@@ -349,12 +451,13 @@ export function planHTML(plan, monthLabel) {
             ++number,
             `Pasar a ${escapeHTML(item.name)} de Diurno al grupo ${escapeHTML(item.group)}`,
             `Al grupo ${escapeHTML(item.group)} le falta gente en ${item.fills} turnos de este mes desde el ${escapeHTML(dateLabel(item.startKey))}. ${escapeHTML(item.name)} hace rotativa diurna: pasa al 4to turno en ese grupo desde ese día, partiendo con ${escapeHTML(item.firstTurnLabel)}, y deja de hacer Diurno. No suma horas extras: es su nueva rotativa.${lost}${item.alternatives?.length ? ` Otras personas de Diurno: ${item.alternatives.map(escapeHTML).join(", ")}.` : ""}`,
-            `<label class="mcal-magic-row">
-                <input type="checkbox" data-magic-pick="rotation" value="${index}" checked>
+            `<div class="mcal-magic-row">
+                <input type="hidden" data-magic-pick="rotation" value="${index}">
                 <span>${escapeHTML(item.name)} → grupo ${escapeHTML(item.group)} desde el ${escapeHTML(dateLabel(item.startKey))} (${escapeHTML(item.firstTurnLabel)}), cubre ${item.fills} turnos del mes</span>
-            </label>`,
+            </div>`,
             `rotation:${index}`,
-            1
+            1,
+            { single: true }
         ));
     });
 
@@ -645,7 +748,7 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
         if (closed || id !== runId || !next) return;
 
         plan = next;
-        body.innerHTML = planHTML(plan, monthLabel);
+        body.innerHTML = planHTML(plan, monthLabel, month);
     }
 
     let applying = false;
@@ -808,6 +911,24 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
                 button.hasAttribute("data-magic-request")
             );
         }
+    });
+    // Marcar o desmarcar un movimiento repinta el mes de ese trabajador.
+    backdrop.addEventListener("change", event => {
+        const input = event.target.closest?.('[data-magic-pick="move"]');
+
+        if (!input || !plan) return;
+
+        const section = input.closest("[data-magic-advice]");
+        const calendar = section?.querySelector("[data-magic-cal]");
+
+        if (!calendar) return;
+
+        const checked = [...section.querySelectorAll('[data-magic-pick="move"]')]
+            .filter(item => item.checked)
+            .map(item => plan.moves[Number(item.value)])
+            .filter(Boolean);
+
+        calendar.innerHTML = workerMonthHTML(section.dataset.magicWorkerName || "", month, checked);
     });
     document.addEventListener("keydown", onKeydown);
     document.body.appendChild(backdrop);

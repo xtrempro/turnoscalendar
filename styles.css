@@ -2062,7 +2062,7 @@ body[data-active-view="home"] .secondary-grid {
 }
 
 .turn-change-dialog.mcal-magic-dialog {
-    width: min(1280px, calc(100vw - 32px));
+    width: min(1480px, calc(100vw - 32px));
     max-height: calc(100vh - 32px);
     display: flex;
     flex-direction: column;
@@ -2199,6 +2199,132 @@ body[data-active-view="home"] .secondary-grid {
     justify-content: flex-end;
     flex-wrap: wrap;
     gap: 8px;
+}
+
+/* Mover turnos: la lista y, a la derecha, el mes del trabajador como
+   quedaria con los movimientos marcados. */
+.mcal-magic-movegrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+    gap: 16px;
+    align-items: start;
+    margin-top: 10px;
+}
+
+.mcal-magic-movegrid .mcal-magic-list {
+    margin-top: 0;
+}
+
+.mcal-magic-side {
+    position: sticky;
+    top: 0;
+}
+
+.mcal-wcal {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--panel);
+}
+
+.mcal-wcal-title {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-strong);
+    font-size: 0.86rem;
+}
+
+.mcal-wcal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 4px;
+}
+
+.mcal-wcal-weekday {
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-align: center;
+}
+
+.mcal-wcal-day {
+    display: grid;
+    align-content: space-between;
+    min-height: 42px;
+    padding: 3px 5px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--field);
+    color: var(--text-soft);
+    font-size: 0.7rem;
+}
+
+.mcal-wcal-day.is-empty {
+    border: 0;
+    background: transparent;
+}
+
+.mcal-wcal-day b {
+    font-weight: 700;
+}
+
+.mcal-wcal-day small {
+    justify-self: end;
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.mcal-wcal-day.has-turn {
+    border-color: transparent;
+    background: var(--wcal-color);
+    color: #fff;
+}
+
+/* Recibe un turno con el movimiento. */
+.mcal-wcal-day.is-arriving {
+    box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px #16a34a;
+}
+
+/* Queda libre: se tacha el turno que tenia. */
+.mcal-wcal-day.is-leaving {
+    border: 1px dashed #dc2626;
+    color: #dc2626;
+}
+
+.mcal-wcal-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin: 10px 0 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.mcal-wcal-key {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+}
+
+.mcal-wcal-key.is-arriving {
+    background: var(--field);
+    box-shadow: 0 0 0 2px #16a34a;
+}
+
+.mcal-wcal-key.is-leaving {
+    border: 1px dashed #dc2626;
+}
+
+@media (max-width: 900px) {
+    .mcal-magic-movegrid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .mcal-magic-side {
+        position: static;
+    }
 }
 
 /* Preasignar (a la izquierda, en azul como los preasignados) | Aplicar. */
