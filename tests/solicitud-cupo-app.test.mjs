@@ -599,3 +599,21 @@ test("horas extras: el calendario del elegido al pasar el mouse marca sus turnos
     assert.doesNotMatch(html, /mcal-wcal-day[^"]*is-leaving/, "un turno extra no deja ningun dia libre");
     assert.match(source, /backdrop\.addEventListener\("mouseover", event => \{\s*const select = event\.target\.closest\?\.\("\[data-magic-worker\]"\);/);
 });
+
+test("horas extras: reemplazo u honorarios sin contrato vigente se pueden elegir, con advertencia", async () => {
+    const { coverWarnings, contractWarningText } = await import("../js/monthlyMagic.js");
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+    const row = (index, worker, contractWarning) => ({ index, worker, baseD: 0, contractWarning, item: { keyDay: `2026-11-${index + 2}`, addD: 12 } });
+    const warnings = coverWarnings([
+        row(0, "Rita", "replacement"),
+        row(1, "Hugo", "honoraria"),
+        row(2, "Ana", "")
+    ], 40);
+
+    assert.match(warnings.get(0), /Rita es de reemplazo y no tiene contrato vigente/);
+    assert.match(warnings.get(1), /Hugo es de honorarios y no tiene contrato a honorarios/);
+    assert.equal(warnings.has(2), false);
+    assert.equal(contractWarningText("", "Ana", "2026-11-2"), "");
+    // Ya no se bloquea al aplicar por falta de contrato.
+    assert.doesNotMatch(source, /no tiene contrato vigente el \$\{when\}/);
+});

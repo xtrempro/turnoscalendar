@@ -16,7 +16,29 @@ import {
 import { getJSON, setJSON } from "./persistence.js";
 import { getHourReturn } from "./hourReturns.js";
 import { getClockMarks } from "./clockMarks.js";
-import { hasContractForDate, isHonorariaProfile, isReplacementProfile } from "./contracts.js";
+import {
+    hasContractForDate,
+    hasHonorariaContractForDate,
+    isHonorariaProfile,
+    isReplacementProfile
+} from "./contracts.js";
+
+/**
+ * Si quien cubriria no tiene contrato vigente ese dia: "replacement" (es de
+ * reemplazo sin contrato), "honoraria" (de honorarios sin contrato a
+ * honorarios) o "". Se puede asignar igual, con la advertencia a la vista.
+ */
+export function contractWarningFor(name, keyDay) {
+    if (isReplacementProfile(name, keyDay) && !hasContractForDate(name, keyDay)) return "replacement";
+    if (isHonorariaProfile(name, keyDay) && !hasHonorariaContractForDate(name, keyDay)) return "honoraria";
+    return "";
+}
+
+export function contractWarningText(kind, name, keyDay) {
+    if (kind === "replacement") return `${name} es de reemplazo y no tiene contrato vigente el ${dateLabel(keyDay)}.`;
+    if (kind === "honoraria") return `${name} es de honorarios y no tiene contrato a honorarios el ${dateLabel(keyDay)}.`;
+    return "";
+}
 import {
     buildReplacementCandidates,
     getMonthlyDiurnalOvertimeLimit,
@@ -286,9 +308,8 @@ function browserDeps(holidays, shouldContinue, groupNames = [], month = null) {
                     blockedDay: Boolean(candidate.blockedDay),
                     isForced: Boolean(candidate.isForced),
                     isLinked: false,
-                    // Un trabajador de reemplazo sin contrato ese dia pasa por el
-                    // editor de contrato: eso queda para el modal de siempre.
-                    needsContract: isReplacementProfile(name, keyDay) && !hasContractForDate(name, keyDay),
+                    // Sin contrato vigente ese dia se puede, con advertencia.
+                    contractWarning: contractWarningFor(name, keyDay),
                     grade: Number(getCompensationProfileAt(name, date)?.grade) || 0
                 };
             });
@@ -326,7 +347,7 @@ function coverRowHTML(item, index) {
         ? `cubre a ${escapeHTML(item.replaced)}`
         : `cupo de la Brecha${item.cupo?.label ? ` (${escapeHTML(item.cupo.label)})` : ""}`;
     const options = [
-        { name: item.worker, hhee: item.hhee, baseD: item.baseD, grade: item.grade },
+        { name: item.worker, hhee: item.hhee, baseD: item.baseD, grade: item.grade, contractWarning: item.contractWarning },
         ...(item.alternatives || [])
     ];
 
@@ -335,7 +356,7 @@ function coverRowHTML(item, index) {
             <input type="checkbox" data-magic-pick="cover" value="${index}" checked aria-label="Aplicar">
             <span>${escapeHTML(dateLabel(item.keyDay))} · ${escapeHTML(turnLabel(item.turn))} · ${what}${item.alsoByRotation ? ` <em class="mcal-magic-alt">también lo cubre el cambio de rotativa de ${escapeHTML(item.alsoByRotation)}</em>` : ""}</span>
             <select data-magic-worker="${index}" aria-label="Quién lo cubre" title="Pasa el mouse para ver su mes con los turnos extra marcados">
-                ${options.map(option => `<option value="${escapeHTML(option.name)}" data-base-d="${Number(option.baseD) || 0}">${escapeHTML(option.name)} · ${hoursLabel(option.hhee)} h HHEE · grado ${escapeHTML(String(option.grade || "—"))}</option>`).join("")}
+                ${options.map(option => `<option value="${escapeHTML(option.name)}" data-base-d="${Number(option.baseD) || 0}" data-contract-warning="${escapeHTML(option.contractWarning || "")}">${escapeHTML(option.name)} · ${hoursLabel(option.hhee)} h HHEE · grado ${escapeHTML(String(option.grade || "—"))}${option.contractWarning ? " · sin contrato vigente" : ""}</option>`).join("")}
             </select>
             ${invertedTag(item)}
             <span class="mcal-magic-warn" data-magic-warn="${index}" hidden></span>
@@ -358,7 +379,8 @@ function pickedCovers(section, covers) {
                 index,
                 item: covers[index],
                 worker: select?.value || covers[index]?.worker || "",
-                baseD: Number(option?.dataset?.baseD) || 0
+                baseD: Number(option?.dataset?.baseD) || 0,
+                contractWarning: option?.dataset?.contractWarning || ""
             };
         })
         .filter(entry => entry.item);
@@ -395,6 +417,9 @@ export function coverWarnings(entries, limit) {
             }
             if (days.get(row.item.keyDay) > 1) {
                 notes.push(`${worker} queda con dos turnos el ${dateLabel(row.item.keyDay)}.`);
+            }
+            if (row.contractWarning) {
+                notes.push(contractWarningText(row.contractWarning, worker, row.item.keyDay));
             }
             if (notes.length) warnings.set(row.index, notes.join(" "));
         });
@@ -703,10 +728,6 @@ export async function coverBlockReason(item, worker, { batch, holidays, countsBa
         moveShiftCreatesInvertedTwentyFour(item.turn, around(-1), around(1))
     ) {
         return `${worker} quedaría en 24 invertido el ${when}.`;
-    }
-
-    if (isReplacementProfile(worker, item.keyDay) && !hasContractForDate(worker, item.keyDay)) {
-        return `${worker} no tiene contrato vigente el ${when}.`;
     }
 
     const reference = item.replaced || item.cupo?.reference || "";

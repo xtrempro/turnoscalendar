@@ -157,14 +157,16 @@ test("3. horas extras: menos HHEE primero, despues grado mas alto, sin pasar el 
         { name: "PocoGrado18", hheeD: 4, hheeN: 0, isFree: true, grade: 18 },
         { name: "Tope", hheeD: 30, hheeN: 0, isFree: true, grade: 25 },
         { name: "Ocupado", hheeD: 0, hheeN: 0, isFree: false, grade: 25 },
-        { name: "SinContrato", hheeD: 0, hheeN: 0, isFree: true, needsContract: true, grade: 25 }
+        { name: "SinContrato", hheeD: 0, hheeN: 0, isFree: true, contractWarning: "replacement", grade: 25 }
     ];
     const plan = await planMonth(m, deps({}, { candidatesFor }));
 
     assert.equal(plan.covers.length, 1);
     assert.equal(plan.covers[0].worker, "PocoGrado18");
     assert.equal(plan.covers[0].replaced, "Bea");
-    assert.deepEqual(plan.covers[0].alternatives.map(item => item.name), ["PocoGrado10", "Mucho"], "Tope pasaria las 40 h");
+    // Sin contrato vigente se puede, pero va despues de quienes si tienen.
+    assert.deepEqual(plan.covers[0].alternatives.map(item => item.name), ["PocoGrado10", "Mucho", "SinContrato"], "Tope pasaria las 40 h");
+    assert.equal(plan.covers[0].alternatives[2].contractWarning, "replacement");
 });
 
 test("3. las horas planificadas cuentan: no se le carga todo al mismo", async () => {

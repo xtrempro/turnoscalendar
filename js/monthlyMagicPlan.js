@@ -131,7 +131,8 @@ export function orderMovesForApply(moves) {
  *   baseTurn(name, keyDay)
  *   neededTurnFor(absentName, keyDay)
  *   candidatesFor({ reference, keyDay, turn }) -> Promise<[{ name, hheeD,
- *       hheeN, isFree, blockedDay, isForced, isLinked, needsContract, grade }]>
+ *       hheeN, isFree, blockedDay, isForced, isLinked, grade, contractWarning
+ *       ("" | "replacement" | "honoraria": sin contrato vigente ese dia) }]>
  *   extraHours(keyDay, turn) -> { d, n } que suma cubrirlo
  *   diurnalLimit               tope mensual de horas extras diurnas
  *   shouldContinue()           false para cortar (cambio de mes)
@@ -460,7 +461,6 @@ export async function planMonth(model, deps) {
                         !candidate.isForced &&
                         !candidate.isLinked &&
                         !candidate.blockedDay &&
-                        !candidate.needsContract &&
                         // Libre tambien con el plan (no le llega un turno movido).
                         turnAt(candidate.name, row.keyDay) === TURNO.LIBRE &&
                         !isTouched(candidate.name, row.keyDay)
@@ -484,6 +484,9 @@ export async function planMonth(model, deps) {
                     .filter(candidate => !candidate.overLimit && (!candidate.inverted || deps.allowInverted))
                     .sort((a, b) =>
                         Number(a.inverted) - Number(b.inverted) ||
+                        // Sin contrato vigente ese dia (reemplazo u honorarios)
+                        // se puede, con advertencia, pero va despues.
+                        Number(Boolean(a.contractWarning)) - Number(Boolean(b.contractWarning)) ||
                         a.hhee - b.hhee ||
                         (Number(b.grade) || 0) - (Number(a.grade) || 0) ||
                         a.name.localeCompare(b.name)
@@ -521,11 +524,18 @@ export async function planMonth(model, deps) {
                     // Horas diurnas que suma este turno a quien lo cubra.
                     addD: Number(adding.d) || 0,
                     grade: pick.grade,
+                    contractWarning: pick.contractWarning || "",
                     inverted: pick.inverted,
                     replaced: gap?.name || "",
                     cupo: cupo || null,
                     cupoKey,
-                    alternatives: ranked.slice(1, 4).map(item => ({ name: item.name, hhee: item.hhee, baseD: item.baseD, grade: item.grade }))
+                    alternatives: ranked.slice(1, 4).map(item => ({
+                        name: item.name,
+                        hhee: item.hhee,
+                        baseD: item.baseD,
+                        grade: item.grade,
+                        contractWarning: item.contractWarning || ""
+                    }))
                 });
 
                 const planned = plannedHours.get(pick.name) || { d: 0, n: 0 };
