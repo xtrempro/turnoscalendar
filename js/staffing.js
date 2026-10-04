@@ -53,7 +53,8 @@ import {
 import {
     getReplacementForCoveredShift,
     getReplacementsByWorkerForDay,
-    replacementActive
+    replacementActive,
+    setCupoOpenChecker
 } from "./replacements.js";
 import {
     addAuditLog,
@@ -2234,6 +2235,20 @@ export function getRotaGapShifts({
 
     return rows;
 }
+
+// Si a ese dia y turno todavia le falta alguien por ese motivo de cupo. Lo
+// consulta replacements.js antes de aplicar una solicitud de cupo aceptada en
+// la app: si alguien lo cubrio mientras tanto, no se cubre dos veces.
+setCupoOpenChecker((reason, keyDay, turno) => {
+    const [year, month, day] = String(keyDay || "").split("-").map(Number);
+
+    if (!year && year !== 0) return true;
+
+    return rotaGapRowsForDate(new Date(year, month, day), new Map()).some(row =>
+        row.motive === reason &&
+        Number(row.turno) === Number(turno)
+    );
+});
 
 // Un dia del barrido. Vive aparte para que la version que cede el hilo y la
 // de una tirada compartan EXACTAMENTE el mismo calculo.

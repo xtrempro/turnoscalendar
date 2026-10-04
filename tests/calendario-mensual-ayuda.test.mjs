@@ -266,8 +266,10 @@ test("etapa 2: si a un grupo le falta gente en varios turnos, alguien de Diurno 
         },
         "quien pierde menos, desde el primer cupo que no ya paso"
     );
-    // El cupo del 1 (ya pasado) sigue pidiendo horas extras; los del 3 y 4 no.
-    assert.equal(candidatesAsked, 1);
+    // El cupo del 1 ya paso: no se toca (ni horas extras); los del 3 y 4 los
+    // cubre el cambio de rotativa.
+    assert.equal(candidatesAsked, 0);
+    assert.deepEqual(plan.unresolved, []);
 });
 
 test("etapa 2: el modal lo aplica con el mismo cambio de grupo de Titulares de Turnos", async () => {
@@ -301,4 +303,51 @@ test("un turno con solicitud pendiente en la app no se vuelve a proponer: queda 
     assert.equal(plan.waiting.length, 1);
     assert.equal(plan.waiting[0].worker, "Ana");
     assert.deepEqual(plan.unresolved, []);
+});
+
+test("auditoria: nada del plan toca dias anteriores a manana", async () => {
+    // Sobra gente el 1 y el 4; falta el 2 y el 5. Manana es el 3.
+    const m = model(6, 3, (row, day) => {
+        if (day === 1 || day === 4) row.slots.day.push(person(`X${day}`));
+        if (day === 2 || day === 5) {
+            row.slots.day.pop();
+            row.gaps.day.push({ name: `Aus${day}` });
+        }
+    });
+    const turns = { X1: { "2026-9-1": TURNO.LARGA }, X4: { "2026-9-4": TURNO.LARGA } };
+    let asked = [];
+    const plan = await planMonth(m, deps(turns, {
+        minStartKey: "2026-9-3",
+        canMoveSource: name => name.startsWith("X"),
+        candidatesFor: async ({ keyDay }) => {
+            asked.push(keyDay);
+            return [];
+        }
+    }));
+
+    // Solo X4 (el 4) se mueve, y solo hacia el 5.
+    assert.deepEqual(plan.moves.map(move => `${move.name}:${move.sourceKey}>${move.targetKey}`), ["X4:2026-9-4>2026-9-5"]);
+    assert.deepEqual(asked, [], "el 2 ya paso: no se pide a nadie");
+    assert.deepEqual(plan.unresolved, []);
+    assert.deepEqual(plan.surplus, [], "lo que sobra en un dia pasado no cuenta");
+});
+
+test("auditoria: al aplicar se revalida todo, de a uno, y las solicitudes de cupo esperan la marca", async () => {
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+
+    // Revalidacion completa antes de cada cobertura.
+    assert.match(source, /const blocked = await coverBlockReason\(item, worker, \{/);
+    assert.match(source, /isShiftUncovered\(item\.replaced, item\.keyDay\)/);
+    assert.match(source, /isCupoStillOpen\(item\.cupo\?\.motive \|\| "", item\.keyDay, item\.turn\)/);
+    assert.match(source, /await buildReplacementCandidates\(reference, item\.keyDay,/);
+    assert.match(source, /countsBatchHours \? batch\.hours\.get\(worker\) \|\| 0 : 0/);
+    // Un consejo a la vez, todos los botones bloqueados, con try/finally.
+    assert.match(source, /if \(!plan \|\| applying\) return;/);
+    assert.match(source, /querySelectorAll\("\[data-magic-apply\]"\)\.forEach\(button => \{\s*button\.disabled = busy;/);
+    assert.match(source, /\} finally \{\s*applying = false;\s*\}/);
+    // Solicitudes de cupo: encendidas en test, apagadas en produccion.
+    assert.match(source, /export const CUPO_APP_REQUESTS_IN_PRODUCTION = false;/);
+    assert.match(source, /IS_TEST_ENVIRONMENT \|\| CUPO_APP_REQUESTS_IN_PRODUCTION/);
+    // Diurno -> turno: sin contratos de reemplazo.
+    assert.match(source, /!isHonorariaProfile\(name\) &&\s*!isReplacementProfile\(name\)/);
 });

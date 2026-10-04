@@ -162,6 +162,13 @@ export async function planMonth(model, deps) {
         ["day", "night"].forEach(slot => count.set(cellId(row.keyDay, slot), row.slots?.[slot]?.length || 0));
     });
 
+    // Nada del plan toca un dia anterior a `minStartKey` (manana): ni el
+    // origen ni el destino de un movimiento, ni una hora extra, ni un cambio de
+    // rotativa. Un turno ya hecho no se reescribe.
+    const actionableRows = rows.filter(row =>
+        !deps.minStartKey || dayIndex(row.keyDay) >= dayIndex(deps.minStartKey)
+    );
+
     const turnAt = (name, keyDay) => {
         const planned = overlay.get(name)?.get(keyDay);
 
@@ -209,7 +216,7 @@ export async function planMonth(model, deps) {
         const sourceTurn = Number(deps.baseTurn(name, sourceKey)) || SLOT_TURN[slot];
         let best = null;
 
-        for (const row of rows) {
+        for (const row of actionableRows) {
             for (const targetSlot of ["day", "night"]) {
                 if (cellCount(row.keyDay, targetSlot) >= target) continue;
 
@@ -255,7 +262,7 @@ export async function planMonth(model, deps) {
             changed = false;
             passes += 1;
 
-            for (const row of rows) {
+            for (const row of actionableRows) {
                 for (const slot of ["day", "night"]) {
                     while (cellCount(row.keyDay, slot) > target) {
                         if (deps.shouldContinue && !deps.shouldContinue()) return null;
@@ -321,7 +328,7 @@ export async function planMonth(model, deps) {
     if (deps.diurnoWorkers) {
         const byGroup = new Map();
 
-        rows.forEach(row => {
+        actionableRows.forEach(row => {
             if (deps.minStartKey && dayIndex(row.keyDay) < dayIndex(deps.minStartKey)) return;
 
             ["day", "night"].forEach(slot => {
@@ -386,7 +393,7 @@ export async function planMonth(model, deps) {
 
     // 3. Horas extras para lo que siga faltando.
 
-    for (const row of rows) {
+    for (const row of actionableRows) {
         for (const slot of ["day", "night"]) {
             while (cellCount(row.keyDay, slot) < target) {
                 if (deps.shouldContinue && !deps.shouldContinue()) return null;
@@ -509,7 +516,7 @@ export async function planMonth(model, deps) {
         }
     }
 
-    const surplus = rows.flatMap(row => ["day", "night"]
+    const surplus = actionableRows.flatMap(row => ["day", "night"]
         .filter(slot => cellCount(row.keyDay, slot) > target)
         .map(slot => ({ keyDay: row.keyDay, slot, extra: cellCount(row.keyDay, slot) - target })));
 

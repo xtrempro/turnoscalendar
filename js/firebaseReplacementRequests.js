@@ -16,6 +16,34 @@ let syncInFlight = false;
 let servicesCache = null;
 let onRequestsChanged = () => {};
 
+// Lo que ya esta en la nube, por solicitud. Antes cada cambio volvia a subir
+// TODAS las solicitudes historicas en un solo lote, que se iba a topar con el
+// limite de 500 escrituras por lote; ahora solo sube las que cambiaron, en
+// lotes de hasta BATCH_LIMIT.
+const syncedSignatures = new Map();
+const BATCH_LIMIT = 400;
+
+// La huella de una solicitud, sin la fecha que pone el servidor.
+export function requestSignature(request) {
+    const { updatedAt, ...rest } = request || {};
+
+    return JSON.stringify(rest);
+}
+
+/** Las solicitudes que difieren de lo ya subido, en lotes. */
+export function pendingRequestUploads(requests, synced = syncedSignatures, limit = BATCH_LIMIT) {
+    const changed = (requests || []).filter(request =>
+        request?.id && synced.get(String(request.id)) !== requestSignature(request)
+    );
+    const batches = [];
+
+    for (let index = 0; index < changed.length; index += limit) {
+        batches.push(changed.slice(index, index + limit));
+    }
+
+    return batches;
+}
+
 function requestDocId(request) {
     return encodeURIComponent(String(request?.id || "").trim())
         .replace(/\./g, "%2E");
@@ -52,30 +80,32 @@ async function uploadRequests(requests) {
             db,
             firestoreModule
         } = await services();
-        const batch = firestoreModule.writeBatch(db);
 
-        requests.forEach(request => {
-            if (!request?.id) return;
+        for (const chunk of pendingRequestUploads(requests)) {
+            const batch = firestoreModule.writeBatch(db);
 
-            const ref = firestoreModule.doc(
-                db,
-                "workspaces",
-                activeWorkspaceId,
-                "replacementRequests",
-                requestDocId(request)
-            );
+            chunk.forEach(request => {
+                const ref = firestoreModule.doc(
+                    db,
+                    "workspaces",
+                    activeWorkspaceId,
+                    "replacementRequests",
+                    requestDocId(request)
+                );
 
-            batch.set(
-                ref,
-                {
-                    ...request,
-                    updatedAt: firestoreModule.serverTimestamp()
-                },
-                { merge: true }
-            );
-        });
+                batch.set(
+                    ref,
+                    {
+                        ...request,
+                        updatedAt: firestoreModule.serverTimestamp()
+                    },
+                    { merge: true }
+                );
+            });
 
-        await batch.commit();
+            await batch.commit();
+            chunk.forEach(request => syncedSignatures.set(String(request.id), requestSignature(request)));
+        }
     } catch (error) {
         console.warn(
             "No se pudieron sincronizar solicitudes de reemplazo.",
@@ -140,7 +170,13 @@ function applyRemoteSnapshot(snapshot) {
     const localRequests = getReplacementRequests();
     const remoteRequests = snapshot.docs
         .map(docSnap => docSnap.data())
-        .filter(request => request?.id)
+        .filter(request => request?.id);
+
+    // Lo que llega de la nube ya esta subido tal cual.
+    remoteRequests.forEach(request =>
+        syncedSignatures.set(String(request.id), requestSignature(request))
+    );
+    remoteRequests
         .sort((a, b) =>
             String(a.createdAt || "").localeCompare(
                 String(b.createdAt || "")
@@ -238,6 +274,7 @@ export function stopFirebaseReplacementRequestSync() {
 
     activeWorkspaceId = "";
     applyingRemoteRequests = false;
+    syncedSignatures.clear();
 }
 
 if (typeof window !== "undefined") {

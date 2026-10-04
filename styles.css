@@ -2215,6 +2215,11 @@ body.theme-dark .mcal-magic-preassign {
     color: #93c5fd;
 }
 
+/* Mientras se aplica un consejo: nada mas se puede apretar. */
+.turn-change-dialog-backdrop.is-busy .mcal-magic-dialog {
+    cursor: progress;
+}
+
 /* Enviar solicitud a la app de los trabajadores. */
 .mcal-magic-request {
     border-color: rgba(22, 163, 74, 0.45);

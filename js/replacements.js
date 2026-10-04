@@ -1337,6 +1337,8 @@ export function saveReplacement(data) {
         // aparte de `reason`: el motivo interno ("Completar rotativa de ...")
         // es el que lo deja con los titulares y descuenta el cupo.
         comment: String(data.comment || "").trim(),
+        // El cupo de la Brecha que cubre una solicitud aceptada desde la app.
+        ...(data.cupoKey ? { cupoKey: String(data.cupoKey) } : {}),
         source: data.source || "replacement",
         addsShift: data.addsShift !== false,
         date: isoDate,
@@ -1848,6 +1850,25 @@ function requestShiftKey(request) {
     ].join("|");
 }
 
+// Si un cupo de la Brecha sigue abierto ese dia y turno. Lo responde
+// staffing.js, que importa este modulo (por eso se inyecta). Sin quien
+// responda, se da por abierto: es lo que hacia antes.
+let cupoOpenChecker = null;
+
+export function setCupoOpenChecker(checker) {
+    cupoOpenChecker = typeof checker === "function" ? checker : null;
+}
+
+export function isCupoStillOpen(reason, keyDay, turno) {
+    if (!cupoOpenChecker) return true;
+
+    try {
+        return Boolean(cupoOpenChecker(reason, keyDay, turno));
+    } catch {
+        return true;
+    }
+}
+
 export function applyAcceptedReplacementRequests() {
     let changed = false;
     const replacements = getReplacements();
@@ -1916,6 +1937,30 @@ export function applyAcceptedReplacementRequests() {
             )
         );
 
+        // Un cupo que ya cubrio alguien mientras la solicitud esperaba (a mano,
+        // o con otra solicitud) no se cubre dos veces: la Brecha dice si sigue
+        // abierto, y si no, la solicitud queda descartada.
+        if (
+            !alreadyApplied &&
+            !winner.replaced &&
+            winner.reason &&
+            !isCupoStillOpen(winner.reason, winner.keyDay, winnerTurno)
+        ) {
+            const now = new Date().toISOString();
+
+            shiftRequests.forEach(shiftRequest => {
+                const target = nextRequests.find(request => request.id === shiftRequest.id);
+
+                if (target && (target.status === "pending" || target.status === "accepted")) {
+                    target.status = "superseded";
+                    target.supersededAt = now;
+                    target.supersededReason = "cupo_cubierto";
+                }
+            });
+            changed = true;
+            return;
+        }
+
         if (!alreadyApplied && !winner.replaced && winner.reason) {
             // Cupo de la Brecha aceptado desde la app: el mismo registro que
             // deja cubrirlo desde el modal (turno extra con el motivo del cupo).
@@ -1924,6 +1969,7 @@ export function applyAcceptedReplacementRequests() {
                 replaced: "",
                 reason: winner.reason,
                 comment: "",
+                cupoKey: winner.cupoKey || "",
                 keyDay: winner.keyDay,
                 turno: winnerTurno,
                 source: "rota_gap",

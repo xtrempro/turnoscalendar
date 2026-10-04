@@ -131,3 +131,60 @@ test("la Ayuda envia la solicitud solo a quien tiene la app, y lo pendiente qued
     assert.match(source, /Esperando respuesta en la app/);
     assert.match(plan, /const pending = deps\.pendingRequestFor\?\.\(/);
 });
+
+test("auditoria: si el cupo ya lo cubrio alguien mientras esperaba, la aceptacion se descarta", async () => {
+    const { setCupoOpenChecker } = await import("../js/replacements.js");
+
+    setCupoOpenChecker(() => false);
+
+    try {
+        const request = createReplacementRequest({
+            worker: "Ana",
+            replaced: "",
+            keyDay: "2026-9-3",
+            turno: TURNO.LARGA,
+            absenceType: MOTIVE,
+            reason: MOTIVE,
+            cupoKey: `${MOTIVE}|2026-9-3|day|0`
+        });
+
+        accept(request);
+        assert.equal(applyAcceptedReplacementRequests(), true);
+        assert.deepEqual(getJSON("replacements", []), [], "no se cubre dos veces");
+
+        const stored = getJSON("replacementRequests", []).at(-1);
+
+        assert.equal(stored.status, "superseded");
+        assert.equal(stored.supersededReason, "cupo_cubierto");
+    } finally {
+        setCupoOpenChecker(null);
+    }
+});
+
+test("auditoria: la cobertura aplicada guarda la clave del cupo", () => {
+    const request = createReplacementRequest({
+        worker: "Ana", replaced: "", keyDay: "2026-9-3", turno: TURNO.LARGA,
+        absenceType: MOTIVE, reason: MOTIVE, cupoKey: "k-1"
+    });
+
+    accept(request);
+    applyAcceptedReplacementRequests();
+    assert.equal(getJSON("replacements", []).at(-1).cupoKey, "k-1");
+});
+
+test("auditoria: solo se suben las solicitudes que cambiaron, en lotes de a lo mas 400", async () => {
+    const { pendingRequestUploads, requestSignature } = await import("../js/firebaseReplacementRequests.js");
+    const requests = Array.from({ length: 900 }, (_, index) => ({ id: `r${index}`, status: "pending" }));
+    const synced = new Map(requests.slice(0, 850).map(request => [request.id, requestSignature(request)]));
+
+    // 850 ya estan en la nube tal cual; cambia una de ellas.
+    requests[3] = { ...requests[3], status: "accepted" };
+
+    const batches = pendingRequestUploads(requests, synced, 400);
+
+    assert.deepEqual(batches.map(batch => batch.length), [51]);
+    assert.equal(batches[0][0].id, "r3");
+    assert.deepEqual(pendingRequestUploads(requests, new Map(), 400).map(batch => batch.length), [400, 400, 100]);
+    // La fecha del servidor no cuenta como cambio.
+    assert.equal(requestSignature({ id: "a", updatedAt: 1 }), requestSignature({ id: "a", updatedAt: 2 }));
+});

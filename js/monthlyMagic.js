@@ -28,8 +28,12 @@ import {
     cancelReplacementRequest,
     createReplacementRequest,
     getAbsenceLabelForProfileDate,
+    isCupoStillOpen,
     saveReplacement
 } from "./replacements.js";
+import { isShiftUncovered } from "./home.js";
+import { IS_TEST_ENVIRONMENT } from "./firebaseConfig.js";
+import { moveShiftCreatesInvertedTwentyFour } from "./rulesEngine.js";
 import { addPreassignment } from "./preassignments.js";
 import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
@@ -38,6 +42,30 @@ import { applyGroupChange, countAffectedFrom, firstTurnForColumnAt, loadLeaveHol
 import { MOVE_TIERS, movesByWorker, orderMovesForApply, planMonth } from "./monthlyMagicPlan.js";
 
 const SLOT_LABEL = { day: "Día", night: "Noche" };
+
+// Solicitudes a la app por un CUPO de la Brecha. Una pestaña de supervisor con
+// la version anterior aplicaria su aceptacion sin el motivo del cupo, asi que
+// en produccion se encienden recien cuando no quedan versiones viejas abiertas
+// (se cambia esta marca y se vuelve a desplegar). Las solicitudes por una
+// ausencia no dependen de esto: las versiones anteriores ya las procesan bien.
+export const CUPO_APP_REQUESTS_IN_PRODUCTION = false;
+const CUPO_APP_REQUESTS_ENABLED = IS_TEST_ENVIRONMENT || CUPO_APP_REQUESTS_IN_PRODUCTION;
+
+function dayNumber(keyDay) {
+    return Math.round(keyToDate(keyDay).getTime() / 86400000);
+}
+
+// Manana: nada se aplica sobre un dia que ya paso (ni sobre hoy, en curso).
+function firstActionableKey() {
+    const tomorrow = new Date();
+
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return `${tomorrow.getFullYear()}-${tomorrow.getMonth()}-${tomorrow.getDate()}`;
+}
+
+function isActionable(keyDay) {
+    return dayNumber(keyDay) >= dayNumber(firstActionableKey());
+}
 
 function keyToDate(keyDay) {
     const [y, m, d] = String(keyDay).split("-").map(Number);
@@ -71,21 +99,20 @@ function isoOf(keyDay) {
 }
 
 function browserDeps(holidays, shouldContinue, groupNames = []) {
-    const tomorrow = new Date();
-
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
     return {
         shouldContinue,
         // Etapa 2: quien hace Diurno en esta profesion puede pasar a un grupo.
+        // Sin honorarios ni contratos de reemplazo: su rotativa la fija el
+        // contrato, y reescribirla desde aqui lo dejaria descalzado.
         diurnoWorkers: () => groupNames.filter(name =>
             String(getRotativa(name)?.type || "") === "diurno" &&
-            !isHonorariaProfile(name)
+            !isHonorariaProfile(name) &&
+            !isReplacementProfile(name)
         ),
         firstTurnFor: (letter, keyDay) => firstTurnForColumnAt(letter, keyToDate(keyDay)),
         affectedFrom: async (name, keyDay) =>
             countAffectedFrom(name, keyToDate(keyDay), await loadLeaveHolidays(name)),
-        minStartKey: `${tomorrow.getFullYear()}-${tomorrow.getMonth()}-${tomorrow.getDate()}`,
+        minStartKey: firstActionableKey(),
         pendingRequestFor: ({ replaced, keyDay, cupoKey }) =>
             getReplacementRequests().find(request =>
                 request?.status === "pending" &&
@@ -301,6 +328,13 @@ export function planHTML(plan, monthLabel) {
 
 function applyMove(item) {
     const { sourceKey, targetKey } = item;
+
+    if (!isActionable(sourceKey) || !isActionable(targetKey)) {
+        return "ese día ya pasó.";
+    }
+
+    // applyShiftMove vuelve a revisar el origen y el destino con las reglas de
+    // "Mover turno" (permisos, marcajes, cambios, 24 y 24 invertido).
     const result = window.applyShiftMove?.({
         profile: item.name,
         sourceKey,
@@ -314,7 +348,7 @@ function applyMove(item) {
     // En el destino habia un ausente sin cubrir: queda cubierto con este turno.
     // Es su propio turno movido, asi que no se le agrega otro (addsShift false)
     // ni suma horas extras.
-    if (item.covers) {
+    if (item.covers && isShiftUncovered(item.covers, targetKey)) {
         saveReplacement({
             worker: item.name,
             replaced: item.covers,
@@ -328,14 +362,86 @@ function applyMove(item) {
     return "";
 }
 
-function applyCover(item, worker, { preassign = false, request = false } = {}) {
+/**
+ * Por que ya no se puede aplicar una cobertura ("" si se puede). Se revisa
+ * todo de nuevo al aplicar, no lo que valia al calcular el plan: el modal pudo
+ * quedar abierto mientras cambiaban permisos, contratos, turnos u horas. `batch`
+ * acumula lo de este mismo envio (horas y turnos de quien ya se eligio en
+ * otra fila), que el calendario todavia no ve si es preasignacion o solicitud.
+ */
+export async function coverBlockReason(item, worker, { batch, holidays, countsBatchHours }) {
+    const when = dateLabel(item.keyDay);
+
+    if (!isActionable(item.keyDay)) return `${when}: ese día ya pasó.`;
     if (Number(getTurnoReal(worker, item.keyDay)) !== TURNO.LIBRE) {
-        return `${worker} ya tiene turno el ${dateLabel(item.keyDay)}.`;
+        return `${worker} ya tiene turno el ${when}.`;
     }
+
+    const stillNeeded = item.replaced
+        ? isShiftUncovered(item.replaced, item.keyDay)
+        : isCupoStillOpen(item.cupo?.motive || "", item.keyDay, item.turn);
+
+    if (!stillNeeded) return `${when}: ese turno ya está cubierto.`;
+
+    const batchTurns = batch.turns.get(worker) || new Map();
+
+    if (batchTurns.has(item.keyDay)) return `${worker} ya tiene otro turno de este envío el ${when}.`;
+
+    const around = offset => {
+        const date = keyToDate(item.keyDay);
+
+        date.setDate(date.getDate() + offset);
+
+        const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+
+        return batchTurns.get(key) ?? (Number(getTurnoReal(worker, key)) || TURNO.LIBRE);
+    };
+
+    if (
+        getTurnChangeConfig().allowInvertedTwentyFourHourShifts === false &&
+        moveShiftCreatesInvertedTwentyFour(item.turn, around(-1), around(1))
+    ) {
+        return `${worker} quedaría en 24 invertido el ${when}.`;
+    }
+
+    if (isReplacementProfile(worker, item.keyDay) && !hasContractForDate(worker, item.keyDay)) {
+        return `${worker} no tiene contrato vigente el ${when}.`;
+    }
+
+    const reference = item.replaced || item.cupo?.reference || "";
+    const result = reference
+        ? await buildReplacementCandidates(reference, item.keyDay, {
+            neededTurn: item.turn,
+            scope: "compatible",
+            holidays
+        })
+        : null;
+    const candidate = (result?.candidates || []).find(entry => entry.profile.name === worker);
+
+    if (!candidate || !candidate.isFree || candidate.backsPendingExtra || candidate.blockedDay || candidate.isForced) {
+        return `${worker} ya no está disponible para el ${when}.`;
+    }
+
+    const adding = Number(calcExtraHours(keyToDate(item.keyDay), Number(item.turn), holidays)?.d) || 0;
+    const already = countsBatchHours ? batch.hours.get(worker) || 0 : 0;
+    const limit = getMonthlyDiurnalOvertimeLimit();
+
+    if ((Number(candidate.hheeDiurnas) || 0) + already + adding > limit) {
+        return `${worker} pasaría el tope de ${hoursLabel(limit)} h diurnas con el turno del ${when}.`;
+    }
+
+    return "";
+}
+
+function applyCover(item, worker, { preassign = false, request = false } = {}) {
 
     // Solicitud a la app: le llega al trabajador y, si acepta, el turno se
     // asigna solo (applyAcceptedReplacementRequests). Un cupo lleva su motivo.
     if (request) {
+        if (!item.replaced && !CUPO_APP_REQUESTS_ENABLED) {
+            return `${dateLabel(item.keyDay)}: las solicitudes por cupo aún no están habilitadas; usa Aplicar o Preasignar.`;
+        }
+
         const created = createReplacementRequest({
             worker,
             replaced: item.replaced || "",
@@ -469,8 +575,22 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
         body.innerHTML = planHTML(plan, monthLabel);
     }
 
+    let applying = false;
+
+    function setBusy(busy) {
+        backdrop.querySelectorAll("[data-magic-apply]").forEach(button => {
+            button.disabled = busy;
+        });
+        backdrop.classList.toggle("is-busy", busy);
+    }
+
     async function apply(kind, onlySelected, preassign = false, request = false) {
-        if (!plan) return;
+        if (!plan || applying) return;
+
+        // Uno a la vez: con los botones activos, dos clics seguidos aplicaban
+        // dos consejos a medias sobre el mismo calendario.
+        applying = true;
+        setBusy(true);
 
         const section = backdrop.querySelector(`[data-magic-advice="${CSS.escape(kind)}"]`);
         const picked = type => [...(section?.querySelectorAll(`[data-magic-pick="${type}"]`) || [])]
@@ -478,41 +598,82 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             .map(input => Number(input.value));
         const errors = [];
 
-        pushHistory();
+        try {
+            pushHistory();
 
-        if (kind.startsWith("move:")) {
-            // El que libera un dia va antes que el que llega a ese dia.
-            orderMovesForApply(picked("move").map(index => plan.moves[index])).forEach(move => {
-                const error = applyMove(move);
+            if (kind.startsWith("move:")) {
+                // El que libera un dia va antes que el que llega a ese dia.
+                orderMovesForApply(picked("move").map(index => plan.moves[index])).forEach(move => {
+                    const error = applyMove(move);
 
-                if (error) errors.push(`${move.name} (${dateLabel(move.sourceKey)}): ${error}`);
-            });
-        } else if (kind.startsWith("rotation:")) {
-            for (const index of picked("rotation")) {
-                const item = plan.rotations[index];
-                const ok = await applyGroupChange({
-                    profile: item.name,
-                    startISO: isoOf(item.startKey),
-                    firstTurn: item.firstTurn,
-                    toLetter: item.group
+                    if (error) errors.push(`${move.name} (${dateLabel(move.sourceKey)}): ${error}`);
                 });
+            } else if (kind.startsWith("rotation:")) {
+                for (const index of picked("rotation")) {
+                    const item = plan.rotations[index];
 
-                if (!ok) errors.push(`${item.name}: no se pudo cambiar la rotativa.`);
+                    if (!isActionable(item.startKey)) {
+                        errors.push(`${item.name}: el ${dateLabel(item.startKey)} ya pasó.`);
+                        continue;
+                    }
+
+                    if (String(getRotativa(item.name)?.type || "") !== "diurno" || isReplacementProfile(item.name)) {
+                        errors.push(`${item.name}: ya no hace rotativa diurna.`);
+                        continue;
+                    }
+
+                    const ok = await applyGroupChange({
+                        profile: item.name,
+                        startISO: isoOf(item.startKey),
+                        firstTurn: item.firstTurn,
+                        toLetter: item.group
+                    });
+
+                    if (!ok) errors.push(`${item.name}: no se pudo cambiar la rotativa.`);
+                }
+            } else if (kind === "cover") {
+                const holidays = await fetchHolidays(month.getFullYear());
+                const batch = { hours: new Map(), turns: new Map() };
+
+                for (const index of picked("cover")) {
+                    const item = plan.covers[index];
+                    const worker = section.querySelector(`[data-magic-worker="${index}"]`)?.value || item.worker;
+                    const blocked = await coverBlockReason(item, worker, {
+                        batch,
+                        holidays,
+                        // Lo asignado de verdad ya lo ve el calendario; lo
+                        // preasignado o solicitado, no.
+                        countsBatchHours: preassign || request
+                    });
+                    const error = blocked || applyCover(item, worker, { preassign, request });
+
+                    if (error) {
+                        errors.push(error);
+                        continue;
+                    }
+
+                    const adding = Number(calcExtraHours(keyToDate(item.keyDay), Number(item.turn), holidays)?.d) || 0;
+
+                    batch.hours.set(worker, (batch.hours.get(worker) || 0) + adding);
+                    if (!batch.turns.has(worker)) batch.turns.set(worker, new Map());
+                    batch.turns.get(worker).set(item.keyDay, Number(item.turn));
+                }
             }
-        } else if (kind === "cover") {
-            picked("cover").forEach(index => {
-                const item = plan.covers[index];
-                const worker = section.querySelector(`[data-magic-worker="${index}"]`)?.value || item.worker;
-                const error = applyCover(item, worker, { preassign, request });
-
-                if (error) errors.push(error);
-            });
+        } catch (error) {
+            console.error(error);
+            errors.push(`Se detuvo por un error: ${error?.message || error}. Lo anterior a ese punto sí quedó aplicado.`);
+        } finally {
+            applying = false;
         }
 
-        await onApplied?.();
+        try {
+            await onApplied?.();
+        } catch (error) {
+            console.error(error);
+        }
 
         if (errors.length) {
-            await showAlert(`Algunos no se aplicaron porque el calendario cambió:\n\n${errors.join("\n")}`, {
+            await showAlert(`Algunos no se aplicaron:\n\n${errors.join("\n")}`, {
                 title: "Aplicado en parte",
                 tone: "warning"
             });
@@ -530,7 +691,6 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
         const button = event.target.closest("[data-magic-apply]");
 
         if (button) {
-            button.disabled = true;
             void apply(
                 button.dataset.magicApply,
                 button.dataset.magicOnly === "selected",
