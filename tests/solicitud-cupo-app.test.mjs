@@ -471,8 +471,10 @@ test("pasar de Diurno a un grupo se puede descartar por el mes", async () => {
     const december = new Date(2026, 11, 1);
 
     assert.equal(magic.isRotationDismissed(december, "Diurna", "C"), false);
-    magic.dismissRotation(december, "Diurna", "C");
+    magic.dismissRotation(december, "C", new Date(2026, 11, 5));
     assert.equal(magic.isRotationDismissed(december, "Diurna", "C"), true);
+    // Se descarta la OPCION del grupo: tampoco se propone a otra persona.
+    assert.equal(magic.isRotationDismissed(december, "Otra persona", "C"), true);
     assert.equal(magic.isRotationDismissed(december, "Diurna", "D"), false, "solo ese grupo");
     assert.equal(magic.isRotationDismissed(new Date(2027, 0, 1), "Diurna", "C"), false, "solo ese mes");
 
@@ -521,4 +523,79 @@ test("el plan no propone a quien se descarto, y ofrece horas extras como alterna
     assert.equal(dismissed.rotations.length, 0);
     assert.equal(dismissed.covers.length, 2);
     assert.ok(dismissed.covers.every(cover => !cover.alsoByRotation));
+});
+
+test("hotfix: guardar el comentario vuelve a publicar a ese trabajador vaciando shiftMoves", async () => {
+    const { commitShiftMoveComment } = await import("../js/shiftMoveComment.js");
+    const { registerShiftMove, setShiftMoveComment, getShiftMoves } = await import("../js/shiftMoves.js");
+    const published = [];
+    const publish = (...args) => published.push(args);
+    const move = registerShiftMove({ profile: "Ana", sourceKey: "2026-11-4", targetKey: "2026-11-2", sourceTurn: 1, destinationTurn: 1 });
+
+    assert.equal(commitShiftMoveComment({ moveId: move.id, profile: "Ana", comment: "Solicitud del funcionario" }, { setComment: setShiftMoveComment, publish }), true);
+    assert.equal(getShiftMoves().at(-1).comment, "Solicitud del funcionario");
+    assert.deepEqual(published, [[0, "Ana", null, { requiresLocalStateFlush: true, stateKeys: ["shiftMoves"] }]]);
+
+    // Sin comentario, o si el movimiento ya no existe: no se publica nada.
+    published.length = 0;
+    assert.equal(commitShiftMoveComment({ moveId: move.id, profile: "Ana", comment: "" }, { setComment: setShiftMoveComment, publish }), false);
+    assert.equal(commitShiftMoveComment({ moveId: "no-existe", profile: "Ana", comment: "x" }, { setComment: setShiftMoveComment, publish }), false);
+    assert.deepEqual(published, []);
+});
+
+test("hotfix: los descartes de meses viejos se podan al guardar uno nuevo", async () => {
+    const magic = await import("../js/monthlyMagic.js");
+
+    setJSON("magicDismissedRotations", {
+        "2024-0": ["*|A"],
+        "2026-5": ["*|B"],
+        "2026-11": ["Diurna|C"]
+    });
+    magic.dismissRotation(new Date(2026, 11, 1), "D", new Date(2026, 11, 5));
+
+    const stored = getJSON("magicDismissedRotations", {});
+
+    assert.deepEqual(Object.keys(stored).sort(), ["2026-11", "2026-5"], "2024 queda fuera de los 12 meses");
+    assert.deepEqual(stored["2026-11"], ["Diurna|C", "*|D"]);
+    // Lo guardado con el formato anterior (persona|grupo) se sigue respetando.
+    assert.equal(magic.isRotationDismissed(new Date(2026, 11, 1), "Diurna", "C"), true);
+});
+
+test("horas extras: avisa en vivo si con lo marcado alguien pasa el tope o queda con dos turnos el dia", async () => {
+    const { coverWarnings } = await import("../js/monthlyMagic.js");
+    const row = (index, worker, keyDay, baseD, addD = 12) => ({ index, worker, baseD, item: { keyDay, addD } });
+
+    // Ana lleva 20 h diurnas: con dos Largas (12 + 12) llega a 44 > 40.
+    const warnings = coverWarnings([
+        row(0, "Ana", "2026-11-2", 20),
+        row(1, "Ana", "2026-11-5", 20),
+        row(2, "Beto", "2026-11-2", 0)
+    ], 40);
+
+    assert.match(warnings.get(0), /Ana quedaría con 44 h diurnas \(tope 40\)/);
+    assert.match(warnings.get(1), /tope 40/);
+    assert.equal(warnings.has(2), false);
+
+    // Cambiar la fila 1 a Beto apaga el aviso de Ana; pero Beto queda con dos el 2.
+    const after = coverWarnings([
+        row(0, "Ana", "2026-11-2", 20),
+        row(1, "Beto", "2026-11-2", 0),
+        row(2, "Beto", "2026-11-2", 0)
+    ], 40);
+
+    assert.equal(after.has(0), false);
+    assert.match(after.get(1), /dos turnos/);
+});
+
+test("horas extras: el calendario del elegido al pasar el mouse marca sus turnos extra", async () => {
+    const { workerMonthHTML } = await import("../js/monthlyMagic.js");
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+    const html = workerMonthHTML("Ana", new Date(2026, 11, 1), [
+        { sourceKey: "2026-11-9", targetKey: "2026-11-9", destinationTurn: TURNO.LARGA }
+    ], { title: "Ana: su mes con los turnos extra marcados" });
+
+    assert.match(html, /Ana: su mes con los turnos extra marcados/);
+    assert.match(html, /mcal-wcal-day has-turn is-arriving"[^>]*>\s*<b>9<\/b>/);
+    assert.doesNotMatch(html, /mcal-wcal-day[^"]*is-leaving/, "un turno extra no deja ningun dia libre");
+    assert.match(source, /backdrop\.addEventListener\("mouseover", event => \{\s*const select = event\.target\.closest\?\.\("\[data-magic-worker\]"\);/);
 });

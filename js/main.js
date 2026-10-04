@@ -491,6 +491,7 @@ import {
     registerShiftMove,
     setShiftMoveComment
 } from "./shiftMoves.js";
+import { commitShiftMoveComment } from "./shiftMoveComment.js";
 import {
     cancelReplacementById,
     cancelReplacementsForWorkerRange,
@@ -9893,15 +9894,18 @@ async function askShiftMoveComment(moveId, profile) {
 
     const comment = await openShiftMoveCommentDialog({ worker: profile });
 
-    if (!comment) return;
-
-    setShiftMoveComment(moveId, comment);
-    addAuditLog(
-        AUDIT_CATEGORY.CALENDAR,
-        "Comento movimiento de turno",
-        `${profile}: "${comment}".`,
-        { profile, moveId }
-    );
+    // Guarda y vuelve a publicar a ese trabajador: la proyeccion ya salio con
+    // el movimiento, sin el comentario (ver js/shiftMoveComment.js).
+    commitShiftMoveComment({ moveId, profile, comment }, {
+        setComment: setShiftMoveComment,
+        publish: scheduleWorkerAppDataPublish,
+        audit: (worker, text, id) => addAuditLog(
+            AUDIT_CATEGORY.CALENDAR,
+            "Comento movimiento de turno",
+            `${worker}: "${text}".`,
+            { profile: worker, moveId: id }
+        )
+    });
 }
 
 window.askShiftMoveComment = askShiftMoveComment;

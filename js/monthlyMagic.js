@@ -172,27 +172,49 @@ function isoOf(keyDay) {
 }
 
 // Cambios Diurno -> grupo que el supervisor descarto, por mes: "AAAA-M" ->
-// ["persona|grupo"]. Es de la unidad (todos los supervisores lo ven igual).
+// ["*|grupo"]. Se descarta la OPCION (pasar a alguien de Diurno a ese grupo),
+// no a la persona: si no, al descartar a una se proponia la siguiente para el
+// mismo grupo y parecia que no se habia descartado. Es de la unidad (todos los
+// supervisores lo ven igual). Solo se guardan los ultimos meses.
 const DISMISSED_ROTATIONS_KEY = "magicDismissedRotations";
+const DISMISSED_ROTATIONS_KEEP_MONTHS = 12;
 
 function monthKeyOf(month) {
     return `${month.getFullYear()}-${month.getMonth()}`;
 }
 
+function monthIndexOfKey(key) {
+    const [year, month] = String(key).split("-").map(Number);
+
+    return Number.isFinite(year) && Number.isFinite(month) ? year * 12 + month : NaN;
+}
+
 export function isRotationDismissed(month, name, group) {
     const list = getJSON(DISMISSED_ROTATIONS_KEY, {})?.[monthKeyOf(month)] || [];
 
-    return Array.isArray(list) && list.includes(`${name}|${group}`);
+    // `persona|grupo` es como se guardaba antes de descartar por grupo.
+    return Array.isArray(list) && (list.includes(`*|${group}`) || list.includes(`${name}|${group}`));
 }
 
-export function dismissRotation(month, name, group) {
+/**
+ * Descarta pasar a alguien de Diurno al grupo en ese mes, y poda los meses
+ * de mas de DISMISSED_ROTATIONS_KEEP_MONTHS hacia atras (la clave vive en el
+ * documento compartido de la unidad: no puede crecer sin tope).
+ */
+export function dismissRotation(month, group, today = new Date()) {
     const all = getJSON(DISMISSED_ROTATIONS_KEY, {}) || {};
     const key = monthKeyOf(month);
-    const list = Array.isArray(all[key]) ? all[key] : [];
+    const oldest = today.getFullYear() * 12 + today.getMonth() - DISMISSED_ROTATIONS_KEEP_MONTHS;
+    const kept = Object.fromEntries(
+        Object.entries(all).filter(([monthKey, list]) =>
+            monthIndexOfKey(monthKey) >= oldest && Array.isArray(list)
+        )
+    );
+    const list = kept[key] || [];
 
-    if (list.includes(`${name}|${group}`)) return;
+    if (!list.includes(`*|${group}`)) kept[key] = [...list, `*|${group}`];
 
-    setJSON(DISMISSED_ROTATIONS_KEY, { ...all, [key]: [...list, `${name}|${group}`] });
+    setJSON(DISMISSED_ROTATIONS_KEY, kept);
 }
 
 function browserDeps(holidays, shouldContinue, groupNames = [], month = null) {
@@ -304,7 +326,7 @@ function coverRowHTML(item, index) {
         ? `cubre a ${escapeHTML(item.replaced)}`
         : `cupo de la Brecha${item.cupo?.label ? ` (${escapeHTML(item.cupo.label)})` : ""}`;
     const options = [
-        { name: item.worker, hhee: item.hhee, grade: item.grade },
+        { name: item.worker, hhee: item.hhee, baseD: item.baseD, grade: item.grade },
         ...(item.alternatives || [])
     ];
 
@@ -312,11 +334,73 @@ function coverRowHTML(item, index) {
         <div class="mcal-magic-row">
             <input type="checkbox" data-magic-pick="cover" value="${index}" checked aria-label="Aplicar">
             <span>${escapeHTML(dateLabel(item.keyDay))} · ${escapeHTML(turnLabel(item.turn))} · ${what}${item.alsoByRotation ? ` <em class="mcal-magic-alt">también lo cubre el cambio de rotativa de ${escapeHTML(item.alsoByRotation)}</em>` : ""}</span>
-            <select data-magic-worker="${index}" aria-label="Quién lo cubre">
-                ${options.map(option => `<option value="${escapeHTML(option.name)}">${escapeHTML(option.name)} · ${hoursLabel(option.hhee)} h HHEE · grado ${escapeHTML(String(option.grade || "—"))}</option>`).join("")}
+            <select data-magic-worker="${index}" aria-label="Quién lo cubre" title="Pasa el mouse para ver su mes con los turnos extra marcados">
+                ${options.map(option => `<option value="${escapeHTML(option.name)}" data-base-d="${Number(option.baseD) || 0}">${escapeHTML(option.name)} · ${hoursLabel(option.hhee)} h HHEE · grado ${escapeHTML(String(option.grade || "—"))}</option>`).join("")}
             </select>
             ${invertedTag(item)}
+            <span class="mcal-magic-warn" data-magic-warn="${index}" hidden></span>
         </div>`;
+}
+
+/**
+ * Lo que queda elegido en el consejo de horas extras: por cada fila marcada,
+ * quien la cubre. Sirve para avisar en vivo y para el calendario del hover.
+ */
+function pickedCovers(section, covers) {
+    return [...(section?.querySelectorAll('[data-magic-pick="cover"]') || [])]
+        .filter(input => input.checked)
+        .map(input => {
+            const index = Number(input.value);
+            const select = section.querySelector(`[data-magic-worker="${index}"]`);
+            const option = select?.selectedOptions?.[0];
+
+            return {
+                index,
+                item: covers[index],
+                worker: select?.value || covers[index]?.worker || "",
+                baseD: Number(option?.dataset?.baseD) || 0
+            };
+        })
+        .filter(entry => entry.item);
+}
+
+/**
+ * Avisos de cada fila con lo marcado AHORA: quien quedaria sobre el tope de
+ * horas diurnas sumando todas sus filas, o con dos turnos el mismo dia. Lo que
+ * se cambie en una fila puede encender el aviso en otra.
+ *
+ * @returns {Map<number, string>} fila -> aviso
+ */
+export function coverWarnings(entries, limit) {
+    const byWorker = new Map();
+
+    entries.forEach(entry => {
+        if (!byWorker.has(entry.worker)) byWorker.set(entry.worker, []);
+        byWorker.get(entry.worker).push(entry);
+    });
+
+    const warnings = new Map();
+
+    byWorker.forEach((rows, worker) => {
+        const total = Math.max(...rows.map(row => row.baseD)) +
+            rows.reduce((sum, row) => sum + (Number(row.item.addD) || 0), 0);
+        const days = new Map();
+
+        rows.forEach(row => days.set(row.item.keyDay, (days.get(row.item.keyDay) || 0) + 1));
+        rows.forEach(row => {
+            const notes = [];
+
+            if (total > limit) {
+                notes.push(`Con lo marcado, ${worker} quedaría con ${hoursLabel(total)} h diurnas (tope ${hoursLabel(limit)}): no se aplicará.`);
+            }
+            if (days.get(row.item.keyDay) > 1) {
+                notes.push(`${worker} queda con dos turnos el ${dateLabel(row.item.keyDay)}.`);
+            }
+            if (notes.length) warnings.set(row.index, notes.join(" "));
+        });
+    });
+
+    return warnings;
 }
 
 // Letra de cada turno en el calendario del trabajador.
@@ -328,7 +412,7 @@ const WEEKDAYS = ["L", "M", "M", "J", "V", "S", "D"];
  * que reciben un turno se destacan y los que quedan libres se marcan con el
  * turno que tenian. Se repinta al marcar o desmarcar cada movimiento.
  */
-export function workerMonthHTML(name, month, moves = []) {
+export function workerMonthHTML(name, month, moves = [], { title = "Así quedaría su mes" } = {}) {
     const year = month.getFullYear();
     const monthIndex = month.getMonth();
     const days = new Date(year, monthIndex + 1, 0).getDate();
@@ -379,7 +463,7 @@ export function workerMonthHTML(name, month, moves = []) {
 
     return `
         <div class="mcal-wcal" aria-label="Calendario de ${escapeHTML(name)} con los movimientos marcados">
-            <strong class="mcal-wcal-title">Así quedaría su mes</strong>
+            <strong class="mcal-wcal-title">${escapeHTML(title)}</strong>
             <div class="mcal-wcal-grid">
                 ${WEEKDAYS.map(day => `<span class="mcal-wcal-weekday">${day}</span>`).join("")}
                 ${cells.join("")}
@@ -409,7 +493,7 @@ function adviceHTML(number, title, text, body, kind, count, {
             </div>
             ${body}
             <div class="mcal-magic-actions">
-                ${worker ? `<button class="secondary-button" type="button" data-magic-dismiss="${escapeHTML(kind)}" title="No volver a proponerlo este mes">Descartar opción</button>` : ""}
+                ${worker ? `<button class="secondary-button" type="button" data-magic-dismiss="${escapeHTML(kind)}" title="No volver a proponer pasar a alguien de Diurno a este grupo este mes">Descartar opción</button>` : ""}
                 <button class="primary-button" type="button" data-magic-apply="${kind}" data-magic-only="all">Aplicar</button>
             </div>
         </section>`;
@@ -790,6 +874,7 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
 
         plan = next;
         body.innerHTML = planHTML(plan, monthLabel, month);
+        refreshCoverWarnings();
     }
 
     let applying = false;
@@ -949,11 +1034,11 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             const item = plan.rotations?.[Number(String(dismiss.dataset.magicDismiss).split(":")[1])];
 
             if (item) {
-                dismissRotation(month, item.name, item.group);
+                dismissRotation(month, item.group);
                 addAuditLog(
                     AUDIT_CATEGORY.CALENDAR,
                     "Descarto un cambio de rotativa sugerido",
-                    `${item.name}: no pasar de Diurno al grupo ${item.group} en ${monthLabel} (Ayuda para cubrir).`,
+                    `No pasar a nadie de Diurno al grupo ${item.group} en ${monthLabel} (se proponia a ${item.name}; Ayuda para cubrir).`,
                     { profile: item.name }
                 );
                 void recompute();
@@ -972,6 +1057,90 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             );
         }
     });
+    function refreshCoverWarnings() {
+        const section = backdrop.querySelector('[data-magic-advice="cover"]');
+
+        if (!section || !plan) return;
+
+        const warnings = coverWarnings(pickedCovers(section, plan.covers), getMonthlyDiurnalOvertimeLimit());
+
+        section.querySelectorAll("[data-magic-warn]").forEach(span => {
+            const text = warnings.get(Number(span.dataset.magicWarn)) || "";
+
+            span.textContent = text;
+            span.hidden = !text;
+        });
+    }
+
+    // Calendario del trabajador elegido, al pasar el mouse por su nombre: su
+    // mes con TODOS los turnos extra marcados que se le asignarian.
+    const hoverCalendar = document.createElement("div");
+
+    hoverCalendar.className = "mcal-magic-hovercal";
+    hoverCalendar.hidden = true;
+    backdrop.appendChild(hoverCalendar);
+
+    function showHoverCalendar(select) {
+        const section = select.closest('[data-magic-advice="cover"]');
+
+        if (!section || !plan) return;
+
+        const worker = select.value;
+        const extras = pickedCovers(section, plan.covers)
+            .filter(entry => entry.worker === worker)
+            .map(entry => ({
+                sourceKey: entry.item.keyDay,
+                targetKey: entry.item.keyDay,
+                destinationTurn: entry.item.turn
+            }));
+        const rect = select.getBoundingClientRect();
+
+        hoverCalendar.innerHTML = workerMonthHTML(worker, month, extras, {
+            title: `${worker}: su mes con los turnos extra marcados`
+        });
+        hoverCalendar.hidden = false;
+
+        const height = hoverCalendar.offsetHeight || 420;
+        const top = rect.bottom + 8 + height > window.innerHeight
+            ? Math.max(8, rect.top - height - 8)
+            : rect.bottom + 8;
+
+        hoverCalendar.style.top = `${top}px`;
+        hoverCalendar.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - (hoverCalendar.offsetWidth || 480) - 8))}px`;
+    }
+
+    function hideHoverCalendar() {
+        hoverCalendar.hidden = true;
+    }
+
+    backdrop.addEventListener("mouseover", event => {
+        const select = event.target.closest?.("[data-magic-worker]");
+
+        if (select) showHoverCalendar(select);
+    });
+    backdrop.addEventListener("mouseout", event => {
+        if (event.target.closest?.("[data-magic-worker]")) hideHoverCalendar();
+    });
+    backdrop.addEventListener("focusin", event => {
+        const select = event.target.closest?.("[data-magic-worker]");
+
+        if (select) showHoverCalendar(select);
+    });
+    backdrop.addEventListener("focusout", event => {
+        if (event.target.closest?.("[data-magic-worker]")) hideHoverCalendar();
+    });
+
+    // Cambiar a quien cubre o marcar/desmarcar una fila recalcula los avisos.
+    backdrop.addEventListener("change", event => {
+        if (event.target.closest?.('[data-magic-advice="cover"]')) {
+            refreshCoverWarnings();
+
+            const select = event.target.closest?.("[data-magic-worker]");
+
+            if (select && !hoverCalendar.hidden) showHoverCalendar(select);
+        }
+    });
+
     // Marcar o desmarcar un movimiento repinta el mes de ese trabajador.
     backdrop.addEventListener("change", event => {
         const input = event.target.closest?.('[data-magic-pick="move"]');

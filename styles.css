@@ -2240,6 +2240,35 @@ body[data-active-view="home"] .secondary-grid {
     gap: 6px;
 }
 
+/* Aviso en vivo de una fila de horas extras (tope diurno, dos turnos el dia). */
+.mcal-magic-warn {
+    flex: 1 1 100%;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: rgba(220, 38, 38, 0.1);
+    color: #b91c1c;
+    font-size: 0.8rem;
+    font-weight: 700;
+}
+
+.mcal-magic-warn[hidden] {
+    display: none;
+}
+
+/* El mes del trabajador al pasar el mouse por su nombre. */
+.mcal-magic-hovercal {
+    position: fixed;
+    z-index: 10;
+    width: min(480px, calc(100vw - 16px));
+    pointer-events: none;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.28);
+    border-radius: 16px;
+}
+
+.mcal-magic-hovercal[hidden] {
+    display: none;
+}
+
 /* Horas extras de un turno que tambien cubriria un cambio de rotativa. */
 .mcal-magic-alt {
     margin-left: 6px;

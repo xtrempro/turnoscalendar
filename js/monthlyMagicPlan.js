@@ -472,6 +472,9 @@ export async function planMonth(model, deps) {
 
                         return {
                             ...candidate,
+                            // Sus horas diurnas del mes SIN lo que este mismo plan
+                            // ya le reparte: el modal suma lo que quede marcado.
+                            baseD: Number(candidate.hheeD) || 0,
                             hheeD,
                             hhee,
                             overLimit: hheeD + (Number(adding.d) || 0) > deps.diurnalLimit,
@@ -514,12 +517,15 @@ export async function planMonth(model, deps) {
                     turn,
                     worker: pick.name,
                     hhee: pick.hhee,
+                    baseD: pick.baseD,
+                    // Horas diurnas que suma este turno a quien lo cubra.
+                    addD: Number(adding.d) || 0,
                     grade: pick.grade,
                     inverted: pick.inverted,
                     replaced: gap?.name || "",
                     cupo: cupo || null,
                     cupoKey,
-                    alternatives: ranked.slice(1, 4).map(item => ({ name: item.name, hhee: item.hhee, grade: item.grade }))
+                    alternatives: ranked.slice(1, 4).map(item => ({ name: item.name, hhee: item.hhee, baseD: item.baseD, grade: item.grade }))
                 });
 
                 const planned = plannedHours.get(pick.name) || { d: 0, n: 0 };
