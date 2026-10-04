@@ -375,6 +375,14 @@ const DEFAULT_NO_COVERAGE_REASON_PRESETS = [
 // Motivos al cubrir un cupo de la Brecha RRHH. Lista PROPIA, no la de horas
 // extras: un cupo se cubre porque falta alguien en la dotacion ("renuncia",
 // "se cambio de unidad"), no por una tarea. Cada supervisor agrega el resto.
+// Comentario al mover un turno base: sus propios motivos predefinidos (cada
+// supervisor agrega los suyos), igual que los del cupo.
+const SHIFT_MOVE_COMMENT_PRESETS_KEY = "shiftMoveCommentPresets";
+const DEFAULT_SHIFT_MOVE_COMMENT_PRESETS = [
+    "Se mueve rotativa para cubrir cupo disponible",
+    "Se mueve rotativa para cubrir ausencia",
+    "Solicitud del funcionario"
+];
 const CUPO_COVER_REASON_PRESETS_KEY = "cupoCoverReasonPresets";
 const DEFAULT_CUPO_COVER_REASON_PRESETS = [
     "Cubre cupo disponible por renuncia de funcionario",
@@ -8152,6 +8160,155 @@ function getShiftAttendancePresets() {
  * Resuelve el texto (puede ser "" con "Cubrir sin comentario"), o null si se
  * cancela: entonces no se cubre nada.
  */
+function getShiftMoveCommentPresets() {
+    return getReasonPresets(
+        SHIFT_MOVE_COMMENT_PRESETS_KEY,
+        DEFAULT_SHIFT_MOVE_COMMENT_PRESETS
+    );
+}
+
+/**
+ * Por que se movio un turno base. Se abre DESPUES de mover (desde Mover Turno
+ * del calendario o el Mover del Calendario Mensual) y queda en la columna
+ * Detalles de los reportes. Resuelve el texto, o "" sin comentario.
+ */
+export function openShiftMoveCommentDialog({ worker = "" } = {}) {
+    return new Promise(resolve => {
+        const backdrop = document.createElement("div");
+        const previousFocus =
+            document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : null;
+        let settled = false;
+
+        const presetsHTML = () => {
+            const presets = getShiftMoveCommentPresets();
+
+            if (!presets.length) {
+                return `<small>Sin motivos predefinidos.</small>`;
+            }
+
+            return presets.map(preset => `
+                <button
+                    class="ghost-button"
+                    type="button"
+                    data-shift-move-preset="${escapeHTML(preset)}"
+                >
+                    ${escapeHTML(preset)}
+                </button>
+            `).join("");
+        };
+
+        backdrop.className = "turn-change-dialog-backdrop";
+        backdrop.innerHTML = `
+            <section class="turn-change-dialog replacement-dialog" role="dialog" aria-modal="true" aria-labelledby="shiftMoveCommentTitle">
+                <strong id="shiftMoveCommentTitle">Comentario del movimiento</strong>
+                <p>
+                    Se movió el turno${worker ? ` de <b>${escapeHTML(worker)}</b>` : ""}.
+                    ¿Por qué? El comentario queda en la columna Detalles de su reporte.
+                </p>
+                <div class="extra-reason-field">
+                    <div class="overtime-backup-subsection__head">
+                        <span>Comentario</span>
+                        <button
+                            class="icon-button icon-button--small"
+                            type="button"
+                            data-action="edit-shift-move-presets"
+                            title="Editar motivos predefinidos"
+                            aria-label="Editar motivos predefinidos"
+                        >
+                            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <textarea
+                        rows="3"
+                        data-shift-move-comment
+                        placeholder="Ej: Se mueve rotativa para cubrir cupo disponible"
+                    ></textarea>
+                    <div class="replacement-dialog-toolbar" data-shift-move-preset-list>
+                        ${presetsHTML()}
+                    </div>
+                </div>
+                <div class="turn-change-dialog__actions">
+                    <button class="secondary-button" type="button" data-action="skip">
+                        Sin comentario
+                    </button>
+                    <button class="primary-button" type="button" data-action="save">
+                        Guardar comentario
+                    </button>
+                </div>
+            </section>
+        `;
+
+        const textarea = backdrop.querySelector("[data-shift-move-comment]");
+        const finish = result => {
+            if (settled) return;
+
+            settled = true;
+            document.removeEventListener("keydown", onKeydown, true);
+            backdrop.remove();
+
+            if (previousFocus?.isConnected) previousFocus.focus();
+
+            resolve(result);
+        };
+
+        function onKeydown(event) {
+            if (event.key !== "Escape") return;
+
+            event.preventDefault();
+            event.stopPropagation();
+            finish("");
+        }
+
+        backdrop
+            .querySelector("[data-action='skip']")
+            ?.addEventListener("click", () => finish(""));
+        backdrop
+            .querySelector("[data-action='save']")
+            ?.addEventListener("click", () => {
+                const comment = String(textarea?.value || "").trim();
+
+                if (!comment) {
+                    textarea?.focus();
+                    textarea?.classList.add("is-invalid");
+                    return;
+                }
+
+                finish(comment);
+            });
+        backdrop
+            .querySelector("[data-action='edit-shift-move-presets']")
+            ?.addEventListener("click", async () => {
+                const saved = await openManualExtraReasonPresetsDialog(
+                    SHIFT_MOVE_COMMENT_PRESETS_KEY,
+                    getShiftMoveCommentPresets()
+                );
+
+                if (!saved) return;
+
+                const host = backdrop.querySelector("[data-shift-move-preset-list]");
+
+                if (host) host.innerHTML = presetsHTML();
+            });
+        backdrop.addEventListener("click", event => {
+            const preset = event.target.closest("[data-shift-move-preset]");
+
+            if (!preset) return;
+
+            appendManualExtraReasonPreset(textarea, preset.dataset.shiftMovePreset);
+            textarea?.classList.remove("is-invalid");
+        });
+
+        document.addEventListener("keydown", onKeydown, true);
+        document.body.appendChild(backdrop);
+        textarea?.focus();
+    });
+}
+
 export function openCupoCoverReasonDialog({ worker, keyDay, label, turnoLabel, preassign = false }) {
     return new Promise(resolve => {
         const backdrop = document.createElement("div");

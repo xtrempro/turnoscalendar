@@ -2756,6 +2756,9 @@ async function pickShiftMoveTarget(row, slot) {
     ui.pendingMove = null;
     document.removeEventListener("keydown", onMoveKeydown);
     await renderMonthlyCalendarPanel();
+
+    // Por que se movio: el mismo cuadro que en Mover Turno del calendario.
+    await window.askShiftMoveComment?.(result.moveId, move.name);
 }
 
 function onPanelClick(event) {

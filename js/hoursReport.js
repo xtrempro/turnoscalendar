@@ -321,9 +321,18 @@ function replacementDetail(profileName, keyDay) {
 }
 
 function shiftMoveDetail(profileName, keyDay) {
-    return getShiftMoveMarkers(profileName, keyDay).length
-        ? SHIFT_MOVE_REPORT_DETAIL
-        : "";
+    const markers = getShiftMoveMarkers(profileName, keyDay);
+
+    if (!markers.length) return "";
+
+    // El comentario del movimiento (por que se movio), en la columna Detalles.
+    const comments = [...new Set(markers
+        .map(marker => String(marker.move?.comment || "").trim())
+        .filter(Boolean))];
+
+    return comments.length
+        ? `${SHIFT_MOVE_REPORT_DETAIL}: ${comments.join(" / ")}`
+        : SHIFT_MOVE_REPORT_DETAIL;
 }
 
 function contractDetail(contracts, iso) {

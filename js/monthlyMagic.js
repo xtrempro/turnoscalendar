@@ -13,7 +13,7 @@ import {
     getRotativa,
     getTurnChangeConfig
 } from "./storage.js";
-import { getJSON } from "./persistence.js";
+import { getJSON, setJSON } from "./persistence.js";
 import { getHourReturn } from "./hourReturns.js";
 import { getClockMarks } from "./clockMarks.js";
 import { hasContractForDate, isHonorariaProfile, isReplacementProfile } from "./contracts.js";
@@ -171,8 +171,33 @@ function isoOf(keyDay) {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function browserDeps(holidays, shouldContinue, groupNames = []) {
+// Cambios Diurno -> grupo que el supervisor descarto, por mes: "AAAA-M" ->
+// ["persona|grupo"]. Es de la unidad (todos los supervisores lo ven igual).
+const DISMISSED_ROTATIONS_KEY = "magicDismissedRotations";
+
+function monthKeyOf(month) {
+    return `${month.getFullYear()}-${month.getMonth()}`;
+}
+
+export function isRotationDismissed(month, name, group) {
+    const list = getJSON(DISMISSED_ROTATIONS_KEY, {})?.[monthKeyOf(month)] || [];
+
+    return Array.isArray(list) && list.includes(`${name}|${group}`);
+}
+
+export function dismissRotation(month, name, group) {
+    const all = getJSON(DISMISSED_ROTATIONS_KEY, {}) || {};
+    const key = monthKeyOf(month);
+    const list = Array.isArray(all[key]) ? all[key] : [];
+
+    if (list.includes(`${name}|${group}`)) return;
+
+    setJSON(DISMISSED_ROTATIONS_KEY, { ...all, [key]: [...list, `${name}|${group}`] });
+}
+
+function browserDeps(holidays, shouldContinue, groupNames = [], month = null) {
     return {
+        isRotationDismissed: (name, group) => (month ? isRotationDismissed(month, name, group) : false),
         shouldContinue,
         // Etapa 2: quien hace Diurno en esta profesion puede pasar a un grupo.
         // Sin honorarios ni contratos de reemplazo: su rotativa la fija el
@@ -286,7 +311,7 @@ function coverRowHTML(item, index) {
     return `
         <div class="mcal-magic-row">
             <input type="checkbox" data-magic-pick="cover" value="${index}" checked aria-label="Aplicar">
-            <span>${escapeHTML(dateLabel(item.keyDay))} · ${escapeHTML(turnLabel(item.turn))} · ${what}</span>
+            <span>${escapeHTML(dateLabel(item.keyDay))} · ${escapeHTML(turnLabel(item.turn))} · ${what}${item.alsoByRotation ? ` <em class="mcal-magic-alt">también lo cubre el cambio de rotativa de ${escapeHTML(item.alsoByRotation)}</em>` : ""}</span>
             <select data-magic-worker="${index}" aria-label="Quién lo cubre">
                 ${options.map(option => `<option value="${escapeHTML(option.name)}">${escapeHTML(option.name)} · ${hoursLabel(option.hhee)} h HHEE · grado ${escapeHTML(String(option.grade || "—"))}</option>`).join("")}
             </select>
@@ -384,6 +409,7 @@ function adviceHTML(number, title, text, body, kind, count, {
             </div>
             ${body}
             <div class="mcal-magic-actions">
+                ${worker ? `<button class="secondary-button" type="button" data-magic-dismiss="${escapeHTML(kind)}" title="No volver a proponerlo este mes">Descartar opción</button>` : ""}
                 <button class="primary-button" type="button" data-magic-apply="${kind}" data-magic-only="all">Aplicar</button>
             </div>
         </section>`;
@@ -457,7 +483,7 @@ export function planHTML(plan, monthLabel, month = null) {
             </div>`,
             `rotation:${index}`,
             1,
-            { single: true }
+            { single: true, worker: item.name }
         ));
     });
 
@@ -465,7 +491,7 @@ export function planHTML(plan, monthLabel, month = null) {
         advices.push(adviceHTML(
             ++number,
             `Cubrir ${plan.covers.length} ${plan.covers.length === 1 ? "turno" : "turnos"} con horas extras`,
-            `${number > 1 ? "Lo que sigue faltando después de los consejos anteriores. " : ""}Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno, y preasignarlos (en azul, sin horas ni aviso a la app hasta que se confirmen) o enviarles la solicitud a su app (si aceptan, el turno queda asignado) en vez de asignarlos.`,
+            `${number > 1 ? "Lo que sigue faltando después de los consejos anteriores. " : ""}Se propone primero a quien tiene menos horas extras este mes, sin pasar el tope de ${hoursLabel(getMonthlyDiurnalOvertimeLimit())} h diurnas, y después al de grado más alto. Puedes cambiar a quién en cada turno, y preasignarlos (en azul, sin horas ni aviso a la app hasta que se confirmen) o enviarles la solicitud a su app (si aceptan, el turno queda asignado) en vez de asignarlos.${plan.covers.some(item => item.alsoByRotation) ? " Los marcados también los cubre un cambio de rotativa propuesto arriba: elige uno u otro (si aplicas el cambio, salen de esta lista)." : ""}`,
             plan.covers.map(coverRowHTML).join(""),
             "cover",
             plan.covers.length,
@@ -502,6 +528,20 @@ export function planHTML(plan, monthLabel, month = null) {
 
 /* ---------- aplicar ---------- */
 
+/**
+ * El comentario que deja en el reporte un movimiento de la Ayuda para cubrir:
+ * a que se movio el turno.
+ */
+export function magicMoveComment(item) {
+    if (item.covers) return `Se mueve rotativa para cubrir ausencia de ${item.covers}`;
+    if (item.cupo) {
+        return item.cupoGroup
+            ? `Se mueve rotativa para cubrir cupo del grupo ${item.cupoGroup}`
+            : "Se mueve rotativa para cubrir cupo de la Brecha";
+    }
+    return "Se mueve rotativa para completar el turno";
+}
+
 function applyMove(item) {
     const { sourceKey, targetKey } = item;
 
@@ -516,7 +556,8 @@ function applyMove(item) {
         sourceKey,
         sourceTurn: item.sourceTurn,
         destinationTurn: item.destinationTurn,
-        targetKey
+        targetKey,
+        comment: magicMoveComment(item)
     });
 
     if (!result?.ok) return result?.reason || "No se pudo mover el turno.";
@@ -743,7 +784,7 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             return;
         }
 
-        const next = await planMonth(model, browserDeps(holidays, () => !closed && id === runId, groupNames));
+        const next = await planMonth(model, browserDeps(holidays, () => !closed && id === runId, groupNames, month));
 
         if (closed || id !== runId || !next) return;
 
@@ -898,6 +939,25 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
     backdrop.addEventListener("click", event => {
         if (event.target === backdrop || event.target.closest("[data-magic-close]")) {
             close();
+            return;
+        }
+
+        // Descartar un cambio Diurno -> grupo: no se vuelve a proponer este mes.
+        const dismiss = event.target.closest("[data-magic-dismiss]");
+
+        if (dismiss && plan && !applying) {
+            const item = plan.rotations?.[Number(String(dismiss.dataset.magicDismiss).split(":")[1])];
+
+            if (item) {
+                dismissRotation(month, item.name, item.group);
+                addAuditLog(
+                    AUDIT_CATEGORY.CALENDAR,
+                    "Descarto un cambio de rotativa sugerido",
+                    `${item.name}: no pasar de Diurno al grupo ${item.group} en ${monthLabel} (Ayuda para cubrir).`,
+                    { profile: item.name }
+                );
+                void recompute();
+            }
             return;
         }
 

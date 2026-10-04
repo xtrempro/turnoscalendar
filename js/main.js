@@ -215,7 +215,8 @@ import {
     updateDayCells,
     updateVisibleCalendarDays,
     getLeaveRecordDocumentButtons,
-    openLeaveRecordDocuments
+    openLeaveRecordDocuments,
+    openShiftMoveCommentDialog
 } from "./calendar.js";
 import {
     getAppFilters,
@@ -487,7 +488,8 @@ import { cambioEstaAnulado } from "./swaps.js";
 import {
     cancelShiftMovesForWorkerRange,
     cancelFutureShiftMovesForWorker,
-    registerShiftMove
+    registerShiftMove,
+    setShiftMoveComment
 } from "./shiftMoves.js";
 import {
     cancelReplacementById,
@@ -9876,7 +9878,33 @@ function handleMoveShiftTargetSelection(fecha) {
 
     clearSelectionMode();
     updateHistoryNavState();
+
+    // Despues de mover: por que se movio (queda en Detalles de los reportes).
+    void askShiftMoveComment(result.moveId, profile);
 }
+
+/**
+ * El comentario de un movimiento recien hecho: el cuadro con motivos
+ * predefinidos editables. Cancelar o "Sin comentario" lo deja sin comentario
+ * (el movimiento ya esta hecho).
+ */
+async function askShiftMoveComment(moveId, profile) {
+    if (!moveId) return;
+
+    const comment = await openShiftMoveCommentDialog({ worker: profile });
+
+    if (!comment) return;
+
+    setShiftMoveComment(moveId, comment);
+    addAuditLog(
+        AUDIT_CATEGORY.CALENDAR,
+        "Comento movimiento de turno",
+        `${profile}: "${comment}".`,
+        { profile, moveId }
+    );
+}
+
+window.askShiftMoveComment = askShiftMoveComment;
 
 /**
  * Mueve el turno base Larga/Noche de un trabajador a otro dia (o a otro horario
@@ -9893,7 +9921,8 @@ function applyShiftMove({
     sourceKey,
     sourceTurn,
     destinationTurn,
-    targetKey
+    targetKey,
+    comment = ""
 }) {
     const move = { profile, sourceKey, sourceTurn, destinationTurn };
     const sourceReason = shiftMoveDayBlockReason(
@@ -9995,8 +10024,9 @@ function applyShiftMove({
     saveProfileData(data, profile);
     saveBaseProfileData(baseData, profile);
     saveBlockedDays(blocked, profile);
-    registerShiftMove({
+    const registered = registerShiftMove({
         profile,
+        comment,
         sourceKey: move.sourceKey,
         targetKey,
         sourceTurn: move.sourceTurn,
@@ -10045,7 +10075,8 @@ function applyShiftMove({
         }
     );
 
-    return { ok: true, combina24 };
+    // `moveId`: para dejarle el comentario despues (null si deshizo uno anterior).
+    return { ok: true, combina24, moveId: registered?.id || null };
 }
 
 window.applyShiftMove = applyShiftMove;

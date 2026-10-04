@@ -252,7 +252,12 @@ test("etapa 2: si a un grupo le falta gente en varios turnos, alguien de Diurno 
 
     assert.equal(plan.rotations.length, 1);
     assert.deepEqual(
-        { ...plan.rotations[0], affected: undefined },
+        plan.rotations[0].cells,
+        [{ keyDay: "2026-9-3", slot: "day" }, { keyDay: "2026-9-4", slot: "night" }],
+        "los turnos que cubriria"
+    );
+    assert.deepEqual(
+        { ...plan.rotations[0], affected: undefined, cells: undefined },
         {
             type: "rotation",
             name: "Libre de todo",
@@ -262,13 +267,15 @@ test("etapa 2: si a un grupo le falta gente en varios turnos, alguien de Diurno 
             firstTurnLabel: "Largo",
             fills: 2,
             affected: undefined,
-            alternatives: ["Con permisos"]
+            alternatives: ["Con permisos"],
+            cells: undefined
         },
         "quien pierde menos, desde el primer cupo que no ya paso"
     );
-    // El cupo del 1 ya paso: no se toca (ni horas extras); los del 3 y 4 los
-    // cubre el cambio de rotativa.
-    assert.equal(candidatesAsked, 0);
+    // El cupo del 1 ya paso: no se toca. Para los del 3 y 4 se buscan horas
+    // extras igual (son la alternativa al cambio de rotativa); como nadie
+    // puede, no quedan "sin solucion": los cubre el cambio.
+    assert.equal(candidatesAsked, 2);
     assert.deepEqual(plan.unresolved, []);
 });
 

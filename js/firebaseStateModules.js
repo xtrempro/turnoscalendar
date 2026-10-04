@@ -39,6 +39,10 @@ const EXACT_KEY_MODULES = new Map([
     ["shiftAttendanceCommentPresets", "turnos"],
     // Motivos predefinidos al cubrir un cupo de la Brecha RRHH.
     ["cupoCoverReasonPresets", "turnos"],
+    // Motivos predefinidos del comentario al mover un turno base.
+    ["shiftMoveCommentPresets", "turnos"],
+    // Ayuda para cubrir: cambios Diurno -> grupo descartados por mes.
+    ["magicDismissedRotations", "turnos"],
     ["turnoColorConfig", "turnos"],
     // La tanda de colores de la programacion. Se comparte porque la
     // programacion se imprime y se reparte: los colores son una decision de la

@@ -48,6 +48,8 @@ function normalizeShiftMove(move = {}) {
         hasUndoSnapshot: Boolean(move.hasUndoSnapshot),
         combinedInto24: Boolean(move.combinedInto24),
         combinedBaseComplement: Boolean(move.combinedBaseComplement),
+        // Por que se movio. Va en la columna Detalles de los reportes.
+        comment: String(move.comment || "").trim(),
         sourceHadData: Boolean(move.sourceHadData),
         sourcePreviousData: Number(move.sourcePreviousData) || 0,
         sourceHadBase: Boolean(move.sourceHadBase),
@@ -202,6 +204,28 @@ export function registerShiftMove(move = {}) {
     saveShiftMoves([...moves, normalized]);
 
     return normalized;
+}
+
+/**
+ * Deja el comentario de un movimiento ya registrado (el cuadro que se abre
+ * despues de mover un turno en el calendario). Devuelve el movimiento.
+ */
+export function setShiftMoveComment(moveId, comment) {
+    const id = String(moveId || "");
+    let updated = null;
+
+    if (!id) return null;
+
+    const moves = getShiftMoves().map(move => {
+        if (String(move.id || "") !== id) return move;
+
+        updated = { ...move, comment: String(comment || "").trim() };
+        return updated;
+    });
+
+    if (updated) saveShiftMoves(moves);
+
+    return updated;
 }
 
 export function cancelShiftMoveById(moveId) {

@@ -442,3 +442,83 @@ test("pasar de Diurno a un grupo: un solo boton Aplicar, sin seleccionados", asy
     assert.doesNotMatch(html, /Aplicar seleccionados/);
     assert.doesNotMatch(html, /type="checkbox" data-magic-pick="rotation"/);
 });
+
+test("mover turno deja un comentario visible en Detalles del reporte", async () => {
+    const { registerShiftMove, setShiftMoveComment, getShiftMoves } = await import("../js/shiftMoves.js");
+    const report = await readFile(new URL("../js/hoursReport.js", import.meta.url), "utf8");
+    const main = await readFile(new URL("../js/main.js", import.meta.url), "utf8");
+    const mensual = await readFile(new URL("../js/monthlyCalendar.js", import.meta.url), "utf8");
+    const magic = await import("../js/monthlyMagic.js");
+
+    const move = registerShiftMove({ profile: "Ana", sourceKey: "2026-11-4", targetKey: "2026-11-2", sourceTurn: 1, destinationTurn: 1 });
+
+    assert.equal(move.comment, "");
+    setShiftMoveComment(move.id, " Solicitud del funcionario ");
+    assert.equal(getShiftMoves().at(-1).comment, "Solicitud del funcionario");
+
+    // En el reporte: "Turno base modificado: <comentario>".
+    assert.match(report, /`\$\{SHIFT_MOVE_REPORT_DETAIL\}: \$\{comments\.join\(" \/ "\)\}`/);
+    // Calendario principal y Mover del Calendario Mensual piden el comentario.
+    assert.match(main, /void askShiftMoveComment\(result\.moveId, profile\);/);
+    assert.match(mensual, /await window\.askShiftMoveComment\?\.\(result\.moveId, move\.name\);/);
+    // La Ayuda para cubrir lo deja solo, segun a que se movio.
+    assert.equal(magic.magicMoveComment({ covers: "Bea" }), "Se mueve rotativa para cubrir ausencia de Bea");
+    assert.equal(magic.magicMoveComment({ cupo: true, cupoGroup: "C" }), "Se mueve rotativa para cubrir cupo del grupo C");
+});
+
+test("pasar de Diurno a un grupo se puede descartar por el mes", async () => {
+    const magic = await import("../js/monthlyMagic.js");
+    const december = new Date(2026, 11, 1);
+
+    assert.equal(magic.isRotationDismissed(december, "Diurna", "C"), false);
+    magic.dismissRotation(december, "Diurna", "C");
+    assert.equal(magic.isRotationDismissed(december, "Diurna", "C"), true);
+    assert.equal(magic.isRotationDismissed(december, "Diurna", "D"), false, "solo ese grupo");
+    assert.equal(magic.isRotationDismissed(new Date(2027, 0, 1), "Diurna", "C"), false, "solo ese mes");
+
+    const html = magic.planHTML({
+        target: 3, moves: [], covers: [], waiting: [], unresolved: [], surplus: [],
+        rotations: [{ name: "Diurna", group: "C", startKey: "2026-11-2", firstTurn: "larga", firstTurnLabel: "Largo", fills: 3, affected: [], alternatives: [] }]
+    }, "Diciembre 2026", december);
+
+    assert.match(html, /data-magic-dismiss="rotation:0"[^>]*>Descartar opción/);
+});
+
+test("el plan no propone a quien se descarto, y ofrece horas extras como alternativa", async () => {
+    const { planMonth } = await import("../js/monthlyMagicPlan.js");
+    const cupo = { group: "B", motive: "Completar rotativa de tecnicos del grupo B", turno: TURNO.LARGA, reference: "Molde" };
+    const model = {
+        rows: [1, 2, 3, 4].map(day => ({
+            keyDay: `2026-9-${day}`,
+            slots: {
+                day: Array.from({ length: day >= 3 ? 2 : 3 }, (_, index) => ({ name: `P${day}-${index}` })),
+                night: Array.from({ length: 3 }, (_, index) => ({ name: `Q${day}-${index}` }))
+            },
+            gaps: { day: [], night: [] },
+            cupos: { day: day >= 3 ? [cupo] : [], night: [] }
+        }))
+    };
+    const deps = dismissed => ({
+        tierOf: () => 3, canMoveSource: () => false, dayBlock: () => "", allowInverted: true,
+        turnAt: () => TURNO.LIBRE, baseTurn: () => TURNO.LIBRE, neededTurnFor: () => TURNO.LARGA,
+        extraHours: () => ({ d: 12, n: 0 }), diurnalLimit: 40,
+        candidatesFor: async () => [{ name: "Libre", hheeD: 0, hheeN: 0, isFree: true, grade: 20 }],
+        minStartKey: "2026-9-2",
+        diurnoWorkers: () => ["Diurna"],
+        isRotationDismissed: name => dismissed.includes(name),
+        firstTurnFor: () => ({ firstTurn: "larga", label: "Largo" }),
+        affectedFrom: async () => []
+    });
+
+    const withRotation = await planMonth(model, deps([]));
+
+    assert.equal(withRotation.rotations.length, 1);
+    assert.equal(withRotation.covers.length, 2, "las horas extras siguen apareciendo");
+    assert.ok(withRotation.covers.every(cover => cover.alsoByRotation === "Diurna"), "marcadas como alternativa");
+
+    const dismissed = await planMonth(model, deps(["Diurna"]));
+
+    assert.equal(dismissed.rotations.length, 0);
+    assert.equal(dismissed.covers.length, 2);
+    assert.ok(dismissed.covers.every(cover => !cover.alsoByRotation));
+});

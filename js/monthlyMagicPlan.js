@@ -301,6 +301,7 @@ export async function planMonth(model, deps) {
                             covers: claimGap(best.targetKey, best.targetSlot, best.destinationTurn),
                             cupo: !rowByKey.get(best.targetKey)?.gaps?.[best.targetSlot]?.length &&
                                 Boolean(rowByKey.get(best.targetKey)?.cupos?.[best.targetSlot]?.length),
+                            cupoGroup: String(rowByKey.get(best.targetKey)?.cupos?.[best.targetSlot]?.[0]?.group || ""),
                             inverted: best.inverted
                         });
 
@@ -356,7 +357,8 @@ export async function planMonth(model, deps) {
 
             const ranked = [];
 
-            for (const name of available) {
+            // Las que el supervisor descarto este mes para este grupo, no.
+            for (const name of available.filter(item => !deps.isRotationDismissed?.(item, letter))) {
                 const affected = await deps.affectedFrom(name, startKey);
 
                 ranked.push({
@@ -370,6 +372,8 @@ export async function planMonth(model, deps) {
 
             const pick = ranked[0];
 
+            if (!pick) continue;
+
             available.splice(available.indexOf(pick.name), 1);
             rotations.push({
                 type: "rotation",
@@ -380,16 +384,21 @@ export async function planMonth(model, deps) {
                 firstTurnLabel: first.label,
                 fills: cells.length,
                 affected: pick.affected || [],
-                alternatives: ranked.slice(1, 4).map(item => item.name)
+                alternatives: ranked.slice(1, 4).map(item => item.name),
+                cells
             });
-            cells.forEach(cell => {
-                const id = cellId(cell.keyDay, cell.slot);
-
-                claimedCupos.set(id, (claimedCupos.get(id) || 0) + 1);
-                bump(cell.keyDay, cell.slot, 1);
-            });
+            // Los cupos NO se dan por cubiertos: las horas extras siguen
+            // apareciendo para esos turnos, como alternativa al cambio de
+            // rotativa (marcadas, ver `alsoByRotation`).
         }
     }
+
+    // Turnos que cubriria un cambio de rotativa propuesto (por grupo).
+    const rotationCells = new Map();
+
+    rotations.forEach(rotation => (rotation.cells || []).forEach(cell => {
+        rotationCells.set(`${cellId(cell.keyDay, cell.slot)}|${rotation.group}`, rotation.name);
+    }));
 
     // 3. Horas extras para lo que siga faltando.
 
@@ -478,6 +487,13 @@ export async function planMonth(model, deps) {
                     );
                 const pick = ranked[0];
 
+                // Nadie por horas extras, pero lo cubre un cambio de rotativa
+                // propuesto: no es "sin solucion".
+                if (!pick && cupo && rotationCells.has(`${cellId(row.keyDay, slot)}|${String(cupo.group || "")}`)) {
+                    slots.forEach(item => bump(row.keyDay, item, 1));
+                    continue;
+                }
+
                 if (!pick) {
                     unresolved.push({
                         keyDay: row.keyDay,
@@ -515,6 +531,16 @@ export async function planMonth(model, deps) {
             }
         }
     }
+
+    // Las horas extras de un turno que tambien cubriria un cambio de rotativa
+    // propuesto: es la alternativa; si se aplica el cambio, salen de la lista.
+    covers.forEach(cover => {
+        const group = String(cover.cupo?.group || "");
+
+        if (!group) return;
+
+        cover.alsoByRotation = rotationCells.get(`${cellId(cover.keyDay, cover.slot)}|${group}`) || "";
+    });
 
     const surplus = actionableRows.flatMap(row => ["day", "night"]
         .filter(slot => cellCount(row.keyDay, slot) > target)
