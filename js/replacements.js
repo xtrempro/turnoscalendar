@@ -1965,6 +1965,9 @@ export function applyAcceptedReplacementRequests() {
             // Cupo de la Brecha aceptado desde la app: el mismo registro que
             // deja cubrirlo desde el modal (turno extra con el motivo del cupo).
             saveReplacement({
+                // Id fijo por solicitud: si dos pestañas aplican la misma
+                // aceptacion a la vez, escriben EL MISMO registro, no dos.
+                id: `req_${winner.id}`,
                 worker: winner.worker,
                 replaced: "",
                 reason: winner.reason,

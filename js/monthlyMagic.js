@@ -39,7 +39,65 @@ import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
 import { showAlert } from "./dialogs.js";
 import { applyGroupChange, countAffectedFrom, firstTurnForColumnAt, loadLeaveHolidays } from "./shiftHolders.js";
-import { MOVE_TIERS, movesByWorker, orderMovesForApply, planMonth } from "./monthlyMagicPlan.js";
+import {
+    MOVE_TIERS,
+    ROTATION_MIN_CELLS,
+    movesByWorker,
+    orderMovesForApply,
+    planMonth,
+    targetPerShift
+} from "./monthlyMagicPlan.js";
+
+/**
+ * Cuantos hay HOY en cada turno de Titulares (dia|tramo -> cantidad), del mes
+ * recien calculado. Al aplicar movimientos se descuenta lo que el mismo envio
+ * ya movio, para no mover a alguien a un turno que dejo de faltar.
+ */
+export function liveCounts(model) {
+    const counts = new Map();
+
+    (model?.rows || []).forEach(row => {
+        ["day", "night"].forEach(slot => counts.set(`${row.keyDay}|${slot}`, row.slots?.[slot]?.length || 0));
+    });
+
+    return counts;
+}
+
+/**
+ * Si el cambio de Diurno a un grupo sigue haciendo falta en el mes recien
+ * leido: con la meta de AHORA y la misma exigencia que al proponerlo
+ * (ROTATION_MIN_CELLS turnos sin cubrir desde la fecha).
+ */
+export function rotationStillNeeded(model, item) {
+    return openGroupCells(model, item.group, item.startKey, targetPerShift(model)) >= ROTATION_MIN_CELLS;
+}
+
+/** Por que un movimiento ya no hace falta ("" si sigue haciendo falta). */
+export function moveNoLongerNeeded(move, counts, target) {
+    const source = counts.get(`${move.sourceKey}|${move.sourceSlot}`) || 0;
+    const destination = counts.get(`${move.targetKey}|${move.targetSlot}`) || 0;
+
+    if (source <= target) return "en su turno de origen ya no sobra gente.";
+    if (destination >= target) return "el turno de destino ya está completo.";
+    return "";
+}
+
+/**
+ * Cuantos turnos del grupo siguen sin cubrir desde la fecha (cupos de la
+ * Brecha en turnos con menos de la meta), en el mes recien calculado.
+ */
+export function openGroupCells(model, group, startKey, target) {
+    const start = keyToDate(startKey).getTime();
+
+    return (model?.rows || []).reduce((total, row) => {
+        if (keyToDate(row.keyDay).getTime() < start) return total;
+
+        return total + ["day", "night"].filter(slot =>
+            (row.slots?.[slot]?.length || 0) < target &&
+            (row.cupos?.[slot] || []).some(cupo => String(cupo.group || "") === String(group))
+        ).length;
+    }, 0);
+}
 
 const SLOT_LABEL = { day: "Día", night: "Noche" };
 
@@ -48,6 +106,14 @@ const SLOT_LABEL = { day: "Día", night: "Noche" };
 // en produccion se encienden recien cuando no quedan versiones viejas abiertas
 // (se cambia esta marca y se vuelve a desplegar). Las solicitudes por una
 // ausencia no dependen de esto: las versiones anteriores ya las procesan bien.
+//
+// CONDICION OBLIGATORIA antes de encenderla (auditoria 2026-10-04): la
+// aceptacion de un cupo es idempotente solo para la MISMA solicitud
+// (id `req_<solicitud>`). Dos solicitudes distintas por el mismo cupo,
+// aceptadas a la vez en dos pestañas, pueden cubrirlo dos veces: el `cupoKey`
+// lleva un indice que depende del orden y no identifica al cupo de forma
+// estable. Hace falta un identificador persistente del cupo o aplicar la
+// aceptacion con una transaccion en el servidor.
 export const CUPO_APP_REQUESTS_IN_PRODUCTION = false;
 const CUPO_APP_REQUESTS_ENABLED = IS_TEST_ENVIRONMENT || CUPO_APP_REQUESTS_IN_PRODUCTION;
 
@@ -602,15 +668,49 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
             pushHistory();
 
             if (kind.startsWith("move:")) {
+                // El mes como esta AHORA (otro supervisor pudo cubrir o mover
+                // algo mientras el modal estaba abierto): cada movimiento tiene
+                // que seguir sacando gente de donde sobra y llevandola a donde
+                // falta. Lo que este mismo envio ya movio se descuenta.
+                const live = await buildModel();
+
+                if (!live) throw new Error("No se pudo leer el mes actual; no se movió nada");
+
+                const counts = liveCounts(live);
+                // La meta del mes como esta ahora, no la de cuando se abrio.
+                const liveTarget = targetPerShift(live);
+
                 // El que libera un dia va antes que el que llega a ese dia.
                 orderMovesForApply(picked("move").map(index => plan.moves[index])).forEach(move => {
-                    const error = applyMove(move);
+                    const stale = moveNoLongerNeeded(move, counts, liveTarget);
+                    const error = stale || applyMove(move);
 
-                    if (error) errors.push(`${move.name} (${dateLabel(move.sourceKey)}): ${error}`);
+                    if (error) {
+                        errors.push(`${move.name} (${dateLabel(move.sourceKey)}): ${error}`);
+                        return;
+                    }
+
+                    const from = `${move.sourceKey}|${move.sourceSlot}`;
+                    const to = `${move.targetKey}|${move.targetSlot}`;
+
+                    counts.set(from, (counts.get(from) || 0) - 1);
+                    counts.set(to, (counts.get(to) || 0) + 1);
                 });
             } else if (kind.startsWith("rotation:")) {
+                const current = await buildModel();
+
+                if (!current) throw new Error("No se pudo leer el mes actual; no se cambió ninguna rotativa");
+
                 for (const index of picked("rotation")) {
                     const item = plan.rotations[index];
+
+                    // El grupo tiene que seguir necesitando gente desde esa fecha,
+                    // con la MISMA exigencia que al proponerlo: un cambio de
+                    // rotativa es permanente y no se hace por un solo turno.
+                    if (!rotationStillNeeded(current, item)) {
+                        errors.push(`${item.name}: al grupo ${item.group} ya no le faltan ${ROTATION_MIN_CELLS} turnos o más desde el ${dateLabel(item.startKey)}.`);
+                        continue;
+                    }
 
                     if (!isActionable(item.startKey)) {
                         errors.push(`${item.name}: el ${dateLabel(item.startKey)} ya pasó.`);
@@ -668,18 +768,21 @@ export async function openMonthlyMagic({ month, group, monthLabel, buildModel, o
 
         try {
             await onApplied?.();
+
+            if (errors.length) {
+                await showAlert(`Algunos no se aplicaron:\n\n${errors.join("\n")}`, {
+                    title: "Aplicado en parte",
+                    tone: "warning"
+                });
+            }
+
+            await recompute();
         } catch (error) {
             console.error(error);
+        } finally {
+            // Siempre se sale del estado ocupado, aunque el recalculo falle.
+            setBusy(false);
         }
-
-        if (errors.length) {
-            await showAlert(`Algunos no se aplicaron:\n\n${errors.join("\n")}`, {
-                title: "Aplicado en parte",
-                tone: "warning"
-            });
-        }
-
-        await recompute();
     }
 
     backdrop.addEventListener("click", event => {

@@ -188,3 +188,180 @@ test("auditoria: solo se suben las solicitudes que cambiaron, en lotes de a lo m
     // La fecha del servidor no cuenta como cambio.
     assert.equal(requestSignature({ id: "a", updatedAt: 1 }), requestSignature({ id: "a", updatedAt: 2 }));
 });
+
+test("auditoria 2: si se cambia de unidad mientras espera un lote, los que faltan no se escriben", async () => {
+    const { uploadRequestChunks } = await import("../js/firebaseReplacementRequests.js");
+    const requests = Array.from({ length: 9 }, (_, index) => ({ id: `r${index}`, status: "pending" }));
+    const writes = [];
+    const synced = new Map();
+    let current = true;
+
+    const written = await uploadRequestChunks({
+        workspaceId: "unidad-A",
+        requests,
+        synced,
+        limit: 4,
+        isCurrent: () => current,
+        writeChunk: async (workspaceId, chunk) => {
+            writes.push([workspaceId, chunk.map(item => item.id)]);
+            // El usuario cambia de unidad mientras el primer commit espera.
+            current = false;
+        }
+    });
+
+    assert.equal(written, 0, "el lote que estaba en vuelo no se da por sincronizado");
+    assert.deepEqual(writes, [["unidad-A", ["r0", "r1", "r2", "r3"]]], "nada mas, y nunca con otra unidad");
+    assert.equal(synced.size, 0);
+});
+
+test("auditoria 2: sin cambio de unidad, sube todos los lotes con la unidad del comienzo", async () => {
+    const { uploadRequestChunks } = await import("../js/firebaseReplacementRequests.js");
+    const requests = Array.from({ length: 9 }, (_, index) => ({ id: `r${index}`, status: "pending" }));
+    const units = new Set();
+    const synced = new Map();
+    const written = await uploadRequestChunks({
+        workspaceId: "unidad-A",
+        requests,
+        synced,
+        limit: 4,
+        isCurrent: () => true,
+        writeChunk: async workspaceId => units.add(workspaceId)
+    });
+
+    assert.equal(written, 3);
+    assert.deepEqual([...units], ["unidad-A"]);
+    assert.equal(synced.size, 9);
+});
+
+test("auditoria 2: dos pestañas que aplican la misma aceptacion de cupo dejan UN registro", () => {
+    const request = createReplacementRequest({
+        worker: "Ana", replaced: "", keyDay: "2026-9-3", turno: TURNO.LARGA,
+        absenceType: MOTIVE, reason: MOTIVE, cupoKey: "k-1"
+    });
+
+    accept(request);
+
+    // Las dos pestañas leen la misma lista (aceptada y sin aplicar).
+    const snapshot = getJSON("replacementRequests", []);
+
+    applyAcceptedReplacementRequests();
+    setJSON("replacementRequests", snapshot);
+    applyAcceptedReplacementRequests();
+
+    const saved = getJSON("replacements", []);
+
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].id, `req_${request.id}`);
+});
+
+test("auditoria 2: un movimiento o cambio de rotativa que dejo de hacer falta no se aplica", async () => {
+    const { liveCounts, moveNoLongerNeeded, openGroupCells } = await import("../js/monthlyMagic.js");
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+    const row = (day, dayCount, cupoGroup = "") => ({
+        keyDay: `2026-9-${day}`,
+        slots: {
+            day: Array.from({ length: dayCount }, (_, index) => ({ name: `P${day}-${index}` })),
+            night: Array.from({ length: 3 }, (_, index) => ({ name: `Q${day}-${index}` }))
+        },
+        cupos: { day: cupoGroup ? [{ group: cupoGroup }] : [], night: [] }
+    });
+    const m = { rows: [row(1, 4), row(2, 3), row(3, 2, "B"), row(4, 3)] };
+    const counts = liveCounts(m);
+    const move = { sourceKey: "2026-9-1", sourceSlot: "day", targetKey: "2026-9-3", targetSlot: "day" };
+
+    assert.equal(moveNoLongerNeeded(move, counts, 3), "");
+    // Otro supervisor cubrio el 3 mientras el modal estaba abierto.
+    counts.set("2026-9-3|day", 3);
+    assert.match(moveNoLongerNeeded(move, counts, 3), /destino ya está completo/);
+    counts.set("2026-9-3|day", 2);
+    counts.set("2026-9-1|day", 3);
+    assert.match(moveNoLongerNeeded(move, counts, 3), /ya no sobra gente/);
+    // Cambio de rotativa: el grupo B solo tiene cupo abierto el 3.
+    assert.equal(openGroupCells(m, "B", "2026-9-2", 3), 1);
+    assert.equal(openGroupCells(m, "B", "2026-9-4", 3), 0);
+    // Y se usa al aplicar, con el mes recien leido.
+    assert.match(source, /const liveTarget = targetPerShift\(live\);/);
+    assert.match(source, /const stale = moveNoLongerNeeded\(move, counts, liveTarget\);/);
+    assert.match(source, /if \(!rotationStillNeeded\(current, item\)\)/);
+});
+
+test("auditoria 3: dos inicios A/B con Firebase lento: solo queda escuchando la unidad B", async () => {
+    const sync = await import("../js/firebaseReplacementRequests.js");
+    const listened = [];
+    const releases = [];
+    const firestoreModule = {
+        collection: (db, ...path) => path.join("/"),
+        onSnapshot: (ref, onNext) => {
+            listened.push({ ref, onNext });
+            return () => {};
+        }
+    };
+
+    // Cada inicio espera a que se le responda a mano.
+    sync.setReplacementRequestServicesForTests(() =>
+        new Promise(resolve => releases.push(() => resolve({ db: {}, firestoreModule })))
+    );
+
+    try {
+        const startA = sync.startFirebaseReplacementRequestSync({ id: "A" });
+
+        // Mientras A espera, se abre la unidad B.
+        sync.setReplacementRequestServicesForTests(async () => ({ db: {}, firestoreModule }));
+        await sync.startFirebaseReplacementRequestSync({ id: "B" });
+
+        // Ahora responde Firebase al inicio viejo de A.
+        releases.forEach(release => release());
+        await startA;
+
+        assert.deepEqual(listened.map(item => item.ref), ["workspaces/B/replacementRequests"], "A no instala su listener tarde");
+    } finally {
+        sync.stopFirebaseReplacementRequestSync();
+        sync.setReplacementRequestServicesForTests(null);
+    }
+});
+
+test("auditoria 3: una entrega tardia del listener de otra unidad se ignora", async () => {
+    const sync = await import("../js/firebaseReplacementRequests.js");
+    const listened = [];
+    const firestoreModule = {
+        collection: (db, ...path) => path.join("/"),
+        onSnapshot: (ref, onNext) => {
+            listened.push({ ref, onNext });
+            return () => {};
+        }
+    };
+
+    sync.setReplacementRequestServicesForTests(async () => ({ db: {}, firestoreModule }));
+
+    try {
+        await sync.startFirebaseReplacementRequestSync({ id: "A" });
+        await sync.startFirebaseReplacementRequestSync({ id: "B" });
+
+        // Llega tarde un snapshot del listener de A con una solicitud de A.
+        listened[0].onNext({ docs: [{ data: () => ({ id: "de-A", status: "pending", createdAt: "x" }) }] });
+
+        assert.deepEqual(getJSON("replacementRequests", []).map(item => item.id), [], "no entra a la unidad B");
+    } finally {
+        sync.stopFirebaseReplacementRequestSync();
+        sync.setReplacementRequestServicesForTests(null);
+    }
+});
+
+test("auditoria 3: el cambio de rotativa se revalida con la meta de ahora y al menos 2 turnos", async () => {
+    const { rotationStillNeeded } = await import("../js/monthlyMagic.js");
+    const row = (day, dayCount, cupo = false) => ({
+        keyDay: `2026-9-${day}`,
+        slots: {
+            day: Array.from({ length: dayCount }, (_, index) => ({ name: `P${day}-${index}` })),
+            night: Array.from({ length: 3 }, (_, index) => ({ name: `Q${day}-${index}` }))
+        },
+        gaps: { day: [], night: [] },
+        cupos: { day: cupo ? [{ group: "B" }] : [], night: [] }
+    });
+    const item = { group: "B", startKey: "2026-9-2" };
+
+    // Dos turnos del grupo B sin cubrir desde el 2: sigue haciendo falta.
+    assert.equal(rotationStillNeeded({ rows: [row(1, 3), row(2, 2, true), row(3, 3), row(4, 2, true)] }, item), true);
+    // Otro supervisor cubrio uno: queda uno solo, ya no alcanza para cambiar la rotativa.
+    assert.equal(rotationStillNeeded({ rows: [row(1, 3), row(2, 3), row(3, 3), row(4, 2, true)] }, item), false);
+});

@@ -22,6 +22,9 @@ let onRequestsChanged = () => {};
 // lotes de hasta BATCH_LIMIT.
 const syncedSignatures = new Map();
 const BATCH_LIMIT = 400;
+// Sube cada vez que cambia la unidad (o se detiene la sincronizacion): una
+// subida que empezo con otra generacion deja de escribir.
+let syncGeneration = 0;
 
 // La huella de una solicitud, sin la fecha que pone el servidor.
 export function requestSignature(request) {
@@ -49,9 +52,18 @@ function requestDocId(request) {
         .replace(/\./g, "%2E");
 }
 
+// De donde salen db y firestoreModule. Las pruebas lo cambian para simular un
+// Firebase que tarda en responder.
+let servicesProvider = getFirebaseServices;
+
+export function setReplacementRequestServicesForTests(provider) {
+    servicesProvider = typeof provider === "function" ? provider : getFirebaseServices;
+    servicesCache = null;
+}
+
 async function services() {
     if (!servicesCache) {
-        servicesCache = await getFirebaseServices();
+        servicesCache = await servicesProvider();
     }
 
     return servicesCache;
@@ -66,6 +78,44 @@ function requestsCollection(db, firestoreModule, workspaceId) {
     );
 }
 
+/**
+ * Sube los lotes de UNA unidad. La unidad y la generacion se fijan al empezar:
+ * si se cambia de unidad mientras espera un lote, los que faltan no se
+ * escriben (ni con la unidad nueva, que no es la de estas solicitudes) y sus
+ * firmas no se guardan.
+ *
+ * @param {Object} options
+ * @param {string} options.workspaceId  la unidad de estas solicitudes
+ * @param {Array} options.requests
+ * @param {Function} options.isCurrent  () => sigue siendo la misma generacion
+ * @param {Function} options.writeChunk (workspaceId, chunk) => Promise
+ * @param {Map} [options.synced]
+ * @returns {Promise<number>} cuantos lotes se escribieron
+ */
+export async function uploadRequestChunks({
+    workspaceId,
+    requests,
+    isCurrent,
+    writeChunk,
+    synced = syncedSignatures,
+    limit = BATCH_LIMIT
+}) {
+    let written = 0;
+
+    for (const chunk of pendingRequestUploads(requests, synced, limit)) {
+        if (!isCurrent()) break;
+
+        await writeChunk(workspaceId, chunk);
+
+        if (!isCurrent()) break;
+
+        chunk.forEach(request => synced.set(String(request.id), requestSignature(request)));
+        written += 1;
+    }
+
+    return written;
+}
+
 async function uploadRequests(requests) {
     if (!activeWorkspaceId || applyingRemoteRequests) return;
     if (syncInFlight) {
@@ -75,37 +125,44 @@ async function uploadRequests(requests) {
 
     syncInFlight = true;
 
+    const workspaceId = activeWorkspaceId;
+    const generation = syncGeneration;
+
     try {
         const {
             db,
             firestoreModule
         } = await services();
 
-        for (const chunk of pendingRequestUploads(requests)) {
-            const batch = firestoreModule.writeBatch(db);
+        await uploadRequestChunks({
+            workspaceId,
+            requests,
+            isCurrent: () => syncGeneration === generation && activeWorkspaceId === workspaceId,
+            writeChunk: async (targetWorkspaceId, chunk) => {
+                const batch = firestoreModule.writeBatch(db);
 
-            chunk.forEach(request => {
-                const ref = firestoreModule.doc(
-                    db,
-                    "workspaces",
-                    activeWorkspaceId,
-                    "replacementRequests",
-                    requestDocId(request)
-                );
+                chunk.forEach(request => {
+                    const ref = firestoreModule.doc(
+                        db,
+                        "workspaces",
+                        targetWorkspaceId,
+                        "replacementRequests",
+                        requestDocId(request)
+                    );
 
-                batch.set(
-                    ref,
-                    {
-                        ...request,
-                        updatedAt: firestoreModule.serverTimestamp()
-                    },
-                    { merge: true }
-                );
-            });
+                    batch.set(
+                        ref,
+                        {
+                            ...request,
+                            updatedAt: firestoreModule.serverTimestamp()
+                        },
+                        { merge: true }
+                    );
+                });
 
-            await batch.commit();
-            chunk.forEach(request => syncedSignatures.set(String(request.id), requestSignature(request)));
-        }
+                await batch.commit();
+            }
+        });
     } catch (error) {
         console.warn(
             "No se pudieron sincronizar solicitudes de reemplazo.",
@@ -232,20 +289,33 @@ export async function startFirebaseReplacementRequestSync(
 
     if (!activeWorkspaceId) return;
 
+    // Unidad y generacion de ESTE inicio. Si mientras se espera a Firebase se
+    // abre otra unidad, este inicio ya no instala nada: antes podia reanudarse
+    // tarde, escuchar la unidad vieja y pisar el listener de la nueva.
+    const generation = syncGeneration;
+    const isCurrent = () =>
+        syncGeneration === generation && activeWorkspaceId === workspaceId;
+
     try {
         const {
             db,
             firestoreModule
         } = await services();
+
+        if (!isCurrent()) return;
+
         const collectionRef = requestsCollection(
             db,
             firestoreModule,
-            activeWorkspaceId
+            workspaceId
         );
 
         unsubscribeRequests = firestoreModule.onSnapshot(
             collectionRef,
-            applyRemoteSnapshot,
+            snapshot => {
+                // Una entrega tardia del listener de otra unidad se ignora.
+                if (isCurrent()) applyRemoteSnapshot(snapshot);
+            },
             error => {
                 console.warn(
                     "No se pudo leer solicitudes de reemplazo Firebase.",
@@ -275,6 +345,7 @@ export function stopFirebaseReplacementRequestSync() {
     activeWorkspaceId = "";
     applyingRemoteRequests = false;
     syncedSignatures.clear();
+    syncGeneration += 1;
 }
 
 if (typeof window !== "undefined") {

@@ -351,3 +351,9 @@ test("auditoria: al aplicar se revalida todo, de a uno, y las solicitudes de cup
     // Diurno -> turno: sin contratos de reemplazo.
     assert.match(source, /!isHonorariaProfile\(name\) &&\s*!isReplacementProfile\(name\)/);
 });
+
+test("auditoria 2: el modal siempre sale del estado ocupado", async () => {
+    const source = await readFile(new URL("../js/monthlyMagic.js", import.meta.url), "utf8");
+
+    assert.match(source, /\} finally \{\s*\/\/ Siempre se sale del estado ocupado[^\n]*\n\s*setBusy\(false\);/);
+});
