@@ -78,7 +78,17 @@ function fakeFirestore(seed = {}) {
         stats.writes++;
         docs.set(docPath, structuredClone(value));
       },
-      collection: name => collection(`${docPath}/${name}`)
+      collection: name => collection(`${docPath}/${name}`),
+      // Subcolecciones con algun documento (como el Admin SDK).
+      async listCollections() {
+        const names = new Set(
+          [...docs.keys()]
+            .filter(key => key.startsWith(`${docPath}/`))
+            .map(key => key.slice(docPath.length + 1).split("/")[0])
+        );
+
+        return [...names].map(name => collection(`${docPath}/${name}`));
+      }
     };
   }
 
@@ -140,6 +150,8 @@ function fakeFirestore(seed = {}) {
           forEach: fn => rows.forEach(fn)
         };
       },
+      path: collectionPath,
+      id: collectionPath.split("/").pop(),
       async listDocuments() {
         const ids = new Set(
           [...docs.keys()]
@@ -176,12 +188,23 @@ function fakeFirestore(seed = {}) {
     return run;
   }
 
+  // Borra una coleccion con todo lo que cuelga de ella.
+  async function recursiveDelete(collectionRef) {
+    const prefix = `${collectionRef.path}/`;
+
+    [...docs.keys()].filter(key => key.startsWith(prefix)).forEach(key => {
+      stats.writes++;
+      docs.delete(key);
+    });
+  }
+
   return {
     docs,
     stats,
     collection,
     doc: docRef,
-    runTransaction
+    runTransaction,
+    recursiveDelete
   };
 }
 

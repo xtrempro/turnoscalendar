@@ -35,6 +35,22 @@ const {
 } = require("./medicalEquipmentReports");
 const { approveMonthlyHoursHandler } = require("./hoursValidation");
 const {
+  ensurePracticeWorkspaceHandler,
+  isPracticeWorkspaceId,
+  resetPracticeWorkspaceHandler
+} = require("./practiceWorkspace");
+
+// La unidad de practica es personal y de datos ficticios: nada sale de ella
+// (invitaciones, enlaces entre unidades, prestamos, transferencias, la PWA).
+function rejectPracticeWorkspace(...workspaceIds) {
+  if (workspaceIds.some(id => isPracticeWorkspaceId(id))) {
+    throw new HttpsError(
+      "failed-precondition",
+      "La unidad de práctica tiene datos ficticios: esta acción no está disponible en ella."
+    );
+  }
+}
+const {
   findCompatibleReplacementCandidates
 } = require("./linkedReplacementSearch");
 const {
@@ -2611,6 +2627,7 @@ exports.acceptWorkerAppInvite = onCall(
     }
 
     const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    rejectPracticeWorkspace(workspaceId);
     const inviteId = cleanCallableText(request.data?.inviteId, 160);
 
     if (!workspaceId || !inviteId) {
@@ -2795,6 +2812,8 @@ async function resolveWorkspaceLinkOwner(email, fromWorkspaceId) {
 
       if (!workspaceIsActiveForLinks(data)) return;
       if (docSnap.id === fromWorkspaceId) return;
+      // Nunca se enlaza con una unidad de practica (datos ficticios).
+      if (data.practice === true || isPracticeWorkspaceId(docSnap.id)) return;
       workspaces.set(docSnap.id, {
         id: docSnap.id,
         ...data
@@ -3100,6 +3119,7 @@ exports.createSupervisorInvite = onCall(
     }
 
     const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    rejectPracticeWorkspace(workspaceId);
     const permissions =
       normalizeSupervisorPermissions(request.data?.permissions || {});
 
@@ -3256,6 +3276,7 @@ exports.sendSupervisorInviteEmail = onCall(
     }
 
     const workspaceId = cleanCallableText(request.data?.workspaceId, 160);
+    rejectPracticeWorkspace(workspaceId);
     const email = normalizeEmail(request.data?.email);
     const permissions =
       normalizeSupervisorPermissions(request.data?.permissions || {});
@@ -3405,6 +3426,7 @@ exports.requestWorkspaceLinkByOwnerEmail = onCall(
 
     const fromWorkspaceId =
       cleanCallableText(request.data?.fromWorkspaceId, 160);
+    rejectPracticeWorkspace(fromWorkspaceId);
     const ownerEmail = normalizeEmail(request.data?.ownerEmail);
     // Que unidad espera enlazar quien solicita. No decide nada -el owner elige
     // al aceptar- pero le dice cual de sus unidades le estan pidiendo.
@@ -4037,6 +4059,7 @@ exports.createInterUnitLoan = onCall(
       cleanCallableText(data.sourceWorkspaceId, 160);
     const hostWorkspaceId =
       cleanCallableText(data.hostWorkspaceId, 160);
+    rejectPracticeWorkspace(sourceWorkspaceId, hostWorkspaceId);
     const workerProfileId =
       cleanCallableText(data.workerProfileId, 120);
     const replacedProfileId =
@@ -4303,13 +4326,17 @@ exports.createInterUnitAbsenceRequest = onCall(
     enforceAppCheck: ENFORCE_APP_CHECK,
     timeoutSeconds: 30
   },
-  (request) => createInterUnitAbsenceRequestHandler(request, {
+  (request) => (rejectPracticeWorkspace(
+    request.data?.workspaceId,
+    request.data?.sourceWorkspaceId,
+    request.data?.targetWorkspaceId
+  ), createInterUnitAbsenceRequestHandler(request, {
     db,
     HttpsError,
     serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
     requireWorkspaceRequestManager,
     requireAcceptedWorkspaceLink
-  })
+  }))
 );
 
 exports.respondInterUnitAbsenceRequest = onCall(
@@ -4356,10 +4383,14 @@ exports.moveDueWorkerTransferLinks = onSchedule(
 
 exports.createWorkerTransferRequest = onCall(
   { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
-  (request) => createWorkerTransferRequestHandler(
+  (request) => (rejectPracticeWorkspace(
+    request.data?.workspaceId,
+    request.data?.sourceWorkspaceId,
+    request.data?.targetWorkspaceId
+  ), createWorkerTransferRequestHandler(
     request,
     workerTransferDependencies()
-  )
+  ))
 );
 
 exports.respondWorkerTransferRequest = onCall(
@@ -4847,6 +4878,31 @@ exports.approveMonthlyHours = onCall(
     timeoutSeconds: 30
   },
   (request) => approveMonthlyHoursHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()
+  })
+);
+
+// Unidad de practica de cada supervisor/administrador (functions/practiceWorkspace.js).
+exports.ensurePracticeWorkspace = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => ensurePracticeWorkspaceHandler(request, {
+    db,
+    HttpsError,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()
+  })
+);
+
+exports.resetPracticeWorkspace = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 120
+  },
+  (request) => resetPracticeWorkspaceHandler(request, {
     db,
     HttpsError,
     serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp()
@@ -6550,7 +6606,10 @@ exports.getAccountUsage = onCall(
       (doc) =>
         !BILLING_EXCLUDED_WORKSPACE_STATES.has(
           String(doc.data()?.deletionStatus || "")
-        )
+        ) &&
+        // La unidad de practica (datos ficticios) no cuenta para el plan.
+        doc.data()?.practice !== true &&
+        !isPracticeWorkspaceId(doc.id)
     );
 
     // Suma autoritativa de trabajadores activos entre TODOS los entornos.
@@ -7087,6 +7146,9 @@ exports.getAdminDashboard = onCall(
 
     workspacesSnap.docs.forEach((doc) => {
       const data = doc.data() || {};
+
+      // Las unidades de practica (datos ficticios) no son clientes.
+      if (data.practice === true || isPracticeWorkspaceId(doc.id)) return;
 
       if (BILLING_EXCLUDED_WORKSPACE_STATES.has(
         String(data.deletionStatus || "")

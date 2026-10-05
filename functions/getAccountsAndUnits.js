@@ -210,7 +210,10 @@ async function loadAccounts(userDocs) {
 
   await mapLimit(userDocs, 8, async (userDoc) => {
     const memberships = await userDoc.ref.collection("workspaces").get();
-    const items = memberships.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    // Sin la unidad de practica de cada persona: no es una unidad del cliente.
+    const items = memberships.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .filter((item) => item.practice !== true && !String(item.id).startsWith("practice_"));
 
     membershipsByUid.set(userDoc.id, items);
     items.forEach((item) => workspaceIds.push(item.id));

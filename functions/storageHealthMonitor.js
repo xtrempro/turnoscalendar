@@ -635,7 +635,13 @@ async function runStorageHealthCheck({
 }) {
   const startedAt = clock();
   const date = chileDate(now);
-  const workspaces = await db.collection("workspaces").get();
+  const allWorkspaces = await db.collection("workspaces").get();
+  // Las unidades de practica (datos ficticios, se reinician) no se vigilan.
+  const workspaces = {
+    docs: allWorkspaces.docs.filter(doc =>
+      doc.data()?.practice !== true && !String(doc.id).startsWith("practice_")
+    )
+  };
   const incomplete = [];
   const incompleteIds = [];
   const lines = [];
