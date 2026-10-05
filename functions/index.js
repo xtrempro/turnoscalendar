@@ -3245,15 +3245,19 @@ exports.personalBackupSync = onCall(
 
     const payload = sanitizePersonalBackupPayload(request.data?.payload);
 
-    await ref.set(
-      {
-        payload,
-        uid,
-        rut,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      },
-      { merge: true }
-    );
+    // SIN merge, a proposito. Con merge, Firestore fusiona los mapas en
+    // profundidad: una clave que el trabajador BORRO desaparece del payload y
+    // sobrevive aqui, y al recuperar en otro telefono reaparece. Paso con el
+    // color de "Libre", que al quitarlo volvia pintado.
+    //
+    // Reemplazar el documento es seguro porque estos cuatro campos son todo lo
+    // que tiene: nadie mas escribe en personalBackups/{rut}.
+    await ref.set({
+      payload,
+      uid,
+      rut,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
 
     return { rut, ok: true };
   }
