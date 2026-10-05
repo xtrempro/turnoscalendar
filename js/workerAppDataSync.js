@@ -76,7 +76,12 @@ import {
     normalizeProfileTargets,
     splitDaysByMonth
 } from "./workerAppMonths.js";
-import { baseRenderDay } from "./rotationBase.js";
+import {
+    baseRenderDay,
+    buildPortableRotativa,
+    dayIsProjectionException,
+    projectedDayDiffersFromBase
+} from "./rotationBase.js";
 import {
     measurePerformance,
     recordPerformanceEvent,
@@ -145,6 +150,7 @@ const WORKER_APP_PROJECTION_GLOBAL_STATE_KEYS = [
     "replacements",
     "swaps",
     "manualHolidays",
+    "rotationCatalog",
     "turnoColorConfig",
     "turnChangeConfig",
     "weekly_task_assignment_tasks",
@@ -668,7 +674,20 @@ function computeMonthDays(profile, month, ctx) {
             maps.comp[keyDay] ||
             maps.absences[keyDay]
         );
-        const label = turnoLabel(actualTurn) || "Libre";
+        const portableBaseDay = ctx.portableRotativa
+            ? baseRenderDay(ctx.portableRotativa, iso)
+            : null;
+        const usesConfiguredBaseLabel = Boolean(
+            portableBaseDay?.shiftDefinition &&
+            (Number(actualTurn) || TURNO.LIBRE) === (Number(portableBaseDay.turno) || TURNO.LIBRE) &&
+            (Number(programmedTurn) || TURNO.LIBRE) === (Number(baseTurn) || TURNO.LIBRE) &&
+            !hasLeave &&
+            !manualExtra &&
+            !swapMarker
+        );
+        const label = usesConfiguredBaseLabel
+            ? portableBaseDay.label
+            : turnoLabel(actualTurn) || "Libre";
         const colorGradient = getDayColorGradient(
             profile.name,
             keyDay,
@@ -691,7 +710,7 @@ function computeMonthDays(profile, month, ctx) {
             programmedTurn: Number(programmedTurn) || TURNO.LIBRE,
             baseTurn: Number(baseTurn) || TURNO.LIBRE,
             label,
-            displayLabel: visualLabel || label,
+            displayLabel: usesConfiguredBaseLabel ? label : visualLabel || label,
             className: classNameForDay(actualTurn, hasLeave),
             colorGradient: colorGradient || "",
             isManualExtra: manualExtra,
@@ -741,6 +760,7 @@ function createProfileScheduleContext(profile) {
         maps,
         profileData,
         colorResolver,
+        portableRotativa: buildPortableRotativa(getRotativa(profile.name)),
         holidaysByYear: {},
         // Lo caro se calcula una vez por trabajador, no por dia.
         readMarks: createAttendanceMarksReader(profile)
@@ -914,7 +934,7 @@ function buildOvertimeSummarySignature(profile, schedule) {
 // futuro lejano lo calcula la PWA desde la secuencia.
 const EXCEPTIONS_MONTHS_BACK = 2;
 const EXCEPTIONS_MONTHS_FORWARD = 12;
-const WORKER_APP_BASE_VERSION = 1;
+const WORKER_APP_BASE_VERSION = 2;
 const WORKER_APP_CONTRACT_PROFILE_VERSION = 2;
 const WORKER_APP_MONTH_REPLACE_VERSION = 2;
 
@@ -933,29 +953,26 @@ function exceptionsScanRange(today = new Date()) {
     };
 }
 
-function dayDiffersFromBase(actual, base) {
-    return (
-        (Number(actual.turno) || TURNO.LIBRE) !== (Number(base.turno) || TURNO.LIBRE) ||
-        String(actual.displayLabel || "") !== String(base.displayLabel || "") ||
-        String(actual.className || "") !== String(base.className || "") ||
-        Boolean(actual.hasLeave) !== Boolean(base.hasLeave) ||
-        Boolean(actual.isManualExtra) !== Boolean(base.isManualExtra) ||
-        // Un dia con marcador CCTT/DDTT se publica como excepcion aunque el turno
-        // coincida con la base.
-        String(actual.swapMarker?.label || "") !== String(base.swapMarker?.label || "")
-    );
-}
-
 // Recorre la ventana de barrido y devuelve solo los dias-excepcion (objeto-dia
 // completo, con colorGradient) para que la PWA los superponga sobre su base.
 function computeProfileExceptions(profile) {
-    const rotativa = getRotativa(profile.name);
+    // La base nueva (con la definicion de una rotativa personalizada) y la
+    // ANTIGUA, la que calcula una PWA anterior a v327 o el Android empaquetado
+    // (no conocen `definition`). Ver dayIsProjectionException.
+    const legacyRotativa = getRotativa(profile.name);
+    const rotativa = buildPortableRotativa(legacyRotativa);
     const { start, end } = exceptionsScanRange();
     const months = listMonthsInRange(start, end);
     const maps = profileLeaveMaps(profile.name);
     const profileData = getJSON("data_" + profile.name, {});
     const colorResolver = buildHexColorResolver(getTurnoColorConfig());
-    const ctx = { maps, profileData, colorResolver, holidaysByYear: {} };
+    const ctx = {
+        maps,
+        profileData,
+        colorResolver,
+        portableRotativa: rotativa,
+        holidaysByYear: {}
+    };
 
     const exceptions = {};
 
@@ -963,7 +980,7 @@ function computeProfileExceptions(profile) {
         const days = computeMonthDays(profile, month, ctx);
 
         Object.entries(days).forEach(([iso, day]) => {
-            if (dayDiffersFromBase(day, baseRenderDay(rotativa, iso))) {
+            if (dayIsProjectionException(day, rotativa, legacyRotativa, iso)) {
                 exceptions[iso] = day;
             }
         });
@@ -1831,7 +1848,7 @@ async function buildWorkerAppPayload(
                     unitEntryDate: "",
                     active: isProfileActive(profile)
                 },
-                rotativa: getRotativa(profile.name),
+                rotativa: buildPortableRotativa(getRotativa(profile.name)),
                 shiftAssigned: Boolean(getShiftAssigned(profile.name)),
                 baseVersion: WORKER_APP_BASE_VERSION,
                 contractProfileVersion: WORKER_APP_CONTRACT_PROFILE_VERSION,

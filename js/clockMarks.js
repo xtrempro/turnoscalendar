@@ -12,6 +12,12 @@ import {
     timeNearReference
 } from "./timeUtils.js";
 import { classifyClockMarkSegment } from "./clockMarkUtils.js";
+import {
+    rotationProducesTurns,
+    rotationShiftForDate,
+    rotationUsesCustomSchedule,
+    rotationUsesBusinessDays
+} from "./rotationCatalog.js";
 
 const BLOCK_MINUTES = 30;
 
@@ -306,7 +312,8 @@ export function getClockScheduleState(profile, keyDay, state) {
  * en un 1/2 ADM tarde. La asignacion no cambia la duracion de su turno base.
  */
 function usesAssignedHalfAdminSchedule(profile) {
-    return ["3turno", "4turno"].includes(getRotativa(profile).type);
+    const type = getRotativa(profile).type;
+    return rotationProducesTurns(type) && !rotationUsesBusinessDays(type);
 }
 
 function halfAdminDiurnoSplit(date) {
@@ -377,6 +384,41 @@ function getRawScheduledSegmentsForProfile(
 
     if (halfAdminSegments) {
         return halfAdminSegments;
+    }
+
+    const rotativa = getRotativa(profile);
+    const configuredShift = rotationUsesCustomSchedule(rotativa.type)
+        ? rotationShiftForDate(
+            rotativa,
+            date,
+            { isBusinessDay: isBusinessDay(date, holidays) }
+        )
+        : null;
+    const configuredTurn = Number(configuredShift?.turn) || TURNO.LIBRE;
+
+    if (configuredShift && configuredTurn === (Number(state) || TURNO.LIBRE)) {
+        if (configuredTurn === TURNO.LIBRE) return [];
+
+        const startTime = parseTime(configuredShift.start);
+        const ordinaryEnd = date.getDay() === 5 && configuredShift.fridayEnd
+            ? configuredShift.fridayEnd
+            : configuredShift.end;
+        const endTime = parseTime(ordinaryEnd);
+
+        if (startTime && endTime) {
+            const end = configuredShift.id === "diurno" && isShortDiurnoDay(date)
+                ? diurnoEndAt(date)
+                : configuredShift.nextDay
+                    ? nextDateAt(date, endTime.hour, endTime.minute)
+                    : dateAt(date, endTime.hour, endTime.minute);
+
+            return [{
+                id: configuredShift.id,
+                label: configuredShift.name,
+                start: dateAt(date, startTime.hour, startTime.minute),
+                end
+            }];
+        }
     }
 
     return getScheduledSegmentsForState(
@@ -582,6 +624,22 @@ export function getScheduledSegmentsForProfile(
             state,
             holidays
         )
+    );
+}
+
+export function getBaseScheduledSegmentsForProfile(
+    profile,
+    keyDay,
+    date,
+    state,
+    holidays = {}
+) {
+    return getRawScheduledSegmentsForProfile(
+        profile,
+        keyDay,
+        date,
+        state,
+        holidays
     );
 }
 

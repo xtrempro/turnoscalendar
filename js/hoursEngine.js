@@ -29,6 +29,7 @@ import {
     getClockDeficitHours,
     getClockExtraHours,
     getClockScheduleState,
+    getBaseScheduledSegmentsForProfile,
     getScheduledSegmentsForProfile,
     hasClockMark
 } from "./clockMarks.js";
@@ -45,6 +46,10 @@ import {
     diurnoExtraDayHours,
     roundMonthlyBusinessHours
 } from "./overtimeRules.js";
+import {
+    rotationUsesBusinessDays,
+    rotationUsesCustomSchedule
+} from "./rotationCatalog.js";
 
 // Jornada diurna PROMEDIO. Reparte la jornada contractual del mes (horas
 // habiles esperadas, descuentos por permiso); no es lo que vale un turno
@@ -718,12 +723,16 @@ function addAggregateWorkedHours(
         return;
     }
 
-    if (turno === TURNO.DIURNO) {
+    const customSchedule = rotationUsesCustomSchedule(
+        getRotativa(nombre).type
+    );
+
+    if (!customSchedule && turno === TURNO.DIURNO) {
         addHours(totals, calcExtraHours(date, turno, holidays));
         return;
     }
 
-    if (turno === TURNO.DIURNO_NOCHE) {
+    if (!customSchedule && turno === TURNO.DIURNO_NOCHE) {
         addHours(totals, calcExtraHours(date, turno, holidays));
         return;
     }
@@ -731,7 +740,18 @@ function addAggregateWorkedHours(
     addHours(
         totals,
         classifyIntervals(
-            intervalsForState(date, turno, holidays),
+            customSchedule
+                ? getScheduledSegmentsForProfile(
+                    nombre,
+                    keyDay,
+                    date,
+                    turno,
+                    holidays
+                ).map(segment => ({
+                    start: segment.start,
+                    end: segment.end
+                }))
+                : intervalsForState(date, turno, holidays),
             holidays,
             rangeStart,
             rangeEnd
@@ -862,7 +882,7 @@ function getCalculationMode(nombre, y, m, days, data) {
         return "aggregate";
     }
 
-    if (getRotativa(nombre).type === "diurno") {
+    if (rotationUsesBusinessDays(getRotativa(nombre).type)) {
         return diurnoHasMissingBaseShift(nombre, y, m, days)
             ? "aggregate"
             : "diurno";
@@ -1117,11 +1137,20 @@ function calculateAssignedExtras(
             actualIntervals = diurno.nightIntervals;
         }
 
-        const baseIntervals = intervalsForState(
-            date,
-            baseState,
-            holidays
-        );
+        const baseIntervals = rotationUsesCustomSchedule(
+            getRotativa(nombre).type
+        )
+            ? getBaseScheduledSegmentsForProfile(
+                nombre,
+                keyDay,
+                date,
+                baseState,
+                holidays
+            ).map(segment => ({
+                start: segment.start,
+                end: segment.end
+            }))
+            : intervalsForState(date, baseState, holidays);
         const extraIntervals = subtractIntervals(
             actualIntervals,
             baseIntervals

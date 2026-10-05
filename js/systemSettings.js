@@ -29,6 +29,7 @@ import {
 } from "./auditLog.js";
 import {
     MENU_PERMISSION_DEFS,
+    canEditMenu,
     deleteWorkspaceMember,
     getWorkspacePermissionState,
     isWorkspaceOwner,
@@ -55,6 +56,13 @@ import {
 import {
     showSupervisorInvitePermissionsDialog
 } from "./supervisorInvitesUI.js";
+import {
+    handleRotationSettingsChange,
+    handleRotationSettingsClick,
+    renderRotationSettingsPanel,
+    resetRotationSettingsDraft,
+    saveRotationSettingsDraft
+} from "./rotationSettings.js";
 
 const GROUPS = [
     {
@@ -88,6 +96,7 @@ const SETTINGS_NAV = [
     {
         label: "Turnos y cobertura",
         items: [
+            { id: "rotations", label: "Rotativas y turnos", dot: "#0F766E", keywords: "rotativas turnos patron calendario horarios diurno tercer cuarto turno" },
             { id: "shifts", label: "Reglas de turnos", dot: "#0F766E", keywords: "24 horas invertido diurno post dos funcionarios repartir turno quitar turno boton planta contrata jornada corta salida temprana 17 septiembre 24 diciembre 31 diciembre reloj control" },
             { id: "swaps", label: "Cambios de turno", dot: "#0F766E", keywords: "cambios de turno cctt limite mensual tipos" },
             { id: "requests", label: "Reemplazos", dot: "#0F766E", keywords: "reemplazos sugerencias unidades enlazadas profesiones aceptacion caducidad devolucion de tiempo horas" },
@@ -1085,6 +1094,7 @@ function readColorConfig(backdrop) {
 }
 
 function renderActivePanel(config) {
+    if (activeTab === "rotations") return renderRotationSettingsPanel();
     if (activeTab === "colors") return renderColorsPanel();
     if (activeTab === "holidays") return renderHolidaysPanel();
     if (activeTab === "requests") return renderRequestsPanel();
@@ -1103,7 +1113,16 @@ function collaboratorCount() {
 }
 
 function settingsNavHTML() {
-    return SETTINGS_NAV.map(group => `
+    const visibleGroups = isWorkspaceOwner()
+        ? SETTINGS_NAV
+        : SETTINGS_NAV
+            .map(group => ({
+                ...group,
+                items: group.items.filter(item => item.id === "rotations")
+            }))
+            .filter(group => group.items.length);
+
+    return visibleGroups.map(group => `
         <div class="sx-nav__group" data-settings-nav-group>
             <span class="sx-nav__label">${escapeHTML(group.label)}</span>
             ${group.items.map(item => `
@@ -1729,6 +1748,18 @@ function bindBackdrop(backdrop) {
             return;
         }
 
+        if (
+            activeTab === "rotations" &&
+            handleRotationSettingsChange(
+                event,
+                backdrop,
+                () => rerenderSettings(backdrop)
+            )
+        ) {
+            markSettingsDirty(backdrop);
+            return;
+        }
+
         if (event.target?.closest?.(".sx-main")) {
             markSettingsDirty(backdrop);
         }
@@ -1776,6 +1807,19 @@ function bindBackdrop(backdrop) {
             activeTab = tab.dataset.settingsTab;
             backdrop.innerHTML = modalHTML();
             return;
+        }
+
+        if (activeTab === "rotations") {
+            const handled = await handleRotationSettingsClick(
+                event,
+                backdrop,
+                {
+                    rerender: () => rerenderSettings(backdrop),
+                    dirty: () => markSettingsDirty(backdrop)
+                }
+            );
+
+            if (handled) return;
         }
 
         // Periodos de vigencia de los valores por grado. Cada accion guarda
@@ -1945,31 +1989,36 @@ function bindBackdrop(backdrop) {
         if (event.target.closest("[data-settings-save]")) {
             try {
                 preserveActiveDraft(backdrop);
-                saveGradeHourConfig(gradeConfigDraft);
-                saveManualHolidays(manualHolidayDraft);
-                saveReplacementRequestConfig(
-                    replacementRequestConfigDraft ||
-                    getReplacementRequestConfig()
-                );
-                saveReportSignatureConfig(
-                    reportSignatureConfigDraft ||
-                    getReportSignatureConfig()
-                );
-                saveTurnChangeConfig(
-                    turnChangeConfigDraft ||
-                    getTurnChangeConfig()
-                );
-                saveTurnoColorConfig(
-                    colorConfigDraft || getTurnoColorConfig()
-                );
+                if (isWorkspaceOwner()) {
+                    saveGradeHourConfig(gradeConfigDraft);
+                    saveManualHolidays(manualHolidayDraft);
+                    saveReplacementRequestConfig(
+                        replacementRequestConfigDraft ||
+                        getReplacementRequestConfig()
+                    );
+                    saveReportSignatureConfig(
+                        reportSignatureConfigDraft ||
+                        getReportSignatureConfig()
+                    );
+                    saveTurnChangeConfig(
+                        turnChangeConfigDraft ||
+                        getTurnChangeConfig()
+                    );
+                    saveTurnoColorConfig(
+                        colorConfigDraft || getTurnoColorConfig()
+                    );
+                }
+                saveRotationSettingsDraft();
                 applyTurnoColors();
                 await saveMemberPermissionDrafts();
 
                 addAuditLog(
                     AUDIT_CATEGORY.SYSTEM_SETTINGS,
                     "Modifico ajustes del sistema",
-                    "Actualizo valores por grado, feriados manuales, opciones de reemplazos, pie de firma, reglas de cambios de turno, colores y/o permisos de usuarios.",
-                    { scope: "system_settings" }
+                    isWorkspaceOwner()
+                        ? "Actualizo valores por grado, rotativas, turnos, feriados manuales, opciones de reemplazos, pie de firma, reglas de cambios de turno, colores y/o permisos de usuarios."
+                        : "Actualizo las rotativas y los tipos de turno de la unidad.",
+                    { scope: activeTab === "rotations" ? "rotation_catalog" : "system_settings" }
                 );
                 settingsDirty = false;
                 backdrop.remove();
@@ -1988,7 +2037,9 @@ export function openSystemSettings(initialTab = activeTab) {
     const nextTab = String(initialTab || activeTab);
 
     // "turnChanges" era la pestaña de antes: hoy son dos secciones.
-    const requested = nextTab === "turnChanges" ? "shifts" : nextTab;
+    const requested = !isWorkspaceOwner()
+        ? "rotations"
+        : nextTab === "turnChanges" ? "shifts" : nextTab;
 
     if (SETTINGS_TABS.includes(requested)) {
         activeTab = requested;
@@ -2008,6 +2059,7 @@ export function openSystemSettings(initialTab = activeTab) {
         getReportSignatureConfig();
     turnChangeConfigDraft = getTurnChangeConfig();
     colorConfigDraft = getTurnoColorConfig();
+    resetRotationSettingsDraft();
     memberPermissionDraft = [];
     memberPermissionLoading = false;
     memberPermissionError = "";
@@ -2040,9 +2092,9 @@ export function openSystemSettings(initialTab = activeTab) {
 export function initSystemSettings(options = {}) {
     onSettingsSaved = options.onSaved || null;
     options.button?.addEventListener("click", () => {
-        if (!isWorkspaceOwner()) {
+        if (!isWorkspaceOwner() && !canEditMenu("turnos")) {
             alert(
-                "Solo el creador de la unidad puede abrir los ajustes del sistema."
+                "Necesitas permiso para editar Turnos y administrar rotativas."
             );
             return;
         }

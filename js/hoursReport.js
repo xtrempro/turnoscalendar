@@ -67,6 +67,11 @@ import {
     isBusinessDay
 } from "./calculations.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
+import { getRotativaLabel } from "./rotationUtils.js";
+import {
+    rotationProducesTurns,
+    rotationUsesBusinessDays
+} from "./rotationCatalog.js";
 import {
     codeToTurno,
     getReplacementLogForWorkerMonth,
@@ -188,6 +193,9 @@ async function fetchReportHolidays(year) {
 }
 
 function rotationLabel(type) {
+    const configured = getRotativaLabel(type);
+    if (configured !== "Sin rotativa") return configured;
+
     if (type === "3turno") return "3er Turno";
     if (type === "4turno") return "4° Turno";
     if (type === "diurno") return "Diurno";
@@ -201,7 +209,7 @@ function reportKind(profileName, monthDate = new Date()) {
     const type = getRotativa(profileName).type;
 
     if (isReplacementProfile(profileName)) return "replacement";
-    if (getShiftAssigned(profileName, monthDate) || type === "diurno") {
+    if (getShiftAssigned(profileName, monthDate) || rotationUsesBusinessDays(type)) {
         return "extra-only";
     }
 
@@ -223,7 +231,8 @@ function isNoAssignmentShiftProfile(
     const type = getRotativa(profileName).type;
 
     return (
-        (type === "3turno" || type === "4turno") &&
+        rotationProducesTurns(type) &&
+        !rotationUsesBusinessDays(type) &&
         !getShiftAssigned(profileName, monthDate)
     );
 }
@@ -235,7 +244,8 @@ export function isAssignedShiftReportProfile(
     const type = getRotativa(profileName).type;
 
     return (
-        (type === "3turno" || type === "4turno") &&
+        rotationProducesTurns(type) &&
+        !rotationUsesBusinessDays(type) &&
         getShiftAssigned(profileName, monthDate)
     );
 }
@@ -247,7 +257,7 @@ export function isReplacementReportProfile(profileName) {
 export function isDiurnoReportProfile(profileName) {
     return (
         !isReplacementProfile(profileName) &&
-        getRotativa(profileName).type === "diurno"
+        rotationUsesBusinessDays(getRotativa(profileName).type)
     );
 }
 
@@ -4451,7 +4461,8 @@ export async function buildWorkerHheeMonthSummary(
         .toLowerCase();
     const showsAllShifts = !isReplacement &&
         !getShiftAssigned(profile.name, monthDate) &&
-        (rotativaType === "3turno" || rotativaType === "4turno");
+        rotationProducesTurns(rotativaType) &&
+        !rotationUsesBusinessDays(rotativaType);
     const detailKind = isReplacement
         ? "replacement"
         : showsAllShifts

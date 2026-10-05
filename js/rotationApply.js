@@ -13,6 +13,10 @@ import {
 } from "./storage.js";
 import { fetchHolidays } from "./holidays.js";
 import { getRotationSequence } from "./rotationUtils.js";
+import {
+    rotationBusinessDayTurn,
+    rotationUsesBusinessDays
+} from "./rotationCatalog.js";
 import { updateVisibleCalendarDays } from "./calendar.js";
 import { generateScheduleInWorker } from "./workerService.js";
 
@@ -129,4 +133,35 @@ export async function aplicarTercerTurnoDesde(
         getRotationSequence("3turno", firstTurn),
         options
     );
+}
+
+/**
+ * Aplica cualquier rotativa configurada en la unidad. Las rotativas de dias
+ * habiles conservan el tratamiento de fines de semana y feriados; las demas
+ * usan su secuencia ciclica.
+ */
+export async function aplicarRotativaConfiguradaDesde(
+    fecha,
+    type,
+    firstTurn = "larga",
+    options = {}
+) {
+    if (rotationUsesBusinessDays(type)) {
+        const year = fecha.getFullYear();
+        const holidays = await fetchHolidays(year);
+        await applyGeneratedSchedule(fecha, {
+            mode: "businessDays",
+            businessTurn: rotationBusinessDayTurn(type),
+            holidays,
+            endISO: options.endISO
+        });
+        return;
+    }
+
+    const sequence = getRotationSequence(type, firstTurn);
+    if (!sequence.length) {
+        throw new Error("La rotativa no tiene un patron valido.");
+    }
+
+    await aplicarRotativaSecuencialDesde(fecha, sequence, options);
 }

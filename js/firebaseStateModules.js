@@ -33,6 +33,7 @@ const EXACT_KEY_MODULES = new Map([
     ["leaveCancellationBarriers", "turnos"],
     ["preassignments", "turnos"],
     ["manualHolidays", "turnos"],
+    ["rotationCatalog", "turnos"],
     ["manualExtraReasonPresets", "turnos"],
     ["noCoverageReasonPresets", "turnos"],
     // Comentarios predefinidos al quitar a alguien de un turno aceptado.

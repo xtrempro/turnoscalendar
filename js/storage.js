@@ -1,4 +1,5 @@
 import { normalizeText, stripAccents } from "./stringUtils.js";
+import { normalizeRotationTypeId } from "./rotationCatalog.js";
 import {
     getRaw,
     setRaw,
@@ -825,10 +826,16 @@ function normalizeRotativaType(value){
         return "reemplazo";
     }
 
-    return "";
+    return normalizeRotationTypeId(source);
 }
 
 function normalizeRotationFirstTurn(value) {
+    const source = String(value || "").trim();
+
+    if (/^position:\d+$/.test(source)) {
+        return source;
+    }
+
     const normalized = stripAccents(String(value || "")).toLowerCase();
 
     if (

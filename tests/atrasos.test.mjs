@@ -1529,7 +1529,7 @@ test("el viernes NO corre el corte de 3er y 4to turno", () => {
 test("la asignacion de turno ya no entra en la decision", () => {
     assert.match(
         marcajes,
-        /function usesAssignedHalfAdminSchedule\(profile\) \{\s*\n\s*return \["3turno", "4turno"\]\.includes\(getRotativa\(profile\)\.type\);/
+        /function usesAssignedHalfAdminSchedule\(profile\) \{[\s\S]*?rotationProducesTurns\(type\) && !rotationUsesBusinessDays\(type\);/
     );
     assert.doesNotMatch(marcajes, /getShiftAssigned/);
 });

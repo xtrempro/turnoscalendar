@@ -31,7 +31,12 @@ import { getCachedHolidays, fetchHolidays, clearHolidaysCache } from "./holidays
 import { toISODate, keyFromDate } from "./dateUtils.js";
 import { TURNO } from "./constants.js";
 import { getJSON } from "./persistence.js";
-import { baseRenderDay } from "./rotationBase.js";
+import {
+    baseRenderDay,
+    buildPortableRotativa,
+    dayIsProjectionException,
+    projectedDayDiffersFromBase
+} from "./rotationBase.js";
 import { normalizeText } from "./stringUtils.js";
 import { buildSharedHomeTaskReminders } from "./homeSharedTasks.js";
 import { withManualBalance } from "./balanceUtils.js";
@@ -58,7 +63,7 @@ const OVERTIME_SUMMARY_MONTHS_FORWARD = 3;
 // v2: los resumenes ahora incluyen extraShifts (detalle de turnos extra por mes).
 const OVERTIME_SUMMARY_CACHE_VERSION = 2;
 const LEGAL_CONTINUOUS_BLOCK_DAYS = 10;
-const WORKER_APP_BASE_VERSION = 1;
+const WORKER_APP_BASE_VERSION = 2;
 const WORKER_APP_CONTRACT_PROFILE_VERSION = 2;
 const EXCEPTIONS_MONTHS_BACK = 2;
 const EXCEPTIONS_MONTHS_FORWARD = 12;
@@ -454,7 +459,20 @@ function computeMonthDays(profile, month, ctx) {
             maps.admin[keyDay] || maps.legal[keyDay] ||
             maps.comp[keyDay] || maps.absences[keyDay]
         );
-        const label = turnoLabel(actualTurn) || "Libre";
+        const portableBaseDay = ctx.portableRotativa
+            ? baseRenderDay(ctx.portableRotativa, iso)
+            : null;
+        const usesConfiguredBaseLabel = Boolean(
+            portableBaseDay?.shiftDefinition &&
+            (Number(actualTurn) || TURNO.LIBRE) === (Number(portableBaseDay.turno) || TURNO.LIBRE) &&
+            (Number(programmedTurn) || TURNO.LIBRE) === (Number(baseTurn) || TURNO.LIBRE) &&
+            !hasLeave &&
+            !manualExtra &&
+            !swapMarker
+        );
+        const label = usesConfiguredBaseLabel
+            ? portableBaseDay.label
+            : turnoLabel(actualTurn) || "Libre";
         const colorGradient = getDayColorGradient(
             profile.name, keyDay, actualTurn, cursor,
             holidaysByYear[year], maps.admin[keyDay], baseWithSwaps,
@@ -472,7 +490,7 @@ function computeMonthDays(profile, month, ctx) {
             programmedTurn: Number(programmedTurn) || TURNO.LIBRE,
             baseTurn: Number(baseTurn) || TURNO.LIBRE,
             label,
-            displayLabel: visualLabel || label,
+            displayLabel: usesConfiguredBaseLabel ? label : visualLabel || label,
             className: classNameForDay(actualTurn, hasLeave),
             colorGradient: colorGradient || "",
             isManualExtra: manualExtra,
@@ -548,6 +566,7 @@ export function computeProfileSchedule(profile, today = new Date()) {
         maps,
         profileData,
         colorResolver,
+        portableRotativa: buildPortableRotativa(getRotativa(profile.name)),
         holidaysByYear: {},
         // Lo caro se calcula una vez por trabajador, no por dia.
         readMarks: createAttendanceMarksReader(profile)
@@ -568,27 +587,24 @@ export function computeProfileSchedule(profile, today = new Date()) {
 
 // ───────── Excepciones ─────────
 
-function dayDiffersFromBase(actual, base) {
-    return (
-        (Number(actual.turno) || TURNO.LIBRE) !== (Number(base.turno) || TURNO.LIBRE) ||
-        String(actual.displayLabel || "") !== String(base.displayLabel || "") ||
-        String(actual.className || "") !== String(base.className || "") ||
-        Boolean(actual.hasLeave) !== Boolean(base.hasLeave) ||
-        Boolean(actual.isManualExtra) !== Boolean(base.isManualExtra) ||
-        // Un dia con marcador CCTT/DDTT debe publicarse como excepcion aunque el
-        // turno coincida con la base (p.ej. cambio entre turnos del mismo tipo).
-        String(actual.swapMarker?.label || "") !== String(base.swapMarker?.label || "")
-    );
-}
-
 function computeProfileExceptions(profile, today = new Date()) {
-    const rotativa = getRotativa(profile.name);
+    // La base nueva (con la definicion de una rotativa personalizada) y la
+    // ANTIGUA, la que calcula una PWA anterior a v327 o el Android empaquetado
+    // (no conocen `definition`). Ver dayIsProjectionException.
+    const legacyRotativa = getRotativa(profile.name);
+    const rotativa = buildPortableRotativa(legacyRotativa);
     const { start, end } = exceptionsScanRange(today);
     const months = listMonthsInRange(start, end);
     const maps = profileLeaveMaps(profile.name);
     const profileData = getJSON("data_" + profile.name, {});
     const colorResolver = buildHexColorResolver(getTurnoColorConfig());
-    const ctx = { maps, profileData, colorResolver, holidaysByYear: {} };
+    const ctx = {
+        maps,
+        profileData,
+        colorResolver,
+        portableRotativa: rotativa,
+        holidaysByYear: {}
+    };
 
     const exceptions = {};
 
@@ -596,7 +612,7 @@ function computeProfileExceptions(profile, today = new Date()) {
         const days = computeMonthDays(profile, month, ctx);
 
         Object.entries(days).forEach(([iso, day]) => {
-            if (dayDiffersFromBase(day, baseRenderDay(rotativa, iso))) {
+            if (dayIsProjectionException(day, rotativa, legacyRotativa, iso)) {
                 exceptions[iso] = day;
             }
         });
@@ -1152,7 +1168,7 @@ export async function buildFullProjection(
             unitEntryDate: "",
             active: isProfileActive(profile)
         },
-        rotativa: getRotativa(profile.name),
+        rotativa: buildPortableRotativa(getRotativa(profile.name)),
         shiftAssigned: Boolean(getShiftAssigned(profile.name)),
         holidays: collectHolidayDates([
             baseYear - 1, baseYear, baseYear + 1, baseYear + 2

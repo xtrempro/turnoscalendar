@@ -1,5 +1,5 @@
 // Regla del detalle de turnos que consume la PWA: sin asignacion de turno y con
-// rotativa de 3er/4to turno no hay base contra la cual medir "lo extra", asi que
+// rotativa secuencial no hay base contra la cual medir "lo extra", asi que
 // el resumen mensual publica TODOS los turnos del mes (kind "all", horas reales)
 // y marca detailScope: "all" para que la PWA titule "Turnos realizados".
 import test from "node:test";
@@ -14,11 +14,11 @@ const summary = hoursReport.match(
     /export async function buildWorkerHheeMonthSummary\([\s\S]*?\n}/
 )?.[0] || "";
 
-test("la excepcion exige sin asignacion Y rotativa de 3er/4to turno", () => {
+test("la excepcion exige sin asignacion Y rotativa secuencial con turnos", () => {
     assert.notEqual(summary, "", "no se encontro buildWorkerHheeMonthSummary");
     assert.match(summary, /getShiftAssigned\(profile\.name, monthDate\)/);
-    assert.match(summary, /3turno/);
-    assert.match(summary, /4turno/);
+    assert.match(summary, /rotationProducesTurns\(rotativaType\)/);
+    assert.match(summary, /!rotationUsesBusinessDays\(rotativaType\)/);
     // Debe ser negacion de la asignacion: aplica a quien NO la tiene.
     assert.match(summary, /!getShiftAssigned/);
 });

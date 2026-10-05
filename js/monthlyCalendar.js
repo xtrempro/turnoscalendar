@@ -13,6 +13,10 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { TURNO, TURNO_LABEL } from "./constants.js";
 import {
+    rotationProducesTurns,
+    rotationUsesBusinessDays
+} from "./rotationCatalog.js";
+import {
     getProfiles,
     getRotativa,
     getProfileData,
@@ -226,7 +230,7 @@ function groupKeyFor(profile) {
 function isShiftRotation(profile) {
     const type = getRotativa(profile.name).type;
 
-    return type === "3turno" || type === "4turno";
+    return rotationProducesTurns(type) && !rotationUsesBusinessDays(type);
 }
 
 function monthProfiles(month) {

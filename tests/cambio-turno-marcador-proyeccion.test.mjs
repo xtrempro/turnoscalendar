@@ -23,6 +23,10 @@ const swapsSrc = await readFile(
   new URL("../js/swaps.js", import.meta.url),
   "utf8"
 );
+const rotationBaseSrc = await readFile(
+  new URL("../js/rotationBase.js", import.meta.url),
+  "utf8"
+);
 
 // Ambas copias del motor deben tener el mismo cableado del marcador.
 for (const [nombre, src] of [
@@ -43,13 +47,18 @@ for (const [nombre, src] of [
     assert.match(src, /counterpart: swapMarker\.perspective\?\.counterpart \|\| ""/);
   });
 
-  test(`${nombre}: dayDiffersFromBase considera el marcador`, () => {
-    assert.match(
-      src,
-      /String\(actual\.swapMarker\?\.label \|\| ""\) !== String\(base\.swapMarker\?\.label \|\| ""\)/
-    );
+  test(`${nombre}: usa la comparacion base compartida`, () => {
+    assert.match(src, /projectedDayDiffersFromBase/);
+    assert.match(src, /from "\.\/rotationBase\.js"/);
   });
 }
+
+test("la comparacion base compartida considera el marcador", () => {
+  assert.match(
+    rotationBaseSrc,
+    /String\(actual\?\.swapMarker\?\.label \|\| ""\) !== String\(base\?\.swapMarker\?\.label \|\| ""\)/
+  );
+});
 
 test("swaps.js expone getCambioTurnoCalendario con etiquetas CCTT/DDTT", () => {
   assert.match(swapsSrc, /export function getCambioTurnoCalendario/);

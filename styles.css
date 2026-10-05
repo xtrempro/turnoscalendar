@@ -35,6 +35,348 @@
     --timeline-holiday: rgba(239, 68, 68, 0.12);
 }
 
+/* Editor de rotativas dentro de Ajustes del sistema. */
+.sx-section-head--actions,
+.sx-rotation-builder__head,
+.sx-subhead,
+.sx-inline-actions,
+.sx-rotation-builder__actions,
+.sx-rotation-card,
+.sx-shift-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.sx-section-head--actions > div:first-child,
+.sx-rotation-builder__head > div:first-child,
+.sx-rotation-card > div:first-child,
+.sx-shift-row > div {
+    min-width: 0;
+}
+
+.sx-inline-actions,
+.sx-rotation-builder__actions,
+.sx-rotation-card__actions {
+    display: flex;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+.sx-rotation-builder,
+.sx-shift-editor {
+    margin: 18px 0 24px;
+    padding: 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--panel-alt);
+}
+
+.sx-rotation-builder h3,
+.sx-shift-editor h3,
+.sx-subhead h3 {
+    margin: 0;
+    color: var(--text);
+    font-size: 16px;
+    letter-spacing: 0;
+}
+
+.sx-rotation-builder p,
+.sx-shift-editor p {
+    margin: 5px 0 0;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.sx-eyebrow {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0;
+}
+
+.sx-rotation-palette {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+    margin: 16px 0;
+}
+
+.sx-rotation-shift {
+    display: grid;
+    grid-template-columns: 12px 1fr;
+    gap: 2px 8px;
+    min-height: 56px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+
+.sx-rotation-shift.is-selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(24, 117, 209, .14);
+}
+
+.sx-rotation-shift:disabled,
+.sx-pattern-day:disabled {
+    cursor: default;
+    opacity: .78;
+}
+
+.sx-rotation-shift:disabled:hover,
+.sx-pattern-day:disabled:hover {
+    background: var(--panel);
+}
+
+.sx-rotation-shift strong,
+.sx-rotation-shift small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sx-rotation-shift small {
+    grid-column: 2;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.sx-rotation-shift__swatch {
+    width: 10px;
+    height: 28px;
+    border-radius: 3px;
+    background: #cbd5e1;
+}
+
+.sx-rotation-shift__swatch[data-turn="1"] { background: #f59e0b; }
+.sx-rotation-shift__swatch[data-turn="2"] { background: #14b8a6; }
+.sx-rotation-shift__swatch[data-turn="3"] { background: #ef4444; }
+.sx-rotation-shift__swatch[data-turn="4"] { background: #8b5cf6; }
+.sx-rotation-shift__swatch[data-turn="8"] { background: #2563eb; }
+
+.sx-pattern-weekdays,
+.sx-pattern-calendar {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.sx-pattern-weekdays span {
+    padding: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-align: center;
+}
+
+.sx-pattern-calendar {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--border);
+    gap: 1px;
+}
+
+.sx-pattern-day {
+    position: relative;
+    min-width: 0;
+    min-height: 62px;
+    padding: 7px;
+    border: 0;
+    background: var(--panel);
+    color: var(--text-muted);
+    text-align: left;
+    cursor: pointer;
+}
+
+.sx-pattern-day:hover { background: var(--panel-hover); }
+.sx-pattern-day.has-shift { box-shadow: inset 0 -5px #cbd5e1; }
+.sx-pattern-day[data-turn="1"] { box-shadow: inset 0 -5px #f59e0b; }
+.sx-pattern-day[data-turn="2"] { box-shadow: inset 0 -5px #14b8a6; }
+.sx-pattern-day[data-turn="3"] { box-shadow: inset 0 -5px #ef4444; }
+.sx-pattern-day[data-turn="4"] { box-shadow: inset 0 -5px #8b5cf6; }
+.sx-pattern-day[data-turn="8"] { box-shadow: inset 0 -5px #2563eb; }
+
+.sx-pattern-day span {
+    display: block;
+    font-size: 11px;
+}
+
+.sx-pattern-day strong {
+    display: block;
+    margin-top: 8px;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sx-pattern-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 8px;
+    background: var(--panel);
+}
+
+.sx-pattern-status.is-recognized {
+    border-style: solid;
+    border-color: #22a06b;
+    background: rgba(34, 160, 107, .1);
+}
+
+.sx-pattern-status strong,
+.sx-pattern-status span {
+    display: block;
+}
+
+.sx-pattern-status span {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.sx-rotation-builder__actions {
+    justify-content: flex-end;
+    margin-top: 14px;
+}
+
+.sx-rotation-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr);
+    gap: 18px;
+}
+
+.sx-subhead {
+    margin-bottom: 8px;
+}
+
+.sx-subhead span {
+    min-width: 26px;
+    padding: 3px 7px;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 800;
+    text-align: center;
+}
+
+.sx-rotation-list,
+.sx-shift-list {
+    display: grid;
+    gap: 7px;
+}
+
+.sx-rotation-card,
+.sx-shift-row {
+    min-height: 58px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+}
+
+.sx-rotation-card strong,
+.sx-rotation-card span,
+.sx-rotation-card small,
+.sx-shift-row strong,
+.sx-shift-row small {
+    display: block;
+}
+
+.sx-rotation-card span,
+.sx-rotation-card small,
+.sx-shift-row small {
+    margin-top: 2px;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sx-shift-row {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr) 36px 36px;
+}
+
+.sx-shift-row .sx-rotation-shift__swatch {
+    height: 34px;
+}
+
+.sx-icon-btn--danger { color: #c9363e; }
+
+.sx-shift-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.sx-shift-form label:not(.sx-check-row) {
+    display: grid;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.sx-shift-form input,
+.sx-shift-form select {
+    width: 100%;
+    min-height: 40px;
+    padding: 7px 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    background: var(--field);
+    color: var(--text);
+}
+
+.sx-check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.sx-check-row input { width: 18px; min-height: 18px; }
+
+@media (max-width: 900px) {
+    .sx-section-head--actions,
+    .sx-rotation-builder__head,
+    .sx-pattern-status {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .sx-rotation-columns,
+    .sx-shift-form {
+        grid-template-columns: 1fr;
+    }
+
+    .sx-pattern-day {
+        min-height: 50px;
+        padding: 5px;
+    }
+
+    .sx-pattern-day strong { font-size: 9px; }
+}
+
 /* Dialogos ejecutivos compartidos: reemplazan alert, confirm y prompt nativos. */
 body.app-dialog-open {
     overflow: hidden;

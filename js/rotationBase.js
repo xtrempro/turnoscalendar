@@ -9,6 +9,11 @@
 // Cualquier divergencia se corrige sola: ese dia pasa a ser una excepcion.
 
 import { TURNO } from "./constants.js";
+import {
+    getRotationDefinition,
+    getShiftDefinition,
+    rotationStartIndex as catalogStartIndex
+} from "./rotationCatalog.js";
 
 const TURNO_LABEL = {
     0: "",
@@ -162,6 +167,71 @@ function isWeekend(date) {
     return day === 0 || day === 6;
 }
 
+function portableDefinition(rotativa) {
+    const definition = rotativa?.definition;
+
+    if (!definition || !Array.isArray(definition.pattern)) return null;
+
+    const pattern = definition.pattern.filter(shift =>
+        shift && typeof shift === "object" && Number.isFinite(Number(shift.turn))
+    );
+    if (!pattern.length) return null;
+
+    return {
+        mode: definition.mode === "businessDays" ? "businessDays" : "sequence",
+        pattern
+    };
+}
+
+function portableShiftForDate(rotativa, date, start) {
+    const definition = portableDefinition(rotativa);
+    if (!definition) return null;
+
+    if (definition.mode === "businessDays") {
+        return isWeekend(date) ? { turn: TURNO.LIBRE } : definition.pattern[0];
+    }
+
+    const raw = String(rotativa?.firstTurn || rotativa?.first || "position:0")
+        .trim()
+        .toLowerCase();
+    const requested = /^position:\d+$/.test(raw)
+        ? Number(raw.split(":")[1])
+        : 0;
+    const startIndex = Math.max(0, Math.min(definition.pattern.length - 1, requested));
+    const index = (dayDifference(start, date) + startIndex) % definition.pattern.length;
+
+    return definition.pattern[index] || null;
+}
+
+export function buildPortableRotativa(rotativa) {
+    const source = rotativa && typeof rotativa === "object" ? rotativa : {};
+    const definition = getRotationDefinition(source.type);
+
+    if (!definition || definition.builtin) return { ...source };
+
+    return {
+        ...source,
+        // Ya resuelta: un alias antiguo ("noche") la PWA lo leeria como 0.
+        firstTurn: `position:${catalogStartIndex(source.type, source.firstTurn)}`,
+        name: definition.name,
+        definition: {
+            mode: definition.mode,
+            pattern: definition.pattern.map(shiftId => {
+                const shift = getShiftDefinition(shiftId);
+                return {
+                    id: shift?.id || "libre",
+                    name: shift?.name || "Libre",
+                    turn: Number(shift?.turn) || TURNO.LIBRE,
+                    start: shift?.start || "",
+                    end: shift?.end || "",
+                    fridayEnd: shift?.fridayEnd || "",
+                    nextDay: Boolean(shift?.nextDay)
+                };
+            })
+        }
+    };
+}
+
 // Base simple compartida: NO conoce feriados, permisos, reemplazos ni ediciones.
 export function simpleBaseTurno(rotativa, iso) {
     const type = rotativa && rotativa.type;
@@ -170,6 +240,9 @@ export function simpleBaseTurno(rotativa, iso) {
     const date = parseISODate(iso);
     const start = parseISODate(rotativa.start);
     if (!date || !start || date < start) return TURNO.LIBRE;
+
+    const portableShift = portableShiftForDate(rotativa, date, start);
+    if (portableShift) return Number(portableShift.turn) || TURNO.LIBRE;
 
     if (type === "diurno") {
         return isWeekend(date) ? TURNO.LIBRE : TURNO.DIURNO;
@@ -185,13 +258,58 @@ export function simpleBaseTurno(rotativa, iso) {
 // Render base para comparar contra el dia real y decidir si es excepcion.
 export function baseRenderDay(rotativa, iso) {
     const turno = simpleBaseTurno(rotativa, iso);
-    const label = TURNO_LABEL[turno] || "Libre";
+    const date = parseISODate(iso);
+    const start = parseISODate(rotativa?.start);
+    const portableShift = date && start && date >= start
+        ? portableShiftForDate(rotativa, date, start)
+        : null;
+    const label = portableShift?.name || TURNO_LABEL[turno] || "Libre";
     return {
         turno,
         label,
         displayLabel: label,
         className: classNameForDay(turno, false),
         isManualExtra: false,
-        hasLeave: false
+        hasLeave: false,
+        shiftDefinition: portableShift
+            ? {
+                id: portableShift.id || "",
+                name: portableShift.name || label,
+                start: portableShift.start || "",
+                end: portableShift.end || "",
+                fridayEnd: portableShift.fridayEnd || "",
+                nextDay: Boolean(portableShift.nextDay)
+            }
+            : null
     };
+}
+
+// Comparacion unica para los dos publicadores. La etiqueta y el horario de una
+// rotativa configurable ya forman parte de ambos objetos; permisos,
+// movimientos y ediciones siguen rompiendo la igualdad.
+/**
+ * Si un dia viaja como excepcion: cuando difiere de la base nueva O de la
+ * antigua. Una PWA anterior a v327 (o el Android empaquetado) no entiende
+ * `rotativa.definition` y calcula la base antigua; si solo se comparara con la
+ * nueva, los dias de una rotativa personalizada no viajarian y esa app los
+ * mostraria libres. Para las rotativas de sistema las dos bases son la misma.
+ */
+export function dayIsProjectionException(day, portableRotativa, legacyRotativa, iso) {
+    return projectedDayDiffersFromBase(day, baseRenderDay(portableRotativa, iso)) ||
+        (
+            portableRotativa?.definition
+                ? projectedDayDiffersFromBase(day, baseRenderDay(legacyRotativa, iso))
+                : false
+        );
+}
+
+export function projectedDayDiffersFromBase(actual, base) {
+    return (
+        (Number(actual?.turno) || TURNO.LIBRE) !== (Number(base?.turno) || TURNO.LIBRE) ||
+        String(actual?.displayLabel || "") !== String(base?.displayLabel || "") ||
+        String(actual?.className || "") !== String(base?.className || "") ||
+        Boolean(actual?.hasLeave) !== Boolean(base?.hasLeave) ||
+        Boolean(actual?.isManualExtra) !== Boolean(base?.isManualExtra) ||
+        String(actual?.swapMarker?.label || "") !== String(base?.swapMarker?.label || "")
+    );
 }

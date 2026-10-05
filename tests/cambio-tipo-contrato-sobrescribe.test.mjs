@@ -102,7 +102,7 @@ test("y avisa si el calendario va a quedar vacio", () => {
     assert.match(bloque, /El calendario quedara vacio desde ese mes/);
     assert.match(
         main,
-        /function rotationGeneratesTurns\(rotationType\) \{\s*\n\s*return \["diurno", "3turno", "4turno"\]/
+        /function rotationGeneratesTurns\(rotationType\) \{\s*\n\s*return rotationProducesTurns\(String\(rotationType \|\| ""\)\);/
     );
 });
 

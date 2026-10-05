@@ -130,10 +130,14 @@ import {
     findTopProfileSearchMatch
 } from "./profileSearchUtils.js";
 import {
-    aplicarDiurnoDesde,
-    aplicarCuartoTurnoDesde,
-    aplicarTercerTurnoDesde
+    aplicarRotativaConfiguradaDesde
 } from "./rotationApply.js";
+import {
+    getRotationDefinitions,
+    rotationBusinessDayTurn,
+    rotationProducesTurns,
+    rotationUsesBusinessDays
+} from "./rotationCatalog.js";
 import { freezePriorRotationSchedule } from "./rotationFreeze.js";
 import {
     getClockActualState,
@@ -1301,11 +1305,10 @@ function profileSupportsLibreRotation(profile = {}) {
 }
 
 function getCalendarRotationOptions(profile = {}) {
-    const options = [
-        { value: "3turno", label: "3er Turno" },
-        { value: "4turno", label: "4to Turno" },
-        { value: "diurno", label: "Diurno" }
-    ];
+    const options = getRotationDefinitions().map(rotation => ({
+        value: rotation.id,
+        label: rotation.name
+    }));
 
     if (profileSupportsLibreRotation(profile)) {
         options.push({ value: "libre", label: "Libre" });
@@ -1317,7 +1320,9 @@ function getCalendarRotationOptions(profile = {}) {
 function getCalendarRotationDefaultState(profile) {
     const rotativa = getRotativa(profile?.name);
     const options = getCalendarRotationOptions(profile);
-    const fallbackType = options[0]?.value || "4turno";
+    const fallbackType = options.some(option => option.value === "3turno")
+        ? "3turno"
+        : options[0]?.value || "4turno";
     const existingType = options.some(option =>
         option.value === rotativa.type
     )
@@ -1340,28 +1345,32 @@ function syncProfileRotationOptions(data = profileDraft) {
 
     const replacementContract = isReplacementDraft(data);
     const libreAllowed = supportsLibreRotation(data);
-    const emptyOption = select.querySelector('option[value=""]');
-    const libreOption = select.querySelector('option[value="libre"]');
+    const selected = String(data.rotationType || select.value || "");
+    const options = [
+        {
+            value: "",
+            label: replacementContract
+                ? "Heredar rotativa del trabajador reemplazado"
+                : "Seleccionar"
+        },
+        ...(!replacementContract
+            ? getRotationDefinitions().map(rotation => ({
+                value: rotation.id,
+                label: rotation.name
+            }))
+            : []),
+        ...(libreAllowed ? [{ value: "libre", label: "Libre" }] : [])
+    ];
 
-    if (emptyOption) {
-        emptyOption.textContent = replacementContract
-            ? "Heredar rotativa del trabajador reemplazado"
-            : "Seleccionar";
-    }
-
-    select
-        .querySelectorAll(
-            'option[value="3turno"], option[value="4turno"], option[value="diurno"]'
-        )
-        .forEach(option => {
-            option.hidden = replacementContract;
-            option.disabled = replacementContract;
-        });
-
-    if (libreOption) {
-        libreOption.hidden = !libreAllowed;
-        libreOption.disabled = !libreAllowed;
-    }
+    select.replaceChildren(...options.map(item => {
+        const option = document.createElement("option");
+        option.value = item.value;
+        option.textContent = item.label;
+        return option;
+    }));
+    select.value = options.some(item => item.value === selected)
+        ? selected
+        : "";
 }
 
 function contractBlocksUnionLeave(data = profileDraft) {
@@ -3089,12 +3098,14 @@ function openRotationConfigModal(
             return TURNO.LIBRE;
         }
 
-        if (type === "diurno") {
+        if (rotationUsesBusinessDays(type)) {
             const holidays = getCachedHolidays(date.getFullYear());
-            return isBusinessDay(date, holidays) ? TURNO.DIURNO : TURNO.LIBRE;
+            return isBusinessDay(date, holidays)
+                ? rotationBusinessDayTurn(type)
+                : TURNO.LIBRE;
         }
 
-        if (type === "3turno" || type === "4turno") {
+        {
             const sequence = getRotationSequence(type, state.firstTurn);
 
             if (!sequence.length) return TURNO.LIBRE;
@@ -3108,8 +3119,6 @@ function openRotationConfigModal(
 
             return sequence[index];
         }
-
-        return TURNO.LIBRE;
     };
 
     // La herencia calculada para el rango elegido.
@@ -6773,10 +6782,8 @@ function renderDashboardState() {
 
     const canUseShiftAssignment =
         !shiftAssignmentBlocked &&
-        (
-            data.rotationType === "3turno" ||
-            data.rotationType === "4turno"
-        );
+        rotationProducesTurns(data.rotationType) &&
+        !rotationUsesBusinessDays(data.rotationType);
 
     if (DOM.shiftAssignedRow) {
         DOM.shiftAssignedRow.classList.toggle(
@@ -7968,10 +7975,8 @@ function isFourthShiftNoAssignmentProfile(
 
     const rotativa = getRotativa(profileName);
 
-    return (
-        rotativa.type === "3turno" ||
-        rotativa.type === "4turno"
-    ) &&
+    return rotationProducesTurns(rotativa.type) &&
+        !rotationUsesBusinessDays(rotativa.type) &&
         !getShiftAssigned(profileName, monthDate);
 }
 
@@ -11633,8 +11638,8 @@ function handleRotationSelectionChange() {
         DOM.profileRotationSelect.value;
     if (
         contractBlocksShiftAssignment() ||
-        profileDraft.rotationType !== "3turno" &&
-        profileDraft.rotationType !== "4turno"
+        rotationUsesBusinessDays(profileDraft.rotationType) ||
+        !rotationProducesTurns(profileDraft.rotationType)
     ) {
         profileDraft.shiftAssigned = false;
     }
@@ -11868,7 +11873,7 @@ async function firstRotationTurnDate(
         return "";
     }
 
-    if (rotationType === "diurno") {
+    if (rotationUsesBusinessDays(rotationType)) {
         const startDate = parseInputDate(startISO);
         const holidays = await fetchHolidays(startDate.getFullYear());
         const day = new Date(startDate);
@@ -12466,9 +12471,7 @@ function requestProfileInactivationDate(profileName, displayName = profileName) 
 // Rotativas que PRODUCEN turnos por si solas. "libre", "reemplazo" y la vacia
 // no: ahi el calendario queda en blanco hasta que alguien cargue algo.
 function rotationGeneratesTurns(rotationType) {
-    return ["diurno", "3turno", "4turno"].includes(
-        String(rotationType || "")
-    );
+    return rotationProducesTurns(String(rotationType || ""));
 }
 
 async function applyDraftRotation(
@@ -12523,17 +12526,12 @@ async function applyDraftRotation(
         return;
     }
 
-    if (rotationType === "diurno") {
-        await aplicarDiurnoDesde(startDate, { endISO });
-        return;
-    }
-
-    if (rotationType === "3turno") {
-        await aplicarTercerTurnoDesde(startDate, firstTurn, { endISO });
-        return;
-    }
-
-    await aplicarCuartoTurnoDesde(startDate, firstTurn, { endISO });
+    await aplicarRotativaConfiguradaDesde(
+        startDate,
+        rotationType,
+        firstTurn,
+        { endISO }
+    );
 }
 
 // TODO el camino de escritura de una rotativa -cleanupFutureSchedule,
@@ -12774,10 +12772,8 @@ async function guardarPerfil() {
         : profileDraft.rotationType;
     const nextShiftAssigned =
         !shiftAssignmentBlocked &&
-        (
-            nextRotationType === "3turno" ||
-            nextRotationType === "4turno"
-        ) &&
+        rotationProducesTurns(nextRotationType) &&
+        !rotationUsesBusinessDays(nextRotationType) &&
         Boolean(profileDraft.shiftAssigned);
     const previousShiftAssigned = isEditing
         ? getShiftAssignmentConfiguredState(
@@ -14027,7 +14023,7 @@ function activarSelectorAdmin() {
 
     activarModo(
         "admin",
-        getRotativa(getCurrentProfile()).type === "diurno"
+        rotationUsesBusinessDays(getRotativa(getCurrentProfile()).type)
             ? "Selecciona un turno Diurno en dia habil para el permiso administrativo."
             : getShiftAssigned(getCurrentProfile(), currentDate)
                 ? "Selecciona un turno Larga o Noche valido para el permiso administrativo."

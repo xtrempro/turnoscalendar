@@ -1,5 +1,4 @@
 import { isoFromKey } from "./dateUtils.js";
-import { stripAccents } from "./stringUtils.js";
 // js/turnEngine.js
 
 import { TURNO } from "./constants.js";
@@ -33,6 +32,11 @@ import {
     isReplacementProfile
 } from "./contracts.js";
 import { REPLACEMENT_ROTATION_MODE } from "./replacementRotation.js";
+import { getRotationSequence } from "./rotationUtils.js";
+import {
+    rotationBusinessDayTurn,
+    rotationUsesBusinessDays
+} from "./rotationCatalog.js";
 
 /* ======================================================
    TURN ENGINE
@@ -178,99 +182,8 @@ function parseISODate(value) {
     );
 }
 
-function normalizeFirstTurn(value) {
-    const normalized = stripAccents(String(value || "")).toLowerCase();
-
-    if (
-        normalized === "larga2" ||
-        normalized === "largo2" ||
-        normalized === "segunda larga" ||
-        normalized === "segundo largo" ||
-        normalized === "2 larga" ||
-        normalized === "2 largo"
-    ) {
-        return "larga2";
-    }
-
-    if (
-        normalized === "noche2" ||
-        normalized === "segunda noche" ||
-        normalized === "2 noche"
-    ) {
-        return "noche2";
-    }
-
-    if (
-        normalized === "libre2" ||
-        normalized === "segundo libre" ||
-        normalized === "segunda libre" ||
-        normalized === "2 libre"
-    ) {
-        return "libre2";
-    }
-
-    if (
-        normalized === "libre" ||
-        normalized === "libre1" ||
-        normalized === "primer libre" ||
-        normalized === "primera libre" ||
-        normalized === "1 libre"
-    ) {
-        return "libre1";
-    }
-
-    return normalized === "noche"
-        ? "noche"
-        : "larga";
-}
-
-function rotateSequence(sequence, startIndex) {
-    return [
-        ...sequence.slice(startIndex),
-        ...sequence.slice(0, startIndex)
-    ];
-}
-
-function rotationStartIndex(type, firstTurn = "larga") {
-    const normalized = normalizeFirstTurn(firstTurn);
-
-    if (type === "3turno") {
-        if (normalized === "larga2") return 1;
-        if (normalized === "noche") return 2;
-        if (normalized === "noche2") return 3;
-        if (normalized === "libre1") return 4;
-        if (normalized === "libre2") return 5;
-
-        return 0;
-    }
-
-    if (type === "4turno") {
-        if (normalized === "noche") return 1;
-        if (normalized === "libre1") return 2;
-        if (normalized === "libre2") return 3;
-
-        return 0;
-    }
-
-    return 0;
-}
-
 function rotationSequence(type, firstTurn = "larga") {
-    if (type === "3turno") {
-        return rotateSequence(
-            [TURNO.LARGA, TURNO.LARGA, TURNO.NOCHE, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE],
-            rotationStartIndex(type, firstTurn)
-        );
-    }
-
-    if (type === "4turno") {
-        return rotateSequence(
-            [TURNO.LARGA, TURNO.NOCHE, TURNO.LIBRE, TURNO.LIBRE],
-            rotationStartIndex(type, firstTurn)
-        );
-    }
-
-    return [];
+    return getRotationSequence(type, firstTurn);
 }
 
 function dayDifference(start, date) {
@@ -376,9 +289,9 @@ function rotativaTurnoBase(nombre, key, visited = new Set()) {
 
     if (!date || !start || date < start) return TURNO.LIBRE;
 
-    if (rotativa.type === "diurno") {
+    if (rotationUsesBusinessDays(rotativa.type)) {
         return isBusinessDaySync(date, key)
-            ? TURNO.DIURNO
+            ? rotationBusinessDayTurn(rotativa.type)
             : TURNO.LIBRE;
     }
 

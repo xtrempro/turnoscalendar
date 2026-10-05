@@ -229,8 +229,10 @@ export function generateSchedule(payload = {}) {
         cursor <= end;
         cursor = addUtcDays(cursor, 1)
     ) {
-        const turn = mode === "diurno"
-            ? (isBusinessDay(cursor, holidays) ? TURN.DAY : TURN.FREE)
+        const turn = mode === "diurno" || mode === "businessDays"
+            ? (isBusinessDay(cursor, holidays)
+                ? (Number(payload.businessTurn) || TURN.DAY)
+                : TURN.FREE)
             : (Number(sequence[position++ % sequence.length]) || TURN.FREE);
 
         entries.push({

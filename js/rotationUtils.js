@@ -4,11 +4,16 @@
 // Las secuencias usan los codigos crudos de turno: 0 = Libre, 1 = Larga,
 // 2 = Noche (coinciden con TURNO.LIBRE/LARGA/NOCHE).
 //
-// Nota: turnEngine.js y storage.js mantienen copias propias de parte de esta
-// logica con diferencias menores; consolidarlas requiere verificar equivalencia
-// y queda pendiente para un paso futuro.
+// Las definiciones configurables viven en rotationCatalog.js. Este modulo
+// conserva los alias historicos de 3er y 4to turno para que las asignaciones
+// existentes sigan abriendo en la misma posicion del patron.
 
 import { stripAccents } from "./stringUtils.js";
+import {
+    getRotationDefinition,
+    rotationStartOptions,
+    rotationTurnSequence
+} from "./rotationCatalog.js";
 
 const POSITION_ORDINALS_MASC = [
     "Primer", "Segundo", "Tercer", "Cuarto",
@@ -64,6 +69,9 @@ export function getRotationSelectionMonth(calendarDate) {
  * @returns {string}
  */
 export function getRotativaLabel(type) {
+    const configured = getRotationDefinition(type);
+    if (configured) return configured.name;
+
     if (type === "3turno") return "3er Turno";
     if (type === "4turno") return "4° Turno";
     if (type === "diurno") return "Diurno";
@@ -78,7 +86,8 @@ export function getRotativaLabel(type) {
  * @returns {boolean}
  */
 export function requiresRotationFirstTurn(type) {
-    return type === "3turno" || type === "4turno";
+    const definition = getRotationDefinition(type);
+    return definition?.mode === "sequence" && definition.pattern.length > 1;
 }
 
 /**
@@ -96,7 +105,13 @@ export function requiresRotationStart(type) {
  * @returns {Array<{value: string, label: string, summary: string, detail: string}>}
  */
 export function getRotationStartOptions(type) {
-    if (type === "3turno") {
+    const pattern = getRotationDefinition(type)?.pattern || [];
+    const isLegacyThird = type === "3turno" &&
+        pattern.join(",") === "larga,larga,noche,noche,libre,libre";
+    const isLegacyFourth = type === "4turno" &&
+        pattern.join(",") === "larga,noche,libre,libre";
+
+    if (isLegacyThird) {
         return [
             {
                 value: "larga",
@@ -137,7 +152,7 @@ export function getRotationStartOptions(type) {
         ];
     }
 
-    if (type === "4turno") {
+    if (isLegacyFourth) {
         return [
             {
                 value: "larga",
@@ -166,7 +181,7 @@ export function getRotationStartOptions(type) {
         ];
     }
 
-    return [];
+    return rotationStartOptions(type);
 }
 
 /**
@@ -176,6 +191,10 @@ export function getRotationStartOptions(type) {
  * @returns {string}
  */
 export function normalizeRotationFirstTurn(value) {
+    const source = String(value || "").trim();
+
+    if (/^position:\d+$/.test(source)) return source;
+
     const normalized = stripAccents(String(value || "")).toLowerCase();
 
     if (
@@ -233,6 +252,13 @@ export function normalizeRotationFirstTurnForType(type, value) {
     const options = getRotationStartOptions(type);
 
     if (!options.length) return normalized;
+
+    if (!['3turno', '4turno'].includes(type)) {
+        const source = String(value || "");
+        return options.some(option => option.value === source)
+            ? source
+            : options[0].value;
+    }
 
     return options.some(option => option.value === normalized)
         ? normalized
@@ -312,19 +338,5 @@ export function rotationStartIndex(type, firstTurn = "larga") {
  * @returns {number[]}
  */
 export function getRotationSequence(type, firstTurn = "larga") {
-    if (type === "3turno") {
-        return rotateRotationSequence(
-            [1, 1, 2, 2, 0, 0],
-            rotationStartIndex(type, firstTurn)
-        );
-    }
-
-    if (type === "4turno") {
-        return rotateRotationSequence(
-            [1, 2, 0, 0],
-            rotationStartIndex(type, firstTurn)
-        );
-    }
-
-    return [];
+    return rotationTurnSequence(type, firstTurn);
 }
