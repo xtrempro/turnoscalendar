@@ -64,8 +64,10 @@ import {
     saveReplacements,
     isNoCoverageDay,
     getNoCoverageReason,
-    setNoCoverageDay
+    setNoCoverageDay,
+    getCompensationProfileAt
 } from "./storage.js";
+import { workerMonthHTML } from "./workerMonthCalendar.js";
 import {
     tieneAusencia,
     requiereReemplazoTurnoBase,
@@ -166,6 +168,7 @@ import {
     getReplacementContractsForDate,
     getReplacedProfileForDate,
     hasContractForDate,
+    isHonorariaContractType,
     isHonorariaProfile,
     isReplacementProfile
 } from "./contracts.js";
@@ -5311,13 +5314,31 @@ async function linkedWorkspaceCandidates(
     );
 }
 
-function candidateMeta(profile) {
+// Lo que distingue a un candidato de los demas: su contrato y su grado,
+// vigentes el dia del turno. La profesion se da por sabida -se busca entre los
+// de la misma-, salvo cuando se buscan otras (modo forzado), que es cuando
+// deja de ser obvia.
+function candidateMeta(candidate, { keyDay = "", showProfession = false } = {}) {
+    const profile = candidate.profile || {};
+    // Uno de otra unidad no esta en los perfiles de esta: se usa lo que trae.
+    const atDate = !candidate.isLinked && keyDay
+        ? getCompensationProfileAt(profile.name, isoFromKeyDay(keyDay))
+        : null;
+    const contractType = String(atDate?.contractType || profile.contractType || "").trim();
+    const grade = String(atDate?.grade ?? profile.grade ?? "").trim();
     const profession = profile.profession &&
         profile.profession !== "Sin informacion"
-        ? ` | ${profile.profession}`
-        : "";
+        ? profile.profession
+        : profile.estamento || "";
 
-    return `${profile.estamento || "Sin estamento"}${profession}`;
+    return [
+        showProfession ? profession : "",
+        contractType,
+        // Honorarios no tiene grado.
+        grade && grade !== "0" && !isHonorariaContractType(contractType)
+            ? `Grado ${grade}`
+            : ""
+    ].filter(Boolean).join(" · ");
 }
 
 function formatCandidateHours(value) {
@@ -5844,7 +5865,7 @@ function replacementDialogHTML({
                     >
                     <span>
                         <strong>${escapeHTML(candidate.profile.name)}</strong>
-                        <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
+                        <small>${escapeHTML(candidateMeta(candidate, { keyDay, showProfession: forceMode || candidate.isForced }))}</small>
                         ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
                         <small class="replacement-candidate-state">
                             ${escapeHTML(candidateStateLabel(candidate, null))}
@@ -5878,7 +5899,7 @@ function replacementDialogHTML({
                     >
                     <span>
                         <strong>${escapeHTML(candidate.profile.name)}</strong>
-                        <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
+                        <small>${escapeHTML(candidateMeta(candidate, { keyDay, showProfession: forceMode || candidate.isForced }))}</small>
                         ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
                         <small class="replacement-candidate-state">
                             ${escapeHTML(candidateStateLabel(candidate, pendingRequest))}
@@ -5927,7 +5948,7 @@ function replacementDialogHTML({
             >
                 <span>
                     <strong>${escapeHTML(candidate.profile.name)}</strong>
-                    <small>${escapeHTML(candidateMeta(candidate.profile))}</small>
+                    <small>${escapeHTML(candidateMeta(candidate, { keyDay, showProfession: forceMode || candidate.isForced }))}</small>
                     ${candidate.isLinked ? `<small>Unidad: ${escapeHTML(candidate.workspaceName)}</small>` : ""}
                     <small class="replacement-candidate-state">
                         ${escapeHTML(candidateStateLabel(candidate, pendingRequest))}
@@ -6598,6 +6619,84 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
     };
     const backdrop = document.createElement("div");
     backdrop.className = "turn-change-dialog-backdrop";
+
+    // Al pasar el mouse por un candidato: su mes con el turno que recibiria,
+    // igual que en la Ayuda para cubrir. Cuelga del backdrop y se vuelve a
+    // poner tras cada repintado (renderContent reemplaza su contenido).
+    const hoverCalendar = document.createElement("div");
+
+    hoverCalendar.className = "mcal-magic-hovercal";
+    hoverCalendar.hidden = true;
+
+    const hoveredCandidateWorker = card => {
+        // Uno de otra unidad: su calendario no esta en esta.
+        if (!card || card.dataset.workerWorkspaceId) return "";
+
+        const input = card.querySelector("[data-worker], [data-request-worker]");
+
+        if (input?.dataset.workerWorkspaceId) return "";
+
+        return card.dataset.worker ||
+            input?.dataset.worker ||
+            input?.dataset.requestWorker ||
+            "";
+    };
+    const showCandidateMonth = card => {
+        const worker = hoveredCandidateWorker(card);
+        const day = dateFromKeyDay(keyDay);
+
+        if (!worker || Number.isNaN(day.getTime())) return;
+
+        // Con lo que ya tenga ese dia: Larga + Noche queda en 24.
+        const turn = fusionarTurnos(getActualState(worker, keyDay), neededTurn);
+
+        hoverCalendar.innerHTML = workerMonthHTML(
+            worker,
+            new Date(day.getFullYear(), day.getMonth(), 1),
+            [{ sourceKey: keyDay, targetKey: keyDay, destinationTurn: turn }],
+            { title: `${worker}: su mes con este turno` }
+        );
+        hoverCalendar.hidden = false;
+
+        // Al costado del cuadro si cabe; si no, bajo (o sobre) la tarjeta.
+        const width = hoverCalendar.offsetWidth || 480;
+        const height = hoverCalendar.offsetHeight || 420;
+        const dialog = backdrop.querySelector(".replacement-dialog")?.getBoundingClientRect();
+        const rect = card.getBoundingClientRect();
+        const clampTop = top => Math.max(8, Math.min(top, window.innerHeight - height - 8));
+        let left;
+        let top;
+
+        if (dialog && window.innerWidth - dialog.right >= width + 20) {
+            left = dialog.right + 12;
+            top = clampTop(rect.top);
+        } else if (dialog && dialog.left >= width + 20) {
+            left = dialog.left - width - 12;
+            top = clampTop(rect.top);
+        } else {
+            left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+            top = rect.bottom + 8 + height > window.innerHeight
+                ? Math.max(8, rect.top - height - 8)
+                : rect.bottom + 8;
+        }
+
+        hoverCalendar.style.left = `${left}px`;
+        hoverCalendar.style.top = `${top}px`;
+    };
+
+    backdrop.addEventListener("mouseover", event => {
+        const card = event.target.closest?.(".replacement-candidate-list .replacement-candidate");
+
+        if (card) showCandidateMonth(card);
+    });
+    backdrop.addEventListener("mouseout", event => {
+        const card = event.target.closest?.(".replacement-candidate-list .replacement-candidate");
+
+        if (card && !card.contains(event.relatedTarget)) hoverCalendar.hidden = true;
+    });
+    backdrop.addEventListener("click", () => {
+        hoverCalendar.hidden = true;
+    }, true);
 
     const saveLinkedUnitReplacement = async button => {
         const workerWorkspaceId =
@@ -7646,6 +7745,8 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
         });
 
         bindActions();
+        hoverCalendar.hidden = true;
+        backdrop.appendChild(hoverCalendar);
 
         // El buscador solo aparece cuando el listado desborda (hay scroll). Se mide
         // tras insertar el DOM (el backdrop ya esta en el documento).
