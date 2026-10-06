@@ -15,7 +15,7 @@
 
 import { getFirebaseServices } from "./firebaseClient.js";
 import { getRaw, setRaw } from "./persistence.js";
-import { buildPracticeBaseState, practiceCoverages, PRACTICE_SEED_VERSION } from "./practiceSeed.js";
+import { buildPracticeBaseState, practiceAppUid, practiceCoverages, PRACTICE_SEED_VERSION } from "./practiceSeed.js";
 import { saveReplacement } from "./replacements.js";
 import { getTurnoReal } from "./turnEngine.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
@@ -93,6 +93,37 @@ export function seedPracticeUnitIfEmpty(workspace, {
         "Se cargaron los datos ficticios de partida.",
         {}
     );
+
+    return true;
+}
+
+/**
+ * Pone al dia una unidad de practica llenada con una version anterior, sin
+ * tocar lo que la persona hizo en ella. v2: los trabajadores ficticios "tienen
+ * la app". Llamar, como el llenado, con la unidad ya hidratada.
+ *
+ * @returns {boolean} si cambio algo
+ */
+export function upgradePracticeUnit(workspace, { read = getRaw, write = setRaw } = {}) {
+    if (!isPracticeWorkspace(workspace)) return false;
+
+    const version = Number(JSON.parse(read(SEED_VERSION_KEY, "0") || "0")) || 0;
+
+    if (!version || version >= PRACTICE_SEED_VERSION) return false;
+
+    const profiles = JSON.parse(read("profiles", "[]") || "[]");
+    const next = profiles.map(profile => {
+        const match = /^practica_(\d+)$/.exec(String(profile?.id || ""));
+
+        if (!match || profile.appUid) return profile;
+
+        const appUid = practiceAppUid(profile.id, Number(match[1]) - 1);
+
+        return appUid ? { ...profile, appUid } : profile;
+    });
+
+    write("profiles", JSON.stringify(next));
+    write(SEED_VERSION_KEY, JSON.stringify(PRACTICE_SEED_VERSION));
 
     return true;
 }

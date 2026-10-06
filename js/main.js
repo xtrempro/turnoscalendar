@@ -300,8 +300,10 @@ import { initFirebaseShell } from "./firebaseShell.js";
 import {
     isPracticeWorkspace,
     practiceBannerHTML,
-    seedPracticeUnitIfEmpty
+    seedPracticeUnitIfEmpty,
+    upgradePracticeUnit
 } from "./practiceUnit.js";
+import { startPracticeResponder, stopPracticeResponder } from "./practiceResponder.js";
 import {
     ensureFirebaseTotpEnrollment,
     isFirebaseSessionMfaVerified,
@@ -17164,6 +17166,7 @@ initFirebaseShell({
             stopFirebaseAuditLogShardShadowSync();
             stopFirebaseAuditLogShardReader();
             stopFirebaseReplacementRequestSync();
+            stopPracticeResponder();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();
             stopWorkerAvailabilitySync();
@@ -17373,6 +17376,9 @@ initFirebaseShell({
                     );
                 }
             });
+            // Solo en la unidad de practica: los trabajadores ficticios
+            // contestan las solicitudes (js/practiceResponder.js).
+            startPracticeResponder(workspace);
             // Publica en segundo plano el resumen RRHH del mes para el Dashboard.
             startRrhhSummaryBackgroundPublisher();
 
@@ -17485,7 +17491,7 @@ initFirebaseShell({
                 // tras reiniciarla). Despues de hidratar, por lo mismo.
                 if (isPracticeWorkspace(workspace)) {
                     try {
-                        if (seedPracticeUnitIfEmpty(workspace)) {
+                        if (seedPracticeUnitIfEmpty(workspace) || upgradePracticeUnit(workspace)) {
                             scheduleHomePanelRender();
                             refrescarVistasDelEntorno();
                         }
@@ -17526,6 +17532,7 @@ initFirebaseShell({
             stopFirebaseAuditLogShardShadowSync();
             stopFirebaseAuditLogShardReader();
             stopFirebaseReplacementRequestSync();
+            stopPracticeResponder();
             stopFirebaseWorkerRequestSync();
             stopWorkerAppDataSync();
             stopWorkerAvailabilitySync();

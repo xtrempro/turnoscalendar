@@ -19,7 +19,18 @@
 
 import { TURNO } from "./constants.js";
 
-export const PRACTICE_SEED_VERSION = 1;
+// 2: los trabajadores ficticios "tienen la app" (appUid), para que las
+// solicitudes de cobertura les lleguen por ahi y las conteste
+// js/practiceResponder.js.
+export const PRACTICE_SEED_VERSION = 2;
+
+// Tres sin app, para ver tambien el camino por WhatsApp.
+const WITHOUT_APP = new Set([8, 19, 23]);
+
+/** El uid ficticio de su app ("" para los que no la tienen). */
+export function practiceAppUid(profileId, index) {
+    return WITHOUT_APP.has(index) ? "" : `practice-app-${profileId}`;
+}
 
 // Nombres inventados (combinaciones comunes, ninguna persona real a proposito).
 const FIRST_NAMES = [
@@ -129,6 +140,7 @@ export function practiceProfiles() {
             estamento: entry.estamento,
             profession: entry.profession,
             grade: String(entry.estamento === "Profesional" ? 12 + (index % 8) : 16 + (index % 9)),
+            appUid: practiceAppUid(`practica_${pad(index + 1)}`, index),
             practice: true
         };
     });
