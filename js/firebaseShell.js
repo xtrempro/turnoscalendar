@@ -31,6 +31,7 @@ import {
     normalizeEmailKey
 } from "./emailUtils.js";
 import { replaceLocalSnapshot } from "./persistence.js";
+import { ensurePracticeUnit, isPracticeWorkspace, resetPracticeUnit } from "./practiceUnit.js";
 import { saveReportSignatureConfig } from "./storage.js";
 import {
     MENU_PERMISSION_DEFS,
@@ -65,6 +66,9 @@ let currentUser = null;
 let currentWorkspace = getActiveWorkspace();
 let workspaceList = [];
 let options = {};
+// La unidad de practica se pide una vez por sesion de cada usuario; la escucha
+// de users/{uid}/workspaces la trae a la lista cuando el servidor la crea.
+let practiceUnitRequestedFor = "";
 let linkedUnitState = {
     loading: false,
     message: "",
@@ -294,9 +298,37 @@ async function activateWorkspace(workspace, optionsOverride = {}) {
 async function maybeActivateSingleWorkspace() {
     if (!currentUser) return false;
     if (hasValidActiveWorkspace()) return false;
-    if (workspaceList.length !== 1) return false;
 
-    return activateWorkspace(workspaceList[0]);
+    // La unidad de practica no cuenta: quien tiene una sola unidad real sigue
+    // entrando directo a ella, sin pasar por el selector.
+    const realWorkspaces = workspaceList.filter(workspace =>
+        !isPracticeWorkspace(workspace)
+    );
+
+    if (realWorkspaces.length !== 1) return false;
+
+    return activateWorkspace(realWorkspaces[0]);
+}
+
+function requestPracticeUnitOnce(memberships) {
+    const uid = currentUser?.uid || "";
+
+    if (!uid || practiceUnitRequestedFor === uid) return;
+
+    practiceUnitRequestedFor = uid;
+    void ensurePracticeUnit(memberships);
+}
+
+// Reinicia la unidad de practica activa: corta la sincronizacion ANTES de que
+// el servidor la vacie (si no, una escritura pendiente volveria a subir los
+// datos viejos), vacia lo local y recarga; al hidratar vacia se vuelve a llenar.
+async function resetActivePracticeWorkspace() {
+    if (!isPracticeWorkspace(currentWorkspace)) return;
+
+    await options.onWorkspaceChange?.(null, { skipViewRefresh: true });
+    await resetPracticeUnit({
+        clearLocal: () => replaceLocalSnapshot({}, { silent: true })
+    });
 }
 
 async function claimPendingSupervisorInvite() {
@@ -611,21 +643,31 @@ function workspaceListHTML() {
         `;
     }
 
-    return workspaceList.map(workspace => {
+    // La de practica al final: no es una unidad del cliente.
+    const ordered = [
+        ...workspaceList.filter(workspace => !isPracticeWorkspace(workspace)),
+        ...workspaceList.filter(isPracticeWorkspace)
+    ];
+
+    return ordered.map(workspace => {
         const isActive = currentWorkspace?.id === workspace.id;
-        const isOwner = workspace.role === "owner" ||
+        const isPractice = isPracticeWorkspace(workspace);
+        // En la de practica no se invita a nadie.
+        const isOwner = !isPractice && (
+            workspace.role === "owner" ||
             Boolean(
                 workspace.ownerUid &&
                 currentUser &&
                 workspace.ownerUid === currentUser.uid
-            );
+            )
+        );
 
         return `
             <article class="firebase-workspace-item ${isActive ? "is-active" : ""}">
                 <div class="firebase-workspace-main">
                     <span>
                         <strong>${escapeHTML(workspace.name || workspace.id)}</strong>
-                        <small>${escapeHTML(workspace.role || "member")}</small>
+                        <small>${isPractice ? "Datos ficticios para practicar" : escapeHTML(workspace.role || "member")}</small>
                     </span>
                     ${isActive ? `
                         <em>Activo</em>
@@ -657,7 +699,7 @@ function workspaceListHTML() {
                     </div>
                 ` : ""}
 
-                ${workspaceDeletionBlockHTML(workspace)}
+                ${isPractice ? "" : workspaceDeletionBlockHTML(workspace)}
             </article>
         `;
     }).join("");
@@ -1248,6 +1290,8 @@ async function refreshWorkspaces() {
     }
 
     const list = await listUserWorkspaces(currentUser);
+
+    requestPracticeUnitOnce(list);
 
     // Adjunta el estado de eliminacion de cada entorno (doc top-level).
     workspaceList = await Promise.all(
@@ -2100,6 +2144,13 @@ export async function initFirebaseShell(initOptions = {}) {
     options.userChip?.addEventListener("click", () => {
         openFirebaseModal({
             required: loginGateEnabled && !currentUser
+        });
+    });
+
+    window.addEventListener("proturnos:practiceReset", () => {
+        resetActivePracticeWorkspace().catch(error => {
+            console.warn("No se pudo reiniciar la unidad de práctica.", error);
+            alert(friendlyFirebaseError(error));
         });
     });
 

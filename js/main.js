@@ -298,6 +298,11 @@ import {
 } from "./subscription.js";
 import { initFirebaseShell } from "./firebaseShell.js";
 import {
+    isPracticeWorkspace,
+    practiceBannerHTML,
+    seedPracticeUnitIfEmpty
+} from "./practiceUnit.js";
+import {
     ensureFirebaseTotpEnrollment,
     isFirebaseSessionMfaVerified,
     signOutFirebase
@@ -17097,6 +17102,35 @@ async function enforceWorkspaceMfa(workspace) {
 // Cambiar de unidad dos veces seguidas deja una hidratacion en vuelo: cuando
 // termine, sus vistas serian las del entorno ANTERIOR.
 let workspaceChangeGeneration = 0;
+
+// La franja "Unidad de practica" bajo la barra superior, solo en esa unidad.
+function syncPracticeBanner(workspace) {
+    const topbar = document.querySelector(".app-shell > .topbar");
+    let banner = document.getElementById("practiceBanner");
+
+    if (!isPracticeWorkspace(workspace)) {
+        banner?.remove();
+        return;
+    }
+
+    if (banner || !topbar) return;
+
+    banner = document.createElement("div");
+    banner.id = "practiceBanner";
+    banner.innerHTML = practiceBannerHTML();
+    topbar.after(banner);
+    banner.querySelector("[data-practice-reset]")?.addEventListener("click", async () => {
+        const ok = await showConfirm(
+            "Se borrará todo lo que hiciste en la unidad de práctica y volverá a los datos de partida. Las unidades reales no se tocan.",
+            {
+                title: "Reiniciar unidad de práctica",
+                confirmText: "Reiniciar"
+            }
+        );
+
+        if (ok) window.dispatchEvent(new CustomEvent("proturnos:practiceReset"));
+    });
+}
 let resolveInitialWorkspaceStartup;
 let initialWorkspaceStartupSettled = false;
 const initialWorkspaceStartup = new Promise(resolve => {
@@ -17151,6 +17185,8 @@ initFirebaseShell({
     },
     onWorkspaceChange: async (workspace, changeOptions = {}) => {
         const generacion = ++workspaceChangeGeneration;
+
+        syncPracticeBanner(workspace);
 
         // La escucha anterior esta asociada a la unidad que se deja.
         stopHoursValidationPanel();
@@ -17443,6 +17479,19 @@ initFirebaseShell({
                 if (typeof changeOptions.afterStateHydrated === "function") {
                     changeOptions.afterStateHydrated();
                     scheduleHomePanelRender();
+                }
+
+                // La unidad de practica se llena la primera vez que se abre (o
+                // tras reiniciarla). Despues de hidratar, por lo mismo.
+                if (isPracticeWorkspace(workspace)) {
+                    try {
+                        if (seedPracticeUnitIfEmpty(workspace)) {
+                            scheduleHomePanelRender();
+                            refrescarVistasDelEntorno();
+                        }
+                    } catch (error) {
+                        console.warn("No se pudo preparar la unidad de práctica.", error);
+                    }
                 }
 
                 // Preasignaciones confirmadas que quedaron sin turno (ver

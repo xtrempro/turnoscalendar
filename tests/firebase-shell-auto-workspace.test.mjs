@@ -19,8 +19,10 @@ test("escucha cambios en unidades del usuario autenticado", () => {
 
 test("activa automaticamente la unica unidad disponible", () => {
     assert.match(firebaseShell, /maybeActivateSingleWorkspace/);
-    assert.match(firebaseShell, /workspaceList\.length !== 1/);
-    assert.match(firebaseShell, /activateWorkspace\(workspaceList\[0\]\)/);
+    // La unidad de practica no cuenta: con una sola real se entra directo.
+    assert.match(firebaseShell, /workspaceList\.filter\(workspace =>\s*!isPracticeWorkspace\(workspace\)\s*\)/);
+    assert.match(firebaseShell, /realWorkspaces\.length !== 1/);
+    assert.match(firebaseShell, /activateWorkspace\(realWorkspaces\[0\]\)/);
     assert.match(firebaseShell, /await maybeActivateSingleWorkspace\(\)/);
 });
 

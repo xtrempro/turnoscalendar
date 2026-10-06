@@ -30920,3 +30920,30 @@ body[data-active-view="profile"] .pf-v2 #profileSection .metric-row--field selec
         justify-items: start;
     }
 }
+
+/* Unidad de practica: franja bajo la barra superior (js/practiceUnit.js). */
+.practice-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin: 12px 6px 0;
+    padding: 10px 14px;
+    border: 1px dashed #d97706;
+    border-radius: 10px;
+    background: rgba(245, 158, 11, 0.12);
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.practice-banner strong {
+    color: #b45309;
+}
+
+.practice-banner span {
+    flex: 1 1 260px;
+}
+
+body.theme-dark .practice-banner strong {
+    color: #fbbf24;
+}

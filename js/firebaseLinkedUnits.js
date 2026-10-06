@@ -3,6 +3,7 @@ import {
     getFirebaseServices
 } from "./firebaseClient.js";
 import { getActiveWorkspace, listUserWorkspaces } from "./workspaces.js";
+import { isPracticeWorkspace } from "./practiceUnit.js";
 import { showChoice } from "./dialogs.js";
 
 function cleanText(value, fallback = "") {
@@ -168,7 +169,8 @@ export async function listLinkTargetWorkspaces(user = getCurrentFirebaseUser()) 
     const workspaces = await listUserWorkspaces(user);
 
     return workspaces.filter(workspace =>
-        String(workspace?.role || "") === "owner"
+        String(workspace?.role || "") === "owner" &&
+        !isPracticeWorkspace(workspace)
     );
 }
 
