@@ -5764,6 +5764,18 @@ async function sendWorkerPush({ workspaceId, uid, category, title, body, data })
   return { sent, error: sent ? "" : firstError };
 }
 
+// De donde viene un token. Los nuevos lo declaran en `client`; los antiguos no,
+// asi que para esos se mira el user agent, que en el WebView de Android siempre
+// trae "; wv)".
+function tokenIsNativeApp(tokenInfo) {
+  const client = String(tokenInfo?.client || "");
+
+  if (client === "android" || client === "ios") return true;
+  if (client === "web") return false;
+
+  return String(tokenInfo?.userAgent || "").toLowerCase().includes("; wv)");
+}
+
 async function getWorkerTokens(workspaceId, uid, category) {
   const snapshot = await db
     .collection("workspaces")
@@ -5774,13 +5786,30 @@ async function getWorkerTokens(workspaceId, uid, category) {
     .where("active", "==", true)
     .get();
 
-  return snapshot.docs
+  const tokens = snapshot.docs
     .map((doc) => ({
       ref: doc.ref,
       id: doc.id,
       ...doc.data()
     }))
     .filter((item) => item.token && tokenAllows(item, category));
+
+  // Con la aplicacion instalada, se envia SOLO ahi.
+  //
+  // La PWA y la app registran tokens distintos bajo el mismo trabajador, asi
+  // que quien tenga las dos recibe cada aviso dos veces. En la migracion a
+  // Google Play le pasa a todo el mundo, porque hoy todos usan la PWA.
+  //
+  // Esto no se puede resolver en el cliente: abrir la PWA vuelve a activar su
+  // token, de modo que gana el ultimo que arranque y acaban los dos activos.
+  // La decision tiene que vivir aqui, que es el unico lugar que ve la lista
+  // completa en el momento de enviar.
+  //
+  // Sin ningun token de la aplicacion, no cambia nada: se envia a todos los
+  // activos, como siempre.
+  const nativos = tokens.filter(tokenIsNativeApp);
+
+  return nativos.length ? nativos : tokens;
 }
 
 // ─────────── Alertas de recordatorio (push programado) ───────────
