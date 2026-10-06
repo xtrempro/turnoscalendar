@@ -44,7 +44,7 @@ function stableString(value) {
     }
 }
 
-function localKeyToISO(value) {
+function localKeyToISO(value, base0 = false) {
     const text = String(value || "").trim();
     const match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
 
@@ -58,12 +58,14 @@ function localKeyToISO(value) {
 
     if (!year || !monthNumber && rawMonth !== "0" || !day) return "";
 
-    // Las claves internas de calendario usan mes base 0 (`2026-6-18` =
-    // 18/julio). Si viene con dos digitos, se asume ISO (`2026-07-18`).
-    const isoMonth =
-        rawMonth.length === 2 && monthNumber >= 1
-            ? monthNumber
-            : monthNumber + 1;
+    // Las claves internas del calendario se arman con getMonth(), que es base
+    // 0 y sin rellenar: el 25 de noviembre se guarda como "2026-10-25". Un ISO
+    // ya formado trae el mes en base 1, y los dos textos pueden ser IDENTICOS.
+    //
+    // Antes se adivinaba por la cantidad de digitos, y eso fallaba justo en los
+    // meses 10 y 11 -noviembre y diciembre-: sus claves ya tienen dos digitos,
+    // asi que se leian como octubre y noviembre. Ahora lo declara quien llama.
+    const isoMonth = base0 ? monthNumber + 1 : monthNumber;
 
     if (isoMonth < 1 || isoMonth > 12) return "";
 
@@ -74,10 +76,10 @@ function localKeyToISO(value) {
     ].join("-");
 }
 
-export function normalizeAffectedDates(values = []) {
+export function normalizeAffectedDates(values = [], { base0 = false } = {}) {
     return [...new Set(
         (Array.isArray(values) ? values : [values])
-            .map(localKeyToISO)
+            .map((value) => localKeyToISO(value, base0))
             .filter(Boolean)
             .sort()
     )].slice(0, MAX_AFFECTED_DATES);
@@ -150,8 +152,10 @@ function calendarMutationMessage(label, affectedDates = []) {
 
 function metadataForProfileStorageKey(storageKey, change = {}) {
     const key = String(storageKey || "");
+    // Lo unico que llega en claves internas, con el mes en base 0.
     const affectedDates = normalizeAffectedDates(
-        changedCalendarKeysFromRawMutation(change)
+        changedCalendarKeysFromRawMutation(change),
+        { base0: true }
     );
     const kind = mutationKind(change);
     const bulk = kind === "bulk" || affectedDates.length > 1;

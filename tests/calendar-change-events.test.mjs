@@ -25,7 +25,7 @@ test("detecta fechas modificadas en mapas de calendario", () => {
         ["2026-6-18", "2026-6-20"]
     );
     assert.deepEqual(
-        normalizeAffectedDates(changedCalendarKeysFromRawMutation(change)),
+        normalizeAffectedDates(changedCalendarKeysFromRawMutation(change), { base0: true }),
         ["2026-07-18", "2026-07-20"]
     );
 });
@@ -89,4 +89,39 @@ test("asignar reemplazo notifica solo al trabajador que cubre", async () => {
         workerAppSource,
         /notifyProfileNames\s*&&\s*!notifyProfileNames\.has\(name\)/
     );
+});
+
+// Noviembre y diciembre son los meses 10 y 11 en base 0, asi que sus claves ya
+// traen dos digitos. La version anterior adivinaba el formato contando digitos
+// y los anunciaba con un mes de menos: un turno agregado el 25 de noviembre
+// llegaba al trabajador como 25 de octubre.
+test("las claves de noviembre y diciembre no se leen con un mes de menos", () => {
+    assert.deepEqual(
+        normalizeAffectedDates(["2026-10-25"], { base0: true }),
+        ["2026-11-25"]
+    );
+    assert.deepEqual(
+        normalizeAffectedDates(["2026-11-03"], { base0: true }),
+        ["2026-12-03"]
+    );
+});
+
+test("los meses de un digito siguen funcionando", () => {
+    assert.deepEqual(
+        normalizeAffectedDates(["2026-0-01", "2026-6-18", "2026-9-30"], { base0: true }),
+        ["2026-01-01", "2026-07-18", "2026-10-30"]
+    );
+});
+
+test("una fecha ya en ISO se respeta tal cual", () => {
+    // Es lo que llega al fusionar eventos pendientes, que ya fueron normalizados.
+    assert.deepEqual(
+        normalizeAffectedDates(["2026-10-25", "2026-12-03"]),
+        ["2026-10-25", "2026-12-03"]
+    );
+});
+
+test("un mes fuera de rango se descarta en los dos formatos", () => {
+    assert.deepEqual(normalizeAffectedDates(["2026-12-01"], { base0: true }), []);
+    assert.deepEqual(normalizeAffectedDates(["2026-13-01"]), []);
 });
