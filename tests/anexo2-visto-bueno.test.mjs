@@ -328,3 +328,13 @@ test("una vuelta del visto bueno a la vez: un guardado a mitad de camino no la d
     assert.match(main, /keys\.every\(key => isInternalKey\(key\)\)/);
     assert.match(main, /"app-state-entries-applied"[\s\S]*?hoursValidationDataStamp \+= 1/);
 });
+
+test("al cambiar de mes el panel pide su repintado (no depende de que llegue un guardado)", async () => {
+    const main = await readFile(new URL("../js/main.js", import.meta.url), "utf8");
+    const prepare = main.match(/function prepareHoursValidationMonthChange\(\)[\s\S]*?\n}/)?.[0] || "";
+    const dashboard = main.match(/function renderDashboardState\(\)[\s\S]*?\n {8}return;/)?.[0] || "";
+
+    assert.match(prepare, /renderHoursValidationLoading[\s\S]*scheduleHoursValidationRender\(\)/);
+    assert.match(dashboard, /activeView === "hours"[\s\S]*scheduleHoursValidationRender\(\)/,
+        "la vista Horas sale antes del final de renderDashboardState");
+});

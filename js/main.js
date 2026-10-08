@@ -6665,6 +6665,10 @@ function renderDashboardState() {
             renderHheeProfiles();
             syncHoursMonthControls(true);
             renderHoursCharts(profile);
+            // Con el calculo guardado, repintar solo vuelve a cruzar. Sin esto
+            // el cambio de mes dejaba el panel en "Actualizando" para siempre:
+            // lo destrababa cualquier guardado, incluso uno interno.
+            scheduleHoursValidationRender();
 
             if (DOM.printHoursReportBtn) {
                 DOM.printHoursReportBtn.disabled =
@@ -7774,6 +7778,7 @@ function prepareHoursValidationMonthChange() {
 
     stopHoursValidationPanel();
     renderHoursValidationLoading(profileRotationMiniDate, "Actualizando vistos buenos…");
+    scheduleHoursValidationRender();
 }
 
 function retryHoursValidationPanel() {

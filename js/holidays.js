@@ -102,7 +102,18 @@ export async function fetchHolidays(year){
     const official = {};
 
     try {
-        const r = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/CL`);
+        // Con tope: una API que no contesta dejaba colgado a quien esperaba
+        // los feriados (el visto bueno de horas, el reporte).
+        const controller = typeof AbortController === "function"
+            ? new AbortController()
+            : null;
+        const timer = controller
+            ? setTimeout(() => controller.abort(), 8000)
+            : null;
+        const r = await fetch(
+            `https://date.nager.at/api/v3/PublicHolidays/${year}/CL`,
+            controller ? { signal: controller.signal } : undefined
+        ).finally(() => clearTimeout(timer));
         const data = await r.json();
 
         data.forEach(d=>{
