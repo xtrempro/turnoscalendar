@@ -132,34 +132,85 @@ test("el RUT se normaliza antes de comparar", () => {
   assert.equal(_private.normalizeRut("17816632-k"), "17816632K");
 });
 
-test("la busqueda devuelve la unidad, y nada mas", async () => {
-  // Esto es lo importante: con el RUT basta para saber DONDE te invitaron,
-  // porque pueden ser varias unidades y hay que poder elegir. Pero el id de la
-  // invitacion es el secreto del camino por correo, y el nombre del perfil es
-  // dato personal: ninguno de los dos sale de aqui.
+test("con una sola invitacion no se dice cual es la unidad", async () => {
+  // Con una sola, pedir acceso no necesita que la persona elija nada, asi que
+  // mandar el nombre seria regalar informacion a cambio de nada. Ocultarlo en
+  // la pantalla no bastaria: quien mire el trafico lo veria igual.
   const resultado = await findWorkerInvitesByRutHandler(
     { data: { rut: "17.816.632-8" } },
     { db: fakeDb(UNIDADES), HttpsError }
   );
 
-  assert.deepEqual(resultado.unidades, [
-    { workspaceId: "ws-imagenologia", workspaceName: "Imagenologia" }
-  ]);
+  assert.equal(resultado.count, 1);
+  assert.deepEqual(resultado.unidades, []);
 
   const texto = JSON.stringify(resultado);
-  assert.ok(!texto.includes("inv-secreto-123"), "no debe salir el id de la invitacion");
-  assert.ok(!texto.includes("ALAN"), "no debe salir el nombre del perfil");
+  assert.ok(!texto.includes("Imagenologia"), "no debe salir el nombre de la unidad");
+  assert.ok(!texto.includes("ws-imagenologia"), "ni su id");
+  assert.ok(!texto.includes("inv-secreto-123"), "ni el id de la invitacion");
+  assert.ok(!texto.includes("ALAN"), "ni el nombre del perfil");
 });
 
-test("una invitacion ya usada no aparece", async () => {
-  // Urgencias tiene una invitacion para ese RUT, pero esta aceptada.
+test("con varias invitaciones si se nombran, para poder elegir", async () => {
+  const dosUnidades = [
+    UNIDADES[0],
+    {
+      ...UNIDADES[1],
+      invites: [
+        {
+          id: "inv-urgencias",
+          data: { profileRut: "178166328", status: "pending", profileName: "ALAN PLAZA" }
+        }
+      ]
+    }
+  ];
+  const resultado = await findWorkerInvitesByRutHandler(
+    { data: { rut: "178166328" } },
+    { db: fakeDb(dosUnidades), HttpsError }
+  );
+
+  assert.equal(resultado.count, 2);
+  assert.deepEqual(resultado.unidades.map((u) => u.workspaceName), [
+    "Imagenologia",
+    "Urgencias"
+  ]);
+  // Aun aqui, el id de la invitacion sigue sin salir.
+  assert.ok(!JSON.stringify(resultado).includes("inv-"), "no debe salir ningun id de invitacion");
+});
+
+test("una invitacion ya usada no cuenta", async () => {
+  // Urgencias tiene una invitacion para ese RUT, pero esta aceptada: por eso el
+  // resultado es una sola, no dos.
   const resultado = await findWorkerInvitesByRutHandler(
     { data: { rut: "178166328" } },
     { db: fakeDb(UNIDADES), HttpsError }
   );
 
-  assert.equal(resultado.unidades.length, 1);
-  assert.equal(resultado.unidades[0].workspaceId, "ws-imagenologia");
+  assert.equal(resultado.count, 1);
+});
+
+test("sin invitaciones no hay nada que contar", async () => {
+  const resultado = await findWorkerInvitesByRutHandler(
+    { data: { rut: "99999999" } },
+    { db: fakeDb(UNIDADES), HttpsError }
+  );
+
+  assert.equal(resultado.count, 0);
+  assert.deepEqual(resultado.unidades, []);
+});
+
+test("sin unidad, pedir acceso resuelve la unica invitacion", async () => {
+  // Es el caso de una sola: la persona nunca supo cual era, asi que no puede
+  // mandarla. La resuelve el servidor.
+  const db = fakeDb(UNIDADES);
+  const resultado = await requestWorkerJoinHandler(
+    { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+    { db, HttpsError }
+  );
+
+  assert.equal(resultado.status, "pending");
+  assert.equal(db.escrituras[0].data.workspaceId, "ws-imagenologia");
+  assert.equal(db.escrituras[0].data.inviteId, "inv-secreto-123");
 });
 
 test("un RUT incompleto no dispara la busqueda", async () => {

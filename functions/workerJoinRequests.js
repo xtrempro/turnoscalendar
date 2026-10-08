@@ -8,8 +8,8 @@
 // salida era que el supervisor borrara el vinculo y volviera a invitar, que
 // crea un uid nuevo y se lleva los chats por delante.
 //
-// Aqui el trabajador escribe su RUT, ve a que unidades lo invitaron y pide
-// acceso. El supervisor aprueba.
+// Aqui el trabajador escribe su RUT y pide acceso; el supervisor aprueba. Si
+// lo invitaron desde varias unidades, elige cual.
 //
 // EL RUT NO ES UNA CREDENCIAL, y es lo que no se puede perder de vista al tocar
 // este archivo. En Chile no es secreto: esta en documentos, lo saben los
@@ -93,13 +93,18 @@ async function findInvitesByRut(db, rut) {
   return encontradas;
 }
 
-// 1) Buscar. Devuelve SOLO el nombre de la unidad.
+// 1) Buscar. Con UNA sola invitacion no se devuelve ni el nombre de la unidad.
 //
-// Hace falta el nombre porque a una misma persona pueden haberla invitado desde
-// mas de una unidad y tiene que poder elegir. El costo es confirmar que ese RUT
-// fue invitado ahi, que un colega ya sabe. No lleva nombres ni correos, y el id
-// de la invitacion tampoco sale: ese es el secreto del camino por correo y no
-// se le regala a quien solo escribio un RUT.
+// El nombre solo hace falta cuando hay varias y la persona tiene que elegir;
+// con una sola, pedir acceso no necesita que ella diga nada mas, asi que
+// mandarlo seria regalar informacion a cambio de nada. Ocultarlo en la pantalla
+// no serviria: quien mire el trafico lo veria igual, asi que no sale de aqui.
+//
+// Lo que si se confirma, inevitablemente, es que ese RUT tiene una invitacion
+// pendiente en alguna parte. Es bastante menos que decir donde.
+//
+// El id de la invitacion no sale nunca: ese es el secreto del camino por correo
+// y no se le regala a quien solo escribio un RUT. El nombre del perfil tampoco.
 async function findWorkerInvitesByRutHandler(request, { db, HttpsError }) {
   const rut = normalizeRut(request.data?.rut);
 
@@ -110,10 +115,13 @@ async function findWorkerInvitesByRutHandler(request, { db, HttpsError }) {
   const encontradas = await findInvitesByRut(db, rut);
 
   return {
-    unidades: encontradas.map((item) => ({
-      workspaceId: item.workspaceId,
-      workspaceName: item.workspaceName
-    }))
+    count: encontradas.length,
+    unidades: encontradas.length > 1
+      ? encontradas.map((item) => ({
+        workspaceId: item.workspaceId,
+        workspaceName: item.workspaceName
+      }))
+      : []
   };
 }
 
@@ -129,27 +137,35 @@ async function requestWorkerJoinHandler(request, { db, HttpsError }) {
   const workspaceId = cleanText(request.data?.workspaceId, 160);
   const deviceLabel = cleanText(request.data?.deviceLabel, MAX_DEVICE_LABEL);
 
-  if (!rut || !workspaceId) {
-    throw new HttpsError("invalid-argument", "Falta identificar la unidad.");
+  if (!rut) {
+    throw new HttpsError("invalid-argument", "Falta el RUT.");
   }
 
   // La invitacion se vuelve a buscar en el servidor. Si se confiara en lo que
   // manda el cliente, cualquiera podria pedir acceso a una unidad que nunca lo
   // invito, y al supervisor le llegaria una solicitud con pinta de legitima.
   const encontradas = await findInvitesByRut(db, rut);
-  const invitacion = encontradas.find((item) => item.workspaceId === workspaceId);
+
+  // Sin unidad: es el caso de una sola invitacion, donde la persona no tuvo que
+  // elegir nada y el servidor nunca le dijo cual era. La resuelve aqui.
+  const invitacion = workspaceId
+    ? encontradas.find((item) => item.workspaceId === workspaceId)
+    : (encontradas.length === 1 ? encontradas[0] : null);
 
   if (!invitacion) {
     throw new HttpsError(
       "permission-denied",
-      "No encontramos una invitacion pendiente para ese RUT en esa unidad."
+      encontradas.length > 1
+        ? "Elige a que unidad quieres pedir acceso."
+        : "No encontramos una invitacion pendiente para ese RUT en esa unidad."
     );
   }
 
   const ahora = Date.now();
+  const unidad = invitacion.workspaceId;
   const requestsRef = db
     .collection("workspaces")
-    .doc(workspaceId)
+    .doc(unidad)
     .collection("workerJoinRequests");
 
   // Una sola solicitud viva por persona y unidad: si vuelve a pedirlo porque el
@@ -167,7 +183,7 @@ async function requestWorkerJoinHandler(request, { db, HttpsError }) {
   await nueva.set({
     uid,
     rut,
-    workspaceId,
+    workspaceId: unidad,
     inviteId: invitacion.inviteId,
     profileName: invitacion.profileName,
     deviceLabel,
