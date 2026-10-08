@@ -1443,6 +1443,16 @@ function cleanAssignmentsForWeek(days, tasks, start = currentWeekStart) {
     // que sanear.
     if (!tasks.length) return assignments;
 
+    // Lo mismo con los perfiles (incidente 2026-10-08): una pestana que paso la
+    // noche abierta publico a la PWA con la lista de perfiles aun vacia, cada
+    // nombre parecio "un perfil que ya no existe" y se vaciaron las tres
+    // semanas publicadas en todas las sesiones. Sin perfiles no se sanea.
+    const profilesByName = new Map(
+        getProfiles().map(profile => [profile.name, profile])
+    );
+
+    if (!profilesByName.size) return assignments;
+
     const taskIds = new Set(tasks.map(task => task.id));
     // El catalogo de cada tablero, que es contra el que se mide la fusion: la
     // tarea de abajo es la siguiente DE ESE TURNO.
@@ -1481,7 +1491,11 @@ function cleanAssignmentsForWeek(days, tasks, start = currentWeekStart) {
         if (!days.some(day => keyFromDate(day) === keyDay)) return;
 
         // Aqui solo se quita a quien ese dia NO PUEDE trabajar: licencia,
-        // permiso, ausencia, o un perfil que ya no existe o quedo inactivo.
+        // permiso, ausencia, o un perfil que quedo inactivo.
+        //
+        // Un nombre SIN perfil no se quita: con la sincronizacion por elemento
+        // la lista puede llegar a medias, y que falte aqui no prueba que se
+        // haya borrado (igual que las tareas fuera del catalogo, queda inerte).
         //
         // Estar libre del turno NO basta para quitarlo. El modal ofrece
         // deliberadamente "Todos" para asignar a alguien fuera de su turno
@@ -1491,10 +1505,11 @@ function cleanAssignmentsForWeek(days, tasks, start = currentWeekStart) {
         // asignada y el chip se marca como fuera de turno.
         const availableWorkers = assignmentWorkers(entry)
             .filter(name => {
-                const profile = profileByName(name);
+                const profile = profilesByName.get(name);
 
-                return Boolean(profile) &&
-                    isProfileActive(profile) &&
+                if (!profile) return true;
+
+                return isProfileActive(profile) &&
                     !hasBlockingAbsence(name, keyDay, shift);
             });
 
