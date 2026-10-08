@@ -8,6 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
   requestWorkerJoinHandler,
   resolveWorkerJoinRequestHandler,
@@ -294,6 +295,57 @@ test("volver a pedirlo reusa la solicitud viva en vez de duplicarla", async () =
 function unidadConSolicitud(data) {
   return [{ ...UNIDADES[0], requests: [{ id: "req-1", data }] }];
 }
+
+test("cancelar libera la solicitud propia para poder reintentar", async () => {
+  // El caso real: un RUT mal escrito que cae en el de otro trabajador con
+  // invitacion pendiente. La solicitud se fue al supervisor equivocado y la
+  // persona quedaria esperando para siempre.
+  const db = fakeDb(unidadConSolicitud({
+    uid: "uid-1",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 9e5)
+  }));
+
+  const resultado = await cancelWorkerJoinRequestHandler(
+    { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+    { db, HttpsError }
+  );
+
+  assert.equal(resultado.cancelled, 1);
+  assert.equal(db.escrituras[0].data.status, "cancelled");
+});
+
+test("nadie cancela la solicitud de otro", async () => {
+  // Sin esto, cualquiera dejaria a un companero esperando indefinidamente.
+  const db = fakeDb(unidadConSolicitud({
+    uid: "uid-ajeno",
+    status: "pending",
+    expiresAt: new Date(Date.now() + 9e5)
+  }));
+
+  const resultado = await cancelWorkerJoinRequestHandler(
+    { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+    { db, HttpsError }
+  );
+
+  assert.equal(resultado.cancelled, 0);
+  assert.equal(db.escrituras.length, 0);
+});
+
+test("una solicitud ya resuelta no se cancela", async () => {
+  const db = fakeDb(unidadConSolicitud({
+    uid: "uid-1",
+    status: "approved",
+    expiresAt: new Date(Date.now() + 9e5)
+  }));
+
+  const resultado = await cancelWorkerJoinRequestHandler(
+    { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+    { db, HttpsError }
+  );
+
+  assert.equal(resultado.cancelled, 0);
+});
 
 test("aprobar enlaza por el mismo camino que la invitacion por correo", async () => {
   const llamadas = [];

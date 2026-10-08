@@ -195,7 +195,58 @@ async function requestWorkerJoinHandler(request, { db, HttpsError }) {
   return { requestId: nueva.id, status: "pending", reused: false };
 }
 
-// 3) Resolver. Solo quien puede administrar perfiles de esa unidad.
+// 3) Cancelar la propia solicitud.
+//
+// Hace falta porque un RUT mal escrito puede caer en el de otro trabajador con
+// invitacion pendiente: ahi la solicitud se va al supervisor equivocado y la
+// persona queda esperando una aprobacion que no va a llegar. Cancelando puede
+// reintentar sin dejarle ruido a nadie.
+//
+// Se cancela por RUT y no por id de solicitud a proposito. En el caso de una
+// sola invitacion la persona nunca supo a que unidad pertenecia, y devolverle
+// ese id para que pudiera cancelar reabriria justo lo que se cerro. El uid es
+// el ancla: solo el dueño cancela la suya.
+async function cancelWorkerJoinRequestHandler(request, { db, HttpsError }) {
+  const uid = request.auth?.uid;
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Falta la sesion.");
+  }
+
+  const rut = normalizeRut(request.data?.rut);
+
+  if (!rut) {
+    throw new HttpsError("invalid-argument", "Falta el RUT.");
+  }
+
+  const ahora = Date.now();
+  const encontradas = await findInvitesByRut(db, rut);
+  let canceladas = 0;
+
+  for (const invitacion of encontradas) {
+    const requestsRef = db
+      .collection("workspaces")
+      .doc(invitacion.workspaceId)
+      .collection("workerJoinRequests");
+    const propiasSnap = await requestsRef.where("uid", "==", uid).get();
+
+    for (const docSnap of propiasSnap.docs) {
+      if (!requestIsUsable(docSnap.data(), ahora)) continue;
+
+      await requestsRef.doc(docSnap.id).set({
+        status: "cancelled",
+        resolvedAt: new Date(ahora),
+        resolvedBy: uid
+      }, { merge: true });
+
+      canceladas += 1;
+    }
+  }
+
+  return { cancelled: canceladas };
+}
+
+// 4) Resolver. Solo quien puede administrar perfiles de esa unidad.
 async function resolveWorkerJoinRequestHandler(request, {
   db,
   HttpsError,
@@ -273,6 +324,7 @@ async function resolveWorkerJoinRequestHandler(request, {
 }
 
 module.exports = {
+  cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
   requestWorkerJoinHandler,
   resolveWorkerJoinRequestHandler,

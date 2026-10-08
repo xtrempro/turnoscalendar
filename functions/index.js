@@ -30,6 +30,7 @@ const {
   syncWorkerLinkEmailsHandler
 } = require("./workerLinkEmailSync");
 const {
+  cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
   requestWorkerJoinHandler,
   resolveWorkerJoinRequestHandler
@@ -2678,6 +2679,16 @@ exports.requestWorkerJoin = onCall(
     timeoutSeconds: 30
   },
   (request) => requestWorkerJoinHandler(request, { db, HttpsError })
+);
+
+// Cancelar la propia solicitud: hace falta cuando un RUT mal escrito la mando
+// al supervisor equivocado y la persona quedaria esperando para siempre.
+exports.cancelWorkerJoinRequest = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => cancelWorkerJoinRequestHandler(request, { db, HttpsError })
 );
 
 exports.resolveWorkerJoinRequest = onCall(
