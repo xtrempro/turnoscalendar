@@ -323,13 +323,101 @@ async function resolveWorkerJoinRequestHandler(request, {
   return { status: "approved" };
 }
 
+// Tope de destinatarios. Una unidad con muchos supervisores no deberia
+// convertir una solicitud en una rafaga de correos.
+const MAX_NOTIFIED = 20;
+
+function escapeEmail(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// 5) Avisarle al supervisor que alguien pide acceso.
+//
+// Va por correo y no por push porque los supervisores no tienen push: esa pila
+// -service worker, VAPID, permisos, coleccion de tokens- existe solo para los
+// trabajadores, y montarla entera para esto seria mas trabajo que todo el resto
+// del enrolamiento por RUT.
+//
+// Importa que se entere sin abrir la aplicacion: la solicitud caduca a los 7
+// dias y seria absurdo que el plazo corriera contra alguien que no sabe que
+// tiene algo pendiente.
+async function notifyWorkerJoinRequestHandler(event, {
+  db,
+  canManageProfiles,
+  getUserEmail,
+  sendEmail,
+  logger
+}) {
+  const workspaceId = String(event?.params?.workspaceId || "");
+  const data = event?.data?.data() || {};
+
+  if (!workspaceId) return;
+  if (String(data.status || "") !== "pending") return;
+
+  const membersSnap = await db
+    .collection("workspaces")
+    .doc(workspaceId)
+    .collection("members")
+    .get();
+  const destinatarios = [];
+
+  for (const memberDoc of membersSnap.docs) {
+    if (destinatarios.length >= MAX_NOTIFIED) break;
+    // El mismo permiso que decide quien puede aprobarla: avisarle a quien no
+    // puede resolverla solo seria ruido.
+    if (!canManageProfiles(memberDoc.data() || {})) continue;
+
+    const email = await getUserEmail(memberDoc.id);
+
+    if (email) destinatarios.push(email);
+  }
+
+  if (!destinatarios.length) return;
+
+  const nombre = cleanText(data.profileName, 160) || "Un trabajador";
+  const rut = cleanText(data.rut, 20);
+  const aparato = cleanText(data.deviceLabel, MAX_DEVICE_LABEL);
+  const asunto = `${nombre} pide acceso a la app`;
+  const detalle = aparato
+    ? `${nombre} (${rut}) quiere vincular ${aparato}.`
+    : `${nombre} (${rut}) quiere vincular un dispositivo.`;
+  const text = [
+    detalle,
+    "",
+    "Revisala en TurnoPlus, en el menu Solicitudes.",
+    `Caduca en ${REQUEST_TTL_DAYS} dias.`
+  ].join("\n");
+  const html = [
+    `<p>${escapeEmail(detalle)}</p>`,
+    "<p>Revisala en TurnoPlus, en el menu <strong>Solicitudes</strong>.</p>",
+    `<p>Caduca en ${REQUEST_TTL_DAYS} dias.</p>`
+  ].join("");
+
+  for (const to of destinatarios) {
+    try {
+      await sendEmail({ to, subject: asunto, html, text });
+    } catch (error) {
+      logger?.warn?.("No se pudo avisar de una solicitud de acceso.", {
+        workspaceId,
+        error: String(error?.message || error)
+      });
+    }
+  }
+}
+
 module.exports = {
   cancelWorkerJoinRequestHandler,
+  notifyWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
   requestWorkerJoinHandler,
   resolveWorkerJoinRequestHandler,
   _private: {
     MAX_DEVICE_LABEL,
+    MAX_NOTIFIED,
     MAX_WORKSPACES,
     REQUEST_TTL_DAYS,
     findInvitesByRut,

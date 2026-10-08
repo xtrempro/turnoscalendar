@@ -10,6 +10,7 @@ const assert = require("node:assert/strict");
 const {
   cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
+  notifyWorkerJoinRequestHandler,
   requestWorkerJoinHandler,
   resolveWorkerJoinRequestHandler,
   _private
@@ -463,4 +464,112 @@ test("sin permiso de perfiles no se resuelve nada", async () => {
   );
 
   assert.equal(llamadas.length, 0);
+});
+
+// --- El aviso al supervisor ---
+
+function fakeMembersDb(miembros) {
+  return {
+    collection: () => ({
+      doc: () => ({
+        collection: () => ({
+          get: async () => ({
+            docs: miembros.map((m) => ({ id: m.uid, data: () => m.data }))
+          })
+        })
+      })
+    })
+  };
+}
+
+function eventoSolicitud(data) {
+  return {
+    params: { workspaceId: "ws-imagenologia", requestId: "req-1" },
+    data: { data: () => data }
+  };
+}
+
+const PENDIENTE = {
+  status: "pending",
+  profileName: "ALAN PLAZA",
+  rut: "178166328",
+  deviceLabel: "Samsung SM-A556E"
+};
+
+test("solo se avisa a quien puede aprobar", async () => {
+  // Avisarle a quien no puede resolverla seria ruido, y ademas filtraria el
+  // nombre y el RUT a gente que no tiene por que verlos.
+  const enviados = [];
+
+  await notifyWorkerJoinRequestHandler(eventoSolicitud(PENDIENTE), {
+    db: fakeMembersDb([
+      { uid: "uid-jefe", data: { role: "owner" } },
+      { uid: "uid-miron", data: { role: "member", permissions: {} } }
+    ]),
+    canManageProfiles: (member) => member.role === "owner",
+    getUserEmail: async (uid) => `${uid}@turnoplus.cl`,
+    sendEmail: async (mensaje) => { enviados.push(mensaje); },
+    logger: { warn() {} }
+  });
+
+  assert.equal(enviados.length, 1);
+  assert.equal(enviados[0].to, "uid-jefe@turnoplus.cl");
+  assert.match(enviados[0].subject, /ALAN PLAZA/);
+  assert.match(enviados[0].text, /Samsung SM-A556E/);
+  assert.match(enviados[0].text, /7 dias/);
+});
+
+test("sin correo conocido no se intenta enviar", async () => {
+  const enviados = [];
+
+  await notifyWorkerJoinRequestHandler(eventoSolicitud(PENDIENTE), {
+    db: fakeMembersDb([{ uid: "uid-jefe", data: { role: "owner" } }]),
+    canManageProfiles: () => true,
+    getUserEmail: async () => "",
+    sendEmail: async (mensaje) => { enviados.push(mensaje); },
+    logger: { warn() {} }
+  });
+
+  assert.equal(enviados.length, 0);
+});
+
+test("un fallo de envio no detiene al resto", async () => {
+  // Un correo rebotado no deberia dejar sin aviso a los demas supervisores.
+  const enviados = [];
+  const avisos = [];
+
+  await notifyWorkerJoinRequestHandler(eventoSolicitud(PENDIENTE), {
+    db: fakeMembersDb([
+      { uid: "uid-a", data: { role: "owner" } },
+      { uid: "uid-b", data: { role: "owner" } }
+    ]),
+    canManageProfiles: () => true,
+    getUserEmail: async (uid) => `${uid}@turnoplus.cl`,
+    sendEmail: async (mensaje) => {
+      if (mensaje.to.startsWith("uid-a")) throw new Error("rebotado");
+      enviados.push(mensaje);
+    },
+    logger: { warn: (...args) => avisos.push(args) }
+  });
+
+  assert.equal(enviados.length, 1);
+  assert.equal(enviados[0].to, "uid-b@turnoplus.cl");
+  assert.equal(avisos.length, 1);
+});
+
+test("una solicitud que no nace pendiente no avisa", async () => {
+  const enviados = [];
+
+  await notifyWorkerJoinRequestHandler(
+    eventoSolicitud({ ...PENDIENTE, status: "approved" }),
+    {
+      db: fakeMembersDb([{ uid: "uid-jefe", data: { role: "owner" } }]),
+      canManageProfiles: () => true,
+      getUserEmail: async () => "jefe@turnoplus.cl",
+      sendEmail: async (mensaje) => { enviados.push(mensaje); },
+      logger: { warn() {} }
+    }
+  );
+
+  assert.equal(enviados.length, 0);
 });

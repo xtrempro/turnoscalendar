@@ -32,6 +32,7 @@ const {
 const {
   cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
+  notifyWorkerJoinRequestHandler,
   requestWorkerJoinHandler,
   resolveWorkerJoinRequestHandler
 } = require("./workerJoinRequests");
@@ -2691,6 +2692,37 @@ exports.cancelWorkerJoinRequest = onCall(
   (request) => cancelWorkerJoinRequestHandler(request, { db, HttpsError })
 );
 
+
+// Avisarle al supervisor que alguien pide acceso.
+//
+// Va por correo y no por push porque los supervisores NO tienen push: esa
+// pila -service worker, VAPID, permisos, coleccion de tokens- existe solo
+// para los trabajadores. Importa que se entere sin abrir la aplicacion,
+// porque la solicitud caduca a los 7 dias y seria absurdo que el plazo
+// corriera contra alguien que no sabe que tiene algo pendiente.
+exports.notifyWorkerJoinRequest = onDocumentCreated(
+  {
+    document: "workspaces/{workspaceId}/workerJoinRequests/{requestId}",
+    timeoutSeconds: 60,
+    memory: "256MiB",
+    secrets: [RESEND_API_KEY]
+  },
+  (event) => notifyWorkerJoinRequestHandler(event, {
+    db,
+    canManageProfiles: memberCanManageProfiles,
+    getUserEmail: async (uid) => {
+      try {
+        const user = await admin.auth().getUser(uid);
+
+        return user.email || "";
+      } catch (_error) {
+        return "";
+      }
+    },
+    sendEmail: sendResendEmail,
+    logger
+  })
+);
 exports.resolveWorkerJoinRequest = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,
