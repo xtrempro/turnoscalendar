@@ -390,7 +390,8 @@ import {
     isCoverageAuthorizationCandidate
 } from "./coverageAuthorizationRows.js";
 import {
-    buildHoursValidationRows,
+    computeHoursValidationBase,
+    crossHoursValidationRows,
     hoursValidationMonthKey,
     hoursValidationPanelHTML
 } from "./hoursValidationPanel.js";
@@ -443,7 +444,7 @@ import {
     calcularHorasMesPerfil,
     renderSummaryHTML
 } from "./hoursEngine.js";
-import { getRaw, setRaw, getJSON, setJSON, listKeys } from "./persistence.js";
+import { getRaw, setRaw, getJSON, setJSON, listKeys, isInternalKey } from "./persistence.js";
 import {
     getProfileData,
     saveProfileData,
@@ -7727,8 +7728,17 @@ function renderHheeProfiles() {
 // Visto bueno de horas del mes (menu Horas extras). Recorre a todos los
 // trabajadores con el calculo del Anexo 2, asi que va diferido, solo con la
 // vista abierta, y descarta la vuelta si cambio el mes mientras calculaba.
+//
+// Ese calculo (~40 ms por trabajador) se guarda por unidad y mes y solo se
+// rehace si cambio algun dato; un visto bueno nuevo solo vuelve a cruzar. Una
+// vuelta a la vez: un cambio a mitad de camino no la tira (con guardados
+// seguidos no terminaba nunca), la deja terminar y pide otra.
 let hoursValidationTimer = null;
 let hoursValidationRun = 0;
+let hoursValidationBusy = false;
+let hoursValidationAgain = false;
+let hoursValidationDataStamp = 0;
+let hoursValidationBase = { key: "", stamp: -1, rows: null };
 
 function hoursValidationLoadingHTML(monthDate, message = "Cargando vistos buenos…") {
     const monthLabel = formatMonthHeading(monthDate);
@@ -7781,12 +7791,47 @@ function scheduleHoursValidationRender(delay = 300) {
     }, delay);
 }
 
+// Cede la pagina cada ~40 ms de calculo para que no se congele.
+let hoursValidationLastYield = 0;
+
+function yieldHoursValidationToPage() {
+    const now = performance.now();
+
+    if (now - hoursValidationLastYield < 40) return null;
+
+    return new Promise(resolve => setTimeout(() => {
+        hoursValidationLastYield = performance.now();
+        resolve();
+    }, 0));
+}
+
 async function renderHoursValidationPanel() {
     const host = document.getElementById("hheeValidationPanel");
 
     if (!host || document.body.dataset.activeView !== "hours") return;
 
-    const run = ++hoursValidationRun;
+    if (hoursValidationBusy) {
+        hoursValidationAgain = true;
+        return;
+    }
+
+    hoursValidationBusy = true;
+    hoursValidationAgain = false;
+
+    try {
+        await paintHoursValidationPanel(host);
+    } finally {
+        hoursValidationBusy = false;
+
+        if (hoursValidationAgain) {
+            hoursValidationAgain = false;
+            scheduleHoursValidationRender(0);
+        }
+    }
+}
+
+async function paintHoursValidationPanel(host) {
+    const run = hoursValidationRun;
     const monthDate = new Date(
         profileRotationMiniDate.getFullYear(),
         profileRotationMiniDate.getMonth(),
@@ -7794,20 +7839,70 @@ async function renderHoursValidationPanel() {
     );
     const monthKey = hoursValidationMonthKey(monthDate);
     const monthLabel = formatMonthHeading(monthDate);
+    const workspace = getActiveWorkspace();
+    const baseKey = `${workspace?.id || ""}|${monthKey}`;
+    const stillWanted = () =>
+        run === hoursValidationRun &&
+        document.body.dataset.activeView === "hours" &&
+        hoursValidationMonthKey(profileRotationMiniDate) === monthKey;
 
     if (!host.dataset.month || host.dataset.month !== monthKey) {
         renderHoursValidationLoading(monthDate);
     }
 
-    // Los vistos buenos del mes (escucha en vivo: uno nuevo repinta).
-    const watched = watchHoursValidations(
-        getActiveWorkspace()?.id || "",
+    // Los vistos buenos del mes (escucha en vivo: uno nuevo repinta). Se
+    // piden antes del calculo para que la red corra mientras tanto.
+    let watched = watchHoursValidations(
+        workspace?.id || "",
         monthKey,
         () => scheduleHoursValidationRender(200)
     );
 
+    let base = hoursValidationBase.key === baseKey &&
+        hoursValidationBase.stamp === hoursValidationDataStamp
+        ? hoursValidationBase.rows
+        : null;
+
+    if (!base) {
+        const stamp = hoursValidationDataStamp;
+
+        try {
+            base = await computeHoursValidationBase(monthDate, {
+                workspaceName: workspace?.name || "",
+                shouldAbort: () => !stillWanted(),
+                yieldToPage: yieldHoursValidationToPage,
+                onProgress: (done, total) => {
+                    if (host.dataset.state !== "loading" || total < 8) return;
+
+                    const label = host.querySelector(".hh-validation__loading span:last-child");
+
+                    if (label) label.textContent = `Calculando horas… ${done} de ${total}`;
+                }
+            });
+        } catch (error) {
+            console.warn("No se pudo armar el visto bueno de horas.", error);
+            if (stillWanted()) {
+                host.dataset.state = "error";
+                host.removeAttribute("aria-busy");
+                host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">No se pudo calcular el listado.</p>`;
+            }
+            return;
+        }
+
+        if (!base || !stillWanted()) return;
+
+        hoursValidationBase = { key: baseKey, stamp, rows: base };
+    }
+
+    watched = watchHoursValidations(
+        workspace?.id || "",
+        monthKey,
+        () => scheduleHoursValidationRender(200)
+    );
+
+    // Sin los vistos buenos aun: la escucha repinta al llegar (ya sin calculo).
     if (!watched.loaded) {
-        renderHoursValidationLoading(monthDate);
+        renderHoursValidationLoading(monthDate, "Leyendo vistos buenos…");
         return;
     }
 
@@ -7831,33 +7926,15 @@ async function renderHoursValidationPanel() {
         uidsByProfile.set(name, [...(uidsByProfile.get(name) || []), link.uid]);
     });
 
-    try {
-        const rows = await buildHoursValidationRows(monthDate, {
-            workspaceName: getActiveWorkspace()?.name || "",
-            validations: watched.docs,
-            linkUidsForProfile: profile => uidsByProfile.get(profile.name) || []
-        });
+    const rows = crossHoursValidationRows(base, {
+        validations: watched.docs,
+        linkUidsForProfile: profile => uidsByProfile.get(profile.name) || []
+    });
 
-        if (
-            run !== hoursValidationRun ||
-            hoursValidationMonthKey(profileRotationMiniDate) !== monthKey
-        ) return;
-
-        host.dataset.month = monthKey;
-        host.dataset.state = "ready";
-        host.removeAttribute("aria-busy");
-        host.innerHTML = hoursValidationPanelHTML(rows, monthLabel);
-    } catch (error) {
-        console.warn("No se pudo armar el visto bueno de horas.", error);
-        if (
-            run === hoursValidationRun &&
-            hoursValidationMonthKey(profileRotationMiniDate) === monthKey
-        ) {
-            host.dataset.state = "error";
-            host.removeAttribute("aria-busy");
-            host.innerHTML = `<div class="hh-rec-head"><h2>Visto bueno de horas · ${escapeHTML(monthLabel)}</h2></div><p class="hh-validation__hint">No se pudo calcular el listado.</p>`;
-        }
-    }
+    host.dataset.month = monthKey;
+    host.dataset.state = "ready";
+    host.removeAttribute("aria-busy");
+    host.innerHTML = hoursValidationPanelHTML(rows, monthLabel);
 }
 
 document.addEventListener("click", event => {
@@ -7877,7 +7954,33 @@ document.addEventListener("click", event => {
 
 // Un visto bueno nuevo o un cambio de horas: se rehace (debounce largo, para
 // no recalcular con cada tecla del supervisor).
-window.addEventListener("proturnos:persistenceChanged", () => scheduleHoursValidationRender(1500));
+// Las claves internas (sincronizacion, caches) no cambian horas.
+window.addEventListener("proturnos:persistenceChanged", event => {
+    const keys = event?.detail?.keys || [];
+
+    if (keys.length && keys.every(key => isInternalKey(key))) return;
+
+    hoursValidationDataStamp += 1;
+    scheduleHoursValidationRender(1500);
+});
+
+// Lo que llega de otra sesion se aplica sin persistenceChanged.
+window.addEventListener("proturnos:firebaseAppState", event => {
+    const type = event?.detail?.type;
+
+    if (
+        type !== "app-state-entries-applied" &&
+        type !== "app-state-module-applied" &&
+        type !== "app-state-applied"
+    ) return;
+
+    const keys = event.detail.keys || [];
+
+    if (keys.length && keys.every(key => isInternalKey(key))) return;
+
+    hoursValidationDataStamp += 1;
+    scheduleHoursValidationRender(1500);
+});
 
 function renderClockMarksProfiles() {
     if (!DOM.clockMarksProfiles) return;

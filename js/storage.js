@@ -2021,9 +2021,25 @@ export function saveAbsences(data){
     setJSON("absences_" + currentProfile, data);
 }
 
+// El motor de horas la pide miles de veces por mes calculado: se guarda lo
+// interpretado por el texto crudo y se entrega una copia.
+const ROTATIVA_CACHE = new Map();
+
 export function getRotativa(profile = currentProfile){
     const raw = getRaw("rotativa_" + profile, null);
+    const cached = ROTATIVA_CACHE.get(profile);
 
+    if (cached && cached.raw === raw) return { ...cached.value };
+
+    const value = parseRotativa(raw);
+
+    if (ROTATIVA_CACHE.size > 2000) ROTATIVA_CACHE.clear();
+    ROTATIVA_CACHE.set(profile, { raw, value });
+
+    return { ...value };
+}
+
+function parseRotativa(raw){
     if (!raw) {
         return {
             type: "",

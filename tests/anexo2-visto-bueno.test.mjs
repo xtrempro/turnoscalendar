@@ -218,14 +218,14 @@ test("los publicadores invalidan una huella anterior cuando el mes deja de tener
 
 test("un error al leer vistos buenos se muestra como error y permite reintentar", async () => {
     const main = await readFile(new URL("../js/main.js", import.meta.url), "utf8");
-    const render = main.match(/async function renderHoursValidationPanel\(\)[\s\S]*?\n}/)?.[0] || "";
+    const render = main.match(/async function paintHoursValidationPanel\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
     const retry = main.match(/function retryHoursValidationPanel\(\)[\s\S]*?\n}/)?.[0] || "";
 
     assert.match(render, /if \(watched\.error\)/);
     assert.match(render, /No se pudieron leer los vistos buenos/);
     assert.match(render, /data-hours-validation-retry/);
     assert.ok(
-        render.indexOf("if (watched.error)") < render.indexOf("buildHoursValidationRows"),
+        render.indexOf("if (watched.error)") < render.indexOf("crossHoursValidationRows("),
         "el error corta antes de pintar trabajadores pendientes"
     );
     assert.match(retry, /stopHoursValidationPanel\(\)/);
@@ -243,7 +243,7 @@ test("al cambiar de mes vacia de inmediato el visto bueno anterior y muestra car
     const changeMonth = main.match(/function changeHoursMonth\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
     const prepare = main.match(/function prepareHoursValidationMonthChange\(\)[\s\S]*?\n}/)?.[0] || "";
     const loading = main.match(/function renderHoursValidationLoading\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
-    const render = main.match(/async function renderHoursValidationPanel\(\)[\s\S]*?\n}/)?.[0] || "";
+    const render = main.match(/async function paintHoursValidationPanel\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
 
     assert.match(setMonth, /prepareHoursValidationMonthChange\(\)/);
     assert.match(changeMonth, /prepareHoursValidationMonthChange\(\)/);
@@ -255,7 +255,7 @@ test("al cambiar de mes vacia de inmediato el visto bueno anterior y muestra car
     assert.match(prepare, /renderHoursValidationLoading\(profileRotationMiniDate/);
     assert.match(loading, /aria-busy/);
     assert.match(loading, /hoursValidationLoadingHTML/);
-    assert.match(render, /hoursValidationMonthKey\(profileRotationMiniDate\) !== monthKey/);
+    assert.match(render, /hoursValidationMonthKey\(profileRotationMiniDate\) === monthKey/);
     assert.match(styles, /\.hh-validation__loading\s*\{/);
     assert.match(styles, /\.hh-validation__spinner\s*\{[\s\S]*?animation:\s*app-busy-spin/);
 });
@@ -285,4 +285,46 @@ test("supervisor y PWA usan el mismo calculo; el visto bueno vive en hoursValida
     assert.match(main, /stopHoursValidationsWatch/);
     assert.match(main, /previousView === "hours" && nextView !== "hours"/);
     assert.match(main, /onWorkspaceChange:[\s\S]*?stopHoursValidationPanel\(\)/);
+});
+
+test("el calculo del Anexo 2 se guarda y un visto bueno nuevo solo vuelve a cruzar", async () => {
+    seed();
+    const base = await panel.computeHoursValidationBase(MONTH_DATE, {});
+
+    assert.deepEqual(base.map(item => item.name), ["Ana Perez"]);
+
+    const linkUidsForProfile = () => ["uid-ana"];
+    const pending = panel.crossHoursValidationRows(base, { validations: [], linkUidsForProfile });
+    const validated = panel.crossHoursValidationRows(base, {
+        validations: [{ uid: "uid-ana", signature: base[0].signature, validatedAtMillis: 10 }],
+        linkUidsForProfile
+    });
+
+    assert.equal(pending[0].status, "pending");
+    assert.equal(validated[0].status, "validated");
+
+    let progress = 0;
+    const aborted = await panel.computeHoursValidationBase(MONTH_DATE, {
+        onProgress: () => { progress += 1; },
+        shouldAbort: () => true
+    });
+
+    assert.equal(aborted, null, "se deja de calcular al cambiar de mes");
+    assert.equal(progress, 1);
+});
+
+test("una vuelta del visto bueno a la vez: un guardado a mitad de camino no la descarta", async () => {
+    const main = await readFile(new URL("../js/main.js", import.meta.url), "utf8");
+    const render = main.match(/async function renderHoursValidationPanel\(\)[\s\S]*?\n}/)?.[0] || "";
+    const paint = main.match(/async function paintHoursValidationPanel\([^)]*\)[\s\S]*?\n}/)?.[0] || "";
+
+    assert.match(render, /if \(hoursValidationBusy\) \{\s*hoursValidationAgain = true;/);
+    assert.doesNotMatch(render, /\+\+hoursValidationRun/, "repintar no invalida la vuelta en curso");
+    assert.match(paint, /hoursValidationBase\.stamp === hoursValidationDataStamp/);
+    assert.ok(
+        paint.indexOf("watchHoursValidations(") < paint.indexOf("computeHoursValidationBase("),
+        "la lectura de Firestore corre mientras se calcula"
+    );
+    assert.match(main, /keys\.every\(key => isInternalKey\(key\)\)/);
+    assert.match(main, /"app-state-entries-applied"[\s\S]*?hoursValidationDataStamp \+= 1/);
 });

@@ -56,41 +56,77 @@ export function validationsForProfile(validations, profile, linkUids = []) {
  * @param {Function} [options.linkUidsForProfile] perfil -> uids de sus enlaces
  */
 export async function buildHoursValidationRows(monthDate, options = {}) {
+    const base = await computeHoursValidationBase(monthDate, options);
+
+    return base ? crossHoursValidationRows(base, options) : [];
+}
+
+/**
+ * La parte cara del listado: el Anexo 2 de cada trabajador (motor de horas),
+ * sin los vistos buenos. No depende de Firestore, asi que se puede guardar y
+ * volver a cruzar cuando llega un visto bueno nuevo.
+ *
+ * @param {Function} [options.onProgress] (hechos, total) tras cada trabajador
+ * @param {Function} [options.shouldAbort] true = se dejo de necesitar (null)
+ * @param {Function} [options.yieldToPage] promesa para ceder la pagina
+ */
+export async function computeHoursValidationBase(monthDate, options = {}) {
     const month = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+    const prefix = `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`;
     const profiles = getProfiles();
-    const replacements = getReplacements();
-    const validations = options.validations || [];
-    const linkUidsForProfile = options.linkUidsForProfile || (() => []);
+    const replacements = getReplacements().filter(record =>
+        !record?.canceled &&
+        String(record?.date || "").startsWith(prefix)
+    );
     const candidates = profiles.filter(profile =>
         isProfileActive(profile) && isCoverageAuthorizationCandidate(profile, month)
     );
-    const rows = [];
+    const base = [];
 
-    for (const profile of candidates) {
+    for (let index = 0; index < candidates.length; index++) {
+        const profile = candidates[index];
         const row = await buildCoverageAuthorizationRow(profile, month, {
             workspaceName: options.workspaceName || "",
             profiles,
             replacements
         });
 
-        if (!hasCoverageAuthorizationOvertime(row)) continue;
+        if (hasCoverageAuthorizationOvertime(row)) {
+            base.push({
+                profile,
+                name: profile.name,
+                totals: coverageAuthorizationTotals(row),
+                signature: coverageAuthorizationSignature(row)
+            });
+        }
 
-        const signature = coverageAuthorizationSignature(row);
-        const state = hoursValidationState(
-            validationsForProfile(validations, profile, linkUidsForProfile(profile)),
-            signature
-        );
-
-        rows.push({
-            name: profile.name,
-            totals: coverageAuthorizationTotals(row),
-            signature,
-            status: state.status,
-            validatedAtMillis: Number(state.validation?.validatedAtMillis) || 0
-        });
+        options.onProgress?.(index + 1, candidates.length);
+        if (options.yieldToPage) await options.yieldToPage();
+        if (options.shouldAbort?.()) return null;
     }
 
-    return rows.sort((a, b) => a.name.localeCompare(b.name, "es"));
+    return base.sort((a, b) => a.name.localeCompare(b.name, "es"));
+}
+
+// Lo barato: cruza el calculo con los vistos buenos del mes.
+export function crossHoursValidationRows(base, options = {}) {
+    const validations = options.validations || [];
+    const linkUidsForProfile = options.linkUidsForProfile || (() => []);
+
+    return base.map(item => {
+        const state = hoursValidationState(
+            validationsForProfile(validations, item.profile, linkUidsForProfile(item.profile)),
+            item.signature
+        );
+
+        return {
+            name: item.name,
+            totals: item.totals,
+            signature: item.signature,
+            status: state.status,
+            validatedAtMillis: Number(state.validation?.validatedAtMillis) || 0
+        };
+    });
 }
 
 function formatHours(value) {
