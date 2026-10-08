@@ -1205,6 +1205,20 @@ service cloud.firestore {
           (signedIn() && request.auth.uid == userId);
       }
 
+      // Solicitudes de acceso por RUT. Las escribe SOLO la Cloud Function
+      // (workerJoinRequests.js), que es la unica que puede comprobar que ese
+      // RUT tenga de verdad una invitacion pendiente ahi.
+      //
+      // Lectura solo para quien puede administrar perfiles: es el mismo permiso
+      // que decide quien puede aprobarlas.
+      //
+      // El trabajador no necesita leer aqui. Cuando lo aprueban aparece su
+      // workerLink, y la app ya escucha eso.
+      match /workerJoinRequests/{requestId} {
+        allow read: if canManageProfiles(workspaceId);
+        allow write: if false;
+      }
+
       match /workerPushTokens/{userId} {
         allow read: if signedIn() && request.auth.uid == userId;
         allow create, update: if signedIn() &&

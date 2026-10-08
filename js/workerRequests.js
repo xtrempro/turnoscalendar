@@ -101,6 +101,7 @@ const REQUEST_TYPE_LABELS = {
     workspace_link: "Enlace de Unidad",
     worker_transfer: "Transferencia de Trabajador",
     supervisor_invite: "Acceso Supervisor",
+    worker_join: "Acceso a la App",
     unknown: "Solicitud"
 };
 
@@ -278,6 +279,12 @@ function isWorkerTransferRequest(request = {}) {
 
 function isSupervisorInviteRequest(request = {}) {
     return request.kind === "supervisor_invite";
+}
+
+// Alguien que escribio su RUT en la app y pide vincular su telefono
+// (functions/workerJoinRequests.js).
+function isWorkerJoinRequest(request = {}) {
+    return request.kind === "worker_join";
 }
 
 function isReplacementRequest(request = {}) {
@@ -1659,6 +1666,72 @@ async function rejectWorkerTransferRequest(request) {
     });
 }
 
+// Solicitudes de acceso por RUT.
+//
+// Llegan al mismo menu que el resto porque es exactamente eso: alguien pidiendo
+// acceso. Lo que el supervisor necesita para decidir es de quien se trata y que
+// aparato pide vincularse, porque el RUT no prueba nada por si solo: en una
+// unidad todos conocen el de todos. La pregunta de la nota esta redactada para
+// que la decision sea consciente y no un "aprobar" por inercia.
+async function getWorkerJoinRequests() {
+    if (
+        !isFirebaseConfigured() ||
+        !getCurrentFirebaseUser() ||
+        !getActiveWorkspace()?.id
+    ) {
+        return [];
+    }
+
+    const workspaceId = getActiveWorkspace().id;
+
+    try {
+        const { db, firestoreModule } = await getFirebaseServices();
+        const snapshot = await firestoreModule.getDocs(
+            firestoreModule.collection(
+                db,
+                "workspaces",
+                workspaceId,
+                "workerJoinRequests"
+            )
+        );
+
+        return snapshot.docs.map(docSnap => {
+            const data = docSnap.data() || {};
+            const status = String(data.status || "pending");
+            const device = String(data.deviceLabel || "").trim();
+
+            return {
+                kind: "worker_join",
+                id: `worker_join:${docSnap.id}`,
+                requestId: docSnap.id,
+                type: "worker_join",
+                // Canceladas y vencidas se archivan junto a las rechazadas: el
+                // panel solo distingue pendiente de resuelta.
+                status: status === "pending" ? "pending" : (
+                    status === "approved" ? "approved" : "rejected"
+                ),
+                profile: String(data.profileName || "").trim() || "Trabajador",
+                workerRut: String(data.rut || ""),
+                deviceLabel: device,
+                note: status === "pending"
+                    ? `Pide vincular ${device || "un dispositivo"} a su cuenta. ¿Esperabas que lo hiciera?`
+                    : "",
+                createdAt: timestampISO(
+                    data.createdAt ||
+                    data.resolvedAt ||
+                    new Date()
+                )
+            };
+        });
+    } catch (error) {
+        console.warn(
+            "No se pudieron cargar solicitudes de acceso a la app.",
+            error
+        );
+        return [];
+    }
+}
+
 async function getWorkspaceLinkRequests() {
     if (
         !isFirebaseConfigured() ||
@@ -2232,6 +2305,42 @@ async function rejectWorkspaceLinkRequest(request) {
     );
 }
 
+// Resolver una solicitud de acceso por RUT.
+//
+// El enlace lo hace la Cloud Function, que es la unica que puede comprobar que
+// esa invitacion siga pendiente y que quien aprueba tenga permiso sobre la
+// unidad. Aqui solo se decide.
+async function resolveWorkerJoinRequestFromPanel(request, approve) {
+    const workspaceId = getActiveWorkspace()?.id || "";
+
+    if (!workspaceId) return;
+
+    const { functions, functionsModule } = await getFirebaseServices();
+    const callable = functionsModule.httpsCallable(
+        functions,
+        "resolveWorkerJoinRequest"
+    );
+
+    await callable({
+        workspaceId,
+        requestId: request.requestId,
+        approve
+    });
+
+    addAuditLog(
+        AUDIT_CATEGORY.WORKER_REQUESTS,
+        approve ? "Aprobo acceso a la app" : "Rechazo acceso a la app",
+        `${request.profile} (${request.workerRut}): acceso ` +
+            (approve ? "aprobado" : "rechazado") +
+            (request.deviceLabel ? ` para ${request.deviceLabel}.` : "."),
+        {
+            requestId: request.requestId,
+            requestType: "worker_join",
+            workspaceId
+        }
+    );
+}
+
 async function approveSupervisorInviteRequest(request) {
     const permissions =
         await showSupervisorInvitePermissionsDialog({
@@ -2305,7 +2414,9 @@ export async function renderWorkerRequestsPanel() {
     const transferRequests = await getWorkerTransferPanelRequests();
     const supervisorInviteRequests =
         await getSupervisorInviteRequests();
+    const workerJoinRequests = await getWorkerJoinRequests();
     const allRequests = [
+        ...workerJoinRequests,
         ...supervisorInviteRequests,
         ...linkRequests,
         ...transferRequests,
@@ -2472,6 +2583,8 @@ export async function renderWorkerRequestsPanel() {
                 } else {
                     await rejectSupervisorInviteRequest(request);
                 }
+            } else if (isWorkerJoinRequest(request)) {
+                await resolveWorkerJoinRequestFromPanel(request, accepting);
             } else if (accepting) {
                 await acceptRequest(request);
             } else {

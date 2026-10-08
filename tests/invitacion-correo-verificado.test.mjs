@@ -22,7 +22,9 @@ const source = readFileSync("functions/index.js", "utf8");
 // propia ventana de N caracteres, agregar un comentario al codigo desbordaba la
 // mas corta y el test fallaba por algo que no tenia que ver con lo que afirma.
 function bloqueVerificacionCorreo() {
-  const inicio = source.indexOf("if (WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED) {");
+  // Se ancla por prefijo: la condicion gano una excepcion (ver el test de la
+  // aprobacion del supervisor) y seguira pudiendo ganar otras.
+  const inicio = source.indexOf("if (WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED");
 
   assert.notEqual(inicio, -1, "no se encontro la comprobacion de correo");
 
@@ -62,4 +64,17 @@ test("el vinculo guarda el correo verificado, no el escrito a mano", () => {
   // Con la bandera encendida gana el correo del token; el de la invitacion
   // queda solo como respaldo del camino anterior.
   assert.match(bloque, /\?\s*normalizeEmail\(authToken\.email\)/);
+});
+
+test("la aprobacion del supervisor vale como prueba en lugar del correo", () => {
+  // Enrolarse por RUT existe justamente para quien no tiene un correo usable:
+  // exigirle uno ahi dejaria el camino sin salida. La prueba la dio el
+  // supervisor al aprobar, y eso es lo que levanta la comprobacion.
+  const bloque = bloqueVerificacionCorreo();
+
+  assert.match(bloque, /&& !approvedBySupervisor/);
+
+  // Y por defecto esta en false: solo lo activa quien enlaza desde una
+  // solicitud aprobada, nunca el camino normal por correo.
+  assert.match(source, /approvedBySupervisor = false/);
 });
