@@ -29,6 +29,11 @@ const {
 const {
   syncWorkerLinkEmailsHandler
 } = require("./workerLinkEmailSync");
+const {
+  findWorkerInvitesByRutHandler,
+  requestWorkerJoinHandler,
+  resolveWorkerJoinRequestHandler
+} = require("./workerJoinRequests");
 const { profilesFromState } = require("./getAccountsAndUnitsCore");
 const {
   createWorkerMedicalEquipmentReportHandler
@@ -2346,7 +2351,11 @@ async function acceptWorkerAppInviteImpl({
   uid,
   authToken = {},
   workspaceId,
-  inviteId
+  inviteId,
+  // Enrolamiento por RUT: ahi la prueba de identidad la dio el supervisor al
+  // aprobar, no un correo verificado. Quien llega por ese camino puede no tener
+  // correo, que es justamente su motivo para usarlo.
+  approvedBySupervisor = false
 }) {
   const workspaceRef = db.collection("workspaces").doc(workspaceId);
   const inviteRef = workspaceRef.collection("workerAppInvites").doc(inviteId);
@@ -2416,7 +2425,7 @@ async function acceptWorkerAppInviteImpl({
       );
     }
 
-    if (WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED) {
+    if (WORKER_PASSWORDLESS_INVITE_EMAIL_ENABLED && !approvedBySupervisor) {
       const authEmail = normalizeEmail(authToken.email);
       const inviteEmail = normalizeEmail(invite.email);
 
@@ -2644,6 +2653,54 @@ exports.acceptWorkerAppInvite = onCall(
       inviteId
     });
   }
+);
+
+// ─────────── Enrolarse por RUT, con aprobacion del supervisor ───────────
+//
+// El detalle de por que el RUT solo sirve para buscar esta en
+// functions/workerJoinRequests.js.
+
+// Sin auth a proposito: quien abre la app recien instalada todavia no tiene
+// sesion, y crear una anonima solo para buscar reviviria las identidades
+// huerfanas que quitamos en la v322. La sesion nace al PEDIR acceso, no al
+// buscar. App Check sigue limitando quien puede llamar.
+exports.findWorkerInvitesByRut = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => findWorkerInvitesByRutHandler(request, { db, HttpsError })
+);
+
+exports.requestWorkerJoin = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => requestWorkerJoinHandler(request, { db, HttpsError })
+);
+
+exports.resolveWorkerJoinRequest = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 30
+  },
+  (request) => resolveWorkerJoinRequestHandler(request, {
+    db,
+    HttpsError,
+    requireProfileManager: requireWorkspaceProfileManager,
+    // El enlace pasa por el MISMO camino que aceptar una invitacion por correo,
+    // para que no haya dos formas distintas de quedar enlazado. El authToken va
+    // vacio porque quien llama es el supervisor, no el trabajador.
+    acceptInvite: ({ uid, workspaceId, inviteId, approvedBySupervisor }) =>
+      acceptWorkerAppInviteImpl({
+        uid,
+        authToken: {},
+        workspaceId,
+        inviteId,
+        approvedBySupervisor
+      })
+  })
 );
 
 function safeMailFrom() {
