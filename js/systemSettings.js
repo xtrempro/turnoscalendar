@@ -38,7 +38,6 @@ import {
     deleteWorkspaceMember,
     getWorkspacePermissionState,
     isWorkspaceOwner,
-    setWorkspaceEstablishment,
     listWorkspaceMembersForPermissions,
     normalizeMenuPermissions,
     saveWorkspaceMemberPermissions
@@ -57,7 +56,8 @@ import {
 } from "./turnoColors.js";
 import {
     getActiveWorkspace,
-    sendSupervisorInvitationEmail
+    sendSupervisorInvitationEmail,
+    setWorkspaceEstablishment
 } from "./workspaces.js";
 import {
     showSupervisorInvitePermissionsDialog
@@ -1854,7 +1854,10 @@ function bindBackdrop(backdrop) {
             event.target === backdrop ||
             event.target.closest("[data-settings-close], [data-settings-discard]")
         ) {
-            if (await confirmDiscardSettings()) backdrop.remove();
+            if (await confirmDiscardSettings()) {
+                establishmentDraft = null;
+                backdrop.remove();
+            }
             return;
         }
 
@@ -2078,10 +2081,16 @@ function bindBackdrop(backdrop) {
 
                             if (activa) activa.establishment = establishmentDraft;
                         } catch (error) {
-                            console.warn(
-                                "No se pudo guardar el establecimiento.",
-                                error
+                            console.error(error);
+                            alert(
+                                "No se pudo guardar el establecimiento: " +
+                                (error?.message || "intentalo de nuevo") +
+                                ". El resto de los ajustes si se guardo."
                             );
+
+                            // Se corta antes de cerrar: si el modal cerrara, la
+                            // persona creeria que quedo guardado.
+                            return;
                         }
                     }
 
@@ -2132,6 +2141,7 @@ export function openSystemSettings(initialTab = activeTab) {
     }
 
     settingsDirty = false;
+    establishmentDraft = null;
 
     document
         .querySelector(".turn-change-dialog-backdrop[data-system-settings]")
