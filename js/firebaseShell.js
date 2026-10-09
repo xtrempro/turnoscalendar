@@ -1,3 +1,8 @@
+import {
+    establishmentName,
+    establishmentOptionsHTML,
+    normalizeEstablishment
+} from "./establishments.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { showConfirm, showPrompt } from "./dialogs.js";
 import { FIREBASE_CONFIG } from "./firebaseConfig.js";
@@ -1232,7 +1237,9 @@ function renderSignedInModal(backdrop) {
                     ${createWorkspaceFormOpen ? `
                         <input id="firebaseCreateWorkspaceName" type="text" placeholder="Nombre de la unidad (Ej: Unidad de Cuidados Intensivos)">
                         <input id="firebaseCreateSupervisorName" type="text" placeholder="Nombre del supervisor (pie de firma)">
-                        <input id="firebaseCreateHospitalName" type="text" placeholder="Nombre del hospital (pie de firma)">
+                        <select id="firebaseCreateEstablishment" class="create-workspace-select">
+                            ${establishmentOptionsHTML()}
+                        </select>
                     ` : ""}
                     <button class="primary-button" type="button" data-action="create-workspace">Crear unidad</button>
                 </div>
@@ -1671,12 +1678,16 @@ async function handleAction(action, backdrop, sourceButton = null) {
                 currentUser?.displayName ||
                 ""
             ).trim();
-            const hospitalName = String(
-                backdrop.querySelector("#firebaseCreateHospitalName")?.value || ""
-            ).trim();
+            // El establecimiento se guarda como campo de la unidad, no solo
+            // como linea del pie de firma: de el depende que dos unidades se
+            // reconozcan para pedirse el traslado de un trabajador.
+            const establishment = normalizeEstablishment(
+                backdrop.querySelector("#firebaseCreateEstablishment")?.value
+            );
+            const hospitalName = establishmentName(establishment);
 
             currentWorkspace =
-                await createWorkspace(currentUser, input?.value);
+                await createWorkspace(currentUser, input?.value, establishment);
             await options.onWorkspaceChange?.(null, {
                 skipViewRefresh: true
             });

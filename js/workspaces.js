@@ -1,3 +1,4 @@
+import { normalizeEstablishment } from "./establishments.js";
 import { getJSON, setJSON } from "./persistence.js";
 import {
     getFirebaseServices,
@@ -205,7 +206,7 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
     }
 }
 
-export async function createWorkspace(user, name) {
+export async function createWorkspace(user, name, establishment = "") {
     const cleanName = String(name || "").trim();
 
     if (!user) {
@@ -225,6 +226,9 @@ export async function createWorkspace(user, name) {
     const workspace = {
         id: workspaceRef.id,
         name: cleanName,
+        // Vacio cuando no es uno de la lista: asi nunca coincide con otro y la
+        // unidad simplemente no participa de la deteccion entre unidades.
+        establishment: normalizeEstablishment(establishment),
         ownerUid: user.uid,
         stateStorage: "entries-v1",
         replacementStorage: "records-shadow-v1",
