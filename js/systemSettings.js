@@ -2056,20 +2056,8 @@ function bindBackdrop(backdrop) {
             try {
                 preserveActiveDraft(backdrop);
                 if (isWorkspaceOwner()) {
-                    saveGradeHourConfig(gradeConfigDraft);
-                    saveManualHolidays(manualHolidayDraft);
-                    saveReplacementRequestConfig(
-                        replacementRequestConfigDraft ||
-                        getReplacementRequestConfig()
-                    );
-                    saveReportSignatureConfig(
-                        reportSignatureConfigDraft ||
-                        getReportSignatureConfig()
-                    );
-
-                    // El establecimiento vive en la unidad, no en la firma: de
-                    // el depende que otra unidad del mismo hospital pueda pedir
-                    // el traslado de un trabajador.
+                    // Primero lo unico que viaja al servidor. Si falla, se corta
+                    // sin haber guardado nada y el aviso puede decir la verdad.
                     if (establishmentDraft !== null && canEditEstablishment()) {
                         try {
                             await setWorkspaceEstablishment(
@@ -2085,16 +2073,28 @@ function bindBackdrop(backdrop) {
                             alert(
                                 "No se pudo guardar el establecimiento: " +
                                 (error?.message || "intentalo de nuevo") +
-                                ". El resto de los ajustes si se guardo."
+                                ". No se guardo ningun cambio."
                             );
 
-                            // Se corta antes de cerrar: si el modal cerrara, la
-                            // persona creeria que quedo guardado.
+                            // Sin cerrar: si el modal se fuera, la persona
+                            // creeria que quedo guardado.
                             return;
                         }
                     }
 
                     establishmentDraft = null;
+
+                    saveGradeHourConfig(gradeConfigDraft);
+                    saveManualHolidays(manualHolidayDraft);
+                    saveReplacementRequestConfig(
+                        replacementRequestConfigDraft ||
+                        getReplacementRequestConfig()
+                    );
+                    saveReportSignatureConfig(
+                        reportSignatureConfigDraft ||
+                        getReportSignatureConfig()
+                    );
+
                     saveTurnChangeConfig(
                         turnChangeConfigDraft ||
                         getTurnChangeConfig()
