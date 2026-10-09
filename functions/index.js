@@ -2272,6 +2272,29 @@ exports.notifyScheduleAttachmentUpdated = onCall(
   }
 );
 
+// Dos unidades del mismo establecimiento pueden pedirse el traslado de un
+// trabajador aunque no esten enlazadas. El enlace sigue haciendo falta para
+// buscar cobertura; esto es solo para traspasar gente.
+async function requireSameEstablishment(sourceWorkspaceId, targetWorkspaceId) {
+  const [origen, destino] = await Promise.all([
+    db.collection("workspaces").doc(sourceWorkspaceId).get(),
+    db.collection("workspaces").doc(targetWorkspaceId).get()
+  ]);
+  const uno = String(origen.data()?.establishment || "");
+  const otro = String(destino.data()?.establishment || "");
+
+  // Vacio no coincide con vacio. Sin esto, cualquier par de unidades que no
+  // declararon establecimiento podria pedirse trabajadores entre si.
+  if (!uno || uno !== otro) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Las unidades no estan enlazadas ni son del mismo establecimiento."
+    );
+  }
+
+  return uno;
+}
+
 async function requireAcceptedWorkspaceLink(
   linkId,
   sourceWorkspaceId,
@@ -4464,7 +4487,8 @@ const workerTransferDependencies = () => ({
   logger,
   serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
   requireWorkspaceProfileManager,
-  requireAcceptedWorkspaceLink
+  requireAcceptedWorkspaceLink,
+  requireSameEstablishment
 });
 
 // El enlace de la app de un trabajador transferido se muda a la unidad nueva

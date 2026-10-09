@@ -639,3 +639,61 @@ test("rechazar no toca el perfil de origen", async () => {
 
   assert.equal(db.documents.get(PERFILES).items, undefined);
 });
+
+// --- Traspaso entre unidades del mismo establecimiento ---
+//
+// Dos caminos llegan al mismo codigo: la unidad que transfiere a alguien y la
+// que pide a alguien de otra. Lo unico que se bifurca es quien puede pedirlo.
+
+test("sin enlace, autoriza compartir establecimiento", async () => {
+  const db = new FakeDb();
+  const establecimientos = [];
+  const { deps, calls } = dependencies(db, {
+    requireSameEstablishment: async (origen, destino) => {
+      establecimientos.push({ origen, destino });
+    }
+  });
+  const { linkId, ...sinEnlace } = DATOS;
+  const result = await createWorkerTransferRequestHandler(peticion(sinEnlace), deps);
+
+  assert.equal(result.status, PENDING);
+  assert.deepEqual(establecimientos, [{ origen: "w-origen", destino: "w-destino" }]);
+  // Y no se pide enlace, que es justo lo que estas unidades no tienen.
+  assert.deepEqual(calls.link, []);
+});
+
+test("con enlace, sigue mandando el enlace", async () => {
+  // El camino de siempre no cambia: no se consulta el establecimiento.
+  const db = new FakeDb();
+  const establecimientos = [];
+  const { deps, calls } = dependencies(db, {
+    requireSameEstablishment: async (origen, destino) => {
+      establecimientos.push({ origen, destino });
+    }
+  });
+
+  await createWorkerTransferRequestHandler(peticion(DATOS), deps);
+
+  assert.deepEqual(calls.link, [{ linkId: "l-1", target: "w-destino", source: "w-origen" }]);
+  assert.deepEqual(establecimientos, []);
+});
+
+test("sin enlace y sin establecimiento comun, no se transfiere", async () => {
+  const db = new FakeDb();
+  const { deps } = dependencies(db, {
+    requireSameEstablishment: async () => {
+      throw new HttpsError(
+        "failed-precondition",
+        "Las unidades no estan enlazadas ni son del mismo establecimiento."
+      );
+    }
+  });
+  const { linkId, ...sinEnlace } = DATOS;
+
+  await assert.rejects(
+    () => createWorkerTransferRequestHandler(peticion(sinEnlace), deps),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(db.documents.get(`${COLLECTION}/t-1`), undefined);
+});

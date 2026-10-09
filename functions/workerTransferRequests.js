@@ -1,6 +1,22 @@
 "use strict";
 
-// Transferir a un trabajador a OTRA unidad enlazada.
+// Transferir a un trabajador a OTRA unidad.
+//
+// Dos caminos llegan aqui y comparten TODO lo que sigue -que datos se copian,
+// los saldos de vacaciones, el vaciado del calendario en origen, la
+// inactivacion del perfil-: la unidad que transfiere a alguien, y la unidad que
+// pide a alguien de otra. Si manana cambia que se lleva, cambia para ambos.
+//
+// Lo unico que se bifurca es quien puede pedirlo:
+//
+//   - con enlace entre las unidades, como siempre;
+//   - sin enlace, si ambas declaran el MISMO establecimiento.
+//
+// El establecimiento alcanza porque hay doble control: quien pide puede
+// tambien crear el perfil de cero, y quien recibe la solicitud puede
+// rechazarla. Y ademas porque un trabajador debe estar vigente en una sola
+// unidad a la vez: si apareciera en dos, no se sabria quien lo califica por
+// que periodo. Buscar cobertura si exige enlace; eso no cambia.
 //
 // La unidad de origen elige la unidad destino y la fecha desde la que el
 // trabajador empieza alla. Queda una solicitud PENDIENTE; la unidad destino la
@@ -444,6 +460,7 @@ async function createWorkerTransferRequestHandler(request, dependencies) {
     serverTimestamp,
     requireWorkspaceProfileManager,
     requireAcceptedWorkspaceLink,
+    requireSameEstablishment,
     idFactory = defaultIdFactory
   } = dependencies;
   const { uid, workspaceId } = validateBasePayload(request, HttpsError);
@@ -453,10 +470,11 @@ async function createWorkerTransferRequestHandler(request, dependencies) {
   const startDate = cleanText(data.startDate, 10);
   const profile = cleanProfile(data.profile);
 
+  // linkId deja de ser obligatorio: sin el, la autorizacion la da compartir
+  // establecimiento.
   if (
     !targetWorkspaceId ||
     targetWorkspaceId === workspaceId ||
-    !linkId ||
     !profile.name ||
     !validISODate(startDate)
   ) {
@@ -469,7 +487,9 @@ async function createWorkerTransferRequestHandler(request, dependencies) {
 
   await Promise.all([
     requireWorkspaceProfileManager(workspaceId, uid, request.auth.token),
-    requireAcceptedWorkspaceLink(linkId, targetWorkspaceId, workspaceId)
+    linkId
+      ? requireAcceptedWorkspaceLink(linkId, targetWorkspaceId, workspaceId)
+      : requireSameEstablishment(workspaceId, targetWorkspaceId)
   ]);
 
   // Una transferencia en curso por trabajador: dos pendientes a unidades
