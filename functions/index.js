@@ -30,6 +30,9 @@ const {
   syncWorkerLinkEmailsHandler
 } = require("./workerLinkEmailSync");
 const {
+  findWorkerInEstablishmentHandler
+} = require("./workerEstablishmentLookup");
+const {
   cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
   notifyWorkerJoinRequestHandler,
@@ -2689,6 +2692,25 @@ exports.acceptWorkerAppInvite = onCall(
 // sesion, y crear una anonima solo para buscar reviviria las identidades
 // huerfanas que quitamos en la v322. La sesion nace al PEDIR acceso, no al
 // buscar. App Check sigue limitando quien puede llamar.
+
+// Al crear un perfil: avisa si ese RUT ya esta registrado en otra unidad del
+// mismo establecimiento, para poder pedir el traslado de su informacion en
+// vez de ingresarla de cero.
+//
+// Va por funcion y no por el cliente porque exige leer perfiles de unidades a
+// las que el supervisor no pertenece. Devuelve solo en que unidad esta, nunca
+// datos de la persona.
+exports.findWorkerInEstablishment = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 60
+  },
+  (request) => findWorkerInEstablishmentHandler(request, {
+    db,
+    HttpsError,
+    requireProfileManager: requireWorkspaceProfileManager
+  })
+);
 exports.findWorkerInvitesByRut = onCall(
   {
     enforceAppCheck: ENFORCE_APP_CHECK,
