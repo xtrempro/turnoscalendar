@@ -643,6 +643,11 @@ import {
     watchAcceptedOutgoingTransfers,
     watchIncomingTransferBalances
 } from "./workerTransfers.js";
+import {
+    findWorkerInEstablishment,
+    requestWorkerHandover,
+    resolveWorkerHandoverRequest
+} from "./workerHandovers.js";
 
 initPerformanceMonitor();
 installAppDialogs();
@@ -1201,6 +1206,174 @@ function updateProfileEmailHint() {
 function hideProfileEmailHint() {
     if (DOM.profileEmailHint) {
         DOM.profileEmailHint.hidden = true;
+    }
+}
+
+// Al ingresar a alguien, avisar si ese RUT ya esta registrado en otra unidad
+// del mismo establecimiento, para poder pedir el traspaso de su informacion
+// en vez de ingresarla de cero -y que no queden alla sus saldos de
+// vacaciones, que es lo que de verdad se pierde-.
+//
+// La consulta la responde el servidor, el unico que puede mirar perfiles de
+// una unidad a la que este supervisor no pertenece, y devuelve solo en que
+// unidad esta la persona: ni nombre ni correo
+// (functions/workerEstablishmentLookup.js).
+//
+// Es una ayuda, no un requisito: nada de esto bloquea el formulario.
+
+// Lo ultimo que se consulto, para no repetir la llamada en cada blur.
+let rutLookupState = { rut: "", unidades: [], asked: "" };
+
+function profileRutLookupAllowed() {
+    return isProfileEditing() &&
+        profileDraft.mode === PROFILE_MODE.CREATE &&
+        // Si el perfil se esta creando para ACEPTAR una transferencia, el
+        // traspaso ya esta en curso y ofrecerlo de nuevo solo confunde.
+        !pendingTransferIntake &&
+        !isPracticeWorkspace(getActiveWorkspace());
+}
+
+function hideProfileRutNotice() {
+    rutLookupState = { rut: "", unidades: [], asked: "" };
+
+    if (DOM.profileRutNotice) {
+        DOM.profileRutNotice.hidden = true;
+    }
+}
+
+function renderProfileRutNotice() {
+    if (!DOM.profileRutNotice || !DOM.profileRutNoticeText) return;
+
+    if (!rutLookupState.unidades.length) {
+        DOM.profileRutNotice.hidden = true;
+        return;
+    }
+
+    const nombres = rutLookupState.unidades
+        .map(unidad => unidad.workspaceName || "otra unidad")
+        .join(", ");
+    const yaPedido = `Ya se pidió el traspaso a ${rutLookupState.asked}. ` +
+        "Cuando acepten, llegará como una transferencia con sus saldos de " +
+        "vacaciones: no hace falta ingresarla de cero.";
+    const seOfrece = `Este RUT ya está registrado en ${nombres}, del mismo ` +
+        "establecimiento. Puedes pedir el traspaso de su información o " +
+        "ingresarla de cero.";
+
+    DOM.profileRutNoticeText.textContent = rutLookupState.asked
+        ? yaPedido
+        : seOfrece;
+
+    if (DOM.profileRutHandoverBtn) {
+        DOM.profileRutHandoverBtn.hidden = Boolean(rutLookupState.asked);
+    }
+
+    DOM.profileRutNotice.hidden = false;
+}
+
+async function checkRutInEstablishment() {
+    if (!profileRutLookupAllowed()) return;
+
+    const rut = String(DOM.profileRutInput.value || "").trim();
+
+    if (!rut || getRutValidationMessage(rut)) {
+        hideProfileRutNotice();
+        return;
+    }
+
+    if (rutLookupState.rut === rut) {
+        renderProfileRutNotice();
+        return;
+    }
+
+    try {
+        const { unidades } = await findWorkerInEstablishment(rut);
+
+        // Mientras respondia el servidor pudo cambiar lo que hay escrito.
+        if (String(DOM.profileRutInput.value || "").trim() !== rut) return;
+
+        rutLookupState = { rut, unidades, asked: "" };
+        renderProfileRutNotice();
+    } catch (error) {
+        // Sin aviso en pantalla: que esta ayuda falle no debe estorbar a
+        // quien solo quiere ingresar a una persona.
+        console.warn("No se pudo revisar el RUT en el establecimiento.", error);
+    }
+}
+
+// Pedirle a la otra unidad el traspaso.
+//
+// El pedido no mueve nada: cuando lo aceptan, esa unidad crea una
+// transferencia normal y de ahi en adelante todo es el camino de siempre.
+// Por eso la fecha la elige quien acepta: es su calendario el que se vacia.
+async function askWorkerHandover() {
+    if (!rutLookupState.unidades.length) return;
+
+    let elegida = rutLookupState.unidades[0];
+
+    if (rutLookupState.unidades.length > 1) {
+        const workspaceId = await showChoice(
+            "¿A qué unidad le pides el traspaso?",
+            {
+                title: "Pedir el traspaso",
+                confirmText: "Continuar",
+                choices: rutLookupState.unidades.map(unidad => ({
+                    value: unidad.workspaceId,
+                    label: unidad.workspaceName || unidad.workspaceId
+                }))
+            }
+        );
+
+        if (!workspaceId) return;
+
+        elegida = rutLookupState.unidades.find(
+            unidad => unidad.workspaceId === workspaceId
+        );
+    }
+
+    const nombreUnidad = elegida.workspaceName || "la otra unidad";
+    const rut = String(DOM.profileRutInput.value || "").trim();
+    const confirmado = await showConfirm(
+        `Se le pedirá a ${nombreUnidad} el traspaso de esta persona.\n\n` +
+        "Si aceptan, llegará como una transferencia: traerá sus saldos de " +
+        "vacaciones y su calendario allá se vaciará desde la fecha que ellos " +
+        "definan, porque es su calendario el que se vacía.\n\n" +
+        // No conviene invitar a hacer las dos cosas a la vez: si se ingresa de
+        // cero con el pedido en pie, al aceptarlo llega una transferencia de
+        // alguien que ya existe aquí.
+        "Si decides no esperar e ingresarla de cero, retira el pedido desde " +
+        "el menú Solicitudes.",
+        {
+            title: "Pedir el traspaso",
+            tone: "info",
+            confirmText: "Enviar el pedido"
+        }
+    );
+
+    if (!confirmado) return;
+
+    try {
+        await requestWorkerHandover({
+            sourceWorkspaceId: elegida.workspaceId,
+            sourceWorkspaceName: elegida.workspaceName || "",
+            rut,
+            requestedByName: getCurrentActor().name
+        });
+        rutLookupState = { ...rutLookupState, asked: nombreUnidad };
+        renderProfileRutNotice();
+        addAuditLog(
+            AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+            "Pidio el traspaso de un trabajador",
+            `Se pidió a ${nombreUnidad} el traspaso del trabajador con RUT ${rut}.`,
+            { rut, targetWorkspaceId: elegida.workspaceId }
+        );
+        await showAlert(
+            `El pedido quedó enviado a ${nombreUnidad}. Les llega un correo y lo ` +
+            "verán en el menú Solicitudes.",
+            { title: "Pedido enviado", tone: "success" }
+        );
+    } catch (error) {
+        console.warn("No se pudo pedir el traspaso.", error);
+        alert(error?.message || "No se pudo pedir el traspaso.");
     }
 }
 
@@ -6690,6 +6863,7 @@ function renderDashboardState() {
     DOM.profileEmailInput.value = data.email || "";
     syncEmailValidity(false);
     hideProfileEmailHint();
+    hideProfileRutNotice();
     DOM.profileRutInput.value = data.rut || "";
     syncRutValidity(false);
     DOM.profilePhoneInput.value = data.phone || "";
@@ -10936,6 +11110,44 @@ async function openWorkerTransferDialog(profile) {
         ? link.toWorkspaceId
         : link.fromWorkspaceId;
     const targetName = workspaceLinkDisplayName(link, workspace);
+    const requestId = await sendWorkerTransfer({
+        profile,
+        targetWorkspaceId,
+        targetName,
+        linkId
+    });
+
+    if (!requestId) return;
+
+    await showAlert(
+        `La solicitud quedó enviada. ${targetName} la verá en Solicitudes; ` +
+        `${profile.name} sigue activo aquí hasta que la acepten.`,
+        { title: "Solicitud enviada", tone: "success" }
+    );
+}
+
+// Pedir la fecha, confirmar y enviar la transferencia.
+//
+// Es la parte que comparten los DOS caminos que terminan transfiriendo a
+// alguien: la unidad que decide transferir a uno de sus trabajadores, y la
+// unidad que acepta el pedido de traspaso de otra del mismo establecimiento.
+// Que se lleva -los saldos de vacaciones, el vaciado del calendario de aqui,
+// la inactivacion del perfil, el cambio de unidad en la app- se decide una
+// sola vez y vale para los dos. Si manana cambia, cambia para ambos.
+//
+// linkId vacio es el caso sin enlace: ahi la autorizacion la da compartir
+// establecimiento, y eso lo comprueba el servidor.
+//
+// Devuelve el id de la transferencia creada, o vacio si se cancelo o fallo.
+// El aviso de exito lo da cada camino, porque no dicen lo mismo: uno avisa de
+// una solicitud que la otra unidad todavia no espera, y el otro responde a una
+// que pidieron ellos.
+async function sendWorkerTransfer({
+    profile,
+    targetWorkspaceId,
+    targetName,
+    linkId = ""
+}) {
     const startDate = await showPrompt(
         `¿Desde qué fecha comienza ${profile.name} en ${targetName}?`,
         {
@@ -10946,20 +11158,24 @@ async function openWorkerTransferDialog(profile) {
         }
     );
 
-    if (startDate === null) return;
+    if (startDate === null) return "";
 
     const startISO = normalizeStoredStart(String(startDate || ""));
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
         alert("Selecciona una fecha válida.");
-        return;
+        return "";
     }
 
     const confirmado = await showConfirm(
         `Se enviará a ${targetName} la solicitud para transferir a ${profile.name} desde el ${formatDisplayDate(startISO)}.\n\n` +
         "Cuando la otra unidad la acepte, su calendario en esta unidad se vaciará desde esa fecha y su perfil quedará inactivo. " +
-        "Sus saldos de vacaciones pasan a la nueva unidad y su app se cambia a ella el día en que empieza. " +
-        "Podrá seguir haciendo turnos aquí como trabajador de una unidad enlazada.",
+        "Sus saldos de vacaciones pasan a la nueva unidad y su app se cambia a ella el día en que empieza." +
+        // Seguir haciendo turnos aqui solo es cierto si hay enlace: sin el,
+        // las unidades solo pueden traspasarse gente, no cubrirse turnos.
+        (linkId
+            ? " Podrá seguir haciendo turnos aquí como trabajador de una unidad enlazada."
+            : ""),
         {
             title: "Transferir a otra unidad",
             tone: "warning",
@@ -10967,12 +11183,11 @@ async function openWorkerTransferDialog(profile) {
         }
     );
 
-    if (!confirmado) return;
+    if (!confirmado) return "";
 
     try {
         const leaveBalances = await transferLeaveBalances(profile.name, startISO);
-
-        await requestWorkerTransfer({
+        const resultado = await requestWorkerTransfer({
             targetWorkspaceId,
             targetWorkspaceName: targetName,
             linkId,
@@ -10993,21 +11208,95 @@ async function openWorkerTransferDialog(profile) {
             },
             requestedByName: getCurrentActor().name
         });
+
         addAuditLog(
             AUDIT_CATEGORY.COLLABORATOR_UPDATED,
             "Solicito transferencia a otra unidad",
             `${profile.name}: solicitud de transferencia a ${targetName} desde el ${formatDisplayDate(startISO)}.`,
             { profile: profile.name, targetWorkspaceId, startDate: startISO }
         );
-        await showAlert(
-            `La solicitud quedó enviada. ${targetName} la verá en Unidades enlazadas; ${profile.name} sigue activo aquí hasta que la acepten.`,
-            { title: "Solicitud enviada", tone: "success" }
-        );
+
+        return String(resultado?.requestId || "");
     } catch (error) {
         console.warn("No se pudo solicitar la transferencia.", error);
         alert(error?.message || "No se pudo solicitar la transferencia.");
+        return "";
     }
 }
+
+// Aceptar el pedido de traspaso de otra unidad del establecimiento.
+//
+// Aceptar ES crear la transferencia, con el mismo codigo de arriba. El pedido
+// solo queda anotado al final, apuntando a esa transferencia: el servidor no
+// deja aceptar un pedido sin ella, porque entonces nada viajaria y al otro
+// lado quedarian esperando a alguien que nunca llega.
+//
+// El pedido trae el RUT y no el nombre: la busqueda que lo origina no devuelve
+// datos de la persona. Aqui se resuelve contra los perfiles propios.
+async function startWorkerHandover(detail) {
+    const rut = normalizeRut(detail?.rut);
+    const targetWorkspaceId = String(detail?.requestingWorkspaceId || "");
+    const targetName = String(detail?.requestingWorkspaceName || "") ||
+        "la otra unidad";
+    const handoverId = String(detail?.requestId || "");
+
+    if (!rut || !targetWorkspaceId || !handoverId) return;
+
+    const profile = getProfiles().find(item =>
+        normalizeRut(item.rut) === rut
+    );
+
+    if (!profile) {
+        await showAlert(
+            `Ningún perfil de esta unidad tiene el RUT ${formatRut(rut)}. ` +
+            "Puede que ya lo hayas eliminado; en ese caso rechaza el pedido.",
+            { title: "Pedido de traspaso", tone: "warning" }
+        );
+        return;
+    }
+
+    const transferRequestId = await sendWorkerTransfer({
+        profile,
+        targetWorkspaceId,
+        targetName,
+        // Sin enlace: lo que autoriza es compartir establecimiento.
+        linkId: ""
+    });
+
+    if (!transferRequestId) return;
+
+    try {
+        await resolveWorkerHandoverRequest({
+            requestId: handoverId,
+            approve: true,
+            transferRequestId
+        });
+    } catch (error) {
+        // La transferencia ya existe, que es lo que importa, pero el pedido
+        // sigue pendiente. Callarlo dejaria dos tarjetas contando historias
+        // distintas.
+        console.warn("No se pudo cerrar el pedido de traspaso.", error);
+        await showAlert(
+            "La transferencia quedó enviada, pero el pedido no alcanzó a " +
+            "marcarse como aceptado. Vuelve a aceptarlo desde Solicitudes.",
+            { title: "Pedido de traspaso", tone: "warning" }
+        );
+        return;
+    }
+
+    await showAlert(
+        `${targetName} recibirá la transferencia de ${profile.name}. ` +
+        "Cuando la acepten, su calendario aquí se vaciará desde la fecha que " +
+        "elegiste y su perfil quedará inactivo.",
+        { title: "Pedido aceptado", tone: "success" }
+    );
+    window.dispatchEvent(new CustomEvent("proturnos:workerRequestsChanged"));
+}
+
+// El panel de Solicitudes pide empezar el traspaso; los perfiles viven aqui.
+window.addEventListener("proturnos:startWorkerHandover", event => {
+    startWorkerHandover(event.detail);
+});
 
 // Los saldos que envio la unidad de origen, si son de este año.
 function transferredLeaveBalances(solicitud = {}) {
@@ -15178,12 +15467,18 @@ function bindProfileForm() {
         DOM.profileRutInput.value = formatted;
         profileDraft.rut = formatted;
         syncRutValidity(false);
+        hideProfileRutNotice();
     };
 
     DOM.profileRutInput.onblur = () => {
         if (!isProfileEditing()) return;
         syncRutValidity(true);
+        checkRutInEstablishment();
     };
+
+    if (DOM.profileRutHandoverBtn) {
+        DOM.profileRutHandoverBtn.onclick = askWorkerHandover;
+    }
 
     DOM.profilePhoneInput.oninput = () => {
         if (!isProfileEditing()) return;

@@ -690,6 +690,21 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // Pedir a otra unidad del establecimiento el traspaso de un trabajador.
+    // Lo crea y lo responde SOLO el servidor
+    // (functions/workerHandoverRequests.js), que comprueba el permiso y que
+    // las unidades compartan establecimiento. Las dos lo leen: la que pidio
+    // para saber en que quedo, y la que tiene al trabajador para responderlo.
+    //
+    // El documento guarda el RUT y no el nombre, a proposito: la busqueda que
+    // lo origina no devuelve datos de la persona, y esta regla permite leerlo
+    // a supervisores de otra unidad.
+    match /workerHandoverRequests/{requestId} {
+      allow read: if canManageProfiles(resource.data.sourceWorkspaceId) ||
+        canManageProfiles(resource.data.requestingWorkspaceId);
+      allow create, update, delete: if false;
+    }
+
     match /workerAppEmailInvites/{emailKey}/items/{inviteId} {
       // Un trabajador solo puede leer las invitaciones dirigidas a SU propio
       // correo (la clave del documento es el email normalizado en minusculas).

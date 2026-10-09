@@ -33,6 +33,12 @@ const {
   findWorkerInEstablishmentHandler
 } = require("./workerEstablishmentLookup");
 const {
+  cancelWorkerHandoverRequestHandler,
+  notifyWorkerHandoverRequestHandler,
+  requestWorkerHandoverHandler,
+  resolveWorkerHandoverRequestHandler
+} = require("./workerHandoverRequests");
+const {
   cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
   notifyWorkerJoinRequestHandler,
@@ -4582,6 +4588,72 @@ exports.claimWorkerTransferBalances = onCall(
     request,
     workerTransferDependencies()
   )
+);
+
+// Pedir a otra unidad del establecimiento el traspaso de un trabajador: la
+// direccion contraria de las transferencias de arriba. Un pedido es SOLO el
+// pedido; cuando el origen lo acepta crea una transferencia normal con el
+// codigo de arriba, y de ahi en adelante todo es identico. Ver el encabezado
+// de functions/workerHandoverRequests.js.
+const workerHandoverDependencies = () => ({
+  db,
+  HttpsError,
+  requireProfileManager: requireWorkspaceProfileManager,
+  requireSameEstablishment
+});
+
+exports.requestWorkerHandover = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => (rejectPracticeWorkspace(
+    request.data?.workspaceId,
+    request.data?.sourceWorkspaceId
+  ), requestWorkerHandoverHandler(
+    request,
+    workerHandoverDependencies()
+  ))
+);
+
+exports.resolveWorkerHandoverRequest = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => resolveWorkerHandoverRequestHandler(
+    request,
+    workerHandoverDependencies()
+  )
+);
+
+exports.cancelWorkerHandoverRequest = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => cancelWorkerHandoverRequestHandler(
+    request,
+    workerHandoverDependencies()
+  )
+);
+
+// Avisarle por correo a la unidad que tiene al trabajador, por lo mismo que
+// en las solicitudes de acceso: los supervisores no tienen push, y al otro
+// lado hay alguien esperando para terminar de ingresar a una persona.
+exports.notifyWorkerHandoverRequest = onDocumentCreated(
+  {
+    document: "workerHandoverRequests/{requestId}",
+    timeoutSeconds: 60,
+    memory: "256MiB",
+    secrets: [RESEND_API_KEY]
+  },
+  (event) => notifyWorkerHandoverRequestHandler(event, {
+    db,
+    canManageProfiles: memberCanManageProfiles,
+    getUserEmail: async (uid) => {
+      try {
+        const user = await admin.auth().getUser(uid);
+
+        return user.email || "";
+      } catch (_error) {
+        return "";
+      }
+    },
+    sendEmail: sendResendEmail,
+    logger
+  })
 );
 
 // Ausencias de las unidades enlazadas, para respaldar el contrato de un

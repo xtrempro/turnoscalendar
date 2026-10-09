@@ -39,6 +39,12 @@ import {
     listWorkerTransferRequests,
     respondWorkerTransfer
 } from "./workerTransfers.js";
+import { formatRut } from "./rutUtils.js";
+import {
+    cancelWorkerHandoverRequest,
+    listWorkerHandoverRequests,
+    resolveWorkerHandoverRequest
+} from "./workerHandovers.js";
 import {
     formatInviteDate,
     showSupervisorInvitePermissionsDialog,
@@ -102,6 +108,7 @@ const REQUEST_TYPE_LABELS = {
     worker_transfer: "Transferencia de Trabajador",
     supervisor_invite: "Acceso Supervisor",
     worker_join: "Acceso a la App",
+    worker_handover: "Traspaso de Trabajador",
     unknown: "Solicitud"
 };
 
@@ -285,6 +292,18 @@ function isSupervisorInviteRequest(request = {}) {
 // (functions/workerJoinRequests.js).
 function isWorkerJoinRequest(request = {}) {
     return request.kind === "worker_join";
+}
+
+// Pedido de traspaso entre unidades del mismo establecimiento
+// (functions/workerHandoverRequests.js). Tiene dos caras, y conviene no
+// mezclarlas: el que ESTA unidad recibe se puede aceptar -y aceptarlo es crear
+// la transferencia-, y el que esta unidad pidio solo se informa y se retira.
+function isWorkerHandoverRequest(request = {}) {
+    return request.kind === "worker_handover";
+}
+
+function isSentWorkerHandoverRequest(request = {}) {
+    return request.kind === "worker_handover_sent";
 }
 
 function isReplacementRequest(request = {}) {
@@ -1315,6 +1334,15 @@ function requestDetailsHTML(request) {
         return pieces.join(" | ");
     }
 
+    if (isWorkerHandoverRequest(request) || isSentWorkerHandoverRequest(request)) {
+        pieces.push(isWorkerHandoverRequest(request)
+            ? `La pide: ${request.otherWorkspaceName}`
+            : `Se lo pediste a: ${request.otherWorkspaceName}`);
+        pieces.push(`RUT: ${request.workerRut}`);
+
+        return pieces.join(" | ");
+    }
+
     if (isWorkspaceLinkRequest(request)) {
         pieces.push(`Unidad solicitante: ${request.fromWorkspaceName || "Sin nombre"}`);
 
@@ -1451,7 +1479,8 @@ function requestDetailsHTML(request) {
 
 function requestCardHTML(request) {
     const pending = request.status === "pending" &&
-        !isReplacementRequest(request);
+        !isReplacementRequest(request) &&
+        !isSentWorkerHandoverRequest(request);
     const title = isWorkspaceLinkRequest(request)
         ? request.fromWorkspaceName || "Unidad solicitante"
         : isSupervisorInviteRequest(request)
@@ -1513,6 +1542,16 @@ function requestCardHTML(request) {
                     <div class="worker-request-actions">
                         <button class="secondary-button secondary-button--small" type="button" data-worker-request-action="cancel-replacement" data-request-id="${escapeHTML(request.id)}">
                             Anular solicitud
+                        </button>
+                    </div>
+                `
+                : ""}
+
+            ${isSentWorkerHandoverRequest(request) && request.status === "pending"
+                ? `
+                    <div class="worker-request-actions">
+                        <button class="secondary-button secondary-button--small" type="button" data-worker-request-action="cancel-handover" data-request-id="${escapeHTML(request.id)}">
+                            Retirar el pedido
                         </button>
                     </div>
                 `
@@ -1595,6 +1634,124 @@ export async function refreshWorkerRequestsNavBadge() {
 
 // Transferencias de trabajadores hacia ESTA unidad. Las que esta unidad envio
 // se ven en Unidades enlazadas; aqui solo las que le toca responder.
+// El pedido guarda el RUT y NO el nombre: la busqueda que lo origina no
+// devuelve datos de la persona. Quien lo recibe si puede nombrarla, porque el
+// perfil es suyo; y quien lo pidio tambien, si ya lo creo mientras esperaba.
+function handoverProfileName(rut) {
+    const buscado = normalizeRut(rut);
+
+    if (!buscado) return "";
+
+    const profile = getProfiles().find(item =>
+        normalizeRut(item.rut) === buscado
+    );
+
+    return profile?.name || "";
+}
+
+async function getWorkerHandoverPanelRequests() {
+    const activeWorkspace = getActiveWorkspace();
+
+    if (
+        !isFirebaseConfigured() ||
+        !getCurrentFirebaseUser() ||
+        !activeWorkspace?.id
+    ) {
+        return [];
+    }
+
+    try {
+        const pedidos = await listWorkerHandoverRequests();
+
+        return pedidos
+            .filter(item =>
+                ["pending", "accepted", "rejected"].includes(item.status)
+            )
+            .map(item => {
+                const recibido =
+                    item.sourceWorkspaceId === activeWorkspace.id;
+                const nombre = handoverProfileName(item.rut);
+                const otra = recibido
+                    ? item.requestingWorkspaceName || "Otra unidad"
+                    : item.sourceWorkspaceName || "La otra unidad";
+                const rutLegible = formatRut(item.rut) || item.rut;
+
+                return {
+                    kind: recibido ? "worker_handover" : "worker_handover_sent",
+                    id: `worker_handover:${item.id}`,
+                    handover: item,
+                    type: "worker_handover",
+                    status: item.status,
+                    profile: nombre || `RUT ${rutLegible}`,
+                    workerRut: rutLegible,
+                    otherWorkspaceName: otra,
+                    note: handoverNote(item.status, recibido, otra),
+                    createdAt: timestampISO(
+                        item.createdAt || item.updatedAt || new Date()
+                    )
+                };
+            });
+    } catch (error) {
+        console.warn("No se pudieron cargar los pedidos de traspaso.", error);
+        return [];
+    }
+}
+
+function handoverNote(status, recibido, otra) {
+    if (status === "pending") {
+        return recibido
+            ? "Al aceptar eliges la fecha y se envía la transferencia con sus " +
+                "saldos de vacaciones."
+            : `${otra} todavía no responde. Si decides ingresar a la persona ` +
+                "de cero, retira el pedido: al aceptarlo llegaría una " +
+                "transferencia de alguien que ya existe aquí.";
+    }
+
+    if (status === "accepted" && !recibido) {
+        return "Aceptaron: la transferencia llega como una solicitud en esta " +
+            "misma lista.";
+    }
+
+    if (status === "rejected" && !recibido) {
+        return "No lo aceptaron. Puedes ingresar a la persona de cero.";
+    }
+
+    return "";
+}
+
+async function acceptWorkerHandoverRequest(request) {
+    // Aceptar es crear la transferencia, y eso vive en main.js junto a los
+    // perfiles: el mismo camino que cuando esta unidad transfiere por su
+    // cuenta, para que lo que se lleva sea identico en los dos.
+    window.dispatchEvent(new CustomEvent("proturnos:startWorkerHandover", {
+        detail: {
+            requestId: request.handover.id,
+            rut: request.handover.rut,
+            requestingWorkspaceId: request.handover.requestingWorkspaceId,
+            requestingWorkspaceName: request.handover.requestingWorkspaceName
+        }
+    }));
+}
+
+async function rejectWorkerHandoverRequest(request) {
+    const confirmado = await showConfirm(
+        `¿Rechazas el pedido de ${request.otherWorkspaceName}?`,
+        {
+            title: "Rechazar el pedido de traspaso",
+            confirmText: "Rechazar",
+            cancelText: "Volver",
+            destructive: true
+        }
+    );
+
+    if (!confirmado) return;
+
+    await resolveWorkerHandoverRequest({
+        requestId: request.handover.id,
+        approve: false
+    });
+}
+
 async function getWorkerTransferPanelRequests() {
     const activeWorkspace = getActiveWorkspace();
 
@@ -2415,8 +2572,10 @@ export async function renderWorkerRequestsPanel() {
     const supervisorInviteRequests =
         await getSupervisorInviteRequests();
     const workerJoinRequests = await getWorkerJoinRequests();
+    const handoverRequests = await getWorkerHandoverPanelRequests();
     const allRequests = [
         ...workerJoinRequests,
+        ...handoverRequests,
         ...supervisorInviteRequests,
         ...linkRequests,
         ...transferRequests,
@@ -2548,6 +2707,35 @@ export async function renderWorkerRequestsPanel() {
                 return;
             }
 
+            if (action === "cancel-handover") {
+                const confirmed = await showConfirm(
+                    `¿Retiras el pedido de traspaso que le hiciste a ${request.otherWorkspaceName}?`,
+                    {
+                        title: "Retirar el pedido",
+                        confirmText: "Retirar",
+                        cancelText: "Volver",
+                        destructive: true
+                    }
+                );
+
+                if (!confirmed) return;
+
+                button.disabled = true;
+
+                try {
+                    await cancelWorkerHandoverRequest(request.handover.id);
+                } catch (error) {
+                    console.warn("No se pudo retirar el pedido.", error);
+                    alert(error?.message || "No se pudo retirar el pedido.");
+                }
+
+                await renderWorkerRequestsPanel();
+                window.dispatchEvent(
+                    new CustomEvent("proturnos:workerRequestsChanged")
+                );
+                return;
+            }
+
             if (action === "view-calendar") {
                 window.dispatchEvent(
                     new CustomEvent("proturnos:viewWorkerRequestInCalendar", {
@@ -2582,6 +2770,12 @@ export async function renderWorkerRequestsPanel() {
                     await approveSupervisorInviteRequest(request);
                 } else {
                     await rejectSupervisorInviteRequest(request);
+                }
+            } else if (isWorkerHandoverRequest(request)) {
+                if (accepting) {
+                    await acceptWorkerHandoverRequest(request);
+                } else {
+                    await rejectWorkerHandoverRequest(request);
                 }
             } else if (isWorkerJoinRequest(request)) {
                 await resolveWorkerJoinRequestFromPanel(request, accepting);

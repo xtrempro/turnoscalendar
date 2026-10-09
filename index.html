@@ -400,6 +400,16 @@
                                 <input id="profileRutField" type="text" required>
                             </label>
 
+                            <!-- Ese RUT ya esta registrado en otra unidad del
+                                 establecimiento. Avisa sin bloquear: ingresarlo de
+                                 cero sigue siendo valido. -->
+                            <div id="profileRutNotice" class="profile-rut-notice" role="status" hidden>
+                                <p id="profileRutNoticeText" class="profile-rut-notice__text"></p>
+                                <div class="profile-rut-notice__actions">
+                                    <button id="profileRutHandoverBtn" type="button" class="secondary-button">Pedir el traspaso de su información</button>
+                                </div>
+                            </div>
+
                             <label class="metric-row metric-row--field">
                                 <span class="metric-label">Celular:</span>
                                 <span class="phone-prefix-field">

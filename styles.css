@@ -5811,6 +5811,42 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
     border-bottom-color: #fff;
 }
 
+/* Aviso bajo el RUT: esa persona ya esta registrada en otra unidad del
+   establecimiento. No es un error -ingresarla de cero sigue siendo valido-,
+   asi que avisa sin bloquear el formulario ni pintarse de rojo. */
+.profile-rut-notice {
+    display: grid;
+    gap: 8px;
+    margin: 2px 0 10px;
+    padding: 10px 12px;
+    border: 1px solid #f0c674;
+    border-left: 4px solid #e0a106;
+    border-radius: 10px;
+    background: #fff9ec;
+    color: #4a3a12;
+    font-size: 0.82rem;
+    line-height: 1.35;
+}
+
+.profile-rut-notice[hidden] {
+    display: none;
+}
+
+.profile-rut-notice__text {
+    margin: 0;
+}
+
+.profile-rut-notice__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.profile-rut-notice__actions button {
+    font-size: 0.78rem;
+    padding: 6px 10px;
+}
+
 .metric-input input {
     max-width: none;
     padding: 10px 12px;
