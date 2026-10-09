@@ -39,6 +39,9 @@ const {
   resolveWorkerHandoverRequestHandler
 } = require("./workerHandoverRequests");
 const {
+  notifyWorkerUnitChangeHandler
+} = require("./workerUnitChangeNotice");
+const {
   cancelWorkerJoinRequestHandler,
   findWorkerInvitesByRutHandler,
   notifyWorkerJoinRequestHandler,
@@ -2650,6 +2653,38 @@ exports.syncWorkerLinkEmails = onDocumentWritten(
     db,
     profilesFromState,
     serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    logger
+  })
+);
+
+
+// Un trabajador se enlazo en otra unidad por su cuenta: avisarle a la que se
+// quedo con su perfil activo, que si no no se entera de nada.
+//
+// Solo avisa cuando el enlace ANTERIOR sigue activo, y por eso una
+// transferencia no lo dispara: ahi el enlace viejo queda en "transferred" en
+// el mismo lote, y ese camino ya inactiva el perfil por su cuenta. Ver el
+// encabezado de functions/workerUnitChangeNotice.js.
+exports.notifyWorkerUnitChange = onDocumentWritten(
+  {
+    document: "users/{uid}/workerLinks/{workspaceId}",
+    timeoutSeconds: 120,
+    memory: "256MiB",
+    secrets: [RESEND_API_KEY]
+  },
+  (event) => notifyWorkerUnitChangeHandler(event, {
+    db,
+    canManageProfiles: memberCanManageProfiles,
+    getUserEmail: async (uid) => {
+      try {
+        const user = await admin.auth().getUser(uid);
+
+        return user.email || "";
+      } catch (_error) {
+        return "";
+      }
+    },
+    sendEmail: sendResendEmail,
     logger
   })
 );

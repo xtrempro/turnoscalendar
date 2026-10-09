@@ -153,7 +153,11 @@ test("con una sola invitacion no se dice cual es la unidad", async () => {
   assert.ok(!texto.includes("ALAN"), "ni el nombre del perfil");
 });
 
-test("con varias invitaciones si se nombran, para poder elegir", async () => {
+test("con varias invitaciones se siguen nombrando, por las app ya instaladas", async () => {
+  // La app nueva ya no pregunta a que unidad entrar -se toma la invitacion mas
+  // reciente-, pero las instaladas si: muestran este listado y mandan la unidad
+  // elegida. Si dejara de venir, se quedarian con un selector vacio y sin
+  // salida. Se puede quitar cuando ya nadie use una version con selector.
   const dosUnidades = [
     UNIDADES[0],
     {
@@ -213,6 +217,108 @@ test("sin unidad, pedir acceso resuelve la unica invitacion", async () => {
   assert.equal(resultado.status, "pending");
   assert.equal(db.escrituras[0].data.workspaceId, "ws-imagenologia");
   assert.equal(db.escrituras[0].data.inviteId, "inv-secreto-123");
+});
+
+// Dos unidades con invitacion pendiente para el mismo RUT, con fechas.
+function conDosInvitaciones(fechaImagenologia, fechaUrgencias) {
+  return [
+    {
+      ...UNIDADES[0],
+      invites: [
+        {
+          id: "inv-imagenologia",
+          data: {
+            profileRut: "178166328",
+            status: "pending",
+            profileName: "ALAN PLAZA",
+            createdAt: fechaImagenologia
+          }
+        }
+      ]
+    },
+    {
+      ...UNIDADES[1],
+      invites: [
+        {
+          id: "inv-urgencias",
+          data: {
+            profileRut: "178166328",
+            status: "pending",
+            profileName: "ALAN PLAZA",
+            createdAt: fechaUrgencias
+          }
+        }
+      ]
+    }
+  ];
+}
+
+test("con varias invitaciones, pedir acceso toma la mas reciente", async () => {
+  // Es la de donde lo acaban de invitar. Quien trabajo en varios sitios puede
+  // arrastrar invitaciones viejas que nunca uso, y antes esto fallaba
+  // pidiendole elegir entre nombres de unidades que ya no son suyas.
+  const db = fakeDb(conDosInvitaciones(
+    "2026-01-10T00:00:00.000Z",
+    "2026-03-20T00:00:00.000Z"
+  ));
+  const resultado = await requestWorkerJoinHandler(
+    { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+    { db, HttpsError }
+  );
+
+  assert.equal(resultado.status, "pending");
+  assert.equal(db.escrituras[0].data.workspaceId, "ws-urgencias");
+  assert.equal(db.escrituras[0].data.inviteId, "inv-urgencias");
+});
+
+test("la mas reciente no depende del orden en que llegan las unidades", async () => {
+  const db = fakeDb(conDosInvitaciones(
+    "2026-05-01T00:00:00.000Z",
+    "2026-02-01T00:00:00.000Z"
+  ));
+
+  await requestWorkerJoinHandler(
+    { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+    { db, HttpsError }
+  );
+
+  assert.equal(db.escrituras[0].data.workspaceId, "ws-imagenologia");
+});
+
+test("dos invitaciones del mismo instante eligen siempre la misma", async () => {
+  // Sin desempate, el resultado quedaria a merced del orden en que Firestore
+  // devolvio los documentos: a veces una unidad y a veces la otra.
+  const misma = "2026-04-04T00:00:00.000Z";
+  const elegidas = [];
+
+  for (const unidades of [
+    conDosInvitaciones(misma, misma),
+    [...conDosInvitaciones(misma, misma)].reverse()
+  ]) {
+    const db = fakeDb(unidades);
+
+    await requestWorkerJoinHandler(
+      { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+      { db, HttpsError }
+    );
+
+    elegidas.push(db.escrituras[0].data.inviteId);
+  }
+
+  assert.equal(elegidas[0], elegidas[1]);
+});
+
+test("una invitacion sin fecha no le gana a una fechada", async () => {
+  // Las invitaciones viejas, de antes de que se guardara createdAt, no deben
+  // ganarle a la que acaban de enviar.
+  const db = fakeDb(conDosInvitaciones(undefined, "2026-02-01T00:00:00.000Z"));
+
+  await requestWorkerJoinHandler(
+    { auth: { uid: "uid-1" }, data: { rut: "178166328" } },
+    { db, HttpsError }
+  );
+
+  assert.equal(db.escrituras[0].data.workspaceId, "ws-urgencias");
 });
 
 test("un RUT incompleto no dispara la busqueda", async () => {

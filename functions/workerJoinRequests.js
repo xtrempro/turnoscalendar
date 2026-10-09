@@ -85,12 +85,24 @@ async function findInvitesByRut(db, rut) {
         workspaceId: workspaceDoc.id,
         workspaceName: cleanText(workspace.name || workspace.workspaceName, 160),
         inviteId: inviteDoc.id,
-        profileName: cleanText(invite.profileName, 160)
+        profileName: cleanText(invite.profileName, 160),
+        createdAtMs: millisFrom(invite.createdAt) ||
+          millisFrom(invite.createdAtISO)
       });
     }
   }
 
-  return encontradas;
+  // De la mas reciente a la mas vieja. Es el orden que decide a cual se le pide
+  // acceso cuando la persona no elige: dentro de una unidad solo hay una
+  // invitacion pendiente por perfil, asi que varias siempre son unidades
+  // distintas, y la ultima es la de donde la acaban de invitar.
+  //
+  // El id desempata para que el resultado no dependa del orden en que llegaron
+  // los documentos: dos invitaciones del mismo instante elegirian al azar.
+  return encontradas.sort((uno, otro) =>
+    otro.createdAtMs - uno.createdAtMs ||
+    uno.inviteId.localeCompare(otro.inviteId)
+  );
 }
 
 // 1) Buscar. Con UNA sola invitacion no se devuelve ni el nombre de la unidad.
@@ -146,18 +158,26 @@ async function requestWorkerJoinHandler(request, { db, HttpsError }) {
   // invito, y al supervisor le llegaria una solicitud con pinta de legitima.
   const encontradas = await findInvitesByRut(db, rut);
 
-  // Sin unidad: es el caso de una sola invitacion, donde la persona no tuvo que
-  // elegir nada y el servidor nunca le dijo cual era. La resuelve aqui.
+  // Sin unidad: la persona no eligio, y con una sola invitacion el servidor
+  // nunca le dijo cual era. Se resuelve aqui, y si hay varias se toma la MAS
+  // RECIENTE (findInvitesByRut ya las devuelve en ese orden).
+  //
+  // Antes esto fallaba pidiendole elegir. Tomar la ultima es lo que de verdad
+  // quiere quien acaba de cambiarse de unidad: alguien que trabajo en tres
+  // sitios puede arrastrar invitaciones viejas que nunca uso, y hacerle elegir
+  // entre ellas lo obliga a leer nombres de unidades que ya no son suyas. Si
+  // se equivoco, el supervisor que no lo esperaba rechaza la solicitud y puede
+  // reintentar; la cancelacion por RUT sigue estando para eso.
   const invitacion = workspaceId
     ? encontradas.find((item) => item.workspaceId === workspaceId)
-    : (encontradas.length === 1 ? encontradas[0] : null);
+    : (encontradas[0] || null);
 
   if (!invitacion) {
     throw new HttpsError(
       "permission-denied",
-      encontradas.length > 1
-        ? "Elige a que unidad quieres pedir acceso."
-        : "No encontramos una invitacion pendiente para ese RUT en esa unidad."
+      workspaceId
+        ? "No encontramos una invitacion pendiente para ese RUT en esa unidad."
+        : "No encontramos una invitacion pendiente para ese RUT."
     );
   }
 
