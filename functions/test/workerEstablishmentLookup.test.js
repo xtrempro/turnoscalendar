@@ -2,7 +2,8 @@
 
 // Detectar que un RUT ya esta registrado en otra unidad del mismo
 // establecimiento. Lo que estas pruebas protegen: que no devuelva datos de
-// personas, y que no mire unidades que no corresponden.
+// personas, que no mire unidades que no corresponden, y que lea los perfiles
+// como estan guardados de verdad y no solo en su forma mas simple.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -19,18 +20,28 @@ class HttpsError extends Error {
   }
 }
 
-// Doble de Firestore: unidades, y los perfiles de cada una guardados como la
-// entrada "profiles" del modulo profile.
+// Doble de Firestore con el estado del workspace tal como lo escribe el
+// cliente: una base compacta en "chunks" y, encima, una entrada por clave en
+// "entries" que puede traer parches por elemento.
+//
+// Cada unidad del arreglo acepta:
+//   base  -> lista de perfiles del volcado completo (va a los chunks)
+//   entry -> el documento de la entrada "profiles", tal cual
 function fakeDb(unidades) {
-  function entradasDe(unidad) {
+  function chunksSnap(unidad, moduleId) {
+    if (moduleId !== "profile" || !unidad.base) return { docs: [] };
+
+    // El estado es un mapa clave -> JSON en texto, partido en trozos.
+    const texto = JSON.stringify({ profiles: JSON.stringify(unidad.base) });
+    const corte = Math.ceil(texto.length / 2);
+
+    // Devueltos al reves a proposito: el lector los ordena por index, y si
+    // dejara de hacerlo el JSON quedaria partido y no se leeria ningun perfil.
     return {
-      where: (campo, _op, valor) => ({
-        get: async () => ({
-          docs: (unidad.entries || [])
-            .filter((item) => item[campo] === valor)
-            .map((item) => ({ id: item.id || "e1", data: () => item }))
-        })
-      })
+      docs: [
+        { id: "c2", data: () => ({ index: 1, text: texto.slice(corte) }) },
+        { id: "c1", data: () => ({ index: 0, text: texto.slice(0, corte) }) }
+      ]
     };
   }
 
@@ -40,16 +51,32 @@ function fakeDb(unidades) {
         exists: true,
         data: () => ({ name: unidad.name, establishment: unidad.establishment })
       }),
-      collection: () => ({
-        doc: () => ({ collection: () => entradasDe(unidad) })
-      })
+      collection: (nombre) => {
+        assert.equal(nombre, "stateModules");
+
+        return {
+          doc: (moduleId) => ({
+            collection: (sub) => {
+              if (sub === "chunks") {
+                return { get: async () => chunksSnap(unidad, moduleId) };
+              }
+
+              assert.equal(sub, "entries");
+
+              return {
+                doc: (key) => ({ unidad, moduleId, key })
+              };
+            }
+          })
+        };
+      }
     };
   }
 
   return {
     collection: () => ({
       doc: (id) => {
-        const unidad = unidades.find((item) => item.id === id) || { id, entries: [] };
+        const unidad = unidades.find((item) => item.id === id) || { id };
 
         return refUnidad(unidad);
       },
@@ -65,12 +92,20 @@ function fakeDb(unidades) {
           })
         })
       })
+    }),
+    getAll: async (...refs) => refs.map((ref) => {
+      const entrada = ref.moduleId === "profile" && ref.key === "profiles"
+        ? ref.unidad.entry
+        : null;
+
+      return { exists: Boolean(entrada), data: () => entrada || {} };
     })
   };
 }
 
-function conPerfiles(perfiles) {
-  return [{ id: "e1", storageKey: "profiles", value: JSON.stringify(perfiles) }];
+// Una entrada de lista, como las escribe el cliente para los perfiles.
+function entrada(campos) {
+  return { storageKey: "profiles", container: "array", ...campos };
 }
 
 const UNIDADES = [
@@ -78,21 +113,27 @@ const UNIDADES = [
     id: "ws-imagenologia",
     name: "Imagenologia",
     establishment: "hospital-claudio-vicuna",
-    entries: conPerfiles([{ name: "OTRA PERSONA", rut: "99.999.999-9" }])
+    base: [{ id: "p-otra", name: "OTRA PERSONA", rut: "99.999.999-9" }]
   },
   {
     id: "ws-uci",
     name: "UCI",
     establishment: "hospital-claudio-vicuna",
-    entries: conPerfiles([
-      { name: "ALAN PLAZA", rut: "17.816.632-8", email: "alan@correo.cl", active: true }
-    ])
+    base: [
+      {
+        id: "p-alan",
+        name: "ALAN PLAZA",
+        rut: "17.816.632-8",
+        email: "alan@correo.cl",
+        active: true
+      }
+    ]
   },
   {
     id: "ws-ajena",
     name: "Unidad de otro hospital",
     establishment: "otro-hospital",
-    entries: conPerfiles([{ name: "ALAN PLAZA", rut: "17816632-8" }])
+    base: [{ id: "p-alan", name: "ALAN PLAZA", rut: "17816632-8" }]
   }
 ];
 
@@ -105,11 +146,15 @@ function peticion(rut, workspaceId = "ws-imagenologia") {
   return { auth: { uid: "supervisor", token: {} }, data: { rut, workspaceId } };
 }
 
-test("encuentra el RUT en otra unidad del mismo establecimiento", async () => {
-  const resultado = await findWorkerInEstablishmentHandler(
-    peticion("17.816.632-8"),
-    { ...DEPS, db: fakeDb(UNIDADES) }
+function buscar(unidades, rut, workspaceId) {
+  return findWorkerInEstablishmentHandler(
+    peticion(rut, workspaceId),
+    { ...DEPS, db: fakeDb(unidades) }
   );
+}
+
+test("encuentra el RUT en otra unidad del mismo establecimiento", async () => {
+  const resultado = await buscar(UNIDADES, "17.816.632-8");
 
   assert.equal(resultado.establishment, "hospital-claudio-vicuna");
   assert.deepEqual(resultado.unidades, [
@@ -121,10 +166,7 @@ test("no devuelve datos de la persona", async () => {
   // Quien pregunta ya escribio el RUT y sabe de quien se trata. Devolver su
   // nombre o su correo convertiria esto en una via para pescar datos de
   // trabajadores de otras unidades.
-  const resultado = await findWorkerInEstablishmentHandler(
-    peticion("17.816.632-8"),
-    { ...DEPS, db: fakeDb(UNIDADES) }
-  );
+  const resultado = await buscar(UNIDADES, "17.816.632-8");
   const texto = JSON.stringify(resultado);
 
   assert.ok(!texto.includes("ALAN"), "no debe salir el nombre");
@@ -134,10 +176,7 @@ test("no devuelve datos de la persona", async () => {
 
 test("no mira unidades de otro establecimiento", async () => {
   // El mismo RUT existe en "Unidad de otro hospital" y no debe aparecer.
-  const resultado = await findWorkerInEstablishmentHandler(
-    peticion("17.816.632-8"),
-    { ...DEPS, db: fakeDb(UNIDADES) }
-  );
+  const resultado = await buscar(UNIDADES, "17.816.632-8");
 
   assert.equal(resultado.unidades.length, 1);
   assert.ok(!JSON.stringify(resultado).includes("ws-ajena"));
@@ -146,13 +185,18 @@ test("no mira unidades de otro establecimiento", async () => {
 test("una unidad sin establecimiento no ve ninguna otra", async () => {
   // Vacio no coincide con vacio: si no, las unidades sin declarar se verian
   // entre todas.
-  const sinDeclarar = [
-    { id: "ws-sola", name: "Sola", establishment: "", entries: [] },
-    { id: "ws-otra-sola", name: "Otra", establishment: "", entries: conPerfiles([{ rut: "17816632-8" }]) }
-  ];
-  const resultado = await findWorkerInEstablishmentHandler(
-    peticion("17.816.632-8", "ws-sola"),
-    { ...DEPS, db: fakeDb(sinDeclarar) }
+  const resultado = await buscar(
+    [
+      { id: "ws-sola", name: "Sola", establishment: "" },
+      {
+        id: "ws-otra-sola",
+        name: "Otra",
+        establishment: "",
+        base: [{ id: "p-1", rut: "17816632-8" }]
+      }
+    ],
+    "17.816.632-8",
+    "ws-sola"
   );
 
   assert.deepEqual(resultado, { establishment: "", unidades: [] });
@@ -161,23 +205,155 @@ test("una unidad sin establecimiento no ve ninguna otra", async () => {
 test("un perfil inactivo igual se informa", async () => {
   // Es justo el de alguien que se fue de esa unidad, y sus saldos de
   // vacaciones siguen ahi: es el caso que mas conviene detectar.
-  const conInactivo = [
-    { id: "ws-a", name: "A", establishment: "hcv", entries: [] },
-    {
-      id: "ws-b",
-      name: "B",
-      establishment: "hcv",
-      entries: conPerfiles([{ rut: "17816632-8", active: false }])
-    }
-  ];
-  const resultado = await findWorkerInEstablishmentHandler(
-    peticion("17.816.632-8", "ws-a"),
-    { ...DEPS, db: fakeDb(conInactivo) }
+  const resultado = await buscar(
+    [
+      { id: "ws-a", name: "A", establishment: "hcv" },
+      {
+        id: "ws-b",
+        name: "B",
+        establishment: "hcv",
+        base: [{ id: "p-1", rut: "17816632-8", active: false }]
+      }
+    ],
+    "17.816.632-8",
+    "ws-a"
   );
 
   assert.deepEqual(resultado.unidades, [
     { workspaceId: "ws-b", workspaceName: "B", active: false }
   ]);
+});
+
+test("encuentra un perfil que solo existe en items", async () => {
+  // El caso real: el perfil se creo despues del ultimo volcado completo, asi
+  // que vive como un parche en `items` y no esta en la base ni en `value`.
+  // Leyendo solo `value` esta busqueda diria que no esta en ninguna otra
+  // unidad y el supervisor lo ingresaria de cero, que es justo lo que esta
+  // pieza existe para evitar.
+  const resultado = await buscar(
+    [
+      { id: "ws-a", name: "A", establishment: "hcv" },
+      {
+        id: "ws-b",
+        name: "B",
+        establishment: "hcv",
+        base: [{ id: "p-vieja", rut: "11111111-1" }],
+        entry: entrada({
+          items: {
+            "p-nueva": JSON.stringify({
+              id: "p-nueva",
+              name: "ALAN PLAZA",
+              rut: "17816632-8",
+              active: true
+            })
+          }
+        })
+      }
+    ],
+    "17.816.632-8",
+    "ws-a"
+  );
+
+  assert.deepEqual(resultado.unidades, [
+    { workspaceId: "ws-b", workspaceName: "B", active: true }
+  ]);
+});
+
+test("un perfil borrado en deletedItems no se informa", async () => {
+  // Esta en la base pero fue eliminado despues. Informarlo mandaria al
+  // supervisor a pedir el traslado de un perfil que ya no existe.
+  function unidades(entry) {
+    return [
+      { id: "ws-a", name: "A", establishment: "hcv" },
+      {
+        id: "ws-b",
+        name: "B",
+        establishment: "hcv",
+        base: [{ id: "p-alan", rut: "17816632-8", active: true }],
+        entry
+      }
+    ];
+  }
+
+  // Control: el mismo perfil sin el borrado si se encuentra. Sin esto la
+  // prueba pasaria igual con un lector que no mire la base, por no encontrar
+  // nada en ningun caso.
+  const control = await buscar(unidades(undefined), "17.816.632-8", "ws-a");
+
+  assert.equal(control.unidades.length, 1, "la base debe leerse");
+
+  const borrado = await buscar(
+    unidades(entrada({ deletedItems: { "p-alan": true } })),
+    "17.816.632-8",
+    "ws-a"
+  );
+
+  assert.deepEqual(borrado.unidades, []);
+});
+
+test("lo que corrige items pisa a la base", async () => {
+  // El RUT estaba mal escrito y se corrigio. Vale el corregido, y el viejo ya
+  // no debe encontrar a nadie.
+  const unidades = [
+    { id: "ws-a", name: "A", establishment: "hcv" },
+    {
+      id: "ws-b",
+      name: "B",
+      establishment: "hcv",
+      base: [{ id: "p-alan", rut: "17816632-9", active: true }],
+      entry: entrada({
+        items: {
+          "p-alan": JSON.stringify({ id: "p-alan", rut: "17816632-8", active: true })
+        }
+      })
+    }
+  ];
+
+  const corregido = await buscar(unidades, "17.816.632-8", "ws-a");
+  const viejo = await buscar(unidades, "17.816.632-9", "ws-a");
+
+  assert.equal(corregido.unidades.length, 1);
+  assert.deepEqual(viejo.unidades, []);
+});
+
+test("una entrada con value y items aplica el value y encima los items", async () => {
+  // Una clave que antes viajaba entera deja su `value` viejo en el documento.
+  // Es una foto anterior a los items, asi que los items mandan.
+  const resultado = await buscar(
+    [
+      { id: "ws-a", name: "A", establishment: "hcv" },
+      {
+        id: "ws-b",
+        name: "B",
+        establishment: "hcv",
+        entry: entrada({
+          value: JSON.stringify([{ id: "p-alan", rut: "17816632-8", active: true }]),
+          items: {
+            "p-alan": JSON.stringify({ id: "p-alan", rut: "17816632-8", active: false })
+          }
+        })
+      }
+    ],
+    "17.816.632-8",
+    "ws-a"
+  );
+
+  assert.deepEqual(resultado.unidades, [
+    { workspaceId: "ws-b", workspaceName: "B", active: false }
+  ]);
+});
+
+test("una unidad sin estado guardado no rompe la busqueda", async () => {
+  const resultado = await buscar(
+    [
+      { id: "ws-a", name: "A", establishment: "hcv" },
+      { id: "ws-vacia", name: "Vacia", establishment: "hcv" }
+    ],
+    "17.816.632-8",
+    "ws-a"
+  );
+
+  assert.deepEqual(resultado, { establishment: "hcv", unidades: [] });
 });
 
 test("sin permiso para administrar perfiles no se consulta nada", async () => {
@@ -195,10 +371,7 @@ test("sin permiso para administrar perfiles no se consulta nada", async () => {
 
 test("un RUT incompleto no dispara la busqueda", async () => {
   await assert.rejects(
-    () => findWorkerInEstablishmentHandler(peticion("123"), {
-      ...DEPS,
-      db: fakeDb(UNIDADES)
-    }),
+    () => buscar(UNIDADES, "123"),
     (error) => error.code === "invalid-argument"
   );
 });
@@ -206,10 +379,4 @@ test("un RUT incompleto no dispara la busqueda", async () => {
 test("el RUT se compara normalizado", () => {
   assert.equal(_private.normalizeRut("17.816.632-8"), "178166328");
   assert.equal(_private.normalizeRut("17816632-8"), "178166328");
-});
-
-test("una lista de perfiles rota no rompe la busqueda", () => {
-  assert.deepEqual(_private.parseProfiles("{no es json"), []);
-  assert.deepEqual(_private.parseProfiles(null), []);
-  assert.deepEqual(_private.parseProfiles([{ rut: "1" }]), [{ rut: "1" }]);
 });

@@ -16,6 +16,12 @@
 // respuesta confirme la unidad alcanza para ofrecer el traslado, y no convierte
 // esto en una via para pescar datos de trabajadores de otras unidades.
 
+const {
+  readModuleBase,
+  applyExactEntries,
+  storageValue
+} = require("./lib/stateReader");
+
 // Tope defensivo, como en el resto de las busquedas que recorren unidades.
 const MAX_WORKSPACES = 500;
 
@@ -27,40 +33,24 @@ function cleanText(value, max) {
   return String(value || "").trim().slice(0, max);
 }
 
-// Los perfiles viven como un JSON dentro de una entrada del modulo "profile".
-function parseProfiles(raw) {
-  if (Array.isArray(raw)) return raw;
-
-  try {
-    const parsed = JSON.parse(String(raw || "[]"));
-
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_error) {
-    return [];
-  }
-}
-
+// La lista de perfiles se lee con lib/stateReader, igual que en el resto del
+// servidor.
+//
+// Un perfil NO vive solo en el campo `value` de una entrada: la base puede
+// estar partida en chunks, y encima van los parches por elemento de `items` y
+// `deletedItems`. Leer solo `value` deja afuera a quien fue creado o editado
+// despues del ultimo volcado completo, y aqui ese error es peor que una falla
+// visible: devolveria "no esta en ninguna otra unidad" y el supervisor
+// ingresaria a la persona de cero, que es exactamente lo que esta busqueda
+// existe para evitar.
 async function profilesOfWorkspace(db, workspaceId) {
-  const entriesSnap = await db
-    .collection("workspaces")
-    .doc(workspaceId)
-    .collection("stateModules")
-    .doc("profile")
-    .collection("entries")
-    .where("storageKey", "==", "profiles")
-    .get();
+  const state = await readModuleBase(db, workspaceId, "profile");
 
-  for (const doc of entriesSnap.docs) {
-    const entrada = doc.data() || {};
+  await applyExactEntries(db, workspaceId, state, { profile: ["profiles"] });
 
-    if (entrada.deleted === true) continue;
+  const perfiles = storageValue(state, "profiles", []);
 
-    const perfiles = parseProfiles(entrada.value);
-
-    if (perfiles.length) return perfiles;
-  }
-
-  return [];
+  return Array.isArray(perfiles) ? perfiles : [];
 }
 
 async function findWorkerInEstablishmentHandler(request, {
@@ -126,7 +116,6 @@ module.exports = {
   _private: {
     MAX_WORKSPACES,
     normalizeRut,
-    parseProfiles,
     profilesOfWorkspace
   }
 };
