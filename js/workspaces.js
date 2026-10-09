@@ -206,6 +206,25 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
     }
 }
 
+// Corregir el establecimiento de una unidad que ya existe.
+//
+// Solo el dueño, porque la regla de actualizacion lo exige: el establecimiento
+// decide con que otras unidades se puede pedir el traslado de un trabajador, y
+// no es algo que deba cambiar cualquiera con acceso a Ajustes.
+export async function setWorkspaceEstablishment(workspaceId, establishment) {
+    const id = String(workspaceId || "").trim();
+
+    if (!id) throw new Error("Falta identificar la unidad.");
+
+    const { db, firestoreModule } = await getFirebaseServices();
+    const ref = firestoreModule.doc(db, "workspaces", id);
+
+    await firestoreModule.updateDoc(ref, {
+        establishment: normalizeEstablishment(establishment),
+        updatedAt: firestoreModule.serverTimestamp()
+    });
+}
+
 export async function createWorkspace(user, name, establishment = "") {
     const cleanName = String(name || "").trim();
 

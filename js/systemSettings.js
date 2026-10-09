@@ -1,3 +1,8 @@
+import {
+    establishmentName,
+    establishmentOptionsHTML,
+    normalizeEstablishment
+} from "./establishments.js";
 import { escapeHTML } from "./htmlUtils.js";
 import { showConfirm } from "./dialogs.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
@@ -33,6 +38,7 @@ import {
     deleteWorkspaceMember,
     getWorkspacePermissionState,
     isWorkspaceOwner,
+    setWorkspaceEstablishment,
     listWorkspaceMembersForPermissions,
     normalizeMenuPermissions,
     saveWorkspaceMemberPermissions
@@ -474,6 +480,23 @@ const SIGNATURE_LINES = [
     { label: "L&iacute;nea 4 &middot; establecimiento", placeholder: "[Nombre del hospital]" }
 ];
 
+// La linea 4 del pie de firma es el establecimiento, y es la unica que no se
+// escribe a mano: se elige de la lista para que dos unidades del mismo
+// hospital se reconozcan al pedirse el traslado de un trabajador.
+const SIGNATURE_ESTABLISHMENT_LINE = 3;
+
+let establishmentDraft = null;
+
+function canEditEstablishment() {
+    return isWorkspaceOwner();
+}
+
+function currentEstablishment() {
+    if (establishmentDraft !== null) return establishmentDraft;
+
+    return normalizeEstablishment(getActiveWorkspace()?.establishment);
+}
+
 function renderSignaturePanel() {
     const config =
         reportSignatureConfigDraft ||
@@ -482,7 +505,19 @@ function renderSignaturePanel() {
         ${sectionHeadHTML("Documentos y firma", "El pie de firma de los documentos imprimibles. La l\u00ednea 1 y 2 prellenan el jefe directo y su cargo en Calificaciones.")}
         <div class="sx-signature">
             <section class="sx-card sx-card--pad settings-signature-grid">
-                ${SIGNATURE_LINES.map((line, index) => `
+                ${SIGNATURE_LINES.map((line, index) => index === SIGNATURE_ESTABLISHMENT_LINE
+                    ? `
+                    <label class="sx-field settings-signature-field">
+                        <span>${line.label}</span>
+                        <select data-establishment-select${canEditEstablishment() ? "" : " disabled"}>
+                            ${establishmentOptionsHTML(currentEstablishment())}
+                        </select>
+                        ${canEditEstablishment()
+                            ? ""
+                            : "<small>Solo el creador de la unidad puede cambiarlo.</small>"}
+                    </label>
+                `
+                    : `
                     <label class="sx-field settings-signature-field">
                         <span>${line.label}</span>
                         <input
@@ -1701,6 +1736,34 @@ function bindBackdrop(backdrop) {
             return;
         }
 
+        const establishmentSelect =
+            event.target?.closest?.("[data-establishment-select]");
+
+        if (establishmentSelect) {
+            establishmentDraft = normalizeEstablishment(establishmentSelect.value);
+
+            const nombre = establishmentName(establishmentDraft);
+            const config =
+                reportSignatureConfigDraft ||
+                structuredClone(getReportSignatureConfig());
+
+            config.lines[SIGNATURE_ESTABLISHMENT_LINE] = nombre;
+            reportSignatureConfigDraft = config;
+
+            const preview = backdrop.querySelector(
+                `[data-signature-preview="${SIGNATURE_ESTABLISHMENT_LINE}"]`
+            );
+
+            if (preview) {
+                preview.textContent =
+                    nombre || SIGNATURE_LINES[SIGNATURE_ESTABLISHMENT_LINE].placeholder;
+                preview.classList.toggle("is-placeholder", !nombre);
+            }
+
+            markSettingsDirty(backdrop);
+            return;
+        }
+
         // Vista previa del pie de firma, en vivo.
         const signatureLine = event.target?.closest?.("[data-signature-line]");
 
@@ -2000,6 +2063,29 @@ function bindBackdrop(backdrop) {
                         reportSignatureConfigDraft ||
                         getReportSignatureConfig()
                     );
+
+                    // El establecimiento vive en la unidad, no en la firma: de
+                    // el depende que otra unidad del mismo hospital pueda pedir
+                    // el traslado de un trabajador.
+                    if (establishmentDraft !== null && canEditEstablishment()) {
+                        try {
+                            await setWorkspaceEstablishment(
+                                getActiveWorkspace()?.id,
+                                establishmentDraft
+                            );
+
+                            const activa = getActiveWorkspace();
+
+                            if (activa) activa.establishment = establishmentDraft;
+                        } catch (error) {
+                            console.warn(
+                                "No se pudo guardar el establecimiento.",
+                                error
+                            );
+                        }
+                    }
+
+                    establishmentDraft = null;
                     saveTurnChangeConfig(
                         turnChangeConfigDraft ||
                         getTurnChangeConfig()
