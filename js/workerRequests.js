@@ -50,6 +50,10 @@ import {
     resolveWorkerHandoverRequest
 } from "./workerHandovers.js";
 import {
+    listWorkerUnitChangeNotices,
+    resolveWorkerUnitChangeNotice
+} from "./workerUnitChangeNotices.js";
+import {
     formatInviteDate,
     showSupervisorInvitePermissionsDialog,
     supervisorInviteActor
@@ -113,6 +117,7 @@ const REQUEST_TYPE_LABELS = {
     supervisor_invite: "Acceso Supervisor",
     worker_join: "Acceso a la App",
     worker_handover: "Traspaso de Trabajador",
+    worker_unit_change: "Trabajador en otra unidad",
     unknown: "Solicitud"
 };
 
@@ -308,6 +313,14 @@ function isWorkerHandoverRequest(request = {}) {
 
 function isSentWorkerHandoverRequest(request = {}) {
     return request.kind === "worker_handover_sent";
+}
+
+// Un trabajador se enlazo en otra unidad y el servidor ya solto su enlace
+// aqui: su aplicacion dejo de mostrar este calendario. Queda decidir que hacer
+// con el perfil, y eso lo decide el supervisor
+// (functions/workerUnitChangeNotice.js).
+function isWorkerUnitChangeNotice(request = {}) {
+    return request.kind === "worker_unit_change";
 }
 
 function isReplacementRequest(request = {}) {
@@ -1338,6 +1351,12 @@ function requestDetailsHTML(request) {
         return pieces.join(" | ");
     }
 
+    if (isWorkerUnitChangeNotice(request)) {
+        if (request.workerRut) pieces.push(`RUT: ${request.workerRut}`);
+
+        return pieces.length ? pieces.join(" | ") : "Ya no aparece en tu app";
+    }
+
     if (isWorkerHandoverRequest(request) || isSentWorkerHandoverRequest(request)) {
         pieces.push(isWorkerHandoverRequest(request)
             ? `La pide: ${request.otherWorkspaceName}`
@@ -1505,7 +1524,9 @@ function requestCardHTML(request) {
     const statusText = displayStatusLabel(request);
     const acceptLabel = isSupervisorInviteRequest(request)
         ? "Aprobar"
-        : "Aceptar";
+        : isWorkerUnitChangeNotice(request)
+            ? "Desactivar perfil"
+            : "Aceptar";
     const documents = (
         request.type === "missing_clock" ||
         request.type === "clock_incident"
@@ -1578,7 +1599,7 @@ function requestCardHTML(request) {
                             ${escapeHTML(acceptLabel)}
                         </button>
                         <button class="secondary-button secondary-button--small" type="button" data-worker-request-action="reject" data-request-id="${escapeHTML(request.id)}">
-                            Rechazar
+                            ${isWorkerUnitChangeNotice(request) ? "Dejarlo activo" : "Rechazar"}
                         </button>
                         ${canViewRequestInCalendar(request)
                             ? `
@@ -1661,6 +1682,74 @@ function handoverProfileName(rut) {
     );
 
     return profile?.name || "";
+}
+
+async function getWorkerUnitChangeNotices() {
+    const activeWorkspace = getActiveWorkspace();
+
+    if (
+        !isFirebaseConfigured() ||
+        !getCurrentFirebaseUser() ||
+        !activeWorkspace?.id
+    ) {
+        return [];
+    }
+
+    try {
+        const avisos = await listWorkerUnitChangeNotices();
+
+        return avisos
+            .filter(item => ["pending", "done", "dismissed"].includes(item.status))
+            .map(item => ({
+                kind: "worker_unit_change",
+                id: `worker_unit_change:${item.id}`,
+                notice: item,
+                type: "worker_unit_change",
+                // Pendiente es lo unico accionable; lo demas se archiva.
+                status: item.status === "pending" ? "pending" : "approved",
+                profile: String(item.profileName || "").trim() || "Trabajador",
+                workerRut: item.profileRut ? formatRut(item.profileRut) : "",
+                note: item.status === "pending"
+                    ? "Fue ingresado en otra unidad y su app ya no muestra la " +
+                        "tuya. Si ya no trabaja contigo, desactiva su perfil."
+                    : "",
+                createdAt: timestampISO(
+                    item.createdAt || item.updatedAt || new Date()
+                )
+            }));
+    } catch (error) {
+        console.warn("No se pudieron cargar los avisos de cambio de unidad.", error);
+        return [];
+    }
+}
+
+// Desactivar el perfil vive en main.js, que es donde viven los perfiles.
+async function acceptWorkerUnitChangeNotice(request) {
+    window.dispatchEvent(new CustomEvent("proturnos:deactivateMovedWorker", {
+        detail: {
+            noticeId: request.notice.id,
+            profileName: request.notice.profileName,
+            profileRut: request.notice.profileRut
+        }
+    }));
+}
+
+async function rejectWorkerUnitChangeNotice(request) {
+    const confirmado = await showConfirm(
+        `¿Dejas activo el perfil de ${request.profile}?`,
+        {
+            title: "Dejarlo activo",
+            confirmText: "Dejarlo activo",
+            cancelText: "Volver"
+        }
+    );
+
+    if (!confirmado) return;
+
+    await resolveWorkerUnitChangeNotice({
+        noticeId: request.notice.id,
+        deactivated: false
+    });
 }
 
 async function getWorkerHandoverPanelRequests() {
@@ -2614,9 +2703,11 @@ export async function renderWorkerRequestsPanel() {
         await getSupervisorInviteRequests();
     const workerJoinRequests = await getWorkerJoinRequests();
     const handoverRequests = await getWorkerHandoverPanelRequests();
+    const unitChangeNotices = await getWorkerUnitChangeNotices();
     const allRequests = [
         ...workerJoinRequests,
         ...handoverRequests,
+        ...unitChangeNotices,
         ...supervisorInviteRequests,
         ...linkRequests,
         ...transferRequests,
@@ -2811,6 +2902,12 @@ export async function renderWorkerRequestsPanel() {
                     await approveSupervisorInviteRequest(request);
                 } else {
                     await rejectSupervisorInviteRequest(request);
+                }
+            } else if (isWorkerUnitChangeNotice(request)) {
+                if (accepting) {
+                    await acceptWorkerUnitChangeNotice(request);
+                } else {
+                    await rejectWorkerUnitChangeNotice(request);
                 }
             } else if (isWorkerHandoverRequest(request)) {
                 if (accepting) {

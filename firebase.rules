@@ -705,6 +705,15 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // Aviso a la unidad que se quedo con el perfil de alguien que se enlazo
+    // en otra. Lo crea el servidor al soltar el enlace viejo
+    // (functions/workerUnitChangeNotice.js) y lo cierra una callable, no el
+    // cliente: aqui solo se lee, y solo la unidad a la que va dirigido.
+    match /workerUnitChangeNotices/{noticeId} {
+      allow read: if canManageProfiles(resource.data.workspaceId);
+      allow create, update, delete: if false;
+    }
+
     match /workerAppEmailInvites/{emailKey}/items/{inviteId} {
       // Un trabajador solo puede leer las invitaciones dirigidas a SU propio
       // correo (la clave del documento es el email normalizado en minusculas).

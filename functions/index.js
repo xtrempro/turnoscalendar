@@ -39,7 +39,8 @@ const {
   resolveWorkerHandoverRequestHandler
 } = require("./workerHandoverRequests");
 const {
-  notifyWorkerUnitChangeHandler
+  notifyWorkerUnitChangeHandler,
+  resolveWorkerUnitChangeNoticeHandler
 } = require("./workerUnitChangeNotice");
 const {
   cancelWorkerJoinRequestHandler,
@@ -2689,7 +2690,20 @@ exports.notifyWorkerUnitChange = onDocumentWritten(
       }
     },
     sendEmail: sendResendEmail,
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
     logger
+  })
+);
+
+// El supervisor de la unidad anterior responde la tarjeta: desactivo el perfil
+// o decidio dejarlo activo. Desactivarlo lo hace su navegador, que es donde
+// viven los perfiles; esto solo cierra la tarjeta.
+exports.resolveWorkerUnitChangeNotice = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => resolveWorkerUnitChangeNoticeHandler(request, {
+    db,
+    HttpsError,
+    requireProfileManager: requireWorkspaceProfileManager
   })
 );
 

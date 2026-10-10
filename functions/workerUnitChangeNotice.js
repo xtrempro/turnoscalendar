@@ -1,28 +1,41 @@
 "use strict";
 
-// Avisarle a la unidad anterior que un trabajador se enlazo en otra.
+// Un trabajador se enlazo en otra unidad: soltarlo de la anterior y avisarle.
 //
-// Cuando alguien se cambia de servicio por su cuenta -pide acceso con su RUT en
-// la unidad nueva y el supervisor de alla lo aprueba- en la unidad vieja no
-// pasa nada: su perfil sigue activo, sigue apareciendo en la planificacion y
-// sigue contando como trabajador de esa unidad. Nadie se entera salvo que
-// alguien lo note.
+// Pasa cuando alguien se cambia de servicio y en la unidad nueva lo ingresan de
+// cero -en vez de pedir el traspaso-. Antes, en la unidad vieja no pasaba nada:
+// su perfil seguia activo, seguia apareciendo en la planificacion, seguia
+// contando como trabajador de esa unidad, y su aplicacion seguia mostrando el
+// calendario de alla. Nadie se enteraba salvo que alguien lo notara.
 //
-// Esto no lo arregla solo. A proposito: inactivar el perfil de alguien es
-// decision del supervisor, que puede saber cosas que el sistema no -que se fue
-// a cubrir dos meses y vuelve, que sigue haciendo turnos en ambas-. Lo que si
-// corresponde es avisarle.
+// Aqui se hacen las dos cosas que si corresponden hacer solas:
+//
+//   1. SOLTAR EL ENLACE de la unidad anterior. Un trabajador esta en una unidad
+//      por vez -de eso depende que cada supervisor lo califique por el periodo
+//      en que estuvo con el-, y su aplicacion tiene que mostrar donde trabaja
+//      hoy. Se suelta cuando acepta la invitacion de la unidad nueva y no
+//      antes: soltarlo al crearle el perfil lo dejaria sin ninguna aplicacion
+//      en el medio, que puede ser dias.
+//
+//   2. DEJAR UNA TARJETA en la unidad anterior, con el boton para desactivar el
+//      perfil.
+//
+// Lo que NO se hace solo, a proposito: inactivar el perfil. Es decision del
+// supervisor, que puede saber cosas que el sistema no -que se fue a cubrir dos
+// meses y vuelve, que arrastra horas pendientes-. Por eso es una tarjeta con un
+// boton y no un cambio automatico.
 //
 // POR QUE MIRA LOS ENLACES ACTIVOS Y NO LAS TRANSFERENCIAS: cuando un
 // supervisor transfiere a alguien, el enlace viejo queda en "transferred" en el
 // mismo lote que crea el nuevo, y ese camino ya vacia el calendario e inactiva
 // el perfil por su cuenta. Al exigir que el enlace anterior siga ACTIVO, la
-// transferencia queda fuera sin necesidad de reconocerla: si llegara a avisar
-// ahi, estaria recomendando algo que acaba de pasar solo.
-//
-// Lo que no dice el aviso: a que unidad se fue. La unidad vieja no tiene por
-// que enterarse de donde trabaja ahora, y para decidir si inactiva el perfil no
-// le hace falta.
+// transferencia queda fuera sin necesidad de reconocerla.
+
+const NOTICES_COLLECTION = "workerUnitChangeNotices";
+
+const PENDING = "pending";
+const DONE = "done";
+const DISMISSED = "dismissed";
 
 // Topes defensivos. Alguien con enlaces en muchas unidades no deberia convertir
 // un cambio de unidad en una rafaga de correos.
@@ -45,11 +58,91 @@ function linkIsActive(link) {
   return String(link?.status || "") === "active";
 }
 
+function defaultIdFactory() {
+  return `wuc_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Suelta el enlace de la unidad anterior y deja la tarjeta para su supervisor.
+ *
+ * Se escribe en un lote: si quedara el enlace suelto sin la tarjeta, la unidad
+ * perderia al trabajador de su aplicacion sin que nadie le explicara por que.
+ */
+async function releaseWorkerFromUnit({
+  db,
+  uid,
+  workspaceId,
+  link,
+  newWorkspaceName,
+  serverTimestamp,
+  idFactory
+}) {
+  const now = serverTimestamp();
+  const workspaceRef = db.collection("workspaces").doc(workspaceId);
+  const profileName = cleanText(link.profileName, 180);
+  const batch = db.batch();
+
+  // El lado de la unidad se borra y el del trabajador queda marcado: es como
+  // ya se sueltan los enlaces duplicados al aceptar una invitacion.
+  batch.delete(workspaceRef.collection("workerLinks").doc(uid));
+  batch.set(
+    db.collection("users").doc(uid).collection("workerLinks").doc(workspaceId),
+    {
+      workspaceId,
+      workspaceName: cleanText(link.workspaceName, 160),
+      profileName,
+      status: "unlinked",
+      unlinkedAt: now,
+      unlinkedBy: "worker_moved_unit",
+      updatedAt: now
+    },
+    { merge: true }
+  );
+  batch.set(
+    workspaceRef.collection("workerMessageDirectory").doc(uid),
+    {
+      uid,
+      workspaceId,
+      profileName,
+      status: "unlinked",
+      unlinkedAt: now,
+      updatedAt: now,
+      updatedAtISO: new Date().toISOString()
+    },
+    { merge: true }
+  );
+  // Que no lo sigan ofreciendo para cubrir turnos de una unidad en la que ya
+  // no esta.
+  batch.delete(workspaceRef.collection("workerSwapCandidates").doc(uid));
+
+  const noticeId = idFactory();
+
+  batch.set(db.collection(NOTICES_COLLECTION).doc(noticeId), {
+    workspaceId,
+    uid,
+    profileName,
+    profileRut: cleanText(link.profileRut, 32),
+    // A proposito NO viaja el nombre de la unidad nueva: para decidir si
+    // inactiva el perfil no hace falta, y esta unidad no tiene por que
+    // enterarse de donde trabaja ahora.
+    newWorkspaceName: "",
+    status: PENDING,
+    createdAt: now,
+    updatedAt: now
+  });
+
+  await batch.commit();
+
+  return { noticeId, profileName };
+}
+
 async function notifyWorkerUnitChangeHandler(event, {
   db,
   canManageProfiles,
   getUserEmail,
   sendEmail,
+  serverTimestamp,
+  idFactory = defaultIdFactory,
   logger
 }) {
   const uid = String(event?.params?.uid || "");
@@ -60,7 +153,8 @@ async function notifyWorkerUnitChangeHandler(event, {
   if (!uid || !workspaceId || !despues) return;
 
   // Solo el momento en que el enlace PASA a activo. Sin esto, cada cambio de
-  // updatedAt volveria a avisar.
+  // updatedAt volveria a avisar. Y es lo que evita que soltar los enlaces
+  // viejos -que escribe en esta misma ruta- se llame a si mismo.
   if (!linkIsActive(despues) || linkIsActive(antes)) return;
 
   // Cinturon y tirantes: un enlace que nace de una transferencia lo dice.
@@ -86,6 +180,15 @@ async function notifyWorkerUnitChangeHandler(event, {
     const unidadVieja = String(anterior.workspaceId || anterior.id);
 
     try {
+      const { profileName } = await releaseWorkerFromUnit({
+        db,
+        uid,
+        workspaceId: unidadVieja,
+        link: anterior,
+        serverTimestamp,
+        idFactory
+      });
+
       await avisarUnidad({
         db,
         canManageProfiles,
@@ -93,10 +196,10 @@ async function notifyWorkerUnitChangeHandler(event, {
         sendEmail,
         workspaceId: unidadVieja,
         // El nombre que esa unidad le puso, que es el que reconoce.
-        profileName: cleanText(anterior.profileName, 180)
+        profileName
       });
     } catch (error) {
-      logger?.warn?.("No se pudo avisar del cambio de unidad.", {
+      logger?.warn?.("No se pudo soltar al trabajador de su unidad anterior.", {
         workspaceId: unidadVieja,
         error: String(error?.message || error)
       });
@@ -133,13 +236,13 @@ async function avisarUnidad({
 
   const quien = profileName || "Un trabajador de tu unidad";
   const asunto = `${quien} se enlazo en otra unidad`;
-  const detalle = `${quien} pidió acceso a la app en otra unidad y se lo aprobaron.`;
-  const consejo = "Si ya no trabaja contigo, conviene inactivar su perfil para " +
-    "que deje de aparecer en la planificación. Si sigue en tu unidad, no " +
-    "tienes que hacer nada.";
+  const detalle = `${quien} fue ingresado en otra unidad y su aplicación ya no ` +
+    "muestra la tuya.";
+  const consejo = "Si ya no trabaja contigo, desactiva su perfil para que deje " +
+    "de aparecer en la planificación. Lo tienes en TurnoPlus, en el menú " +
+    "Solicitudes, con el botón para hacerlo.";
   const nota = "Sus saldos de vacaciones siguen aquí: no se traspasan solos. " +
-    "Si la otra unidad los necesita, puede pedirte el traspaso desde " +
-    "Solicitudes.";
+    "Si la otra unidad los necesita, puede pedirte el traspaso.";
   const text = [detalle, "", consejo, "", nota].join("\n");
   const html = [
     `<p>${escapeHtml(detalle)}</p>`,
@@ -152,11 +255,79 @@ async function avisarUnidad({
   }
 }
 
+/**
+ * El supervisor de la unidad anterior responde: desactivo el perfil, o decide
+ * dejarlo activo.
+ *
+ * Solo cierra la tarjeta. Desactivar el perfil lo hace su propio navegador, que
+ * es donde viven los perfiles y donde ya existe el camino para hacerlo.
+ */
+async function resolveWorkerUnitChangeNoticeHandler(request, {
+  db,
+  HttpsError,
+  requireProfileManager
+}) {
+  const uid = request.auth?.uid;
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Inicia sesion.");
+  }
+
+  const data = request.data || {};
+  const workspaceId = cleanText(data.workspaceId, 160);
+  const noticeId = cleanText(data.noticeId, 220);
+  const deactivated = data.deactivated === true;
+
+  if (!workspaceId || !noticeId) {
+    throw new HttpsError("invalid-argument", "Falta identificar el aviso.");
+  }
+
+  await requireProfileManager(workspaceId, uid, request.auth?.token || {});
+
+  const ref = db.collection(NOTICES_COLLECTION).doc(noticeId);
+  const snap = await ref.get();
+
+  if (!snap.exists) {
+    throw new HttpsError("not-found", "Ese aviso ya no existe.");
+  }
+
+  const aviso = snap.data() || {};
+
+  if (aviso.workspaceId !== workspaceId) {
+    throw new HttpsError(
+      "permission-denied",
+      "Ese aviso es de otra unidad."
+    );
+  }
+
+  if (String(aviso.status || "") !== PENDING) {
+    throw new HttpsError("failed-precondition", "Ese aviso ya fue resuelto.");
+  }
+
+  const status = deactivated ? DONE : DISMISSED;
+  const ahora = new Date();
+
+  await ref.set({
+    status,
+    resolvedAt: ahora,
+    resolvedByUid: uid,
+    updatedAt: ahora
+  }, { merge: true });
+
+  return { status, noticeId };
+}
+
 module.exports = {
+  DISMISSED,
+  DONE,
+  NOTICES_COLLECTION,
+  PENDING,
   notifyWorkerUnitChangeHandler,
+  resolveWorkerUnitChangeNoticeHandler,
   _private: {
     MAX_NOTIFIED,
     MAX_PREVIOUS_UNITS,
-    linkIsActive
+    linkIsActive,
+    releaseWorkerFromUnit
   }
 };

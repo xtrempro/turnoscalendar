@@ -648,6 +648,11 @@ import {
     watchIncomingTransferBalances
 } from "./workerTransfers.js";
 import {
+    resolveWorkerUnitChangeNotice,
+    stopWatchingWorkerUnitChangeNotices,
+    watchWorkerUnitChangeNotices
+} from "./workerUnitChangeNotices.js";
+import {
     findWorkerInEstablishment,
     requestWorkerHandover,
     resolveWorkerHandoverRequest
@@ -11572,6 +11577,122 @@ function noticeHandoverApplied(solicitud, nombre) {
     });
 }
 
+// Un trabajador se enlazo en otra unidad. El servidor ya solto su enlace de
+// aqui -su aplicacion dejo de mostrar este calendario- y dejo un aviso; lo
+// que queda es decidir que hacer con el perfil, y eso lo decide el
+// supervisor: puede saber que vuelve, o que arrastra horas pendientes.
+//
+// Desactivar pasa por updateProfile y deja constancia en su historial, igual
+// que cuando lo desactiva una transferencia.
+async function deactivateMovedWorker(detail) {
+    const noticeId = String(detail?.noticeId || "");
+    const nombre = String(detail?.profileName || "").trim();
+    const rut = normalizeRut(detail?.profileRut);
+
+    if (!noticeId) return;
+
+    const profile = getProfiles().find(item => item.name === nombre) ||
+        (rut
+            ? getProfiles().find(item => normalizeRut(item.rut) === rut)
+            : null);
+
+    if (!profile) {
+        // Pudo eliminarse o renombrarse entre medio. El aviso igual se
+        // cierra, porque ya no hay nada que desactivar.
+        const cerrar = await showConfirm(
+            `No encontramos el perfil de ${nombre || "esa persona"} en esta ` +
+            "unidad. ¿Cerramos el aviso?",
+            {
+                title: "Trabajador en otra unidad",
+                tone: "warning",
+                confirmText: "Cerrar el aviso"
+            }
+        );
+
+        if (!cerrar) return;
+
+        await cerrarAvisoDeCambioDeUnidad(noticeId, false);
+        return;
+    }
+
+    const confirmado = await showConfirm(
+        `¿Desactivas el perfil de ${profile.name}?\n\n` +
+        "Dejará de aparecer en la planificación. Sus saldos de vacaciones y " +
+        "su historial quedan guardados por si vuelve.",
+        {
+            title: "Desactivar perfil",
+            tone: "warning",
+            confirmText: "Desactivar"
+        }
+    );
+
+    if (!confirmado) return;
+
+    const salida = toInputDate(new Date());
+
+    try {
+        if (isProfileActive(profile)) {
+            updateProfile(profile.name, {
+                ...profile,
+                active: false,
+                unitExitDate: salida
+            });
+            addContractHistoryEntry(profile.name, {
+                id: `unit_change_${noticeId}`,
+                effectiveDate: salida,
+                summary: "Se enlazo en otra unidad",
+                actor: getCurrentActor(),
+                changes: [{
+                    field: "active",
+                    label: "Estado",
+                    from: "Activo",
+                    to: "Inactivo"
+                }]
+            });
+            addAuditLog(
+                AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+                "Desactivo a un trabajador que se fue a otra unidad",
+                `${profile.name}: perfil desactivado el ${formatDisplayDate(salida)}.`,
+                { profile: profile.name }
+            );
+        }
+
+        await cerrarAvisoDeCambioDeUnidad(noticeId, true);
+        refreshAll();
+        await showAlert(
+            `${profile.name} quedó inactivo en esta unidad.`,
+            { title: "Perfil desactivado", tone: "success" }
+        );
+    } catch (error) {
+        console.warn("No se pudo desactivar el perfil.", error);
+        alert(error?.message || "No se pudo desactivar el perfil.");
+    }
+}
+
+async function cerrarAvisoDeCambioDeUnidad(noticeId, deactivated) {
+    await resolveWorkerUnitChangeNotice({ noticeId, deactivated });
+    window.dispatchEvent(new CustomEvent("proturnos:workerRequestsChanged"));
+}
+
+window.addEventListener("proturnos:deactivateMovedWorker", event => {
+    void deactivateMovedWorker(event.detail);
+});
+
+// Los avisos pendientes suenan en la campanita cuando llegan, no cuando a
+// alguien se le ocurre mirar Solicitudes.
+function noticeMovedWorkers(pendientes = []) {
+    for (const aviso of pendientes) {
+        const quien = String(aviso.profileName || "").trim() || "Un trabajador";
+
+        addBellNotice({
+            id: `cambio-unidad:${aviso.id}`,
+            title: `${quien} se enlazó en otra unidad`,
+            detail: "Su app ya no muestra la tuya. Revísalo en Solicitudes " +
+                "para desactivar su perfil."
+        });
+    }
+}
+
 // Los saldos que envio la unidad de origen, si son de este año.
 function transferredLeaveBalances(solicitud = {}) {
     const saldos = solicitud.profile?.leaveBalances;
@@ -18129,6 +18250,20 @@ initFirebaseShell({
                         error
                     );
                 });
+                // Avisos de trabajadores que se enlazaron en otra unidad.
+                void watchWorkerUnitChangeNotices(
+                    workspace,
+                    pendientes => {
+                        if (generacion !== workspaceChangeGeneration) return;
+
+                        noticeMovedWorkers(pendientes);
+                    }
+                ).catch(error => {
+                    console.warn(
+                        "No se pudieron escuchar los avisos de cambio de unidad.",
+                        error
+                    );
+                });
                 // Los traspasos que ESTA unidad pidio y ya aceptaron: el
                 // perfil se crea solo, sin preguntar nada, porque la fecha y
                 // la rotativa se eligieron al pedirlo. Tambien con el estado
@@ -18225,6 +18360,7 @@ initFirebaseShell({
         } else {
             stopWatchingAcceptedOutgoingTransfers();
             stopWatchingIncomingHandoverTransfers();
+            stopWatchingWorkerUnitChangeNotices();
             stopWatchingIncomingTransferBalances();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseAuditLogShardShadowSync();
