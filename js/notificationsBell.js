@@ -18,6 +18,13 @@ import { getJSON, setJSON } from "./persistence.js";
 const NOTICES_KEY = "bellNotices";
 const MAX_NOTICES = 20;
 
+// Que coberturas aceptadas ya se avisaron. Tiene que PERSISTIR: si solo viviera
+// en memoria, una aceptacion ocurrida con el navegador cerrado se daria por
+// vista al abrir -el arranque marca como conocidas las que ya estan- y el
+// supervisor no se enteraria nunca de la que mas importa, la que paso mientras
+// no miraba.
+const SEEN_COVERS_KEY = "bellSeenCovers";
+
 // Se alertan solo las solicitudes ORIGINADAS por el trabajador: permiso (leave),
 // cambio de turno (swap) e incidencia de marcaje (missing_clock / clock_incident).
 const WORKER_ORIGIN_TYPES = new Set([
@@ -131,6 +138,26 @@ function coverDateLabel(value) {
     return partes ? `${partes[3]}-${partes[2]}-${partes[1]}` : "";
 }
 
+// La primera vez no hay nada guardado: ahi se siembra con lo que ya existe,
+// para no soltar un aviso por cada turno cubierto en la historia de la unidad.
+// De ahi en adelante, lo que no este en la lista es noticia, haya pasado con la
+// aplicacion abierta o cerrada.
+function loadSeenCoverIds() {
+    const guardado = getJSON(SEEN_COVERS_KEY, null);
+
+    if (!Array.isArray(guardado)) {
+        const actuales = acceptedCoverRequests()
+            .map(coverRequestId)
+            .filter(Boolean);
+
+        setJSON(SEEN_COVERS_KEY, actuales);
+
+        return new Set(actuales);
+    }
+
+    return new Set(guardado.map(String).filter(Boolean));
+}
+
 function noticeAcceptedCovers() {
     const actuales = acceptedCoverRequests();
 
@@ -149,9 +176,10 @@ function noticeAcceptedCovers() {
         });
     }
 
-    knownAcceptedCoverIds = new Set(
-        actuales.map(coverRequestId).filter(Boolean)
-    );
+    const vistas = actuales.map(coverRequestId).filter(Boolean);
+
+    knownAcceptedCoverIds = new Set(vistas);
+    setJSON(SEEN_COVERS_KEY, vistas);
 }
 
 export function pendingRequestIds(requests) {
@@ -483,11 +511,7 @@ export function initNotificationsBell({ onOpen } = {}) {
     getBellNotices().forEach(notice => {
         if (notice?.id) knownPendingIds.add(`aviso:${notice.id}`);
     });
-    // Lo ya aceptado al entrar no es noticia: sin esto, abrir la unidad
-    // generaria un aviso por cada turno cubierto hace semanas.
-    knownAcceptedCoverIds = new Set(
-        acceptedCoverRequests().map(coverRequestId).filter(Boolean)
-    );
+    knownAcceptedCoverIds = loadSeenCoverIds();
     alertsReadyAt = Date.now() + HYDRATION_GRACE_MS;
     updateBadge(knownPendingIds.size);
 
@@ -509,6 +533,15 @@ export function initNotificationsBell({ onOpen } = {}) {
     window.addEventListener("pointerdown", unlock, { once: true });
     window.addEventListener("keydown", unlock, { once: true });
 
-    // Reutiliza el evento existente en vez de abrir un listener nuevo.
+    // Reutiliza los eventos existentes en vez de abrir listeners nuevos.
+    //
+    // Los DOS hacen falta: las solicitudes del trabajador llegan por el
+    // primero, pero las coberturas tienen su propio sync y emiten el segundo.
+    // Escuchando solo el primero, que alguien acepte cubrir un turno no
+    // despertaba a la campanita.
     window.addEventListener("proturnos:workerRequestsChanged", scheduleRefresh);
+    window.addEventListener(
+        "proturnos:replacementRequestsChanged",
+        scheduleRefresh
+    );
 }

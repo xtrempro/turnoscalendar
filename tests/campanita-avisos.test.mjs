@@ -61,9 +61,31 @@ test("un turno aceptado por la app se vuelve aviso", () => {
 test("lo que ya estaba aceptado al entrar no genera avisos viejos", () => {
     // Sin esto, abrir la unidad soltaria un aviso por cada turno cubierto
     // hace semanas.
-    const init = campanita.slice(campanita.indexOf("export function initNotificationsBell"));
+    const sembrar = campanita.slice(
+        campanita.indexOf("function loadSeenCoverIds("),
+        campanita.indexOf("function noticeAcceptedCovers(")
+    );
 
-    assert.match(init, /knownAcceptedCoverIds = new Set\(/);
+    assert.match(sembrar, /if \(!Array\.isArray\(guardado\)\)/);
+    assert.match(sembrar, /setJSON\(SEEN_COVERS_KEY, actuales\)/);
+});
+
+test("una aceptacion ocurrida con el navegador cerrado igual avisa", () => {
+    // Lo visto se guarda, no se recalcula al arrancar: si se recalculara, lo
+    // que paso mientras nadie miraba se daria por visto -justo lo que mas
+    // importa saber-.
+    assert.match(campanita, /const SEEN_COVERS_KEY = "bellSeenCovers";/);
+    assert.match(campanita, /knownAcceptedCoverIds = loadSeenCoverIds\(\);/);
+    assert.match(campanita, /setJSON\(SEEN_COVERS_KEY, vistas\);/);
+});
+
+test("la campanita escucha tambien el sync de coberturas", () => {
+    // Las coberturas tienen su propio evento: escuchando solo el de
+    // solicitudes, que alguien acepte cubrir un turno no la despertaba.
+    assert.match(
+        campanita,
+        /addEventListener\(\s*"proturnos:replacementRequestsChanged",\s*scheduleRefresh\s*\)/
+    );
 });
 
 test("un aviso creado dentro del refresco no se llama a si mismo", () => {
