@@ -30,7 +30,8 @@ const {
   syncWorkerLinkEmailsHandler
 } = require("./workerLinkEmailSync");
 const {
-  findWorkerInEstablishmentHandler
+  findWorkerInEstablishmentHandler,
+  findWorkerUnitsInEstablishment
 } = require("./workerEstablishmentLookup");
 const {
   cancelWorkerHandoverRequestHandler,
@@ -40,6 +41,7 @@ const {
 } = require("./workerHandoverRequests");
 const {
   notifyWorkerUnitChangeHandler,
+  reportWorkerEnteredHereHandler,
   resolveWorkerUnitChangeNoticeHandler
 } = require("./workerUnitChangeNotice");
 const {
@@ -2698,6 +2700,46 @@ exports.notifyWorkerUnitChange = onDocumentWritten(
 // El supervisor de la unidad anterior responde la tarjeta: desactivo el perfil
 // o decidio dejarlo activo. Desactivarlo lo hace su navegador, que es donde
 // viven los perfiles; esto solo cierra la tarjeta.
+
+// Se ingreso de cero a alguien cuyo RUT ya estaba en otra unidad del
+// establecimiento: avisarle a esa unidad para que decida si desactiva su
+// perfil.
+//
+// Por RUT y no por el enlace de la app: la mayoria de los trabajadores
+// todavia no tiene la aplicacion, y en esos casos la unidad vieja no se
+// enteraria nunca.
+exports.reportWorkerEnteredHere = onCall(
+  {
+    enforceAppCheck: ENFORCE_APP_CHECK,
+    timeoutSeconds: 60,
+    secrets: [RESEND_API_KEY]
+  },
+  (request) => (rejectPracticeWorkspace(
+    request.data?.workspaceId
+  ), reportWorkerEnteredHereHandler(request, {
+    db,
+    HttpsError,
+    requireProfileManager: requireWorkspaceProfileManager,
+    // La MISMA busqueda que usa la deteccion al escribir el RUT: si cada una
+    // buscara por su cuenta, un dia una encontraria lo que la otra no.
+    findWorkerUnitsInEstablishment,
+    normalizeRut: (value) => String(value || "").replace(/[^0-9kK]/g, "").toUpperCase(),
+    serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+    canManageProfiles: memberCanManageProfiles,
+    getUserEmail: async (uid) => {
+      try {
+        const user = await admin.auth().getUser(uid);
+
+        return user.email || "";
+      } catch (_error) {
+        return "";
+      }
+    },
+    sendEmail: sendResendEmail,
+    logger
+  }))
+);
+
 exports.resolveWorkerUnitChangeNotice = onCall(
   { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
   (request) => resolveWorkerUnitChangeNoticeHandler(request, {

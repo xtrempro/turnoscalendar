@@ -109,3 +109,38 @@ test("el cliente nunca marca el aviso por su cuenta", () => {
     assert.match(puente, /callFunction\("resolveWorkerUnitChangeNotice"/);
     assert.doesNotMatch(puente, /setDoc|updateDoc/);
 });
+
+test("el aviso tambien sale por RUT, sin depender de la app", () => {
+    // El camino del enlace solo se dispara si el trabajador tiene la
+    // aplicacion, y la mayoria no la tiene: en esos casos la unidad vieja no
+    // se enteraba nunca, y su perfil se quedaba activo en la planificacion.
+    assert.match(servidor, /async function reportWorkerEnteredHereHandler/);
+    assert.match(servidor, /findWorkerUnitsInEstablishment\(db, workspaceId, rut\)/);
+    assert.match(puente, /callFunction\("reportWorkerEnteredHere"/);
+});
+
+test("avisar es parte de guardar el perfil nuevo", () => {
+    const guardar = main.slice(
+        main.indexOf("if (isCreating && !transferIntake) {"),
+        main.indexOf("if (isCreating && !transferIntake) {") + 300
+    );
+
+    assert.match(guardar, /reportWorkerEnteredElsewhere\(nextProfilePayload\.rut\)/);
+});
+
+test("una transferencia no vuelve a avisar", () => {
+    // Ese camino ya inactiva el perfil en origen por su cuenta.
+    assert.match(main, /if \(isCreating && !transferIntake\) \{/);
+});
+
+test("las unidades a avisar las decide el servidor", () => {
+    // Si se confiara en la lista que manda el cliente, cualquiera podria
+    // dejarle una tarjeta a una unidad que nada tiene que ver.
+    const puenteRut = puente.slice(
+        puente.indexOf("export async function reportWorkerEnteredHere"),
+        puente.indexOf("export async function reportWorkerEnteredHere") + 600
+    );
+
+    assert.doesNotMatch(puenteRut, /unidades/);
+    assert.match(puenteRut, /workspaceId: workspace\.id,\s*\n\s*rut/);
+});

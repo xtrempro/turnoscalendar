@@ -18,6 +18,7 @@ const {
   NOTICES_COLLECTION,
   PENDING,
   notifyWorkerUnitChangeHandler,
+  reportWorkerEnteredHereHandler,
   resolveWorkerUnitChangeNoticeHandler,
   _private
 } = require("../workerUnitChangeNotice");
@@ -94,7 +95,20 @@ function fakeDb({ links = {}, members = {}, notices = {} } = {}) {
         assert.equal(nombre, NOTICES_COLLECTION);
 
         return ref(`${NOTICES_COLLECTION}/${id}`);
-      }
+      },
+      // Lo usa la deduplicacion: una tarjeta por persona y unidad.
+      where: (campo, _op, valor) => ({
+        get: async () => ({
+          docs: [...escrituras.entries()]
+            .filter(([clave, data]) =>
+              clave.startsWith(`${NOTICES_COLLECTION}/`) && data[campo] === valor
+            )
+            .map(([clave, data]) => ({
+              id: clave.split("/").pop(),
+              data: () => data
+            }))
+        })
+      })
     }),
     batch: () => {
       const pendientes = [];
@@ -493,4 +507,157 @@ test("sin permiso para administrar perfiles no se resuelve", async () => {
     ),
     (error) => error.code === "permission-denied"
   );
+});
+
+/* =========================================================
+ * Aviso por RUT: se ingreso de cero a alguien que ya estaba en otra unidad.
+ *
+ * Es el camino que alcanza a TODOS. El otro -el del enlace de la app- solo
+ * se dispara si el trabajador tiene la aplicacion, y la mayoria no la tiene:
+ * en esos casos la unidad vieja no se enteraba nunca.
+ * ========================================================= */
+
+function entornoRut({ unidades = [], miembros = {} } = {}) {
+  const db = fakeDb({ members: miembros });
+  const enviados = [];
+  const dependencias = {
+    db,
+    HttpsError,
+    requireProfileManager: async () => ({ role: "owner" }),
+    findWorkerUnitsInEstablishment: async () => ({
+      establishment: "hcv",
+      unidades
+    }),
+    normalizeRut: (v) => String(v || "").replace(/[^0-9kK]/g, "").toUpperCase(),
+    serverTimestamp: () => "AHORA",
+    canManageProfiles: (m) => m.role === "owner",
+    getUserEmail: async (uid) => `${uid}@correo.cl`,
+    sendEmail: async (m) => enviados.push(m),
+    idFactory: () => `aviso-${db.escrituras.size + 1}`,
+    logger: { warn: () => {} }
+  };
+
+  return { db, enviados, dependencias };
+}
+
+function peticionRut(data, uid = "supervisor") {
+  return { auth: { uid, token: {} }, data };
+}
+
+const UNIDAD_CON_EL = {
+  workspaceId: "ws-vieja",
+  workspaceName: "UCI",
+  profileName: "ALAN PLAZA",
+  active: true
+};
+
+test("avisa a la unidad que ya tenia a esa persona", async () => {
+  const { db, enviados, dependencias } = entornoRut({
+    unidades: [UNIDAD_CON_EL],
+    miembros: { "ws-vieja": [{ uid: "jefa", role: "owner" }] }
+  });
+  const resultado = await reportWorkerEnteredHereHandler(
+    peticionRut({ workspaceId: "ws-nueva", rut: "17.816.632-8" }),
+    dependencias
+  );
+
+  assert.equal(resultado.notified, 1);
+
+  const aviso = db.escrituras.get(`${NOTICES_COLLECTION}/aviso-1`);
+
+  assert.equal(aviso.workspaceId, "ws-vieja");
+  assert.equal(aviso.profileRut, "178166328");
+  assert.equal(aviso.profileName, "ALAN PLAZA");
+  assert.equal(aviso.status, PENDING);
+  assert.equal(enviados.length, 1);
+});
+
+test("no avisa si alla el perfil ya esta inactivo", async () => {
+  // No esta estorbando en ninguna planificacion: no hay nada que decidir.
+  const { db, enviados, dependencias } = entornoRut({
+    unidades: [{ ...UNIDAD_CON_EL, active: false }],
+    miembros: { "ws-vieja": [{ uid: "jefa", role: "owner" }] }
+  });
+  const resultado = await reportWorkerEnteredHereHandler(
+    peticionRut({ workspaceId: "ws-nueva", rut: "17816632-8" }),
+    dependencias
+  );
+
+  assert.equal(resultado.notified, 0);
+  assert.equal(db.escrituras.size, 0);
+  assert.deepEqual(enviados, []);
+});
+
+test("no deja dos tarjetas por la misma persona", async () => {
+  const { db, dependencias } = entornoRut({
+    unidades: [UNIDAD_CON_EL],
+    miembros: { "ws-vieja": [{ uid: "jefa", role: "owner" }] }
+  });
+
+  await reportWorkerEnteredHereHandler(
+    peticionRut({ workspaceId: "ws-nueva", rut: "17816632-8" }),
+    dependencias
+  );
+
+  const segundo = await reportWorkerEnteredHereHandler(
+    peticionRut({ workspaceId: "ws-nueva", rut: "17.816.632-8" }),
+    dependencias
+  );
+
+  assert.equal(segundo.notified, 0);
+  assert.equal(db.escrituras.size, 1);
+});
+
+test("un RUT incompleto no avisa a nadie", async () => {
+  const { dependencias } = entornoRut({ unidades: [UNIDAD_CON_EL] });
+
+  await assert.rejects(
+    () => reportWorkerEnteredHereHandler(
+      peticionRut({ workspaceId: "ws-nueva", rut: "123" }),
+      dependencias
+    ),
+    (error) => error.code === "invalid-argument"
+  );
+});
+
+test("sin permiso en la unidad que ingresa, no se avisa", async () => {
+  const { db, dependencias } = entornoRut({ unidades: [UNIDAD_CON_EL] });
+
+  dependencias.requireProfileManager = async () => {
+    throw new HttpsError("permission-denied", "No puedes.");
+  };
+
+  await assert.rejects(
+    () => reportWorkerEnteredHereHandler(
+      peticionRut({ workspaceId: "ws-nueva", rut: "17816632-8" }),
+      dependencias
+    ),
+    (error) => error.code === "permission-denied"
+  );
+
+  assert.equal(db.escrituras.size, 0);
+});
+
+test("el cliente no elige a que unidades avisar", async () => {
+  // Las vuelve a buscar el servidor: si se confiara en la lista que llega,
+  // cualquiera podria dejarle una tarjeta a una unidad ajena.
+  const { db, dependencias } = entornoRut({
+    unidades: [UNIDAD_CON_EL],
+    miembros: { "ws-vieja": [{ uid: "jefa", role: "owner" }] }
+  });
+
+  await reportWorkerEnteredHereHandler(
+    peticionRut({
+      workspaceId: "ws-nueva",
+      rut: "17816632-8",
+      unidades: [{ workspaceId: "ws-que-no-corresponde", active: true }]
+    }),
+    dependencias
+  );
+
+  const avisos = [...db.escrituras.entries()]
+    .filter(([clave]) => clave.startsWith(NOTICES_COLLECTION));
+
+  assert.equal(avisos.length, 1);
+  assert.equal(avisos[0][1].workspaceId, "ws-vieja");
 });

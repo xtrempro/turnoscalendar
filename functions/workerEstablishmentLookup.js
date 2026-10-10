@@ -53,28 +53,20 @@ async function profilesOfWorkspace(db, workspaceId) {
   return Array.isArray(perfiles) ? perfiles : [];
 }
 
-async function findWorkerInEstablishmentHandler(request, {
-  db,
-  HttpsError,
-  requireProfileManager
-}) {
-  const uid = request.auth?.uid;
-
-  if (!uid) {
-    throw new HttpsError("unauthenticated", "Inicia sesion.");
-  }
-
-  const workspaceId = cleanText(request.data?.workspaceId, 160);
-  const rut = normalizeRut(request.data?.rut);
-
-  if (!workspaceId || rut.length < 7) {
-    throw new HttpsError("invalid-argument", "Falta el RUT o la unidad.");
-  }
-
-  // Solo quien puede administrar perfiles en SU unidad, que es quien esta
-  // creando el perfil. Sin esto, cualquier miembro podria consultar RUTs.
-  await requireProfileManager(workspaceId, uid, request.auth?.token || {});
-
+/**
+ * En que OTRAS unidades del mismo establecimiento esta ese RUT.
+ *
+ * Vive aparte porque hay dos cosas que lo necesitan y tienen que mirar
+ * exactamente lo mismo: avisarle a quien crea un perfil que esa persona ya
+ * esta en otra unidad, y avisarle a esa otra unidad cuando la ingresan aqui de
+ * todos modos (functions/workerUnitChangeNotice.js). Si cada una buscara por
+ * su cuenta, un dia una encontraria lo que la otra no.
+ *
+ * Devuelve tambien el nombre del perfil, que las unidades que ya lo tienen si
+ * pueden saber: es SU trabajador. Lo que no sale de aqui hacia quien pregunta
+ * es otra cosa, y de eso se encarga el handler.
+ */
+async function findWorkerUnitsInEstablishment(db, workspaceId, rut) {
   const propiaSnap = await db.collection("workspaces").doc(workspaceId).get();
   const establecimiento = String(propiaSnap.data()?.establishment || "");
 
@@ -102,6 +94,7 @@ async function findWorkerInEstablishmentHandler(request, {
     encontradas.push({
       workspaceId: doc.id,
       workspaceName: cleanText(doc.data()?.name, 160),
+      profileName: cleanText(perfil.name, 180),
       // Un perfil inactivo igual sirve: es justo el de alguien que se fue de
       // esa unidad, y sus saldos de vacaciones siguen ahi.
       active: perfil.active !== false
@@ -111,8 +104,47 @@ async function findWorkerInEstablishmentHandler(request, {
   return { establishment: establecimiento, unidades: encontradas };
 }
 
+async function findWorkerInEstablishmentHandler(request, {
+  db,
+  HttpsError,
+  requireProfileManager
+}) {
+  const uid = request.auth?.uid;
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Inicia sesion.");
+  }
+
+  const workspaceId = cleanText(request.data?.workspaceId, 160);
+  const rut = normalizeRut(request.data?.rut);
+
+  if (!workspaceId || rut.length < 7) {
+    throw new HttpsError("invalid-argument", "Falta el RUT o la unidad.");
+  }
+
+  // Solo quien puede administrar perfiles en SU unidad, que es quien esta
+  // creando el perfil. Sin esto, cualquier miembro podria consultar RUTs.
+  await requireProfileManager(workspaceId, uid, request.auth?.token || {});
+
+  const { establishment, unidades } =
+    await findWorkerUnitsInEstablishment(db, workspaceId, rut);
+
+  // El nombre del perfil NO sale hacia quien pregunta: ya escribio el RUT y
+  // sabe de quien se trata, y devolverlo convertiria esto en una via para
+  // pescar datos de trabajadores de otras unidades.
+  return {
+    establishment,
+    unidades: unidades.map((item) => ({
+      workspaceId: item.workspaceId,
+      workspaceName: item.workspaceName,
+      active: item.active
+    }))
+  };
+}
+
 module.exports = {
   findWorkerInEstablishmentHandler,
+  findWorkerUnitsInEstablishment,
   _private: {
     MAX_WORKSPACES,
     normalizeRut,

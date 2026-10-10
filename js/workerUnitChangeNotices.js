@@ -24,6 +24,25 @@ async function callFunction(name, payload) {
 }
 
 /**
+ * Se ingreso de cero a alguien cuyo RUT ya estaba en otra unidad del
+ * establecimiento: avisarle a esa unidad.
+ *
+ * Las unidades las vuelve a buscar el servidor. Si se le mandara la lista desde
+ * aqui, cualquiera podria dejarle una tarjeta a una unidad que nada tiene que
+ * ver con esa persona.
+ */
+export async function reportWorkerEnteredHere(rut) {
+    const workspace = getActiveWorkspace();
+
+    if (!workspace?.id || !rut) return { notified: 0 };
+
+    return callFunction("reportWorkerEnteredHere", {
+        workspaceId: workspace.id,
+        rut
+    });
+}
+
+/**
  * Los avisos dirigidos a la unidad activa.
  */
 export async function listWorkerUnitChangeNotices() {

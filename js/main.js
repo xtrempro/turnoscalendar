@@ -648,6 +648,7 @@ import {
     watchIncomingTransferBalances
 } from "./workerTransfers.js";
 import {
+    reportWorkerEnteredHere,
     resolveWorkerUnitChangeNotice,
     stopWatchingWorkerUnitChangeNotices,
     watchWorkerUnitChangeNotices
@@ -11680,6 +11681,21 @@ window.addEventListener("proturnos:deactivateMovedWorker", event => {
 
 // Los avisos pendientes suenan en la campanita cuando llegan, no cuando a
 // alguien se le ocurre mirar Solicitudes.
+// Avisarle a la unidad que ya tenia a esa persona. Silencioso a proposito: el
+// perfil ya quedo guardado, y que el aviso falle no es algo que quien lo acaba
+// de crear pueda resolver ni tenga que cargar.
+async function reportWorkerEnteredElsewhere(rut) {
+    const limpio = normalizeRut(rut);
+
+    if (limpio.length < 7) return;
+
+    try {
+        await reportWorkerEnteredHere(limpio);
+    } catch (error) {
+        console.warn("No se pudo avisar a la unidad anterior.", error);
+    }
+}
+
 function noticeMovedWorkers(pendientes = []) {
     for (const aviso of pendientes) {
         const quien = String(aviso.profileName || "").trim() || "Un trabajador";
@@ -14160,6 +14176,17 @@ async function guardarPerfil() {
                     "Vuelve a Aceptar en Unidades enlazadas para confirmarla con este perfil."
                 );
             }
+        }
+
+        // Se ingreso de cero a alguien que ya estaba en otra unidad del
+        // establecimiento: hay que avisarle a esa unidad, que si no se queda
+        // con el perfil activo apareciendo en su planificacion sin que nadie
+        // lo note.
+        //
+        // No corre cuando llego por una transferencia: ese camino ya inactiva
+        // el perfil alla por su cuenta.
+        if (isCreating && !transferIntake) {
+            void reportWorkerEnteredElsewhere(nextProfilePayload.rut);
         }
 
         return true;

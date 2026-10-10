@@ -236,8 +236,10 @@ async function avisarUnidad({
 
   const quien = profileName || "Un trabajador de tu unidad";
   const asunto = `${quien} se enlazo en otra unidad`;
-  const detalle = `${quien} fue ingresado en otra unidad y su aplicación ya no ` +
-    "muestra la tuya.";
+  // Sin afirmar nada sobre su aplicacion: a este aviso se llega tanto porque
+  // se enlazo alla -y entonces si dejo de ver la tuya- como porque lo
+  // ingresaron de cero, y la mayoria todavia no tiene la app.
+  const detalle = `${quien} fue ingresado en otra unidad del establecimiento.`;
   const consejo = "Si ya no trabaja contigo, desactiva su perfil para que deje " +
     "de aparecer en la planificación. Lo tienes en TurnoPlus, en el menú " +
     "Solicitudes, con el botón para hacerlo.";
@@ -253,6 +255,129 @@ async function avisarUnidad({
   for (const to of destinatarios) {
     await sendEmail({ to, subject: asunto, html, text });
   }
+}
+
+/**
+ * Alguien fue ingresado de cero en esta unidad y su RUT ya estaba en otra del
+ * mismo establecimiento: avisarle a esa otra unidad.
+ *
+ * POR QUE POR RUT Y NO POR EL ENLACE DE LA APP: el otro camino de este archivo
+ * se dispara cuando el trabajador se enlaza aqui, y eso solo pasa si tiene la
+ * aplicacion. La mayoria no la tiene todavia, y justamente en esos casos la
+ * unidad vieja no se enteraria NUNCA: su perfil se quedaria activo, apareciendo
+ * en la planificacion, sin que nadie lo note. El RUT alcanza a todos.
+ *
+ * Los dos caminos terminan en la misma tarjeta, con el mismo boton.
+ */
+async function reportWorkerEnteredHereHandler(request, {
+  db,
+  HttpsError,
+  requireProfileManager,
+  findWorkerUnitsInEstablishment,
+  normalizeRut,
+  serverTimestamp,
+  canManageProfiles,
+  getUserEmail,
+  sendEmail,
+  idFactory = defaultIdFactory,
+  logger = { warn() {} }
+}) {
+  const uid = request.auth?.uid;
+
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Inicia sesion.");
+  }
+
+  const workspaceId = cleanText(request.data?.workspaceId, 160);
+  const rut = normalizeRut(request.data?.rut);
+
+  if (!workspaceId || rut.length < 7) {
+    throw new HttpsError("invalid-argument", "Falta el RUT o la unidad.");
+  }
+
+  await requireProfileManager(workspaceId, uid, request.auth?.token || {});
+
+  // Las unidades se vuelven a buscar en el servidor: si se confiara en la
+  // lista que manda el cliente, cualquiera podria dejarle una tarjeta a una
+  // unidad que nada tiene que ver.
+  const { unidades } = await findWorkerUnitsInEstablishment(db, workspaceId, rut);
+  const avisadas = [];
+
+  for (const unidad of unidades.slice(0, MAX_PREVIOUS_UNITS)) {
+    // Un perfil ya inactivo alla no necesita aviso: no esta estorbando en
+    // ninguna planificacion.
+    if (!unidad.active) continue;
+
+    try {
+      const creado = await createNoticeIfMissing({
+        db,
+        workspaceId: unidad.workspaceId,
+        rut,
+        profileName: unidad.profileName,
+        serverTimestamp,
+        idFactory
+      });
+
+      if (!creado) continue;
+
+      avisadas.push(unidad.workspaceId);
+
+      await avisarUnidad({
+        db,
+        canManageProfiles,
+        getUserEmail,
+        sendEmail,
+        workspaceId: unidad.workspaceId,
+        profileName: unidad.profileName
+      });
+    } catch (error) {
+      logger.warn?.("No se pudo avisar a la unidad anterior.", {
+        workspaceId: unidad.workspaceId,
+        error: String(error?.message || error)
+      });
+    }
+  }
+
+  return { ok: true, notified: avisadas.length };
+}
+
+// Una tarjeta por persona y unidad: dos iguales solo serian dos avisos para
+// decidir lo mismo.
+async function createNoticeIfMissing({
+  db,
+  workspaceId,
+  rut,
+  profileName,
+  serverTimestamp,
+  idFactory
+}) {
+  const previasSnap = await db
+    .collection(NOTICES_COLLECTION)
+    .where("workspaceId", "==", workspaceId)
+    .get();
+  const yaHay = previasSnap.docs.some((docSnap) => {
+    const previa = docSnap.data() || {};
+
+    return String(previa.profileRut || "") === rut &&
+      String(previa.status || "") === PENDING;
+  });
+
+  if (yaHay) return false;
+
+  const now = serverTimestamp();
+
+  await db.collection(NOTICES_COLLECTION).doc(idFactory()).set({
+    workspaceId,
+    uid: "",
+    profileName,
+    profileRut: rut,
+    newWorkspaceName: "",
+    status: PENDING,
+    createdAt: now,
+    updatedAt: now
+  });
+
+  return true;
 }
 
 /**
@@ -323,6 +448,7 @@ module.exports = {
   NOTICES_COLLECTION,
   PENDING,
   notifyWorkerUnitChangeHandler,
+  reportWorkerEnteredHereHandler,
   resolveWorkerUnitChangeNoticeHandler,
   _private: {
     MAX_NOTIFIED,

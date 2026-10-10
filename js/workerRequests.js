@@ -1710,8 +1710,9 @@ async function getWorkerUnitChangeNotices() {
                 profile: String(item.profileName || "").trim() || "Trabajador",
                 workerRut: item.profileRut ? formatRut(item.profileRut) : "",
                 note: item.status === "pending"
-                    ? "Fue ingresado en otra unidad y su app ya no muestra la " +
-                        "tuya. Si ya no trabaja contigo, desactiva su perfil."
+                    ? "Fue ingresado en otra unidad del establecimiento. Si ya " +
+                        "no trabaja contigo, desactiva su perfil para que deje " +
+                        "de aparecer en la planificación."
                     : "",
                 createdAt: timestampISO(
                     item.createdAt || item.updatedAt || new Date()
