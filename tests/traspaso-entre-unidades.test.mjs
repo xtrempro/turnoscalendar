@@ -17,6 +17,7 @@ const main = await leer("../js/main.js");
 const solicitudes = await leer("../js/workerRequests.js");
 const campanita = await leer("../js/notificationsBell.js");
 const puente = await leer("../js/workerHandovers.js");
+const servidorTransferencias = await leer("../functions/workerTransferRequests.js");
 
 function extraer(fuente, nombre, largo = 2600) {
     const inicio = fuente.indexOf(`function ${nombre}(`);
@@ -29,22 +30,33 @@ function extraer(fuente, nombre, largo = 2600) {
 test("al pedir se eligen la fecha y la rotativa", () => {
     const preguntas = extraer(main, "askHandoverSchedule");
 
-    assert.match(preguntas, /inputType: "date"/);
-    assert.match(preguntas, /requiresRotationFirstTurn\(rotationType\)/);
-    assert.match(preguntas, /getRotationStartOptions\(rotationType\)/);
+    assert.match(preguntas, /showChoice\(/);
+    assert.match(preguntas, /openRotationConfigModal\(rotationType/);
+    assert.match(preguntas, /startDate: elegido\.rotationStart/);
     // Y viajan en el pedido.
     assert.match(main, /startDate: rotativa\.startDate/);
     assert.match(main, /rotationType: rotativa\.rotationType/);
     assert.match(main, /rotationFirstTurn: rotativa\.rotationFirstTurn/);
 });
 
-test("las opciones de la secuencia salen de rotationUtils, no escritas a mano", () => {
-    // Si se copiaran aqui, el dia que cambie una secuencia el pedido pediria
-    // un punto de partida que ya no existe.
+test("la rotativa se configura con el cuadro de siempre, no con otro", () => {
+    // Un segundo cuadro para configurar una rotativa seria uno que algun dia
+    // deja de parecerse al primero.
     const preguntas = extraer(main, "askHandoverSchedule");
 
     assert.doesNotMatch(preguntas, /Iniciar con/);
-    assert.match(main, /getRotationStartOptions/);
+    assert.doesNotMatch(preguntas, /inputType: "date"/);
+    assert.match(preguntas, /openRotationConfigModal\(/);
+    // El cuadro avisa cuando se guarda y cuando se cierra, incluso si no
+    // llego a abrirse: si no, quien lo espera se cuelga.
+    assert.match(main, /options\.onSaved\?\.\(\{/);
+    assert.match(main, /options\.onClosed\?\.\(\);/);
+});
+
+test("una modalidad sin secuencia no manda un primer turno inventado", () => {
+    const preguntas = extraer(main, "askHandoverSchedule");
+
+    assert.match(preguntas, /requiresRotationFirstTurn\(rotationType\)/);
 });
 
 test("enviar el pedido descarta el perfil a medio escribir", () => {
@@ -108,13 +120,36 @@ test("el perfil se crea por el camino de siempre, con la rotativa pedida", () =>
     assert.match(crear, /transferredLeaveBalances\(solicitud\)/);
 });
 
-test("si crear el perfil falla, no se queda callado", () => {
-    // El traspaso ya quedo reclamado: nadie mas va a intentarlo, asi que
-    // callarlo dejaria a la persona sin perfil y sin que nadie se entere.
-    const aplicar = extraer(main, "applyIncomingHandoverTransfers", 2600);
+test("si crear el perfil falla, el traspaso vuelve a la cola", () => {
+    // Es lo que evita que un traspaso quede consumido para siempre: el claim
+    // ya lo tomo, asi que sin soltarlo nadie volveria a intentarlo y la
+    // persona se quedaria sin perfil.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers", 3200);
 
+    assert.match(aplicar, /await releaseWorkerTransferIntake\(solicitud\.id\)/);
     assert.match(aplicar, /traspaso-fallido:/);
     assert.match(aplicar, /addBellNotice\(/);
+});
+
+test("solo lo suelta quien lo tomo", () => {
+    // Si cualquiera pudiera soltarlo, una sesion devolveria a la cola un
+    // traspaso que otra esta aplicando, y terminarian creando dos perfiles.
+    assert.match(
+        servidorTransferencias,
+        /solicitud\.targetIntakeAppliedByUid !== uid/
+    );
+});
+
+test("un perfil abierto no deja el traspaso esperando a una recarga", () => {
+    // El oyente no vuelve a hablar solo: el documento ya no cambia. Sin un
+    // reintento al cerrar el perfil, "se reintenta al cerrarlo" dependia de
+    // recargar la unidad.
+    assert.match(main, /function retryHandoverIntakes\(\)/);
+    assert.match(main, /pendingHandoverIntakes = pendientes;/);
+
+    const salir = main.slice(main.indexOf("function exitProfileMode("));
+
+    assert.match(salir.slice(0, 700), /retryHandoverIntakes\(\);/);
 });
 
 test("el oyente del destino se enciende y se apaga con la unidad", () => {

@@ -867,6 +867,77 @@ async function claimWorkerTransferIntakeHandler(request, dependencies) {
 }
 
 /**
+ * Devuelve el traspaso a la cola porque crear el perfil fallo.
+ *
+ * El claim existe para que dos sesiones no creen dos perfiles, pero si la que
+ * lo tomo no consigue guardar, dejarlo marcado como aplicado consumiria el
+ * traspaso para siempre: la persona se quedaria sin perfil y nadie volveria a
+ * intentarlo. Soltarlo lo deja disponible para el proximo intento.
+ *
+ * Solo puede soltarlo quien lo tomo: si no, una sesion podria devolver a la
+ * cola un traspaso que otra esta aplicando en ese mismo momento, y terminarian
+ * los dos creando el perfil.
+ */
+async function releaseWorkerTransferIntakeHandler(request, dependencies) {
+  const {
+    db,
+    HttpsError,
+    serverTimestamp,
+    requireWorkspaceProfileManager
+  } = dependencies;
+  const { uid, workspaceId, requestId } =
+    validateBasePayload(request, HttpsError);
+
+  if (!requestId) {
+    callableError(
+      HttpsError,
+      "invalid-argument",
+      "No fue posible identificar la transferencia."
+    );
+  }
+
+  await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
+
+  const ref = db.collection(COLLECTION).doc(requestId);
+
+  return db.runTransaction(async transaction => {
+    const snap = await transaction.get(ref);
+
+    if (!snap.exists) {
+      callableError(HttpsError, "not-found", "La transferencia ya no existe.");
+    }
+
+    const solicitud = snap.data() || {};
+
+    if (solicitud.targetWorkspaceId !== workspaceId) {
+      callableError(
+        HttpsError,
+        "permission-denied",
+        "Solo la unidad que recibe libera este traspaso."
+      );
+    }
+
+    if (
+      !solicitud.targetIntakeAppliedAt ||
+      solicitud.targetIntakeAppliedByUid !== uid
+    ) {
+      return { ok: true, requestId, released: false };
+    }
+
+    const now = serverTimestamp();
+
+    transaction.update(ref, {
+      targetIntakeAppliedAt: null,
+      targetIntakeAppliedByUid: null,
+      targetIntakeFailedAt: now,
+      updatedAt: now
+    });
+
+    return { ok: true, requestId, released: true };
+  });
+}
+
+/**
  * El ORIGEN informa los saldos que de verdad quedaron tras vaciar el calendario
  * (los permisos anulados ya volvieron al saldo). La unidad destino compara con
  * los que se enviaron al pedir y ajusta la diferencia.
@@ -1003,5 +1074,6 @@ module.exports = {
   moveDueWorkerLinksHandler,
   profilesFromEntry,
   moveWorkerLinkForTransfer,
+  releaseWorkerTransferIntakeHandler,
   respondWorkerTransferRequestHandler
 };

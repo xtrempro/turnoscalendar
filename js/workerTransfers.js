@@ -154,6 +154,22 @@ export async function claimWorkerTransferIntake(requestId) {
     return result?.claimed === true;
 }
 
+/**
+ * Devuelve el traspaso a la cola porque crear el perfil fallo.
+ *
+ * Sin esto, el claim lo consumiria para siempre: la persona se quedaria sin
+ * perfil y ninguna sesion volveria a intentarlo.
+ */
+export async function releaseWorkerTransferIntake(requestId) {
+    const workspace = activeWorkspaceOrThrow();
+    const result = await callFunction("releaseWorkerTransferIntake", {
+        workspaceId: workspace.id,
+        requestId
+    });
+
+    return result?.released === true;
+}
+
 let stopIntakeListener = null;
 let intakeGeneration = 0;
 

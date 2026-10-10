@@ -636,6 +636,7 @@ import {
     claimWorkerTransferApplication,
     claimWorkerTransferBalances,
     claimWorkerTransferIntake,
+    releaseWorkerTransferIntake,
     reportWorkerTransferBalances,
     requestWorkerTransfer,
     respondWorkerTransfer,
@@ -1304,35 +1305,21 @@ async function checkRutInEstablishment() {
     }
 }
 
-// Desde cuando empieza aqui y con que rotativa. Devuelve null si se cancela
-// en cualquier paso.
+// Desde cuando empieza aqui y con que rotativa. Devuelve null si se cancela.
 //
-// Son las mismas preguntas que antes se hacian al RECIBIR la transferencia,
-// movidas al momento de pedirla. Las opciones salen de rotationUtils, el
-// mismo origen que el modal del formulario de perfil: si manana cambia una
-// secuencia, cambia en los dos lados.
+// La rotativa se configura con el MISMO cuadro que el formulario de perfil
+// (openRotationConfigModal): elegir la fecha de inicio y el punto de la
+// secuencia es exactamente lo que se hace al crear un perfil, y tener dos
+// pantallas para lo mismo garantiza que algun dia dejen de parecerse.
+//
+// Se puede reutilizar tal cual porque en este momento hay un perfil en modo
+// creacion -se esta ingresando a la persona-, que es de donde el cuadro lee y
+// donde escribe: profileDraft.rotationStart y rotationFirstTurn.
 async function askHandoverSchedule() {
-    const fecha = await showPrompt(
-        `¿Desde qué fecha comienza en esta unidad?`,
-        {
-            title: "Fecha de inicio",
-            inputType: "date",
-            value: transferTomorrowISO(),
-            confirmText: "Continuar"
-        }
-    );
-
-    if (fecha === null) return null;
-
-    const startDate = normalizeStoredStart(String(fecha || ""));
-
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
-        alert("Selecciona una fecha válida.");
-        return null;
-    }
+    if (!isProfileEditing()) return null;
 
     const rotationType = await showChoice(
-        `¿Qué modalidad seguirá en esta unidad?`,
+        "¿Qué modalidad seguirá en esta unidad?",
         {
             title: "Rotativa en tu unidad",
             confirmText: "Continuar",
@@ -1346,29 +1333,36 @@ async function askHandoverSchedule() {
 
     if (!rotationType) return null;
 
-    let rotationFirstTurn = "";
+    const elegido = await new Promise(resolve => {
+        let guardado = null;
 
-    if (requiresRotationFirstTurn(rotationType)) {
-        rotationFirstTurn = await showChoice(
-            `¿Desde qué punto de la secuencia empieza el ${formatDisplayDate(startDate)}?`,
-            {
-                title: getRotativaLabel(rotationType),
-                confirmText: "Continuar",
-                choices: getRotationStartOptions(rotationType).map(opcion => ({
-                    value: opcion.value,
-                    label: opcion.label
-                }))
-            }
-        );
+        openRotationConfigModal(rotationType, {
+            onSaved: datos => {
+                guardado = datos;
+            },
+            // Se resuelve al cerrarse, haya guardado o no: cancelar el
+            // cuadro cancela el pedido.
+            onClosed: () => resolve(guardado)
+        });
+    });
 
-        if (!rotationFirstTurn) return null;
-    }
+    if (!elegido?.rotationStart) return null;
 
+    // Para una modalidad sin secuencia -diurno- el cuadro deja "larga" por
+    // defecto, que ahi no significa nada y no hay que mostrar ni mandar.
+    const rotationFirstTurn = requiresRotationFirstTurn(rotationType)
+        ? String(elegido.rotationFirstTurn || "")
+        : "";
     const resumen = rotationFirstTurn
         ? `${getRotativaLabel(rotationType)} (${getRotationFirstTurnLabel(rotationFirstTurn, rotationType)})`
         : getRotativaLabel(rotationType);
 
-    return { startDate, rotationType, rotationFirstTurn, resumen };
+    return {
+        startDate: elegido.rotationStart,
+        rotationType,
+        rotationFirstTurn,
+        resumen
+    };
 }
 
 // Pedirle a la otra unidad el traspaso.
@@ -2737,7 +2731,12 @@ function openRotationConfigModal(
     type = profileDraft.rotationType,
     options = {}
 ) {
-    if (!isProfileEditing() || !type) return;
+    if (!isProfileEditing() || !type) {
+        // Tambien avisa cuando no llega a abrirse: quien espera su cierre se
+        // quedaria esperando para siempre.
+        options.onClosed?.();
+        return;
+    }
 
     const profile = getPerfilActual();
     const isReplacement = type === "reemplazo";
@@ -2820,6 +2819,10 @@ function openRotationConfigModal(
         monthPicker?.remove();
         monthPicker = null;
         backdrop.remove();
+        // Quien lo abrio puede necesitar saber cuando se cerro y si se guardo.
+        // Lo usa el pedido de traspaso, que configura la rotativa con ESTE
+        // mismo cuadro para que no existan dos formas de configurarla.
+        options.onClosed?.();
     };
     const cancelModal = () => {
         const selectedName =
@@ -3257,6 +3260,11 @@ function openRotationConfigModal(
                 REPLACEMENT_ROTATION_MODE.INHERIT;
             profileDraft.contractBridgeProfile = "";
             profileDraft.contractExcludedDates = [];
+            options.onSaved?.({
+                rotationType: type,
+                rotationStart: profileDraft.rotationStart,
+                rotationFirstTurn: profileDraft.rotationFirstTurn
+            });
         }
 
         close();
@@ -11436,7 +11444,25 @@ window.addEventListener("proturnos:startWorkerHandover", event => {
 // eso se encarga la campanita.
 const handoverIntakesInFlight = new Set();
 
+// Lo ultimo que dijo el oyente. Se guarda porque hay un caso en que no se puede
+// aplicar en el momento -un perfil abierto a medio editar- y el oyente no va a
+// volver a hablar: el documento ya no cambia. Sin esto, "se reintenta al
+// cerrarlo" dependia de recargar la unidad.
+let pendingHandoverIntakes = [];
+
+function retryHandoverIntakes() {
+    if (!pendingHandoverIntakes.length) return;
+
+    // Despues del guardado en curso, no en medio: exitProfileMode se llama
+    // desde dentro de guardarPerfil.
+    setTimeout(() => {
+        void applyIncomingHandoverTransfers(pendingHandoverIntakes);
+    }, 0);
+}
+
 async function applyIncomingHandoverTransfers(pendientes = []) {
+    pendingHandoverIntakes = pendientes;
+
     for (const solicitud of pendientes) {
         if (handoverIntakesInFlight.has(solicitud.id)) continue;
 
@@ -11448,8 +11474,8 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
 
         const yaEstaba = getProfiles().some(item => item.name === nombre);
 
-        // No se mete en medio de un perfil a medio editar: se reintenta al
-        // cerrarlo, y el oyente vuelve a disparar.
+        // No se mete en medio de un perfil a medio editar. Queda pendiente y
+        // se reintenta al cerrarlo (retryHandoverIntakes).
         if (!yaEstaba && (isProfileEditing() || hasUnsavedProfileDraftChanges())) {
             continue;
         }
@@ -11461,20 +11487,27 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
             // perfiles de la misma persona.
             if (!await claimWorkerTransferIntake(solicitud.id)) continue;
 
-            if (!yaEstaba) await createProfileFromHandover(solicitud, nombre);
+            try {
+                if (!yaEstaba) await createProfileFromHandover(solicitud, nombre);
+            } catch (error) {
+                // Devolverlo a la cola antes de rendirse: si quedara tomado,
+                // el traspaso estaria consumido para siempre y la persona se
+                // quedaria sin perfil sin que nadie vuelva a intentarlo.
+                await releaseWorkerTransferIntake(solicitud.id).catch(fallo => {
+                    console.warn("No se pudo liberar el traspaso.", fallo);
+                });
+                throw error;
+            }
 
             noticeHandoverApplied(solicitud, nombre);
         } catch (error) {
             console.warn("No se pudo crear el perfil del traspaso.", error);
-            // El traspaso ya quedo reclamado, asi que nadie mas va a
-            // intentarlo: callarlo dejaria a la persona sin perfil y sin que
-            // nadie se entere.
             addBellNotice({
                 id: `traspaso-fallido:${solicitud.id}`,
                 title: `No se pudo crear el perfil de ${nombre}`,
                 detail:
-                    "El traspaso fue aceptado, pero su perfil no se creó aquí. " +
-                    "Créalo a mano con sus datos."
+                    "El traspaso fue aceptado y se volverá a intentar. Si no " +
+                    "aparece, créalo a mano con sus datos."
             });
         } finally {
             handoverIntakesInFlight.delete(solicitud.id);
@@ -12040,6 +12073,9 @@ function exitProfileMode(selectedName = getCurrentProfile()) {
     setCurrentProfile(selectedName || null);
     renderProfiles();
     renderBotones();
+    // Al cerrar el perfil se libera el unico caso en que un traspaso aceptado
+    // no se puede aplicar solo.
+    retryHandoverIntakes();
 }
 
 function activeProfileNameAfterSave(savedName, savedProfile = {}) {

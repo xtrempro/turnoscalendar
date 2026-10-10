@@ -5,7 +5,7 @@
 // turno o incidencia de marcaje) se actualiza el badge y, si es una solicitud
 // nueva, se disparan alertas sonoras + vibracion en el celular del supervisor.
 
-import { getWorkerRequests } from "./storage.js";
+import { getReplacementRequests, getWorkerRequests } from "./storage.js";
 import { getJSON, setJSON } from "./persistence.js";
 
 // Avisos que NO son solicitudes: nadie tiene que responderlos, solo enterarse.
@@ -34,8 +34,13 @@ const REFRESH_DEBOUNCE_MS = 120;
 
 let bellButton = null;
 let bellBadge = null;
+let bellPanel = null;
+let bellPanelList = null;
 let onOpenRequests = () => {};
 let knownPendingIds = new Set();
+// Las coberturas que ya estaban aceptadas al abrir. Sin esto, entrar a la
+// unidad generaria un aviso por cada turno aceptado hace semanas.
+let knownAcceptedCoverIds = new Set();
 let alertsReadyAt = Infinity;
 let audioContext = null;
 let refreshTimer = null;
@@ -68,14 +73,14 @@ export function getBellNotices() {
 
 // El id evita repetir el mismo aviso: la transferencia se aplica una vez, pero
 // el oyente puede volver a dispararse antes de que el estado se asiente.
-export function addBellNotice({ id, title, detail = "" }) {
+function pushNotice({ id, title, detail = "" }) {
     const clave = String(id || "").trim();
 
-    if (!clave) return;
+    if (!clave) return false;
 
     const previos = getBellNotices();
 
-    if (previos.some(item => item?.id === clave)) return;
+    if (previos.some(item => item?.id === clave)) return false;
 
     setJSON(NOTICES_KEY, [
         {
@@ -87,7 +92,13 @@ export function addBellNotice({ id, title, detail = "" }) {
         ...previos
     ].slice(0, MAX_NOTICES));
 
-    scheduleRefresh();
+    return true;
+}
+
+export function addBellNotice(notice) {
+    // El refresco va aparte de guardar: los avisos que nacen DENTRO del propio
+    // refresco lo llaman sin el, o se llamarian a si mismos sin parar.
+    if (pushNotice(notice)) scheduleRefresh();
 }
 
 export function clearBellNotices() {
@@ -95,6 +106,52 @@ export function clearBellNotices() {
 
     setJSON(NOTICES_KEY, []);
     scheduleRefresh();
+}
+
+// Un trabajador acepto cubrir un turno desde su app.
+//
+// No hay nada que responder -el turno ya quedo tomado-, pero el supervisor
+// tiene que enterarse: es la diferencia entre dar un turno por cubierto y
+// creer que sigue descubierto.
+function acceptedCoverRequests() {
+    const lista = getReplacementRequests();
+
+    return (Array.isArray(lista) ? lista : [])
+        .filter(request => request?.status === "accepted");
+}
+
+function coverRequestId(request) {
+    return String(request?.id || "").trim();
+}
+
+function coverDateLabel(value) {
+    const texto = String(value || "");
+    const partes = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+    return partes ? `${partes[3]}-${partes[2]}-${partes[1]}` : "";
+}
+
+function noticeAcceptedCovers() {
+    const actuales = acceptedCoverRequests();
+
+    for (const request of actuales) {
+        const id = coverRequestId(request);
+
+        if (!id || knownAcceptedCoverIds.has(id)) continue;
+
+        const quien = String(request.worker || "").trim() || "Un trabajador";
+        const cuando = coverDateLabel(request.date);
+
+        pushNotice({
+            id: `cobertura:${id}`,
+            title: `${quien} aceptó cubrir un turno`,
+            detail: cuando ? `Turno del ${cuando}.` : ""
+        });
+    }
+
+    knownAcceptedCoverIds = new Set(
+        actuales.map(coverRequestId).filter(Boolean)
+    );
 }
 
 export function pendingRequestIds(requests) {
@@ -116,6 +173,187 @@ export function hasNewPendingRequest(previousIds, currentIds) {
     }
 
     return false;
+}
+
+// El recuadro de avisos. Antes la campanita llevaba derecho a Solicitudes, que
+// para un aviso no sirve: no hay nada que resolver ahi, y el aviso desaparecia
+// sin haberse leido. Ahora muestra lo que paso y se marca leido a mano.
+function noticeTimeLabel(value) {
+    const fecha = new Date(String(value || ""));
+
+    if (Number.isNaN(fecha.getTime())) return "";
+
+    const hoy = new Date();
+    const mismoDia =
+        fecha.getDate() === hoy.getDate() &&
+        fecha.getMonth() === hoy.getMonth() &&
+        fecha.getFullYear() === hoy.getFullYear();
+    const hora = fecha.toLocaleTimeString("es-CL", {
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+
+    if (mismoDia) return hora;
+
+    const dia = fecha.toLocaleDateString("es-CL", {
+        day: "2-digit",
+        month: "2-digit"
+    });
+
+    return `${dia} ${hora}`;
+}
+
+function ensureBellPanel() {
+    if (bellPanel) return bellPanel;
+
+    bellPanel = document.createElement("div");
+    bellPanel.className = "bell-panel";
+    bellPanel.id = "notificationsBellPanel";
+    bellPanel.hidden = true;
+    bellPanel.setAttribute("role", "dialog");
+    bellPanel.setAttribute("aria-label", "Avisos");
+
+    const head = document.createElement("header");
+    const titulo = document.createElement("strong");
+    const leidas = document.createElement("button");
+
+    head.className = "bell-panel__head";
+    titulo.textContent = "Avisos";
+    leidas.type = "button";
+    leidas.className = "bell-panel__action";
+    leidas.textContent = "Marcar leídas";
+    leidas.addEventListener("click", () => {
+        clearBellNotices();
+        renderBellPanel();
+    });
+    head.append(titulo, leidas);
+
+    bellPanelList = document.createElement("div");
+    bellPanelList.className = "bell-panel__list";
+
+    const foot = document.createElement("footer");
+    const verSolicitudes = document.createElement("button");
+
+    foot.className = "bell-panel__foot";
+    verSolicitudes.type = "button";
+    verSolicitudes.className = "bell-panel__requests";
+    verSolicitudes.textContent = "Ver solicitudes";
+    verSolicitudes.addEventListener("click", () => {
+        closeBellPanel();
+        onOpenRequests();
+    });
+    foot.append(verSolicitudes);
+
+    bellPanel.append(head, bellPanelList, foot);
+    // Colgado del body y posicionado a mano: asi no depende de que la barra
+    // superior tenga un contenedor posicionado, que hoy no tiene.
+    document.body.appendChild(bellPanel);
+
+    return bellPanel;
+}
+
+function placeBellPanel() {
+    if (!bellPanel || !bellButton) return;
+
+    const rect = bellButton.getBoundingClientRect();
+    const ancho = Math.min(360, window.innerWidth - 24);
+
+    bellPanel.style.width = `${ancho}px`;
+    bellPanel.style.top = `${Math.round(rect.bottom + 10)}px`;
+    bellPanel.style.right = `${Math.max(12, Math.round(window.innerWidth - rect.right))}px`;
+}
+
+// Se arma con nodos y textContent, no con HTML: los avisos llevan nombres de
+// personas y de unidades, que vienen del estado y no son de fiar como marcado.
+function renderBellPanel() {
+    if (!bellPanelList) return;
+
+    const avisos = getBellNotices();
+    const pendientes = pendingWorkerRequests().length;
+
+    bellPanelList.replaceChildren();
+
+    if (!avisos.length) {
+        const vacio = document.createElement("p");
+
+        vacio.className = "bell-panel__empty";
+        vacio.textContent = pendientes
+            ? "No hay avisos nuevos. Tienes solicitudes pendientes por revisar."
+            : "No hay avisos nuevos.";
+        bellPanelList.appendChild(vacio);
+    }
+
+    for (const aviso of avisos) {
+        const item = document.createElement("article");
+        const titulo = document.createElement("strong");
+
+        item.className = "bell-notice";
+        titulo.textContent = aviso?.title || "Aviso";
+        item.appendChild(titulo);
+
+        if (aviso?.detail) {
+            const detalle = document.createElement("p");
+
+            detalle.textContent = aviso.detail;
+            item.appendChild(detalle);
+        }
+
+        const cuando = noticeTimeLabel(aviso?.createdAt);
+
+        if (cuando) {
+            const time = document.createElement("time");
+
+            time.textContent = cuando;
+            item.appendChild(time);
+        }
+
+        bellPanelList.appendChild(item);
+    }
+
+    const verSolicitudes = bellPanel?.querySelector(".bell-panel__requests");
+
+    if (verSolicitudes) {
+        verSolicitudes.textContent = pendientes
+            ? `Ver solicitudes (${pendientes})`
+            : "Ver solicitudes";
+    }
+}
+
+function bellPanelIsOpen() {
+    return Boolean(bellPanel) && bellPanel.hidden === false;
+}
+
+function handleBellOutsideClick(event) {
+    if (!bellPanelIsOpen()) return;
+    if (bellPanel.contains(event.target)) return;
+    if (bellButton?.contains(event.target)) return;
+
+    closeBellPanel();
+}
+
+function handleBellKeydown(event) {
+    if (event.key === "Escape") closeBellPanel();
+}
+
+function openBellPanel() {
+    ensureBellPanel();
+    renderBellPanel();
+    bellPanel.hidden = false;
+    placeBellPanel();
+    document.addEventListener("click", handleBellOutsideClick, true);
+    document.addEventListener("keydown", handleBellKeydown);
+    window.addEventListener("resize", placeBellPanel);
+    window.addEventListener("scroll", placeBellPanel, true);
+}
+
+function closeBellPanel() {
+    if (!bellPanel) return;
+
+    bellPanel.hidden = true;
+    document.removeEventListener("click", handleBellOutsideClick, true);
+    document.removeEventListener("keydown", handleBellKeydown);
+    window.removeEventListener("resize", placeBellPanel);
+    window.removeEventListener("scroll", placeBellPanel, true);
 }
 
 function updateBadge(count) {
@@ -199,6 +437,9 @@ function alertNewRequest() {
 }
 
 function refreshNow() {
+    // Antes de contar: una cobertura recien aceptada se vuelve aviso aqui.
+    noticeAcceptedCovers();
+
     const currentIds = pendingRequestIds();
 
     // Los avisos cuentan y suenan igual que una solicitud nueva: el prefijo
@@ -208,6 +449,8 @@ function refreshNow() {
     });
 
     updateBadge(currentIds.size);
+
+    if (bellPanelIsOpen()) renderBellPanel();
 
     const isNew = hasNewPendingRequest(knownPendingIds, currentIds);
 
@@ -240,15 +483,25 @@ export function initNotificationsBell({ onOpen } = {}) {
     getBellNotices().forEach(notice => {
         if (notice?.id) knownPendingIds.add(`aviso:${notice.id}`);
     });
+    // Lo ya aceptado al entrar no es noticia: sin esto, abrir la unidad
+    // generaria un aviso por cada turno cubierto hace semanas.
+    knownAcceptedCoverIds = new Set(
+        acceptedCoverRequests().map(coverRequestId).filter(Boolean)
+    );
     alertsReadyAt = Date.now() + HYDRATION_GRACE_MS;
     updateBadge(knownPendingIds.size);
 
     bellButton.addEventListener("click", () => {
         unlockNotificationAudio();
-        onOpenRequests();
-        // Abrir las solicitudes es haberlos leido: el aviso se explica en la
-        // tarjeta del traspaso, que queda ahi.
-        clearBellNotices();
+
+        // Abre el recuadro en vez de llevar a Solicitudes: un aviso no se
+        // resuelve ahi, y asi no desaparece sin haberse leido.
+        if (bellPanelIsOpen()) {
+            closeBellPanel();
+            return;
+        }
+
+        openBellPanel();
     });
 
     // Desbloquea el audio en el primer gesto del supervisor.

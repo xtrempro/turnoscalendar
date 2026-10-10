@@ -18,6 +18,8 @@ const {
   REJECTED,
   cancelWorkerTransferRequestHandler,
   claimWorkerTransferApplicationHandler,
+  claimWorkerTransferIntakeHandler,
+  releaseWorkerTransferIntakeHandler,
   createWorkerTransferRequestHandler,
   respondWorkerTransferRequestHandler
 } = require("../workerTransferRequests.js");
@@ -327,6 +329,99 @@ test("aplicarla en origen se reclama UNA vez aunque haya dos sesiones", async ()
   assert.equal((await pedir()).claimed, true);
   assert.equal((await pedir()).claimed, false);
   assert.equal(db.documents.get(`${COLLECTION}/t-1`).sourceAppliedAt, "AHORA");
+});
+
+// Un traspaso que la otra unidad pidio: nace aceptado y la unidad que recibe
+// crea el perfil sola. El claim evita que dos sesiones creen dos perfiles.
+function traspaso(extra = {}) {
+  return pendiente({
+    status: ACCEPTED,
+    handoverRequestId: "whr-1",
+    ...extra
+  });
+}
+
+test("crear el perfil del traspaso se reclama UNA vez", async () => {
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+  const pedir = () => claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  assert.equal((await pedir()).claimed, true);
+  assert.equal((await pedir()).claimed, false);
+  assert.equal(db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt, "AHORA");
+});
+
+test("una transferencia normal no se aplica sola", async () => {
+  // Solo las que nacieron de un pedido de traspaso: una transferencia que esta
+  // unidad no pidio tiene que aceptarla una persona.
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: pendiente({ status: ACCEPTED }) });
+  const { deps } = dependencies(db);
+
+  assert.equal(
+    (await claimWorkerTransferIntakeHandler(
+      peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+      deps
+    )).claimed,
+    false
+  );
+});
+
+test("si crear el perfil falla, el traspaso vuelve a la cola", async () => {
+  // Sin soltarlo, el claim lo consumiria para siempre: la persona se quedaria
+  // sin perfil y ninguna sesion volveria a intentarlo.
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+  const tomar = () => claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  assert.equal((await tomar()).claimed, true);
+
+  const soltado = await releaseWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  assert.equal(soltado.released, true);
+  // Y queda disponible para el proximo intento.
+  assert.equal((await tomar()).claimed, true);
+});
+
+test("solo lo suelta la sesion que lo tomo", async () => {
+  // Si cualquiera pudiera soltarlo, una sesion devolveria a la cola un
+  // traspaso que otra esta aplicando, y terminarian creando dos perfiles.
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+
+  await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  const ajena = await releaseWorkerTransferIntakeHandler(
+    { ...peticion({ workspaceId: "w-destino", requestId: "t-1" }), auth: { uid: "otra-sesion", token: {} } },
+    deps
+  );
+
+  assert.equal(ajena.released, false);
+  assert.equal(db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt, "AHORA");
+});
+
+test("la unidad de origen no suelta el traspaso de la otra", async () => {
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+
+  await falla(
+    releaseWorkerTransferIntakeHandler(
+      peticion({ workspaceId: "w-origen", requestId: "t-1" }),
+      deps
+    ),
+    "permission-denied"
+  );
 });
 
 test("no se aplica una pendiente, ni desde la unidad destino", async () => {

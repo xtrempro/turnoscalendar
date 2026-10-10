@@ -88,6 +88,7 @@ const {
   cleanProfile: cleanTransferProfile,
   createWorkerTransferRequestHandler,
   moveDueWorkerLinksHandler,
+  releaseWorkerTransferIntakeHandler,
   reportWorkerTransferBalancesHandler,
   respondWorkerTransferRequestHandler
 } = require("./workerTransferRequests");
@@ -4625,6 +4626,16 @@ exports.reportWorkerTransferBalances = onCall(
 exports.claimWorkerTransferIntake = onCall(
   { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
   (request) => claimWorkerTransferIntakeHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
+// Si crear el perfil falla, el traspaso vuelve a la cola: dejarlo tomado lo
+// consumiria para siempre y la persona se quedaria sin perfil.
+exports.releaseWorkerTransferIntake = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => releaseWorkerTransferIntakeHandler(
     request,
     workerTransferDependencies()
   )
