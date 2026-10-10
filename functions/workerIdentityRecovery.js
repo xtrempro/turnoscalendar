@@ -40,6 +40,14 @@ function linkedAtMillis(link = {}) {
 
 // Con varias unidades enlazadas gana la mas reciente: es la que el trabajador
 // esta usando de verdad. Las demas se reportan para que el supervisor revise.
+// El Admin SDK avisa que la cuenta no existe con este codigo, no con un error
+// de los que se puedan distinguir por su mensaje.
+function authUserIsMissing(error) {
+  const code = String(error?.errorInfo?.code || error?.code || "");
+
+  return code === "auth/user-not-found";
+}
+
 function pickMostRecentLink(matches = []) {
   return matches
     .slice()
@@ -123,7 +131,35 @@ async function recoverWorkerIdentityHandler(request, dependencies) {
     );
   }
 
-  const elegido = pickMostRecentLink(matches);
+  // Un vinculo puede apuntar a una cuenta que ya NO existe en Auth: la
+  // borraron, o quedo de una prueba. Eso no es una falla del servidor, es un
+  // vinculo muerto, y hay que saltarlo y seguir con el siguiente.
+  //
+  // Antes reventaba aqui sin manejar y al trabajador le llegaba un "INTERNAL"
+  // mudo: el boton de recuperar no hacia nada y no habia como saber por que.
+  const vivos = [];
+
+  for (const candidato of matches) {
+    try {
+      vivos.push({ ...candidato, cuenta: await getAuthUser(candidato.uid) });
+    } catch (error) {
+      if (!authUserIsMissing(error)) throw error;
+
+      logger.warn?.("Vinculo apuntando a una cuenta que ya no existe.", {
+        uid: candidato.uid,
+        workspaceId: candidato.workspaceId
+      });
+    }
+  }
+
+  if (!vivos.length) {
+    throw new HttpsError(
+      "not-found",
+      "No encontramos una app enlazada a ese correo. Pidele una invitacion a tu supervisor."
+    );
+  }
+
+  const elegido = pickMostRecentLink(vivos);
 
   // Ya esta dentro de su propia identidad: no hay nada que devolver.
   if (elegido.uid === callerUid) {
@@ -133,7 +169,7 @@ async function recoverWorkerIdentityHandler(request, dependencies) {
   // Solo se devuelven identidades ANONIMAS. Un uid con credenciales propias es
   // la cuenta de alguien: emitir un token suyo se la entregaria a quien figure
   // en el correo del vinculo, que lo escribio el supervisor a mano.
-  const cuenta = await getAuthUser(elegido.uid);
+  const cuenta = elegido.cuenta;
 
   if ((cuenta?.providerData || []).length) {
     throw new HttpsError(

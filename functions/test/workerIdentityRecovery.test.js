@@ -235,3 +235,76 @@ test("acepta timestamps de Firestore, no solo cadenas", () => {
 
   assert.equal(elegido.uid, "nuevo");
 });
+
+// Un vinculo puede apuntar a una cuenta que ya no existe en Auth: la borraron,
+// o quedo de una prueba. Antes eso reventaba sin manejar y al trabajador le
+// llegaba un "INTERNAL" mudo: el boton de recuperar no hacia nada y no habia
+// como saber por que.
+function cuentaInexistente() {
+  const error = new Error("There is no user record corresponding to the provided identifier.");
+
+  error.errorInfo = { code: "auth/user-not-found" };
+  return error;
+}
+
+test("un vinculo a una cuenta borrada no revienta: se salta", async () => {
+  const dosVinculos = {
+    ws1: [
+      {
+        uid: "uid-muerto",
+        workerEmail: "ana@correo.cl",
+        profileName: "ANA",
+        status: "active",
+        linkedAt: "2026-09-01T00:00:00.000Z"
+      },
+      {
+        uid: "uid-vivo",
+        workerEmail: "ana@correo.cl",
+        profileName: "ANA",
+        status: "active",
+        linkedAt: "2026-08-01T00:00:00.000Z"
+      }
+    ]
+  };
+  const resultado = await recoverWorkerIdentityHandler(
+    peticion({ email: "ana@correo.cl", email_verified: true }),
+    deps({
+      db: fakeDb(dosVinculos),
+      getAuthUser: async (uid) => {
+        if (uid === "uid-muerto") throw cuentaInexistente();
+
+        return { providerData: [] };
+      }
+    })
+  );
+
+  // El mas reciente estaba muerto: se devuelve el que si existe.
+  assert.equal(resultado.token, "token-de-uid-vivo");
+});
+
+test("si TODOS los vinculos estan muertos, lo dice en vez de fallar", async () => {
+  await assert.rejects(
+    () => recoverWorkerIdentityHandler(
+      peticion({ email: "ana@correo.cl", email_verified: true }),
+      deps({
+        db: fakeDb(UNIDAD),
+        getAuthUser: async () => { throw cuentaInexistente(); }
+      })
+    ),
+    (error) => error.code === "not-found"
+  );
+});
+
+test("un fallo de Auth que NO sea cuenta inexistente no se traga", async () => {
+  // Saltarselo callando esconderia un problema real del servidor.
+  await assert.rejects(
+    () => recoverWorkerIdentityHandler(
+      peticion({ email: "ana@correo.cl", email_verified: true }),
+      deps({
+        db: fakeDb(UNIDAD),
+        getAuthUser: async () => { throw new Error("se cayo Auth"); }
+      })
+    ),
+    (error) => error.message === "se cayo Auth"
+  );
+});
