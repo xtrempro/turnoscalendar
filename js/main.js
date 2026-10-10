@@ -1249,8 +1249,17 @@ function renderProfileRutNotice() {
         return;
     }
 
+    // "Inactivo" alla no es un problema, es la mejor senal: quiere decir que
+    // ya se fue de esa unidad y que sus saldos quedaron ahi esperando. Vale
+    // decirlo, porque cambia lo que conviene hacer.
     const nombres = rutLookupState.unidades
-        .map(unidad => unidad.workspaceName || "otra unidad")
+        .map(unidad => {
+            const nombre = unidad.workspaceName || "otra unidad";
+
+            return unidad.active === false
+                ? `${nombre} (con el perfil ya inactivo)`
+                : nombre;
+        })
         .join(", ");
     const yaPedido = `Ya se pidió el traspaso a ${rutLookupState.asked}. ` +
         "Cuando acepten, llegará como una transferencia con sus saldos de " +
