@@ -41,6 +41,10 @@ import {
 } from "./workerTransfers.js";
 import { formatRut } from "./rutUtils.js";
 import {
+    getRotativaLabel,
+    getRotationFirstTurnLabel
+} from "./rotationUtils.js";
+import {
     cancelWorkerHandoverRequest,
     listWorkerHandoverRequests,
     resolveWorkerHandoverRequest
@@ -1340,6 +1344,16 @@ function requestDetailsHTML(request) {
             : `Se lo pediste a: ${request.otherWorkspaceName}`);
         pieces.push(`RUT: ${request.workerRut}`);
 
+        // La fecha y la rotativa las eligio quien pidio: quien responde tiene
+        // que verlas para decidir, y no se las puede cambiar.
+        if (request.startDate) {
+            pieces.push(`Comienza: ${formatDate(request.startDate)}`);
+        }
+
+        if (request.rotationLabel) {
+            pieces.push(request.rotationLabel);
+        }
+
         return pieces.join(" | ");
     }
 
@@ -1685,6 +1699,8 @@ async function getWorkerHandoverPanelRequests() {
                     profile: nombre || `RUT ${rutLegible}`,
                     workerRut: rutLegible,
                     otherWorkspaceName: otra,
+                    startDate: item.startDate || "",
+                    rotationLabel: handoverRotationLabel(item),
                     note: handoverNote(item.status, recibido, otra),
                     createdAt: timestampISO(
                         item.createdAt || item.updatedAt || new Date()
@@ -1697,19 +1713,36 @@ async function getWorkerHandoverPanelRequests() {
     }
 }
 
+// La rotativa que eligio quien pidio, en palabras.
+function handoverRotationLabel(item = {}) {
+    const tipo = String(item.rotationType || "");
+
+    if (!tipo) return "";
+
+    const etiqueta = getRotativaLabel(tipo);
+    const primero = String(item.rotationFirstTurn || "");
+
+    return primero
+        ? `${etiqueta} (${getRotationFirstTurnLabel(primero, tipo)})`
+        : etiqueta;
+}
+
 function handoverNote(status, recibido, otra) {
     if (status === "pending") {
+        // Aceptar ya no envia una solicitud de vuelta: la fecha y la rotativa
+        // vinieron en el pedido, asi que la transferencia queda hecha.
         return recibido
-            ? "Al aceptar eliges la fecha y se envía la transferencia con sus " +
-                "saldos de vacaciones."
-            : `${otra} todavía no responde. Si decides ingresar a la persona ` +
-                "de cero, retira el pedido: al aceptarlo llegaría una " +
-                "transferencia de alguien que ya existe aquí.";
+            ? "Al aceptar se transfiere: su calendario aquí se vacía desde esa " +
+                "fecha y su perfil queda inactivo. No tendrán que aceptar nada más."
+            : `${otra} todavía no responde. Cuando acepten, el perfil se crea ` +
+                "aquí solo. Si decides ingresar a la persona de cero, retira " +
+                "antes el pedido.";
     }
 
-    if (status === "accepted" && !recibido) {
-        return "Aceptaron: la transferencia llega como una solicitud en esta " +
-            "misma lista.";
+    if (status === "accepted") {
+        return recibido
+            ? ""
+            : "Aceptaron: su perfil ya se creó en esta unidad.";
     }
 
     if (status === "rejected" && !recibido) {
@@ -1727,6 +1760,9 @@ async function acceptWorkerHandoverRequest(request) {
         detail: {
             requestId: request.handover.id,
             rut: request.handover.rut,
+            // La fecha la eligio quien pidio: viaja para que aceptar no tenga
+            // que preguntarla.
+            startDate: request.handover.startDate,
             requestingWorkspaceId: request.handover.requestingWorkspaceId,
             requestingWorkspaceName: request.handover.requestingWorkspaceName
         }
@@ -1734,21 +1770,21 @@ async function acceptWorkerHandoverRequest(request) {
 }
 
 async function rejectWorkerHandoverRequest(request) {
-    const confirmado = await showConfirm(
-        `¿Rechazas el pedido de ${request.otherWorkspaceName}?`,
+    const motivo = await showPrompt(
+        `¿Por qué rechazas el pedido de ${request.otherWorkspaceName}? (opcional)`,
         {
             title: "Rechazar el pedido de traspaso",
             confirmText: "Rechazar",
-            cancelText: "Volver",
-            destructive: true
+            placeholder: "Motivo"
         }
     );
 
-    if (!confirmado) return;
+    if (motivo === null) return;
 
     await resolveWorkerHandoverRequest({
         requestId: request.handover.id,
-        approve: false
+        approve: false,
+        rejectReason: String(motivo || "").trim()
     });
 }
 
@@ -1769,7 +1805,12 @@ async function getWorkerTransferPanelRequests() {
         return transfers
             .filter(item =>
                 item.targetWorkspaceId === activeWorkspace.id &&
-                ["pending", "accepted", "rejected"].includes(item.status)
+                ["pending", "accepted", "rejected"].includes(item.status) &&
+                // Las que nacieron de un pedido de traspaso no se muestran
+                // aqui: esta unidad no tiene que aceptarlas -ya las pidio- y
+                // su propia tarjeta de traspaso cuenta la misma historia. Dos
+                // tarjetas para lo mismo solo hacen dudar de si falta algo.
+                !item.handoverRequestId
             )
             .map(item => ({
                 kind: "worker_transfer",

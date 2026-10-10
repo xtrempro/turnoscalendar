@@ -100,7 +100,9 @@ export async function requestWorkerHandover({
     sourceWorkspaceId,
     sourceWorkspaceName,
     rut,
-    suggestedStartDate = "",
+    startDate,
+    rotationType,
+    rotationFirstTurn = "",
     requestedByName = ""
 }) {
     const workspace = activeWorkspaceOrThrow();
@@ -111,7 +113,12 @@ export async function requestWorkerHandover({
         sourceWorkspaceId,
         sourceWorkspaceName,
         rut,
-        suggestedStartDate,
+        // La fecha y la rotativa las decide esta unidad, que es la que recibe
+        // a la persona. Viajan en el pedido para que aceptarlo alcance: con
+        // todo decidido, aqui no queda nada que responder despues.
+        startDate,
+        rotationType,
+        rotationFirstTurn,
         requestedByName
     });
 }
@@ -128,21 +135,30 @@ export async function cancelWorkerHandoverRequest(requestId) {
 /**
  * La unidad que tiene al trabajador responde.
  *
- * Al aceptar hace falta el id de la transferencia ya creada: el servidor no deja
- * aceptar un pedido "en el aire", porque nada viajaria y al otro lado quedarian
- * esperando a alguien que nunca llega.
+ * ACEPTAR ES LA TRANSFERENCIA: el servidor la crea ya aceptada y hace lo que
+ * eso implica aqui -vaciar el calendario desde la fecha, inactivar el perfil,
+ * mudar la app-. La otra unidad no tiene que responder nada, porque la fecha y
+ * la rotativa ya venian en su pedido.
+ *
+ * El perfil lo arma quien acepta, que es el unico que lo tiene: sus datos y sus
+ * saldos de vacaciones salen de su propio estado.
  */
 export async function resolveWorkerHandoverRequest({
     requestId,
     approve,
-    transferRequestId = ""
+    profile = null,
+    rejectReason = "",
+    resolvedByName = ""
 }) {
     const workspace = activeWorkspaceOrThrow();
 
     return callFunction("resolveWorkerHandoverRequest", {
         workspaceId: workspace.id,
+        workspaceName: workspace.name || "",
         requestId,
         approve,
-        transferRequestId
+        profile,
+        rejectReason,
+        resolvedByName
     });
 }

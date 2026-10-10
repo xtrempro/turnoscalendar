@@ -138,6 +138,67 @@ export async function reportWorkerTransferBalances(requestId, leaveBalances) {
 }
 
 /**
+ * Destino de un pedido de traspaso: reclama crear el perfil.
+ *
+ * Esa unidad no acepta nada -ella lo pidio, con fecha y rotativa-, asi que su
+ * aplicacion crea el perfil sola. El claim existe para que dos pestañas
+ * abiertas no creen dos perfiles de la misma persona.
+ */
+export async function claimWorkerTransferIntake(requestId) {
+    const workspace = activeWorkspaceOrThrow();
+    const result = await callFunction("claimWorkerTransferIntake", {
+        workspaceId: workspace.id,
+        requestId
+    });
+
+    return result?.claimed === true;
+}
+
+let stopIntakeListener = null;
+let intakeGeneration = 0;
+
+/**
+ * Destino: transferencias que nacieron de un pedido de traspaso hecho por ESTA
+ * unidad, ya aceptadas y cuyo perfil todavia no se crea aqui.
+ */
+export async function watchIncomingHandoverTransfers(workspace, onPending) {
+    stopWatchingIncomingHandoverTransfers();
+
+    if (!workspace?.id || typeof onPending !== "function") return;
+
+    const generation = intakeGeneration;
+    const { db, firestoreModule } = await getFirebaseServices();
+
+    if (generation !== intakeGeneration) return;
+
+    stopIntakeListener = firestoreModule.onSnapshot(
+        firestoreModule.query(
+            firestoreModule.collection(db, COLLECTION),
+            firestoreModule.where("targetWorkspaceId", "==", workspace.id),
+            firestoreModule.where("status", "==", "accepted")
+        ),
+        snap => {
+            onPending(
+                snap.docs
+                    .map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+                    .filter(item =>
+                        item.handoverRequestId && !item.targetIntakeAppliedAt
+                    )
+            );
+        },
+        error => {
+            console.warn("No se pudieron leer los traspasos aceptados.", error);
+        }
+    );
+}
+
+export function stopWatchingIncomingHandoverTransfers() {
+    intakeGeneration++;
+    stopIntakeListener?.();
+    stopIntakeListener = null;
+}
+
+/**
  * Destino: reclama el ajuste de saldos. true solo para la primera sesion.
  */
 export async function claimWorkerTransferBalances(requestId) {

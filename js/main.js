@@ -520,7 +520,7 @@ import {
     startSupervisorInviteRequestsListener,
     stopSupervisorInviteRequestsListener
 } from "./workerRequests.js";
-import { initNotificationsBell } from "./notificationsBell.js";
+import { addBellNotice, initNotificationsBell } from "./notificationsBell.js";
 import { initPendingLeaveBlinkSync } from "./pendingLeaveBlinkSync.js";
 import {
     WORKER_LINK_STATE,
@@ -635,12 +635,15 @@ import {
 import {
     claimWorkerTransferApplication,
     claimWorkerTransferBalances,
+    claimWorkerTransferIntake,
     reportWorkerTransferBalances,
     requestWorkerTransfer,
     respondWorkerTransfer,
     stopWatchingAcceptedOutgoingTransfers,
+    stopWatchingIncomingHandoverTransfers,
     stopWatchingIncomingTransferBalances,
     watchAcceptedOutgoingTransfers,
+    watchIncomingHandoverTransfers,
     watchIncomingTransferBalances
 } from "./workerTransfers.js";
 import {
@@ -1222,7 +1225,7 @@ function hideProfileEmailHint() {
 // Es una ayuda, no un requisito: nada de esto bloquea el formulario.
 
 // Lo ultimo que se consulto, para no repetir la llamada en cada blur.
-let rutLookupState = { rut: "", unidades: [], asked: "" };
+let rutLookupState = { rut: "", unidades: [] };
 
 function profileRutLookupAllowed() {
     return isProfileEditing() &&
@@ -1234,7 +1237,7 @@ function profileRutLookupAllowed() {
 }
 
 function hideProfileRutNotice() {
-    rutLookupState = { rut: "", unidades: [], asked: "" };
+    rutLookupState = { rut: "", unidades: [] };
 
     if (DOM.profileRutNotice) {
         DOM.profileRutNotice.hidden = true;
@@ -1261,20 +1264,12 @@ function renderProfileRutNotice() {
                 : nombre;
         })
         .join(", ");
-    const yaPedido = `Ya se pidió el traspaso a ${rutLookupState.asked}. ` +
-        "Cuando acepten, llegará como una transferencia con sus saldos de " +
-        "vacaciones: no hace falta ingresarla de cero.";
-    const seOfrece = `Este RUT ya está registrado en ${nombres}, del mismo ` +
-        "establecimiento. Puedes pedir el traspaso de su información o " +
-        "ingresarla de cero.";
-
-    DOM.profileRutNoticeText.textContent = rutLookupState.asked
-        ? yaPedido
-        : seOfrece;
-
-    if (DOM.profileRutHandoverBtn) {
-        DOM.profileRutHandoverBtn.hidden = Boolean(rutLookupState.asked);
-    }
+    // No hay estado de "ya pedido" en esta tarjeta: al enviar el pedido el
+    // formulario se descarta entero, asi que nunca se vuelve a ver con el
+    // pedido en pie. El seguimiento vive en el menu Solicitudes.
+    DOM.profileRutNoticeText.textContent =
+        `Este RUT ya está registrado en ${nombres}, del mismo establecimiento. ` +
+        "Puedes pedir el traspaso de su información o ingresarla de cero.";
 
     DOM.profileRutNotice.hidden = false;
 }
@@ -1300,13 +1295,80 @@ async function checkRutInEstablishment() {
         // Mientras respondia el servidor pudo cambiar lo que hay escrito.
         if (String(DOM.profileRutInput.value || "").trim() !== rut) return;
 
-        rutLookupState = { rut, unidades, asked: "" };
+        rutLookupState = { rut, unidades };
         renderProfileRutNotice();
     } catch (error) {
         // Sin aviso en pantalla: que esta ayuda falle no debe estorbar a
         // quien solo quiere ingresar a una persona.
         console.warn("No se pudo revisar el RUT en el establecimiento.", error);
     }
+}
+
+// Desde cuando empieza aqui y con que rotativa. Devuelve null si se cancela
+// en cualquier paso.
+//
+// Son las mismas preguntas que antes se hacian al RECIBIR la transferencia,
+// movidas al momento de pedirla. Las opciones salen de rotationUtils, el
+// mismo origen que el modal del formulario de perfil: si manana cambia una
+// secuencia, cambia en los dos lados.
+async function askHandoverSchedule() {
+    const fecha = await showPrompt(
+        `¿Desde qué fecha comienza en esta unidad?`,
+        {
+            title: "Fecha de inicio",
+            inputType: "date",
+            value: transferTomorrowISO(),
+            confirmText: "Continuar"
+        }
+    );
+
+    if (fecha === null) return null;
+
+    const startDate = normalizeStoredStart(String(fecha || ""));
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+        alert("Selecciona una fecha válida.");
+        return null;
+    }
+
+    const rotationType = await showChoice(
+        `¿Qué modalidad seguirá en esta unidad?`,
+        {
+            title: "Rotativa en tu unidad",
+            confirmText: "Continuar",
+            choices: [
+                { value: "3turno", label: "3er Turno" },
+                { value: "4turno", label: "4° Turno" },
+                { value: "diurno", label: "Diurno" }
+            ]
+        }
+    );
+
+    if (!rotationType) return null;
+
+    let rotationFirstTurn = "";
+
+    if (requiresRotationFirstTurn(rotationType)) {
+        rotationFirstTurn = await showChoice(
+            `¿Desde qué punto de la secuencia empieza el ${formatDisplayDate(startDate)}?`,
+            {
+                title: getRotativaLabel(rotationType),
+                confirmText: "Continuar",
+                choices: getRotationStartOptions(rotationType).map(opcion => ({
+                    value: opcion.value,
+                    label: opcion.label
+                }))
+            }
+        );
+
+        if (!rotationFirstTurn) return null;
+    }
+
+    const resumen = rotationFirstTurn
+        ? `${getRotativaLabel(rotationType)} (${getRotationFirstTurnLabel(rotationFirstTurn, rotationType)})`
+        : getRotativaLabel(rotationType);
+
+    return { startDate, rotationType, rotationFirstTurn, resumen };
 }
 
 // Pedirle a la otra unidad el traspaso.
@@ -1341,14 +1403,24 @@ async function askWorkerHandover() {
 
     const nombreUnidad = elegida.workspaceName || "la otra unidad";
     const rut = String(DOM.profileRutInput.value || "").trim();
+    // La fecha y la rotativa las decide ESTA unidad, que es la que recibe a la
+    // persona y la unica que sabe en que turno la necesita. Se preguntan al
+    // pedir y no al aceptar para que aceptar alcance: con todo decidido, la
+    // otra unidad responde una sola vez y aqui no queda nada pendiente.
+    const rotativa = await askHandoverSchedule();
+
+    if (!rotativa) return;
+
     const confirmado = await showConfirm(
         `Se le pedirá a ${nombreUnidad} el traspaso de esta persona.\n\n` +
-        "Si aceptan, llegará como una transferencia: traerá sus saldos de " +
-        "vacaciones y su calendario allá se vaciará desde la fecha que ellos " +
-        "definan, porque es su calendario el que se vacía.\n\n" +
+        `Comenzaría aquí el ${formatDisplayDate(rotativa.startDate)}, en ` +
+        `${rotativa.resumen}.\n\n` +
+        "Si aceptan, su perfil se crea aquí solo, con sus saldos de vacaciones, " +
+        "y su calendario allá se vacía desde esa fecha. No tendrás que aceptar " +
+        "nada más.\n\n" +
         // No conviene invitar a hacer las dos cosas a la vez: si se ingresa de
-        // cero con el pedido en pie, al aceptarlo llega una transferencia de
-        // alguien que ya existe aquí.
+        // cero con el pedido en pie, al aceptarlo llegaría el perfil de alguien
+        // que ya existe aquí.
         "Si decides no esperar e ingresarla de cero, retira el pedido desde " +
         "el menú Solicitudes.",
         {
@@ -1361,23 +1433,37 @@ async function askWorkerHandover() {
     if (!confirmado) return;
 
     try {
-        await requestWorkerHandover({
+        const respuesta = await requestWorkerHandover({
             sourceWorkspaceId: elegida.workspaceId,
             sourceWorkspaceName: elegida.workspaceName || "",
             rut,
+            startDate: rotativa.startDate,
+            rotationType: rotativa.rotationType,
+            rotationFirstTurn: rotativa.rotationFirstTurn,
             requestedByName: getCurrentActor().name
         });
-        rutLookupState = { ...rutLookupState, asked: nombreUnidad };
-        renderProfileRutNotice();
+
         addAuditLog(
             AUDIT_CATEGORY.COLLABORATOR_UPDATED,
             "Pidio el traspaso de un trabajador",
             `Se pidió a ${nombreUnidad} el traspaso del trabajador con RUT ${rut}.`,
             { rut, targetWorkspaceId: elegida.workspaceId }
         );
+        // El perfil a medio escribir se descarta. Si quedara abierto, cambiar
+        // de pestaña preguntaria "continuar sin guardar" por un registro que
+        // ya no hay que crear: lo va a traer el traspaso, con sus datos y sus
+        // saldos. Lo unico que queda en pie es el pedido.
+        hideProfileRutNotice();
+        discardProfileDraftChangesBeforeLeaving();
         await showAlert(
-            `El pedido quedó enviado a ${nombreUnidad}. Les llega un correo y lo ` +
-            "verán en el menú Solicitudes.",
+            respuesta?.created === false
+                ? `Ya le habías pedido el traspaso a ${nombreUnidad}. Sigue ` +
+                    "pendiente de su respuesta."
+                : `El pedido quedó enviado a ${nombreUnidad}. Les llega un ` +
+                    "correo y lo verán en su menú Solicitudes.\n\n" +
+                    "No la ingreses de cero: cuando acepten, su perfil se crea " +
+                    "aquí solo, con sus saldos de vacaciones y la rotativa que " +
+                    "elegiste. Puedes seguir el pedido en tu menú Solicitudes.",
             { title: "Pedido enviado", tone: "success" }
         );
     } catch (error) {
@@ -11135,6 +11221,29 @@ async function openWorkerTransferDialog(profile) {
     );
 }
 
+// QUE SE LLEVA un trabajador cuando cambia de unidad. Un solo lugar, porque
+// hay dos caminos que lo mandan -la unidad que transfiere por su cuenta y la
+// que acepta un pedido de traspaso- y los dos tienen que llevar lo mismo.
+//
+// Los saldos se calculan contra la fecha de inicio: incluyen lo que se le
+// devolvera al vaciar su calendario desde ahi.
+async function transferProfilePayload(profile, startISO) {
+    return {
+        leaveBalances: await transferLeaveBalances(profile.name, startISO),
+        name: profile.name,
+        email: profile.email || "",
+        rut: profile.rut || "",
+        phone: profile.phone || "",
+        birthDate: profile.birthDate || "",
+        contractType: profile.contractType || "",
+        estamento: profile.estamento || "",
+        profession: profile.profession || "",
+        grade: String(profile.grade || ""),
+        unionLeaveEnabled: Boolean(profile.unionLeaveEnabled),
+        sourceRotationType: getRotativa(profile.name)?.type || ""
+    };
+}
+
 // Pedir la fecha, confirmar y enviar la transferencia.
 //
 // Es la parte que comparten los DOS caminos que terminan transfiriendo a
@@ -11195,26 +11304,12 @@ async function sendWorkerTransfer({
     if (!confirmado) return "";
 
     try {
-        const leaveBalances = await transferLeaveBalances(profile.name, startISO);
         const resultado = await requestWorkerTransfer({
             targetWorkspaceId,
             targetWorkspaceName: targetName,
             linkId,
             startDate: startISO,
-            profile: {
-                leaveBalances,
-                name: profile.name,
-                email: profile.email || "",
-                rut: profile.rut || "",
-                phone: profile.phone || "",
-                birthDate: profile.birthDate || "",
-                contractType: profile.contractType || "",
-                estamento: profile.estamento || "",
-                profession: profile.profession || "",
-                grade: String(profile.grade || ""),
-                unionLeaveEnabled: Boolean(profile.unionLeaveEnabled),
-                sourceRotationType: getRotativa(profile.name)?.type || ""
-            },
+            profile: await transferProfilePayload(profile, startISO),
             requestedByName: getCurrentActor().name
         });
 
@@ -11242,14 +11337,35 @@ async function sendWorkerTransfer({
 //
 // El pedido trae el RUT y no el nombre: la busqueda que lo origina no devuelve
 // datos de la persona. Aqui se resuelve contra los perfiles propios.
+// Aceptar el pedido de traspaso de otra unidad del establecimiento.
+//
+// ACEPTAR ES LA TRANSFERENCIA. No crea una solicitud que la otra unidad
+// tenga que responder: esa unidad ya dijo que si al pedirlo, y ademas dijo
+// desde cuando y con que rotativa. Pedirle que acepte de nuevo seria pedirle
+// que confirme lo que acaba de pedir.
+//
+// Aqui pasa lo mismo que en cualquier transferencia -calendario vaciado
+// desde la fecha, perfil inactivo, saldos que viajan-, con el mismo codigo.
+// Lo unico que no se pregunta es la fecha: la eligio quien pidio, porque es
+// su unidad la que recibe a la persona.
 async function startWorkerHandover(detail) {
     const rut = normalizeRut(detail?.rut);
     const targetWorkspaceId = String(detail?.requestingWorkspaceId || "");
     const targetName = String(detail?.requestingWorkspaceName || "") ||
         "la otra unidad";
     const handoverId = String(detail?.requestId || "");
+    const startISO = normalizeStoredStart(String(detail?.startDate || ""));
 
     if (!rut || !targetWorkspaceId || !handoverId) return;
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
+        await showAlert(
+            "Este pedido no trae la fecha en que comienza. Pidele a " +
+            `${targetName} que lo vuelva a enviar.`,
+            { title: "Pedido de traspaso", tone: "warning" }
+        );
+        return;
+    }
 
     const profile = getProfiles().find(item =>
         normalizeRut(item.rut) === rut
@@ -11264,40 +11380,47 @@ async function startWorkerHandover(detail) {
         return;
     }
 
-    const transferRequestId = await sendWorkerTransfer({
-        profile,
-        targetWorkspaceId,
-        targetName,
-        // Sin enlace: lo que autoriza es compartir establecimiento.
-        linkId: ""
-    });
+    const confirmado = await showConfirm(
+        `${targetName} pide el traspaso de ${profile.name}, para que comience ` +
+        `allá el ${formatDisplayDate(startISO)}.\n\n` +
+        "Al aceptar, su calendario en esta unidad se vaciará desde esa fecha " +
+        "y su perfil quedará inactivo. Sus saldos de vacaciones pasan a esa " +
+        "unidad y su app se cambia a ella el día en que empieza.\n\n" +
+        "No tendrán que aceptar nada más: su perfil se crea allá solo.",
+        {
+            title: "Aceptar el traspaso",
+            tone: "warning",
+            confirmText: "Aceptar y transferir"
+        }
+    );
 
-    if (!transferRequestId) return;
+    if (!confirmado) return;
 
     try {
         await resolveWorkerHandoverRequest({
             requestId: handoverId,
             approve: true,
-            transferRequestId
+            // Lo que se lleva lo arma el mismo sitio que en una
+            // transferencia normal.
+            profile: await transferProfilePayload(profile, startISO),
+            resolvedByName: getCurrentActor().name
         });
     } catch (error) {
-        // La transferencia ya existe, que es lo que importa, pero el pedido
-        // sigue pendiente. Callarlo dejaria dos tarjetas contando historias
-        // distintas.
-        console.warn("No se pudo cerrar el pedido de traspaso.", error);
-        await showAlert(
-            "La transferencia quedó enviada, pero el pedido no alcanzó a " +
-            "marcarse como aceptado. Vuelve a aceptarlo desde Solicitudes.",
-            { title: "Pedido de traspaso", tone: "warning" }
-        );
+        console.warn("No se pudo aceptar el traspaso.", error);
+        alert(error?.message || "No se pudo aceptar el traspaso.");
         return;
     }
 
+    addAuditLog(
+        AUDIT_CATEGORY.COLLABORATOR_UPDATED,
+        "Acepto el traspaso de un trabajador",
+        `${profile.name}: traspaso aceptado hacia ${targetName} desde el ${formatDisplayDate(startISO)}.`,
+        { profile: profile.name, targetWorkspaceId, startDate: startISO }
+    );
     await showAlert(
-        `${targetName} recibirá la transferencia de ${profile.name}. ` +
-        "Cuando la acepten, su calendario aquí se vaciará desde la fecha que " +
-        "elegiste y su perfil quedará inactivo.",
-        { title: "Pedido aceptado", tone: "success" }
+        `${profile.name} pasa a ${targetName} desde el ${formatDisplayDate(startISO)}. ` +
+        "Su calendario aquí se vacía desde esa fecha y su perfil queda inactivo.",
+        { title: "Traspaso aceptado", tone: "success" }
     );
     window.dispatchEvent(new CustomEvent("proturnos:workerRequestsChanged"));
 }
@@ -11306,6 +11429,115 @@ async function startWorkerHandover(detail) {
 window.addEventListener("proturnos:startWorkerHandover", event => {
     startWorkerHandover(event.detail);
 });
+
+// La otra punta: aqui se PIDIO el traspaso y ya lo aceptaron. El perfil se
+// crea solo, sin preguntar nada, porque la fecha y la rotativa las eligio
+// esta misma unidad al pedirlo. No hay nada que aceptar: solo enterarse, y de
+// eso se encarga la campanita.
+const handoverIntakesInFlight = new Set();
+
+async function applyIncomingHandoverTransfers(pendientes = []) {
+    for (const solicitud of pendientes) {
+        if (handoverIntakesInFlight.has(solicitud.id)) continue;
+
+        const nombre = String(
+            solicitud.profile?.name || solicitud.profileName || ""
+        ).trim();
+
+        if (!nombre) continue;
+
+        const yaEstaba = getProfiles().some(item => item.name === nombre);
+
+        // No se mete en medio de un perfil a medio editar: se reintenta al
+        // cerrarlo, y el oyente vuelve a disparar.
+        if (!yaEstaba && (isProfileEditing() || hasUnsavedProfileDraftChanges())) {
+            continue;
+        }
+
+        handoverIntakesInFlight.add(solicitud.id);
+
+        try {
+            // Solo una sesion lo crea: dos pestañas abiertas crearian dos
+            // perfiles de la misma persona.
+            if (!await claimWorkerTransferIntake(solicitud.id)) continue;
+
+            if (!yaEstaba) await createProfileFromHandover(solicitud, nombre);
+
+            noticeHandoverApplied(solicitud, nombre);
+        } catch (error) {
+            console.warn("No se pudo crear el perfil del traspaso.", error);
+            // El traspaso ya quedo reclamado, asi que nadie mas va a
+            // intentarlo: callarlo dejaria a la persona sin perfil y sin que
+            // nadie se entere.
+            addBellNotice({
+                id: `traspaso-fallido:${solicitud.id}`,
+                title: `No se pudo crear el perfil de ${nombre}`,
+                detail:
+                    "El traspaso fue aceptado, pero su perfil no se creó aquí. " +
+                    "Créalo a mano con sus datos."
+            });
+        } finally {
+            handoverIntakesInFlight.delete(solicitud.id);
+        }
+    }
+}
+
+// Crea el perfil por el MISMO camino que al guardarlo a mano (guardarPerfil),
+// para que la rotativa, los saldos y la bitacora salgan igual que siempre.
+// Lo unico que cambia es que nadie tiene que apretar nada.
+async function createProfileFromHandover(solicitud, nombre) {
+    const datos = solicitud.profile || {};
+    const inicio = normalizeStoredStart(solicitud.startDate || "");
+    const rotativa = solicitud.targetRotation || {};
+
+    startCreateMode();
+    Object.assign(profileDraft, {
+        name: nombre,
+        email: String(datos.email || ""),
+        rut: String(datos.rut || ""),
+        phone: String(datos.phone || ""),
+        birthDate: String(datos.birthDate || ""),
+        contractType: String(datos.contractType || ""),
+        estamento: String(datos.estamento || ""),
+        profession: normalizeProfession(datos.profession, datos.estamento),
+        grade: String(datos.grade || ""),
+        unionLeaveEnabled: Boolean(datos.unionLeaveEnabled),
+        unitEntryDate: inicio,
+        // La rotativa que esta unidad eligio al pedir el traspaso.
+        rotationType: String(rotativa.type || ""),
+        rotationStart: normalizeStoredStart(rotativa.start || inicio),
+        rotationFirstTurn: String(rotativa.firstTurn || "larga"),
+        active: true
+    });
+
+    // Los saldos que trae de su unidad, en vez de los de un trabajador nuevo.
+    const saldos = transferredLeaveBalances(solicitud);
+
+    if (saldos) {
+        createAvailabilityBalances = {
+            ...defaultCreateAvailabilityBalances(),
+            ...saldos.balances
+        };
+    }
+
+    if (!await guardarPerfil()) {
+        throw new Error("El perfil no se pudo guardar.");
+    }
+}
+
+function noticeHandoverApplied(solicitud, nombre) {
+    const inicio = normalizeStoredStart(solicitud.startDate || "");
+    const unidad = String(solicitud.sourceWorkspaceName || "").trim() ||
+        "La otra unidad";
+
+    addBellNotice({
+        id: `traspaso:${solicitud.id}`,
+        title: `${unidad} aceptó tu pedido de traspaso`,
+        detail: inicio
+            ? `${nombre} ya está en tu unidad, desde el ${formatDisplayDate(inicio)}.`
+            : `${nombre} ya está en tu unidad.`
+    });
+}
 
 // Los saldos que envio la unidad de origen, si son de este año.
 function transferredLeaveBalances(solicitud = {}) {
@@ -17861,6 +18093,23 @@ initFirebaseShell({
                         error
                     );
                 });
+                // Los traspasos que ESTA unidad pidio y ya aceptaron: el
+                // perfil se crea solo, sin preguntar nada, porque la fecha y
+                // la rotativa se eligieron al pedirlo. Tambien con el estado
+                // hidratado: guardarPerfil escribe sobre los perfiles de aqui.
+                void watchIncomingHandoverTransfers(
+                    workspace,
+                    pendientes => {
+                        if (generacion !== workspaceChangeGeneration) return;
+
+                        void applyIncomingHandoverTransfers(pendientes);
+                    }
+                ).catch(error => {
+                    console.warn(
+                        "No se pudo escuchar los traspasos aceptados.",
+                        error
+                    );
+                });
                 // Y las recibidas: el origen informa los saldos reales tras
                 // vaciar su calendario, y aqui se ajusta la diferencia.
                 void watchIncomingTransferBalances(
@@ -17939,6 +18188,7 @@ initFirebaseShell({
             startAutoCoverageScheduler();
         } else {
             stopWatchingAcceptedOutgoingTransfers();
+            stopWatchingIncomingHandoverTransfers();
             stopWatchingIncomingTransferBalances();
             stopFirebaseReplacementRecordShadowSync();
             stopFirebaseAuditLogShardShadowSync();

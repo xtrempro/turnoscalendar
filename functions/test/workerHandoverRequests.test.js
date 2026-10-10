@@ -2,10 +2,12 @@
 
 // Pedir a otra unidad del establecimiento el traspaso de un trabajador.
 //
-// Lo que estas pruebas protegen, por orden de importancia: que aceptar un
-// pedido no pueda quedar en nada -sin transferencia de verdad, la unidad que
-// pidio espera para siempre-, que solo responda quien tiene al trabajador, y
-// que el pedido no lleve datos de la persona mas alla del RUT.
+// Lo que estas pruebas protegen, por orden de importancia: que aceptar deje la
+// transferencia YA aceptada -si naciera pendiente, a quien pidio el traspaso se
+// le pediria aceptar lo que el mismo pidio-, que la fecha y la rotativa sean
+// las que eligio quien pide y no quien acepta, que solo responda la unidad que
+// tiene al trabajador, y que el pedido no lleve datos de la persona mas alla
+// del RUT.
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -23,6 +25,8 @@ const {
   _private
 } = require("../workerHandoverRequests");
 
+const TRANSFERENCIAS = "workerTransferRequests";
+
 class HttpsError extends Error {
   constructor(code, message) {
     super(message);
@@ -32,30 +36,41 @@ class HttpsError extends Error {
 
 function fakeDb({ docs = {}, members = {} } = {}) {
   const guardados = new Map(Object.entries(docs));
+  const transferencias = new Map();
 
-  function snap(id) {
-    const data = guardados.get(id);
+  function almacen(nombre) {
+    return nombre === TRANSFERENCIAS ? transferencias : guardados;
+  }
+
+  function snap(mapa, id) {
+    const data = mapa.get(id);
 
     return { exists: Boolean(data), data: () => data || {} };
   }
 
   return {
     guardados,
+    transferencias,
     collection: (nombre) => {
-      if (nombre === COLLECTION) {
+      if (nombre === COLLECTION || nombre === TRANSFERENCIAS) {
+        const mapa = almacen(nombre);
+
         return {
           doc: (id) => ({
             id,
-            get: async () => snap(id),
+            get: async () => snap(mapa, id),
             set: async (data, options) => {
-              const previo = options?.merge ? (guardados.get(id) || {}) : {};
+              const previo = options?.merge ? (mapa.get(id) || {}) : {};
 
-              guardados.set(id, { ...previo, ...data });
+              mapa.set(id, { ...previo, ...data });
+            },
+            update: async (data) => {
+              mapa.set(id, { ...(mapa.get(id) || {}), ...data });
             }
           }),
           where: (campo, _op, valor) => ({
             get: async () => ({
-              docs: [...guardados.entries()]
+              docs: [...mapa.entries()]
                 .filter(([, data]) => data[campo] === valor)
                 .map(([id, data]) => ({ id, data: () => data }))
             })
@@ -86,7 +101,7 @@ function fakeDb({ docs = {}, members = {} } = {}) {
 }
 
 function deps(db, overrides = {}) {
-  const llamadas = { establecimiento: [], permiso: [] };
+  const llamadas = { establecimiento: [], permiso: [], aplicadas: [] };
 
   return {
     llamadas,
@@ -94,6 +109,23 @@ function deps(db, overrides = {}) {
       db,
       HttpsError,
       idFactory: () => "pedido-1",
+      transferIdFactory: () => "transfer-1",
+      serverTimestamp: () => "AHORA",
+      cleanProfile: (profile = {}) => ({
+        name: String(profile.name || "").trim(),
+        rut: String(profile.rut || ""),
+        leaveBalances: profile.leaveBalances || null
+      }),
+      applyTransferResponse: async (args) => {
+        // Se anota el estado del pedido EN EL MOMENTO de aplicar, para poder
+        // comprobar que ya estaba cerrado antes de los efectos.
+        llamadas.aplicadas.push({
+          ...args,
+          pedidoAlAplicar: db.guardados.get("pedido-1")?.status
+        });
+
+        return { ok: true };
+      },
       requireProfileManager: async (workspaceId, uid) => {
         llamadas.permiso.push({ workspaceId, uid });
       },
@@ -117,6 +149,9 @@ const PEDIDO_BASE = {
   sourceWorkspaceId: "ws-uci",
   sourceWorkspaceName: "UCI",
   rut: "17.816.632-8",
+  startDate: "2026-11-03",
+  rotationType: "4turno",
+  rotationFirstTurn: "noche",
   requestedByName: "Jefa de Urgencias"
 };
 
@@ -147,6 +182,63 @@ test("crea el pedido pendiente con el RUT normalizado", async () => {
   assert.equal(pedido.establishment, "hospital-claudio-vicuna");
   assert.equal(pedido.status, PENDING);
   assert.ok(pedido.expiresAt > pedido.createdAt, "debe caducar");
+});
+
+test("el pedido lleva la fecha y la rotativa que eligio quien pide", async () => {
+  // Es la diferencia con una transferencia normal, donde eso lo decide quien
+  // transfiere. Aqui lo decide quien recibe, porque es su unidad la que sabe
+  // en que turno necesita a la persona.
+  const db = fakeDb();
+  const { deps: dependencias } = deps(db);
+
+  await requestWorkerHandoverHandler(peticion(PEDIDO_BASE), dependencias);
+
+  const pedido = guardado(db);
+
+  assert.equal(pedido.startDate, "2026-11-03");
+  assert.equal(pedido.rotationType, "4turno");
+  assert.equal(pedido.rotationFirstTurn, "noche");
+});
+
+test("sin fecha no se puede pedir", async () => {
+  const db = fakeDb();
+  const { deps: dependencias } = deps(db);
+
+  await assert.rejects(
+    () => requestWorkerHandoverHandler(
+      peticion({ ...PEDIDO_BASE, startDate: "" }),
+      dependencias
+    ),
+    (error) => error.code === "invalid-argument"
+  );
+});
+
+test("una fecha mal formada no pasa", async () => {
+  const db = fakeDb();
+  const { deps: dependencias } = deps(db);
+
+  await assert.rejects(
+    () => requestWorkerHandoverHandler(
+      peticion({ ...PEDIDO_BASE, startDate: "manana" }),
+      dependencias
+    ),
+    (error) => error.code === "invalid-argument"
+  );
+});
+
+test("sin rotativa no se puede pedir", async () => {
+  // Sin ella, al aceptar habria que preguntarsela a quien pidio, y entonces
+  // volveria a haber un paso del otro lado.
+  const db = fakeDb();
+  const { deps: dependencias } = deps(db);
+
+  await assert.rejects(
+    () => requestWorkerHandoverHandler(
+      peticion({ ...PEDIDO_BASE, rotationType: "" }),
+      dependencias
+    ),
+    (error) => error.code === "invalid-argument"
+  );
 });
 
 test("el pedido no lleva datos de la persona, solo el RUT", async () => {
@@ -231,22 +323,11 @@ test("un RUT incompleto no pide nada", async () => {
   );
 });
 
-test("una fecha sugerida invalida no pasa", async () => {
-  const db = fakeDb();
-  const { deps: dependencias } = deps(db);
-
-  await assert.rejects(
-    () => requestWorkerHandoverHandler(
-      peticion({ ...PEDIDO_BASE, suggestedStartDate: "manana" }),
-      dependencias
-    ),
-    (error) => error.code === "invalid-argument"
-  );
-});
-
 test("dos pedidos iguales no crean dos documentos", async () => {
   const db = fakeDb();
-  const { deps: dependencias } = deps(db, { idFactory: () => `pedido-${db.guardados.size + 1}` });
+  const { deps: dependencias } = deps(db, {
+    idFactory: () => `pedido-${db.guardados.size + 1}`
+  });
 
   await requestWorkerHandoverHandler(peticion(PEDIDO_BASE), dependencias);
 
@@ -309,61 +390,163 @@ function pedidoPendiente(extra = {}) {
       requestingWorkspaceName: "Urgencias",
       sourceWorkspaceId: "ws-uci",
       rut: "178166328",
+      startDate: "2026-11-03",
+      rotationType: "4turno",
+      rotationFirstTurn: "noche",
       status: PENDING,
       ...extra
     }
   };
 }
 
-test("aceptar sin la transferencia no se permite", async () => {
-  // Es la prueba que mas importa de este archivo. Si un pedido pudiera quedar
-  // "aceptado" sin que exista la transferencia, nada viajaria y la unidad que
-  // pidio esperaria para siempre a alguien que nunca llega.
+function aceptacion(extra = {}) {
+  return peticion({
+    workspaceId: "ws-uci",
+    workspaceName: "UCI",
+    requestId: "pedido-1",
+    approve: true,
+    profile: { name: "ALAN PLAZA", rut: "17816632-8" },
+    resolvedByName: "Jefa de UCI",
+    ...extra
+  });
+}
+
+test("aceptar crea la transferencia y la deja ya aceptada", async () => {
+  // Es la prueba que mas importa de este archivo. Si naciera pendiente, a la
+  // unidad que pidio el traspaso le apareceria una solicitud para aceptar lo
+  // que ella misma pidio, que es justo lo que este camino viene a evitar.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+  const resultado = await resolveWorkerHandoverRequestHandler(
+    aceptacion(),
+    dependencias
+  );
+
+  assert.equal(resultado.status, ACCEPTED);
+  assert.equal(resultado.transferRequestId, "transfer-1");
+
+  const transferencia = db.transferencias.get("transfer-1");
+
+  assert.equal(transferencia.status, ACCEPTED);
+  assert.equal(transferencia.targetProfileName, "ALAN PLAZA");
+  assert.equal(transferencia.sourceWorkspaceId, "ws-uci");
+  assert.equal(transferencia.targetWorkspaceId, "ws-urgencias");
+  assert.equal(transferencia.handoverRequestId, "pedido-1");
+  // Sin enlace: lo que autorizo fue compartir establecimiento.
+  assert.equal(transferencia.linkId, "");
+});
+
+test("la transferencia lleva la rotativa que eligio quien pidio", async () => {
+  // De eso depende que la otra unidad pueda crear el perfil sin preguntar
+  // nada. Si no viajara, habria que preguntarsela y volveria el paso de mas.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+
+  await resolveWorkerHandoverRequestHandler(aceptacion(), dependencias);
+
+  assert.deepEqual(db.transferencias.get("transfer-1").targetRotation, {
+    type: "4turno",
+    firstTurn: "noche",
+    start: "2026-11-03"
+  });
+});
+
+test("la fecha sale del pedido, no de quien acepta", async () => {
+  // Quien acepta no puede cambiarle la fecha a la unidad que recibe: es ella
+  // la que sabe desde cuando lo necesita.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+
+  await resolveWorkerHandoverRequestHandler(
+    aceptacion({ startDate: "2027-01-01" }),
+    dependencias
+  );
+
+  assert.equal(db.transferencias.get("transfer-1").startDate, "2026-11-03");
+});
+
+test("aceptar pasa por la aplicacion de siempre", async () => {
+  // Inactivar el perfil aqui y mudar el enlace no se reimplementa: es el mismo
+  // applyTransferResponse que usa una transferencia normal.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias, llamadas } = deps(db);
+
+  await resolveWorkerHandoverRequestHandler(aceptacion(), dependencias);
+
+  assert.equal(llamadas.aplicadas.length, 1);
+  assert.equal(llamadas.aplicadas[0].status, ACCEPTED);
+  assert.equal(llamadas.aplicadas[0].targetProfileName, "ALAN PLAZA");
+  assert.equal(llamadas.aplicadas[0].requestId, "transfer-1");
+});
+
+test("el pedido se cierra ANTES de aplicar los efectos", async () => {
+  // Si se cerrara despues y algo fallara en el medio, un segundo "aceptar"
+  // crearia una segunda transferencia del mismo trabajador.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias, llamadas } = deps(db);
+
+  await resolveWorkerHandoverRequestHandler(aceptacion(), dependencias);
+
+  assert.equal(llamadas.aplicadas[0].pedidoAlAplicar, ACCEPTED);
+});
+
+test("si aplicar falla, el pedido igual queda cerrado y la transferencia aceptada", async () => {
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, {
+    applyTransferResponse: async () => {
+      throw new Error("se cayo la red");
+    }
+  });
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(aceptacion(), dependencias)
+  );
+
+  assert.equal(guardado(db).status, ACCEPTED);
+  assert.equal(db.transferencias.get("transfer-1").status, ACCEPTED);
+});
+
+test("aceptar sin el trabajador no crea ninguna transferencia", async () => {
   const db = fakeDb({ docs: pedidoPendiente() });
   const { deps: dependencias } = deps(db);
 
   await assert.rejects(
     () => resolveWorkerHandoverRequestHandler(
-      peticion({ workspaceId: "ws-uci", requestId: "pedido-1", approve: true }),
+      aceptacion({ profile: { name: "   " } }),
       dependencias
     ),
     (error) => error.code === "invalid-argument"
   );
 
+  assert.equal(db.transferencias.size, 0);
   assert.equal(guardado(db).status, PENDING);
 });
 
-test("aceptar anota la transferencia que responde al pedido", async () => {
-  const db = fakeDb({ docs: pedidoPendiente() });
+test("un pedido viejo sin fecha no se puede aceptar", async () => {
+  // Los que se crearon antes de que la fecha fuera parte del pedido.
+  const db = fakeDb({ docs: pedidoPendiente({ startDate: "" }) });
   const { deps: dependencias } = deps(db);
-  const resultado = await resolveWorkerHandoverRequestHandler(
-    peticion({
-      workspaceId: "ws-uci",
-      requestId: "pedido-1",
-      approve: true,
-      transferRequestId: "transfer-9"
-    }),
-    dependencias
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(aceptacion(), dependencias),
+    (error) => error.code === "failed-precondition"
   );
 
-  assert.equal(resultado.status, ACCEPTED);
-  assert.equal(guardado(db).transferRequestId, "transfer-9");
+  assert.equal(db.transferencias.size, 0);
 });
 
-test("rechazar no deja ninguna transferencia anotada", async () => {
+test("rechazar no crea ninguna transferencia", async () => {
   const db = fakeDb({ docs: pedidoPendiente() });
-  const { deps: dependencias } = deps(db);
+  const { deps: dependencias, llamadas } = deps(db);
   const resultado = await resolveWorkerHandoverRequestHandler(
-    peticion({
-      workspaceId: "ws-uci",
-      requestId: "pedido-1",
-      approve: false,
-      transferRequestId: "transfer-9"
-    }),
+    aceptacion({ approve: false, rejectReason: "Lo necesitamos aqui" }),
     dependencias
   );
 
   assert.equal(resultado.status, REJECTED);
+  assert.equal(db.transferencias.size, 0);
+  assert.deepEqual(llamadas.aplicadas, []);
+  assert.equal(guardado(db).rejectReason, "Lo necesitamos aqui");
   assert.equal(guardado(db).transferRequestId, "");
 });
 
@@ -374,18 +557,14 @@ test("solo responde la unidad que tiene al trabajador", async () => {
 
   await assert.rejects(
     () => resolveWorkerHandoverRequestHandler(
-      peticion({
-        workspaceId: "ws-urgencias",
-        requestId: "pedido-1",
-        approve: true,
-        transferRequestId: "transfer-9"
-      }),
+      aceptacion({ workspaceId: "ws-urgencias" }),
       dependencias
     ),
     (error) => error.code === "permission-denied"
   );
 
   assert.equal(guardado(db).status, PENDING);
+  assert.equal(db.transferencias.size, 0);
 });
 
 test("un pedido caducado ya no se puede responder", async () => {
@@ -395,15 +574,7 @@ test("un pedido caducado ya no se puede responder", async () => {
   const { deps: dependencias } = deps(db);
 
   await assert.rejects(
-    () => resolveWorkerHandoverRequestHandler(
-      peticion({
-        workspaceId: "ws-uci",
-        requestId: "pedido-1",
-        approve: true,
-        transferRequestId: "transfer-9"
-      }),
-      dependencias
-    ),
+    () => resolveWorkerHandoverRequestHandler(aceptacion(), dependencias),
     (error) => error.code === "failed-precondition"
   );
 });
@@ -414,11 +585,7 @@ test("un pedido ya resuelto no se responde dos veces", async () => {
 
   await assert.rejects(
     () => resolveWorkerHandoverRequestHandler(
-      peticion({
-        workspaceId: "ws-uci",
-        requestId: "pedido-1",
-        approve: false
-      }),
+      aceptacion({ approve: false }),
       dependencias
     ),
     (error) => error.code === "failed-precondition"
@@ -451,15 +618,7 @@ test("un pedido que ya no existe no se responde", async () => {
   const { deps: dependencias } = deps(db);
 
   await assert.rejects(
-    () => resolveWorkerHandoverRequestHandler(
-      peticion({
-        workspaceId: "ws-uci",
-        requestId: "pedido-1",
-        approve: true,
-        transferRequestId: "transfer-9"
-      }),
-      dependencias
-    ),
+    () => resolveWorkerHandoverRequestHandler(aceptacion(), dependencias),
     (error) => error.code === "not-found"
   );
 });

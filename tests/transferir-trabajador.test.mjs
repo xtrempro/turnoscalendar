@@ -48,12 +48,30 @@ test("el origen aplica con el estado hidratado, una sola sesion, sin tocar el pe
 });
 
 test("los saldos viajan: lo que queda mas lo que devuelve el vaciado", () => {
-    assert.match(main, /const leaveBalances = await transferLeaveBalances\(profile\.name, startISO\);/);
+    assert.match(main, /leaveBalances: await transferLeaveBalances\(profile\.name, startISO\)/);
     assert.match(main, /legal: saldos\.legal \+ contarHabiles\(desde\(getLegalDays\(\)\), year, holidays\)/);
     // En destino: el formulario los muestra y, si nadie los toca, se guardan exactos.
     assert.match(main, /createAvailabilityBalances = \{\s*\.\.\.defaultCreateAvailabilityBalances\(\),\s*\.\.\.saldos\.balances/);
     assert.match(main, /applyBalances: !transferBalancesTouched/);
     assert.match(main, /saveManualLeaveBalances\(saldos\.year, saldos\.balances, profileName\);/);
+});
+
+test("los dos caminos mandan lo MISMO: una sola carga util", () => {
+    // Transferir por decision propia y aceptar un pedido de traspaso terminan
+    // mandando los mismos datos. Si cada uno armara su objeto, el dia que se
+    // agregue un campo viajaria por un camino y no por el otro, y nadie lo
+    // notaria hasta que a alguien le falte algo en su unidad nueva.
+    assert.match(main, /async function transferProfilePayload\(profile, startISO\)/);
+
+    const usos = main.match(/await transferProfilePayload\(/g) || [];
+
+    assert.equal(usos.length, 2, "lo usan el camino normal y el del traspaso");
+    // Y nadie arma la lista de campos por su cuenta.
+    assert.equal(
+        (main.match(/sourceRotationType: getRotativa\(/g) || []).length,
+        1,
+        "el campo solo puede armarse en un lugar"
+    );
 });
 
 test("el origen NO desenlaza la app: la muda el servidor", () => {

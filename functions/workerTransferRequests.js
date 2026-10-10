@@ -586,8 +586,52 @@ async function respondWorkerTransferRequestHandler(request, dependencies) {
 
   await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
 
+  return applyTransferResponse({
+    db,
+    ref,
+    requestId,
+    solicitud,
+    status,
+    targetProfileName,
+    uid,
+    rejectReason: cleanText(request.data?.rejectReason, 300),
+    resolvedByName: cleanText(request.data?.resolvedByName, 160),
+    serverTimestamp,
+    logger: dependencies.logger,
+    today: dependencies.today
+  });
+}
+
+/**
+ * Dejar una transferencia aceptada (o rechazada) y hacer lo que eso implica.
+ *
+ * Vive aparte porque hay DOS caminos que terminan aqui y tienen que hacer
+ * exactamente lo mismo: la unidad destino respondiendo una transferencia que le
+ * enviaron, y la unidad de origen aceptando un pedido de traspaso -donde el
+ * destino ya dijo que si al pedirlo, con fecha y rotativa, asi que la
+ * transferencia nace aceptada- (functions/workerHandoverRequests.js).
+ *
+ * Lo que implica aceptar, y que no puede quedar en un solo camino: inactivar el
+ * perfil en origen desde la fecha, y mudar el enlace de la app si la fecha ya
+ * llego. Ambas cosas se hacen aqui, con permisos de servidor, para que ocurran
+ * aunque esa unidad no tenga la aplicacion abierta.
+ */
+async function applyTransferResponse({
+  db,
+  ref,
+  requestId,
+  solicitud,
+  status,
+  targetProfileName,
+  uid,
+  rejectReason = "",
+  resolvedByName = "",
+  serverTimestamp,
+  logger,
+  today: hoy
+}) {
   const now = serverTimestamp();
-  const today = dependencies.today || chileTodayISO();
+  const today = hoy || chileTodayISO();
   // El enlace de la app se muda en la fecha de inicio: antes, el trabajador
   // sigue viendo sus ultimos turnos en origen. Si la fecha ya llego, ahora.
   let linkMoved = null;
@@ -604,7 +648,7 @@ async function respondWorkerTransferRequestHandler(request, dependencies) {
       );
     } catch (error) {
       sourceProfile = { marked: false, reason: "error" };
-      dependencies.logger?.warn?.("No se pudo inactivar el perfil en origen.", {
+      logger?.warn?.("No se pudo inactivar el perfil en origen.", {
         requestId,
         error: error?.message || String(error)
       });
@@ -620,7 +664,7 @@ async function respondWorkerTransferRequestHandler(request, dependencies) {
       )).moved;
     } catch (error) {
       // No se pierde: la tarea diaria lo reintenta mientras linkMovedAt falte.
-      dependencies.logger?.warn?.("No se pudo mudar el enlace al aceptar.", {
+      logger?.warn?.("No se pudo mudar el enlace al aceptar.", {
         requestId,
         error: error?.message || String(error)
       });
@@ -639,12 +683,10 @@ async function respondWorkerTransferRequestHandler(request, dependencies) {
       : {}),
     status,
     targetProfileName: status === ACCEPTED ? targetProfileName : "",
-    rejectReason: status === REJECTED
-      ? cleanText(request.data?.rejectReason, 300)
-      : "",
+    rejectReason: status === REJECTED ? rejectReason : "",
     resolvedAt: now,
     resolvedByUid: uid,
-    resolvedByName: cleanText(request.data?.resolvedByName, 160),
+    resolvedByName,
     updatedAt: now
   });
 
@@ -748,6 +790,75 @@ async function claimWorkerTransferApplicationHandler(request, dependencies) {
     transaction.update(ref, {
       sourceAppliedAt: now,
       sourceAppliedByUid: uid,
+      updatedAt: now
+    });
+
+    return { ok: true, requestId, claimed: true };
+  });
+}
+
+/**
+ * La unidad DESTINO reclama crear el perfil de un traspaso que ya viene
+ * aceptado (functions/workerHandoverRequests.js): ella lo pidio, con fecha y
+ * rotativa, asi que no tiene nada que responder y su aplicacion lo crea sola.
+ *
+ * Solo la primera sesion que lo pide recibe `claimed: true`. Sin esto, dos
+ * pestañas abiertas crearian dos perfiles de la misma persona.
+ */
+async function claimWorkerTransferIntakeHandler(request, dependencies) {
+  const {
+    db,
+    HttpsError,
+    serverTimestamp,
+    requireWorkspaceProfileManager
+  } = dependencies;
+  const { uid, workspaceId, requestId } =
+    validateBasePayload(request, HttpsError);
+
+  if (!requestId) {
+    callableError(
+      HttpsError,
+      "invalid-argument",
+      "No fue posible identificar la transferencia."
+    );
+  }
+
+  await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
+
+  const ref = db.collection(COLLECTION).doc(requestId);
+
+  return db.runTransaction(async transaction => {
+    const snap = await transaction.get(ref);
+
+    if (!snap.exists) {
+      callableError(HttpsError, "not-found", "La transferencia ya no existe.");
+    }
+
+    const solicitud = snap.data() || {};
+
+    if (solicitud.targetWorkspaceId !== workspaceId) {
+      callableError(
+        HttpsError,
+        "permission-denied",
+        "Solo la unidad que recibe crea este perfil."
+      );
+    }
+
+    // Solo las que nacieron de un pedido de traspaso: una transferencia normal
+    // la acepta una persona, no se aplica sola.
+    if (
+      solicitud.status !== ACCEPTED ||
+      !solicitud.handoverRequestId ||
+      solicitud.targetIntakeAppliedAt
+    ) {
+      return { ok: true, requestId, claimed: false };
+    }
+
+    const now = serverTimestamp();
+
+    transaction.update(ref, {
+      targetIntakeAppliedAt: now,
+      targetIntakeAppliedByUid: uid,
       updatedAt: now
     });
 
@@ -874,6 +985,7 @@ async function claimWorkerTransferBalancesHandler(request, dependencies) {
 }
 
 module.exports = {
+  applyTransferResponse,
   claimWorkerTransferBalancesHandler,
   reportWorkerTransferBalancesHandler,
   ACCEPTED,
@@ -884,6 +996,7 @@ module.exports = {
   cancelWorkerTransferRequestHandler,
   chileTodayISO,
   claimWorkerTransferApplicationHandler,
+  claimWorkerTransferIntakeHandler,
   cleanProfile,
   createWorkerTransferRequestHandler,
   markSourceProfileTransferred,

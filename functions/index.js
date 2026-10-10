@@ -80,9 +80,12 @@ const {
   respondInterUnitAbsenceRequestHandler
 } = require("./interUnitAbsenceRequests");
 const {
+  applyTransferResponse,
   cancelWorkerTransferRequestHandler,
   claimWorkerTransferApplicationHandler,
   claimWorkerTransferBalancesHandler,
+  claimWorkerTransferIntakeHandler,
+  cleanProfile: cleanTransferProfile,
   createWorkerTransferRequestHandler,
   moveDueWorkerLinksHandler,
   reportWorkerTransferBalancesHandler,
@@ -4617,6 +4620,16 @@ exports.reportWorkerTransferBalances = onCall(
   )
 );
 
+// Destino de un pedido de traspaso: reclama crear el perfil, que su propia
+// aplicacion crea sola. true solo para la primera sesion.
+exports.claimWorkerTransferIntake = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => claimWorkerTransferIntakeHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
 exports.claimWorkerTransferBalances = onCall(
   { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
   (request) => claimWorkerTransferBalancesHandler(
@@ -4634,7 +4647,13 @@ const workerHandoverDependencies = () => ({
   db,
   HttpsError,
   requireProfileManager: requireWorkspaceProfileManager,
-  requireSameEstablishment
+  requireSameEstablishment,
+  serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
+  // Aceptar un pedido CREA la transferencia, y la deja aceptada. Lo que eso
+  // implica -inactivar el perfil en origen, mudar el enlace de la app- es el
+  // mismo codigo que cuando el destino responde una transferencia normal.
+  applyTransferResponse,
+  cleanProfile: cleanTransferProfile
 });
 
 exports.requestWorkerHandover = onCall(

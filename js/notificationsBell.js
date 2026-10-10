@@ -6,6 +6,17 @@
 // nueva, se disparan alertas sonoras + vibracion en el celular del supervisor.
 
 import { getWorkerRequests } from "./storage.js";
+import { getJSON, setJSON } from "./persistence.js";
+
+// Avisos que NO son solicitudes: nadie tiene que responderlos, solo enterarse.
+// Hoy los usa el traspaso que la otra unidad acepto, donde el perfil ya se creo
+// solo y no queda nada por hacer -pero quien lo pidio tiene que saberlo-.
+//
+// Viajan en el estado de la unidad y no en el navegador porque el traspaso lo
+// aplica UNA sesion: si el aviso quedara local, los demas supervisores de esa
+// unidad no se enterarian nunca.
+const NOTICES_KEY = "bellNotices";
+const MAX_NOTICES = 20;
 
 // Se alertan solo las solicitudes ORIGINADAS por el trabajador: permiso (leave),
 // cambio de turno (swap) e incidencia de marcaje (missing_clock / clock_incident).
@@ -47,6 +58,43 @@ export function pendingWorkerRequests(requests = getWorkerRequests()) {
     return (Array.isArray(requests) ? requests : []).filter(request =>
         request?.status === "pending" && isWorkerLeaveRequest(request)
     );
+}
+
+export function getBellNotices() {
+    const lista = getJSON(NOTICES_KEY, []);
+
+    return Array.isArray(lista) ? lista : [];
+}
+
+// El id evita repetir el mismo aviso: la transferencia se aplica una vez, pero
+// el oyente puede volver a dispararse antes de que el estado se asiente.
+export function addBellNotice({ id, title, detail = "" }) {
+    const clave = String(id || "").trim();
+
+    if (!clave) return;
+
+    const previos = getBellNotices();
+
+    if (previos.some(item => item?.id === clave)) return;
+
+    setJSON(NOTICES_KEY, [
+        {
+            id: clave,
+            title: String(title || ""),
+            detail: String(detail || ""),
+            createdAt: new Date().toISOString()
+        },
+        ...previos
+    ].slice(0, MAX_NOTICES));
+
+    scheduleRefresh();
+}
+
+export function clearBellNotices() {
+    if (!getBellNotices().length) return;
+
+    setJSON(NOTICES_KEY, []);
+    scheduleRefresh();
 }
 
 export function pendingRequestIds(requests) {
@@ -153,6 +201,12 @@ function alertNewRequest() {
 function refreshNow() {
     const currentIds = pendingRequestIds();
 
+    // Los avisos cuentan y suenan igual que una solicitud nueva: el prefijo
+    // evita que un id de aviso choque con el de una solicitud.
+    getBellNotices().forEach(notice => {
+        if (notice?.id) currentIds.add(`aviso:${notice.id}`);
+    });
+
     updateBadge(currentIds.size);
 
     const isNew = hasNewPendingRequest(knownPendingIds, currentIds);
@@ -183,12 +237,18 @@ export function initNotificationsBell({ onOpen } = {}) {
     // Estado inicial desde la cache local (sin alertar) + ventana de gracia para
     // absorber la hidratacion del sync sin sonar por solicitudes viejas.
     knownPendingIds = pendingRequestIds();
+    getBellNotices().forEach(notice => {
+        if (notice?.id) knownPendingIds.add(`aviso:${notice.id}`);
+    });
     alertsReadyAt = Date.now() + HYDRATION_GRACE_MS;
     updateBadge(knownPendingIds.size);
 
     bellButton.addEventListener("click", () => {
         unlockNotificationAudio();
         onOpenRequests();
+        // Abrir las solicitudes es haberlos leido: el aviso se explica en la
+        // tarjeta del traspaso, que queda ahi.
+        clearBellNotices();
     });
 
     // Desbloquea el audio en el primer gesto del supervisor.

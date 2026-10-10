@@ -32,6 +32,10 @@
 
 const COLLECTION = "workerHandoverRequests";
 
+// La coleccion de las transferencias de siempre: aceptar un pedido crea una
+// ahi, no un mecanismo paralelo.
+const TRANSFER_COLLECTION = "workerTransferRequests";
+
 const PENDING = "pending";
 const ACCEPTED = "accepted";
 const REJECTED = "rejected";
@@ -50,6 +54,11 @@ const MAX_NOTIFIED = 20;
 
 function defaultIdFactory() {
   return `whr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// El mismo formato que usan las transferencias creadas por el camino normal.
+function defaultTransferIdFactory() {
+  return `wtr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function normalizeRut(value) {
@@ -107,7 +116,13 @@ async function requestWorkerHandoverHandler(request, {
   const workspaceId = cleanText(data.workspaceId, 160);
   const sourceWorkspaceId = cleanText(data.sourceWorkspaceId, 160);
   const rut = normalizeRut(data.rut);
-  const suggestedStartDate = cleanText(data.suggestedStartDate, 10);
+  // La fecha y la rotativa las decide QUIEN PIDE, no quien acepta: es su
+  // unidad la que recibe a la persona y la que sabe en que turno la necesita.
+  // Van en el pedido y no despues porque de eso depende que aceptar alcance:
+  // con todo decidido, la unidad que pidio no tiene nada mas que responder.
+  const startDate = cleanText(data.startDate, 10);
+  const rotationType = cleanText(data.rotationType, 40);
+  const rotationFirstTurn = cleanText(data.rotationFirstTurn, 40);
 
   if (
     !workspaceId ||
@@ -118,8 +133,12 @@ async function requestWorkerHandoverHandler(request, {
     throw new HttpsError("invalid-argument", "Faltan datos del pedido.");
   }
 
-  if (suggestedStartDate && !validISODate(suggestedStartDate)) {
-    throw new HttpsError("invalid-argument", "La fecha sugerida no es valida.");
+  if (!validISODate(startDate)) {
+    throw new HttpsError("invalid-argument", "Falta la fecha en que comienza.");
+  }
+
+  if (!rotationType) {
+    throw new HttpsError("invalid-argument", "Falta la rotativa que seguira.");
   }
 
   // Primero el permiso en la unidad que pide, y despues que compartan
@@ -159,7 +178,9 @@ async function requestWorkerHandoverHandler(request, {
     sourceWorkspaceName: cleanText(data.sourceWorkspaceName, 160),
     establishment,
     rut,
-    suggestedStartDate,
+    startDate,
+    rotationType,
+    rotationFirstTurn,
     requestedByUid: uid,
     requestedByName: cleanText(data.requestedByName, 160),
     status: PENDING,
@@ -220,35 +241,41 @@ async function cancelWorkerHandoverRequestHandler(request, {
 }
 
 /**
- * La unidad de origen acepta o rechaza.
+ * La unidad que tiene al trabajador acepta o rechaza.
  *
- * Aceptar NO mueve nada aqui: el origen ya creo la transferencia con el camino
- * de siempre y este paso solo la deja anotada, para que el pedido quede cerrado
- * y se pueda seguir desde donde nacio. Por eso al aceptar exige el id de esa
- * transferencia: sin el, un pedido quedaria "aceptado" sin que nada viaje, y la
- * unidad que pidio esperaria para siempre.
+ * ACEPTAR ES LA TRANSFERENCIA. No crea una solicitud que la otra unidad tenga
+ * que responder: esa unidad ya dijo que si al pedirlo, y ademas dijo desde
+ * cuando y con que rotativa. Pedirle que acepte de nuevo seria pedirle que
+ * confirme lo que acaba de pedir.
+ *
+ * Por eso la transferencia nace ACEPTADA y pasa por applyTransferResponse, el
+ * mismo camino que cuando el destino responde una transferencia normal: se
+ * inactiva el perfil aqui desde la fecha y se muda el enlace de la app si la
+ * fecha ya llego. Lo que se lleva no se decide aqui, se decide alla, una sola
+ * vez para los dos caminos (functions/workerTransferRequests.js).
+ *
+ * Lo unico que queda para el otro lado es crear el perfil con los datos que
+ * viajan, y su propia aplicacion lo hace sola al abrirse, sin preguntar nada,
+ * porque la fecha y la rotativa ya venian en el pedido.
  */
 async function resolveWorkerHandoverRequestHandler(request, {
   db,
   HttpsError,
-  requireProfileManager
+  requireProfileManager,
+  serverTimestamp,
+  applyTransferResponse,
+  cleanProfile,
+  transferCollection = TRANSFER_COLLECTION,
+  transferIdFactory = defaultTransferIdFactory
 }) {
   const uid = requireAuth(request, HttpsError);
   const data = request.data || {};
   const workspaceId = cleanText(data.workspaceId, 160);
   const requestId = cleanText(data.requestId, 220);
   const approve = data.approve === true;
-  const transferRequestId = cleanText(data.transferRequestId, 220);
 
   if (!workspaceId || !requestId) {
     throw new HttpsError("invalid-argument", "Falta identificar el pedido.");
-  }
-
-  if (approve && !transferRequestId) {
-    throw new HttpsError(
-      "invalid-argument",
-      "Falta la transferencia que responde al pedido."
-    );
   }
 
   await requireProfileManager(workspaceId, uid, request.auth?.token || {});
@@ -276,18 +303,99 @@ async function resolveWorkerHandoverRequestHandler(request, {
     );
   }
 
-  const status = approve ? ACCEPTED : REJECTED;
   const ahora = new Date();
 
+  if (!approve) {
+    await ref.set({
+      status: REJECTED,
+      rejectReason: cleanText(data.rejectReason, 300),
+      transferRequestId: "",
+      resolvedAt: ahora,
+      resolvedByUid: uid,
+      updatedAt: ahora
+    }, { merge: true });
+
+    return { status: REJECTED, requestId };
+  }
+
+  // El perfil lo arma quien acepta, que es el unico que lo tiene: sus datos y
+  // sus saldos de vacaciones salen de su propio estado.
+  const profile = cleanProfile(data.profile);
+
+  if (!profile.name) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Falta el trabajador que se traspasa."
+    );
+  }
+
+  const startDate = cleanText(solicitud.startDate, 10);
+
+  if (!validISODate(startDate)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "El pedido no trae la fecha en que comienza."
+    );
+  }
+
+  const transferRequestId = transferIdFactory();
+  const transferRef = db.collection(transferCollection).doc(transferRequestId);
+  // Nace aceptada y no pendiente a proposito: si algo fallara despues, lo peor
+  // que puede pasar es que el otro lado tenga que crear el perfil -que es lo
+  // que iba a hacer igual-. Dejarla pendiente, en cambio, le pediria aceptar
+  // una transferencia que el mismo pidio.
+  const transferencia = {
+    sourceWorkspaceId: workspaceId,
+    sourceWorkspaceName: cleanText(data.workspaceName, 160),
+    targetWorkspaceId: cleanText(solicitud.requestingWorkspaceId, 160),
+    targetWorkspaceName: cleanText(solicitud.requestingWorkspaceName, 160),
+    // Sin enlace: lo que autorizo el pedido fue compartir establecimiento.
+    linkId: "",
+    profileName: profile.name,
+    profile,
+    startDate,
+    // La rotativa que eligio quien pidio. Viaja con la transferencia para que
+    // su aplicacion cree el perfil sin preguntarle nada.
+    targetRotation: {
+      type: cleanText(solicitud.rotationType, 40),
+      firstTurn: cleanText(solicitud.rotationFirstTurn, 40),
+      start: startDate
+    },
+    handoverRequestId: requestId,
+    requestedByUid: uid,
+    requestedByName: cleanText(data.resolvedByName, 160),
+    status: ACCEPTED,
+    targetProfileName: profile.name,
+    createdAt: ahora,
+    updatedAt: ahora
+  };
+
+  await transferRef.set(transferencia);
+
+  // Cerrar el pedido ANTES de los efectos: si se cerrara despues y algo
+  // fallara en el medio, un segundo "aceptar" crearia una segunda
+  // transferencia del mismo trabajador.
   await ref.set({
-    status,
-    transferRequestId: approve ? transferRequestId : "",
+    status: ACCEPTED,
+    transferRequestId,
     resolvedAt: ahora,
     resolvedByUid: uid,
     updatedAt: ahora
   }, { merge: true });
 
-  return { status, requestId };
+  await applyTransferResponse({
+    db,
+    ref: transferRef,
+    requestId: transferRequestId,
+    solicitud: transferencia,
+    status: ACCEPTED,
+    targetProfileName: profile.name,
+    uid,
+    resolvedByName: cleanText(data.resolvedByName, 160),
+    serverTimestamp
+  });
+
+  return { status: ACCEPTED, requestId, transferRequestId };
 }
 
 function escapeHtml(value) {
