@@ -734,3 +734,47 @@ test("un pedido pendiente sin fecha de caducidad sigue sirviendo", () => {
   );
   assert.equal(_private.requestIsUsable({ status: ACCEPTED }, Date.now()), false);
 });
+
+test("pedirlo de nuevo con otra fecha ACTUALIZA el pedido", async () => {
+  // No es un pedido repetido: es el mismo corregido. Devolver el viejo tal
+  // cual dejaba a la otra unidad respondiendo algo que ya nadie quiere, y a
+  // quien pidio creyendo que pidio lo ultimo que eligio.
+  const db = fakeDb();
+  const { deps: dependencias } = deps(db);
+
+  await requestWorkerHandoverHandler(peticion(PEDIDO_BASE), dependencias);
+
+  const segundo = await requestWorkerHandoverHandler(
+    peticion({
+      ...PEDIDO_BASE,
+      startDate: "2027-01-15",
+      rotationType: "3turno",
+      rotationFirstTurn: "larga2"
+    }),
+    dependencias
+  );
+
+  assert.equal(segundo.created, false);
+  assert.equal(segundo.updated, true);
+
+  const pedido = guardado(db);
+
+  assert.equal(pedido.startDate, "2027-01-15");
+  assert.equal(pedido.rotationType, "3turno");
+  assert.equal(pedido.rotationFirstTurn, "larga2");
+  assert.equal(db.guardados.size, 1, "sigue siendo un solo pedido");
+});
+
+test("pedirlo de nuevo con lo mismo no dice que cambio", async () => {
+  const db = fakeDb();
+  const { deps: dependencias } = deps(db);
+
+  await requestWorkerHandoverHandler(peticion(PEDIDO_BASE), dependencias);
+
+  const segundo = await requestWorkerHandoverHandler(
+    peticion(PEDIDO_BASE),
+    dependencias
+  );
+
+  assert.equal(segundo.updated, false);
+});

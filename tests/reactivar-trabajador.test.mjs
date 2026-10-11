@@ -19,6 +19,7 @@ const main = await leer("../js/main.js");
 const solicitudes = await leer("../js/workerRequests.js");
 const puente = await leer("../js/workerUnitChangeNotices.js");
 const servidor = await leer("../functions/workerUnitChangeNotice.js");
+const servidorHandover = await leer("../functions/workerHandoverRequests.js");
 
 function extraer(fuente, nombre, largo = 3000) {
     const inicio = fuente.indexOf(`function ${nombre}(`);
@@ -128,4 +129,42 @@ test("reactivar por traspaso no le avisa a quien ya lo sabe", () => {
     const reactivar = extraer(main, "reactivateProfileFromHandover");
 
     assert.doesNotMatch(reactivar, /reportWorkerEnteredElsewhere/);
+});
+
+test("reactivar vuelve a escribir la rotativa aunque no cambie", () => {
+    // Al inactivar se vacio el calendario desde su ultimo dia. Si la rotativa
+    // "no cambio" no se aplicara, el perfil quedaria activo con el calendario
+    // en blanco: y el cuadro ABRE con la fecha guardada preseleccionada, asi
+    // que basta con aceptar sin tocarla para caer justo ahi.
+    const inicio = main.indexOf("const shouldApplyRotation =");
+    const bloque = main.slice(inicio, main.indexOf(";", main.indexOf(");", inicio)));
+
+    assert.match(bloque, /PROFILE_MODE\.CREATE \|\|/);
+    assert.match(bloque, /isReactivating \|\|/);
+    assert.match(bloque, /hasRotationChanged\(\)/);
+});
+
+test("reactivar por traspaso trae los saldos", () => {
+    // Es la promesa de pedir el traspaso: que vuelva con sus saldos. Sin esto
+    // no se cumplia justo en el caso de quien vuelve, que es cuando importa.
+    const reactivar = extraer(main, "reactivateProfileFromHandover", 3000);
+
+    assert.match(reactivar, /transferredLeaveBalances\(solicitud\)/);
+    assert.match(reactivar, /saveManualLeaveBalances\(\s*saldos\.year,\s*saldos\.balances,\s*profile\.name\s*\)/);
+    // Y crear de cero los aplica por su propio camino: los dos cumplen.
+    assert.match(
+        extraer(main, "createProfileFromHandover", 3000),
+        /transferredLeaveBalances\(solicitud\)/
+    );
+});
+
+test("pedir el traspaso de nuevo con otra fecha no deja el pedido viejo", () => {
+    const servidorPedidos = servidorHandover;
+
+    assert.match(servidorPedidos, /updated: cambio/);
+    assert.match(servidorPedidos, /cleanText\(previa\.startDate, 10\) !== startDate/);
+});
+
+test("una tarjeta pendiente se actualiza con la fecha de reactivacion", () => {
+    assert.match(servidor, /if \(activeFrom && activeFrom !== anterior\)/);
 });

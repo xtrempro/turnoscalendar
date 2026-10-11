@@ -364,14 +364,30 @@ async function createNoticeIfMissing({
     .collection(NOTICES_COLLECTION)
     .where("workspaceId", "==", workspaceId)
     .get();
-  const yaHay = previasSnap.docs.some((docSnap) => {
+  const yaHay = previasSnap.docs.find((docSnap) => {
     const previa = docSnap.data() || {};
 
     return String(previa.profileRut || "") === rut &&
       String(previa.status || "") === PENDING;
   });
 
-  if (yaHay) return false;
+  // Ya hay una tarjeta pendiente por esa persona: no se duplica. Pero si ahora
+  // se sabe DESDE CUANDO esta activa alla -porque la reactivaron- esa fecha
+  // tiene que llegar igual: es justo el dato con el que esta unidad decide, y
+  // una tarjeta vieja no puede taparlo.
+  if (yaHay) {
+    const anterior = String(yaHay.data()?.activeFrom || "");
+
+    if (activeFrom && activeFrom !== anterior) {
+      await db.collection(NOTICES_COLLECTION).doc(yaHay.id).set({
+        activeFrom,
+        profileName,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    }
+
+    return false;
+  }
 
   const now = serverTimestamp();
 

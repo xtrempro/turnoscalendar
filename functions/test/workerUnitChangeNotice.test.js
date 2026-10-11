@@ -661,3 +661,70 @@ test("el cliente no elige a que unidades avisar", async () => {
   assert.equal(avisos.length, 1);
   assert.equal(avisos[0][1].workspaceId, "ws-vieja");
 });
+
+test("una tarjeta pendiente se actualiza con la fecha nueva", async () => {
+  // Es el dato con el que la unidad decide. Una tarjeta vieja no puede
+  // taparlo: diria que la persona se fue, pero no desde cuando volvio a estar
+  // activa en otra parte.
+  const { db, dependencias } = entornoRut({
+    unidades: [UNIDAD_CON_EL],
+    miembros: { "ws-vieja": [{ uid: "jefa", role: "owner" }] }
+  });
+
+  await reportWorkerEnteredHereHandler(
+    peticionRut({ workspaceId: "ws-nueva", rut: "17816632-8" }),
+    dependencias
+  );
+
+  await reportWorkerEnteredHereHandler(
+    peticionRut({
+      workspaceId: "ws-nueva",
+      rut: "17816632-8",
+      activeFrom: "2026-11-03"
+    }),
+    dependencias
+  );
+
+  const avisos = [...db.escrituras.entries()]
+    .filter(([clave]) => clave.startsWith(NOTICES_COLLECTION));
+
+  assert.equal(avisos.length, 1, "no se duplica");
+  assert.equal(avisos[0][1].activeFrom, "2026-11-03");
+});
+
+test("una fecha mal formada no se guarda", async () => {
+  const { dependencias } = entornoRut({ unidades: [UNIDAD_CON_EL] });
+
+  await assert.rejects(
+    () => reportWorkerEnteredHereHandler(
+      peticionRut({
+        workspaceId: "ws-nueva",
+        rut: "17816632-8",
+        activeFrom: "manana"
+      }),
+      dependencias
+    ),
+    (error) => error.code === "invalid-argument"
+  );
+});
+
+test("la fecha valida si pasa", async () => {
+  // La validacion se escribio a mano y perdio las barras una vez: quedo en
+  // /^d{4}-.../, que no calza NINGUNA fecha y rechazaba todos los avisos.
+  const { db, dependencias } = entornoRut({
+    unidades: [UNIDAD_CON_EL],
+    miembros: { "ws-vieja": [{ uid: "jefa", role: "owner" }] }
+  });
+
+  const resultado = await reportWorkerEnteredHereHandler(
+    peticionRut({
+      workspaceId: "ws-nueva",
+      rut: "17816632-8",
+      activeFrom: "2026-11-03"
+    }),
+    dependencias
+  );
+
+  assert.equal(resultado.notified, 1);
+  assert.equal(db.escrituras.get(`${NOTICES_COLLECTION}/aviso-1`).activeFrom, "2026-11-03");
+});

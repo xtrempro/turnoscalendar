@@ -11709,6 +11709,16 @@ async function reactivateProfileFromHandover(solicitud, profile) {
     } finally {
         pendingHandoverReactivation = null;
     }
+
+    // Los saldos que trae de la otra unidad. Van DESPUES de guardar, por el
+    // mismo camino que cuando el perfil se crea de cero: sin esto, pedir el
+    // traspaso para que "vuelva con sus saldos" no cumplia nada justo en el
+    // caso de quien vuelve, que es cuando mas importa.
+    const saldos = transferredLeaveBalances(solicitud);
+
+    if (saldos) {
+        saveManualLeaveBalances(saldos.year, saldos.balances, profile.name);
+    }
 }
 
 function noticeHandoverApplied(solicitud, nombre) {
@@ -13854,6 +13864,13 @@ async function guardarPerfil() {
         !replacementContract &&
         (
             profileDraft.mode === PROFILE_MODE.CREATE ||
+            // Al inactivar se vacio el calendario desde su ultimo dia, asi que
+            // reactivar tiene que volver a escribir la rotativa AUNQUE los
+            // valores sean los mismos: "no cambio" se refiere a la rotativa,
+            // no al calendario, que quedo en blanco. Y el cuadro abre con la
+            // fecha guardada preseleccionada, asi que basta con aceptar sin
+            // tocarla para caer en ese caso.
+            isReactivating ||
             hasRotationChanged()
         );
     const rotationCleanupStart =

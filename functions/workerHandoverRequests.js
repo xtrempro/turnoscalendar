@@ -165,8 +165,35 @@ async function requestWorkerHandoverHandler(request, {
 
   // Un pedido a la vez por persona y unidad: dos iguales solo serian dos
   // avisos y dos tarjetas para decidir lo mismo.
+  //
+  // Pero pedirlo de nuevo con OTRA fecha u OTRA rotativa no es un pedido
+  // repetido: es el mismo corregido. Devolver el viejo tal cual dejaba a la
+  // otra unidad respondiendo algo que ya nadie quiere -y al que pidio,
+  // creyendo que pidio lo ultimo que eligio-.
   if (yaPedido) {
-    return { status: PENDING, requestId: yaPedido.id, created: false };
+    const previa = yaPedido.data() || {};
+    const cambio =
+      cleanText(previa.startDate, 10) !== startDate ||
+      cleanText(previa.rotationType, 40) !== rotationType ||
+      cleanText(previa.rotationFirstTurn, 40) !== rotationFirstTurn;
+
+    if (cambio) {
+      await db.collection(COLLECTION).doc(yaPedido.id).set({
+        startDate,
+        rotationType,
+        rotationFirstTurn,
+        requestedByUid: uid,
+        requestedByName: cleanText(data.requestedByName, 160),
+        updatedAt: new Date(ahora)
+      }, { merge: true });
+    }
+
+    return {
+      status: PENDING,
+      requestId: yaPedido.id,
+      created: false,
+      updated: cambio
+    };
   }
 
   const requestId = idFactory();
