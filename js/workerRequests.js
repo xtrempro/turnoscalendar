@@ -1354,6 +1354,12 @@ function requestDetailsHTML(request) {
     if (isWorkerUnitChangeNotice(request)) {
         if (request.workerRut) pieces.push(`RUT: ${request.workerRut}`);
 
+        // Solo cuando lo reactivaron alla: ahi se sabe desde cuando, y es el
+        // dato que decide si el perfil de aqui todavia tiene sentido.
+        if (request.activeFrom) {
+            pieces.push(`Activo allá desde: ${formatDate(request.activeFrom)}`);
+        }
+
         return pieces.length ? pieces.join(" | ") : "Ya no aparece en tu app";
     }
 
@@ -1709,6 +1715,7 @@ async function getWorkerUnitChangeNotices() {
                 status: item.status === "pending" ? "pending" : "approved",
                 profile: String(item.profileName || "").trim() || "Trabajador",
                 workerRut: item.profileRut ? formatRut(item.profileRut) : "",
+                activeFrom: item.activeFrom || "",
                 note: item.status === "pending"
                     ? "Fue ingresado en otra unidad del establecimiento. Si ya " +
                         "no trabaja contigo, desactiva su perfil para que deje " +

@@ -31,14 +31,17 @@ async function callFunction(name, payload) {
  * aqui, cualquiera podria dejarle una tarjeta a una unidad que nada tiene que
  * ver con esa persona.
  */
-export async function reportWorkerEnteredHere(rut) {
+export async function reportWorkerEnteredHere(rut, activeFrom = "") {
     const workspace = getActiveWorkspace();
 
     if (!workspace?.id || !rut) return { notified: 0 };
 
     return callFunction("reportWorkerEnteredHere", {
         workspaceId: workspace.id,
-        rut
+        rut,
+        // Al reactivar a alguien se sabe desde cuando vuelve a estar activo, y
+        // esa fecha es justo lo que la otra unidad necesita para decidir.
+        activeFrom
     });
 }
 

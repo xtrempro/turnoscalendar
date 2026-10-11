@@ -1377,32 +1377,48 @@ async function askHandoverSchedule() {
 // transferencia normal y de ahi en adelante todo es el camino de siempre.
 // Por eso la fecha la elige quien acepta: es su calendario el que se vacia.
 async function askWorkerHandover() {
-    if (!rutLookupState.unidades.length) return;
+    return requestHandoverFromUnits(
+        rutLookupState.unidades,
+        String(DOM.profileRutInput.value || "").trim(),
+        { discardDraft: true }
+    );
+}
 
-    let elegida = rutLookupState.unidades[0];
+// Pide el traspaso a una de esas unidades. Devuelve true si quedo pedido.
+//
+// Recibe las unidades en vez de leer el estado de la deteccion porque hay dos
+// momentos que piden lo mismo: ingresar a alguien de cero, y reactivar a quien
+// se habia ido. Si cada uno armara su pedido, un dia dejarian de pedir igual.
+//
+// discardDraft solo aplica al primero: ahi el perfil estaba a medio escribir y
+// no hay que crearlo -lo trae el traspaso-. Al reactivar, el perfil ya existe
+// y no se toca.
+async function requestHandoverFromUnits(unidades, rut, { discardDraft = false } = {}) {
+    if (!unidades?.length) return false;
 
-    if (rutLookupState.unidades.length > 1) {
+    let elegida = unidades[0];
+
+    if (unidades.length > 1) {
         const workspaceId = await showChoice(
             "¿A qué unidad le pides el traspaso?",
             {
                 title: "Pedir el traspaso",
                 confirmText: "Continuar",
-                choices: rutLookupState.unidades.map(unidad => ({
+                choices: unidades.map(unidad => ({
                     value: unidad.workspaceId,
                     label: unidad.workspaceName || unidad.workspaceId
                 }))
             }
         );
 
-        if (!workspaceId) return;
+        if (!workspaceId) return false;
 
-        elegida = rutLookupState.unidades.find(
+        elegida = unidades.find(
             unidad => unidad.workspaceId === workspaceId
         );
     }
 
     const nombreUnidad = elegida.workspaceName || "la otra unidad";
-    const rut = String(DOM.profileRutInput.value || "").trim();
     // La fecha y la rotativa las decide ESTA unidad, que es la que recibe a la
     // persona y la unica que sabe en que turno la necesita. Se preguntan al
     // pedir y no al aceptar para que aceptar alcance: con todo decidido, la
@@ -1430,7 +1446,7 @@ async function askWorkerHandover() {
         }
     );
 
-    if (!confirmado) return;
+    if (!confirmado) return false;
 
     try {
         const respuesta = await requestWorkerHandover({
@@ -1453,8 +1469,10 @@ async function askWorkerHandover() {
         // de pestaña preguntaria "continuar sin guardar" por un registro que
         // ya no hay que crear: lo va a traer el traspaso, con sus datos y sus
         // saldos. Lo unico que queda en pie es el pedido.
-        hideProfileRutNotice();
-        discardProfileDraftChangesBeforeLeaving();
+        if (discardDraft) {
+            hideProfileRutNotice();
+            discardProfileDraftChangesBeforeLeaving();
+        }
         await showAlert(
             respuesta?.created === false
                 ? `Ya le habías pedido el traspaso a ${nombreUnidad}. Sigue ` +
@@ -1466,10 +1484,79 @@ async function askWorkerHandover() {
                     "elegiste. Puedes seguir el pedido en tu menú Solicitudes.",
             { title: "Pedido enviado", tone: "success" }
         );
+
+        return true;
     } catch (error) {
         console.warn("No se pudo pedir el traspaso.", error);
         alert(error?.message || "No se pudo pedir el traspaso.");
+
+        return false;
     }
+}
+
+// Reactivar a alguien que estuvo inactivo.
+//
+// Al inactivarlo se pregunta hasta que dia vale su ultimo turno y el calendario
+// se vacia desde ahi. Volver a activarlo sin decir desde cuando lo dejaria
+// activo con el calendario en blanco, asi que la fecha y la rotativa son parte
+// de reactivar y no un paso aparte que alguien tenga que recordar despues.
+//
+// Y si mientras tanto entro en otra unidad del establecimiento, lo primero es
+// ofrecer pedir el traspaso: asi vuelve con sus saldos en vez de empezar otra
+// vez de cero.
+//
+// Devuelve null si se cancela, { handoverRequested: true } si quedo pedido el
+// traspaso -y entonces no se reactiva ahora-, o la fecha y la rotativa.
+async function resolveProfileReactivation(nombre, rut) {
+    const limpio = normalizeRut(rut);
+    let enOtras = [];
+
+    if (limpio.length >= 7) {
+        try {
+            const { unidades } = await findWorkerInEstablishment(limpio);
+
+            enOtras = unidades.filter(unidad => unidad.active !== false);
+        } catch (error) {
+            // Es una ayuda: que falle no puede impedir reactivar a alguien.
+            console.warn("No se pudo revisar el RUT al reactivar.", error);
+        }
+    }
+
+    if (enOtras.length) {
+        const nombres = enOtras
+            .map(unidad => unidad.workspaceName || "otra unidad")
+            .join(", ");
+        const eleccion = await showChoice(
+            `${nombre} figura activo en ${nombres}, del mismo establecimiento.\n\n` +
+            "Puedes pedir el traspaso para que vuelva con sus saldos de " +
+            "vacaciones, o reactivarlo aquí de todos modos.",
+            {
+                title: "Reactivar a un trabajador",
+                confirmText: "Continuar",
+                choices: [
+                    { value: "traspaso", label: "Pedir el traspaso" },
+                    { value: "aqui", label: "Reactivarlo aquí" }
+                ]
+            }
+        );
+
+        if (!eleccion) return null;
+
+        if (eleccion === "traspaso") {
+            const pedido = await requestHandoverFromUnits(enOtras, limpio);
+
+            // Pedido el traspaso, el perfil se reactiva cuando llegue, con la
+            // fecha y la rotativa acordadas. Reactivarlo ahora dejaria a dos
+            // unidades contandolo como activo al mismo tiempo.
+            return pedido ? { handoverRequested: true } : null;
+        }
+    }
+
+    const rotativa = await askHandoverSchedule();
+
+    if (!rotativa) return null;
+
+    return { ...rotativa, handoverRequested: false };
 }
 
 async function openAttachment(doc) {
@@ -11450,6 +11537,11 @@ window.addEventListener("proturnos:startWorkerHandover", event => {
 // eso se encarga la campanita.
 const handoverIntakesInFlight = new Set();
 
+// Una reactivacion que viene de un traspaso aceptado: la fecha y la rotativa
+// ya las acordaron las dos unidades, asi que al guardar no hay nada que
+// preguntar ni a quien avisarle.
+let pendingHandoverReactivation = null;
+
 // Lo ultimo que dijo el oyente. Se guarda porque hay un caso en que no se puede
 // aplicar en el momento -un perfil abierto a medio editar- y el oyente no va a
 // volver a hablar: el documento ya no cambia. Sin esto, "se reintenta al
@@ -11478,11 +11570,19 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
 
         if (!nombre) continue;
 
-        const yaEstaba = getProfiles().some(item => item.name === nombre);
+        // Puede existir pero estar INACTIVO: es el caso de quien se fue y
+        // vuelve. Ahi no hay que crearlo de nuevo -se perderia su historial-,
+        // hay que reactivarlo con la fecha y la rotativa que se acordaron.
+        const existente = getProfiles().find(item => item.name === nombre);
+        const porReactivar = Boolean(existente) && !isProfileActive(existente);
+        const hayQueTocarElPerfil = !existente || porReactivar;
 
         // No se mete en medio de un perfil a medio editar. Queda pendiente y
         // se reintenta al cerrarlo (retryHandoverIntakes).
-        if (!yaEstaba && (isProfileEditing() || hasUnsavedProfileDraftChanges())) {
+        if (
+            hayQueTocarElPerfil &&
+            (isProfileEditing() || hasUnsavedProfileDraftChanges())
+        ) {
             continue;
         }
 
@@ -11494,7 +11594,11 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
             if (!await claimWorkerTransferIntake(solicitud.id)) continue;
 
             try {
-                if (!yaEstaba) await createProfileFromHandover(solicitud, nombre);
+                if (!existente) {
+                    await createProfileFromHandover(solicitud, nombre);
+                } else if (porReactivar) {
+                    await reactivateProfileFromHandover(solicitud, existente);
+                }
             } catch (error) {
                 // Devolverlo a la cola antes de rendirse: si quedara tomado,
                 // el traspaso estaria consumido para siempre y la persona se
@@ -11561,6 +11665,49 @@ async function createProfileFromHandover(solicitud, nombre) {
 
     if (!await guardarPerfil()) {
         throw new Error("El perfil no se pudo guardar.");
+    }
+}
+
+// Reactivar a quien vuelve, con lo que acordaron las dos unidades.
+//
+// Pasa por startEditMode + guardarPerfil -el camino de siempre- para que la
+// rotativa, el calendario y la bitacora salgan igual que si lo hubiera hecho
+// una persona. Lo unico distinto es que no se pregunta nada: la fecha y la
+// rotativa venian en el pedido.
+async function reactivateProfileFromHandover(solicitud, profile) {
+    const rotativa = solicitud.targetRotation || {};
+    const inicio = normalizeStoredStart(
+        rotativa.start || solicitud.startDate || ""
+    );
+
+    setCurrentProfile(profile.name);
+    startEditMode();
+
+    if (!isProfileEditing()) {
+        throw new Error("No se pudo abrir el perfil para reactivarlo.");
+    }
+
+    Object.assign(profileDraft, {
+        active: true,
+        rotationType: String(rotativa.type || profileDraft.rotationType || ""),
+        rotationStart: inicio,
+        rotationFirstTurn: String(rotativa.firstTurn || "larga")
+    });
+
+    // Sin esto, guardarPerfil volveria a preguntar desde cuando y con que
+    // rotativa, que es justo lo que ya se acordo.
+    pendingHandoverReactivation = {
+        rotationType: profileDraft.rotationType,
+        rotationStart: inicio,
+        rotationFirstTurn: profileDraft.rotationFirstTurn
+    };
+
+    try {
+        if (!await guardarPerfil()) {
+            throw new Error("El perfil no se pudo reactivar.");
+        }
+    } finally {
+        pendingHandoverReactivation = null;
     }
 }
 
@@ -11684,13 +11831,13 @@ window.addEventListener("proturnos:deactivateMovedWorker", event => {
 // Avisarle a la unidad que ya tenia a esa persona. Silencioso a proposito: el
 // perfil ya quedo guardado, y que el aviso falle no es algo que quien lo acaba
 // de crear pueda resolver ni tenga que cargar.
-async function reportWorkerEnteredElsewhere(rut) {
+async function reportWorkerEnteredElsewhere(rut, activeFrom = "") {
     const limpio = normalizeRut(rut);
 
     if (limpio.length < 7) return;
 
     try {
-        await reportWorkerEnteredHere(limpio);
+        await reportWorkerEnteredHere(limpio, activeFrom);
     } catch (error) {
         console.warn("No se pudo avisar a la unidad anterior.", error);
     }
@@ -13581,6 +13728,27 @@ async function guardarPerfil() {
         contractBlocksGrade();
     const shiftAssignmentBlocked =
         contractBlocksShiftAssignment();
+    // Reactivar exige decir desde cuando y con que rotativa, y por eso va
+    // ANTES de leer la rotativa del borrador: el cuadro escribe ahi.
+    const isReactivating = isEditing && !wasActive && willBeActive;
+    let reactivationFrom = "";
+
+    if (isReactivating && !pendingHandoverReactivation) {
+        const decision = await resolveProfileReactivation(
+            nextName,
+            profileDraft.rut
+        );
+
+        if (!decision || decision.handoverRequested) return false;
+
+        profileDraft.rotationType = decision.rotationType;
+        profileDraft.rotationStart = decision.startDate;
+        profileDraft.rotationFirstTurn = decision.rotationFirstTurn;
+        // Solo cuando se reactiva SIN pedir el traspaso: si vino por traspaso,
+        // la otra unidad ya lo sabe -lo acordo- y avisarle seria ruido.
+        reactivationFrom = decision.startDate;
+    }
+
     const nextRotationType = replacementContract
         ? (
             profileDraft.originalRotationType === "libre"
@@ -14187,6 +14355,15 @@ async function guardarPerfil() {
         // el perfil alla por su cuenta.
         if (isCreating && !transferIntake) {
             void reportWorkerEnteredElsewhere(nextProfilePayload.rut);
+        }
+
+        // Reactivado aqui sin pedir el traspaso: la otra unidad tiene que
+        // enterarse de que desde esa fecha esta activo en dos lados.
+        if (reactivationFrom) {
+            void reportWorkerEnteredElsewhere(
+                nextProfilePayload.rut,
+                reactivationFrom
+            );
         }
 
         return true;

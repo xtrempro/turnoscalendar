@@ -235,7 +235,7 @@ async function avisarUnidad({
   if (!destinatarios.length) return;
 
   const quien = profileName || "Un trabajador de tu unidad";
-  const asunto = `${quien} se enlazo en otra unidad`;
+  const asunto = `${quien} esta activo en otra unidad`;
   // Sin afirmar nada sobre su aplicacion: a este aviso se llega tanto porque
   // se enlazo alla -y entonces si dejo de ver la tuya- como porque lo
   // ingresaron de cero, y la mayoria todavia no tiene la app.
@@ -290,9 +290,16 @@ async function reportWorkerEnteredHereHandler(request, {
 
   const workspaceId = cleanText(request.data?.workspaceId, 160);
   const rut = normalizeRut(request.data?.rut);
+  // Solo al reactivar: ahi se sabe desde cuando vuelve a estar activo, y esa
+  // fecha es justo lo que la otra unidad necesita para decidir.
+  const activeFrom = cleanText(request.data?.activeFrom, 10);
 
   if (!workspaceId || rut.length < 7) {
     throw new HttpsError("invalid-argument", "Falta el RUT o la unidad.");
+  }
+
+  if (activeFrom && !/^\d{4}-\d{2}-\d{2}$/.test(activeFrom)) {
+    throw new HttpsError("invalid-argument", "La fecha no es valida.");
   }
 
   await requireProfileManager(workspaceId, uid, request.auth?.token || {});
@@ -314,6 +321,7 @@ async function reportWorkerEnteredHereHandler(request, {
         workspaceId: unidad.workspaceId,
         rut,
         profileName: unidad.profileName,
+        activeFrom,
         serverTimestamp,
         idFactory
       });
@@ -348,6 +356,7 @@ async function createNoticeIfMissing({
   workspaceId,
   rut,
   profileName,
+  activeFrom = "",
   serverTimestamp,
   idFactory
 }) {
@@ -371,6 +380,7 @@ async function createNoticeIfMissing({
     uid: "",
     profileName,
     profileRut: rut,
+    activeFrom,
     newWorkspaceName: "",
     status: PENDING,
     createdAt: now,
