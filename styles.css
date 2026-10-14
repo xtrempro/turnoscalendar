@@ -28664,6 +28664,23 @@ body.theme-dark .pf-v2 {
 .pf-v2 .pf-kpi--hhee { background: linear-gradient(140deg, #f0a63a, #dd7d10); }
 .pf-v2 .pf-kpi--doc { background: linear-gradient(140deg, #2dd4c4, #0e918c); }
 
+/* ---- Perfil inactivo ---- */
+/* El trabajador ya no esta activo en la unidad y la vista entera lo dice: las
+   tarjetas, el avatar, los iconos y los graficos pierden el color. Se despinta
+   con un filtro y no cambiando cada color, porque varios vienen en estilos en
+   linea (los anillos de vacaciones, las barras de turnos) y porque asi un color
+   nuevo queda en gris sin tener que acordarse de este bloque.
+   Los botones NO entran: siguen funcionando, y en gris pareceria que no. */
+.pf-v2.pf-inactive .pf-av,
+.pf-v2.pf-inactive .pf-kpi,
+.pf-v2.pf-inactive .pf-card-ico,
+.pf-v2.pf-inactive .pf-mini-head .ci,
+.pf-v2.pf-inactive .pf-vac,
+.pf-v2.pf-inactive .pf-spark,
+.pf-v2.pf-inactive .pf-tdist {
+    filter: grayscale(1);
+}
+
 /* ---- Layout 2 columnas ---- */
 .pf-v2 .profile-layout {
     grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr);

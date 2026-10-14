@@ -120,9 +120,11 @@ test("guardar cambios confirma solo las claves que realmente variaron", () => {
     assert.match(seal, /reason: "unchanged"/);
 });
 
-test("al guardar un perfil desactivado se selecciona otro activo", () => {
+test("al guardar un perfil desactivado se sigue viendo ese perfil", () => {
+    // Antes saltaba al primer activo: el supervisor terminaba mirando a otra
+    // persona justo despues de inactivar, sin ver el resultado.
     const selectionHelpers = sourceBlock(
-        "function activeProfileNameAfterSave",
+        "function selectProfileAfterSave",
         "function normalizeProfileDraftText"
     );
     const guardarPerfil = sourceBlock(
@@ -130,10 +132,10 @@ test("al guardar un perfil desactivado se selecciona otro activo", () => {
         "function handleAvailabilityEdit"
     );
 
-    assert.match(selectionHelpers, /savedProfile\.active !== false/);
-    assert.match(selectionHelpers, /isProfileActive\(profile\)/);
-    assert.match(selectionHelpers, /setCurrentProfile\(selectedName \|\| null\)/);
-    assert.match(guardarPerfil, /selectProfileAfterSave\(nextName, nextProfilePayload\)/);
+    assert.match(selectionHelpers, /setCurrentProfile\(savedName \|\| null\)/);
+    assert.doesNotMatch(selectionHelpers, /isProfileActive/);
+    assert.match(guardarPerfil, /selectProfileAfterSave\(nextName\)/);
+    assert.doesNotMatch(source, /activeProfileNameAfterSave/);
 });
 
 test("mover turno habilita deshacer al terminar la accion", () => {

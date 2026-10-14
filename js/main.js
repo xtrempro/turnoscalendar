@@ -6663,6 +6663,15 @@ function pfAge(birthDate) {
     return { age: Math.max(0, age), daysToBirthday };
 }
 
+// La vista del perfil pierde el color cuando el trabajador ya no esta activo en
+// la unidad: se nota al entrar, sin tener que buscar la etiqueta "Inactivo".
+// Se marca en el contenedor porque cada tarjeta se pinta por su lado.
+function markInactiveProfileView(inactive) {
+    document
+        .querySelector(".profile-view-layout")
+        ?.classList.toggle("pf-inactive", Boolean(inactive));
+}
+
 function renderProfileHero(profile, data) {
     const avatar = document.getElementById("profileHeroAvatar");
     const nameEl = document.getElementById("profileHeroName");
@@ -6677,6 +6686,7 @@ function renderProfileHero(profile, data) {
         nameEl.textContent = "Selecciona un trabajador";
         subEl.textContent = "";
         pillsEl.innerHTML = "";
+        markInactiveProfileView(false);
         return;
     }
 
@@ -6694,6 +6704,9 @@ function renderProfileHero(profile, data) {
     subEl.textContent = subParts.join(" · ");
 
     const active = creating ? true : isProfileActive(profile);
+
+    markInactiveProfileView(!active);
+
     const assigned = creating
         ? Boolean(profileDraft.shiftAssigned)
         : getShiftAssigned(data.name, currentDate);
@@ -7864,15 +7877,10 @@ function renderProfiles(options = {}) {
         setCurrentProfile(selectableProfiles[0]?.name || null);
     }
 
-    if (
-        profileDraft.mode === PROFILE_MODE.VIEW &&
-        getCurrentProfile() &&
-        !selectableProfiles.some(profile =>
-            profile.name === getCurrentProfile()
-        )
-    ) {
-        setCurrentProfile(selectableProfiles[0]?.name || null);
-    }
+    // El filtro de la lista decide lo que se LISTA, no a quien se esta mirando:
+    // mientras el perfil exista, se sigue viendo. Antes, el perfil que se
+    // acababa de inactivar desaparecia de la lista y esto saltaba al primer
+    // activo, justo cuando el supervisor queria ver el resultado.
 
     const current = getCurrentProfile();
     const filtro = filters.role || "Todos";
@@ -12234,10 +12242,8 @@ async function applyWorkerTransferAtSource(solicitud, profile) {
     }
     scheduleWorkerAppDataPublish(300, name);
 
-    if (getCurrentProfile() === name) {
-        setCurrentProfile(activeProfileNameAfterSave(name, { active: false }) || null);
-    }
-
+    // Se sigue viendo a quien se transfirio, ahora en gris: el aviso dice que
+    // quedo inactivo aqui, y saltar a otra persona lo contradecia.
     renderProfiles({ dashboard: false });
     renderBotones();
     refreshAll();
@@ -12375,21 +12381,12 @@ function exitProfileMode(selectedName = getCurrentProfile()) {
     retryHandoverIntakes();
 }
 
-function activeProfileNameAfterSave(savedName, savedProfile = {}) {
-    if (savedProfile.active !== false) return savedName;
-
-    return getProfiles()
-        .find(profile =>
-            profile.name !== savedName &&
-            isProfileActive(profile)
-        )?.name || "";
-}
-
-function selectProfileAfterSave(savedName, savedProfile = {}) {
-    const selectedName =
-        activeProfileNameAfterSave(savedName, savedProfile);
-
-    setCurrentProfile(selectedName || null);
+// Despues de guardar se sigue viendo el mismo perfil, tambien cuando acaba de
+// quedar inactivo: saltar al primer activo dejaba al supervisor mirando a otra
+// persona justo despues de inactivar, sin ver lo que acababa de hacer. La vista
+// del perfil inactivo se pinta en gris (ver .pf-inactive en styles.css).
+function selectProfileAfterSave(savedName) {
+    setCurrentProfile(savedName || null);
 }
 
 function normalizeProfileDraftText(value) {
@@ -14427,7 +14424,7 @@ async function guardarPerfil() {
                 label: "Confirmando guardado..."
             }
         );
-        selectProfileAfterSave(nextName, nextProfilePayload);
+        selectProfileAfterSave(nextName);
         renderProfiles({ dashboard: false });
         renderBotones();
         refreshAll();
