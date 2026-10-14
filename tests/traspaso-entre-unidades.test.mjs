@@ -277,3 +277,52 @@ test("el testigo de la reserva viaja a confirmar y a soltar", () => {
     assert.match(aplicar, /confirmWorkerTransferIntake\(solicitud\.id, testigo\)/);
     assert.match(aplicar, /releaseWorkerTransferIntake\(solicitud\.id, testigo\)/);
 });
+
+// --- Tercera vuelta de la auditoria (2026-10-14) ---
+
+test("quien llega se reconoce por su RUT, no por su nombre", () => {
+    // Con el nombre, un homonimo ACTIVO hacia que el traspaso se diera por
+    // aplicado sin crear a nadie: la persona desaparecia. Y uno INACTIVO era
+    // peor: se reactivaba a otro y se le cargaban los saldos del que venia.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+
+    assert.match(
+        aplicar,
+        /normalizeRut\(item\.rut\) === rut/
+    );
+    assert.doesNotMatch(aplicar, /find\(item => item\.name === nombre\)/);
+});
+
+test("sin RUT no se adivina: se pide a mano", () => {
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+
+    assert.match(aplicar, /if \(!rut\) \{[\s\S]{0,300}noticeHandoverNeedsHand\(/);
+});
+
+test("un nombre ya ocupado se avisa en vez de pisar al otro perfil", () => {
+    // Los perfiles se identifican por nombre dentro de la unidad: crear el que
+    // llega pisaria al que ya estaba.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+
+    assert.match(aplicar, /const homonimo = !existente &&/);
+    assert.match(aplicar, /perfiles\.some\(item => item\.name === nombre\)/);
+    assert.match(aplicar, /if \(homonimo\) \{[\s\S]{0,400}noticeHandoverNeedsHand\(/);
+
+    // Y sin tomar la reserva: el claim viene despues de estas dos salidas.
+    const homonimo = aplicar.indexOf("if (homonimo)");
+    const claim = aplicar.indexOf("claimWorkerTransferIntake(solicitud.id)");
+
+    assert.ok(homonimo < claim, "se avisa antes de tomar el traspaso");
+});
+
+test("si falla crear Y liberar, igual se reintenta", () => {
+    // Ahi no queda nada escrito que despierte al oyente: la reserva vence en
+    // silencio y la pestaña se quedaria esperando.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+    const fallo = aplicar.slice(
+        aplicar.indexOf("No se pudo crear el perfil del traspaso.")
+    );
+
+    assert.match(fallo, /scheduleHandoverIntakeRetry\(\)/);
+    assert.match(fallo, /traspaso-fallido:/);
+});

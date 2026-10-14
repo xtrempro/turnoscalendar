@@ -1261,3 +1261,78 @@ test("retirar el pedido tampoco pisa una aceptacion", async () => {
 
   assert.equal(guardado(db).status, ACCEPTED);
 });
+
+// Corregir no lee el documento: lo busca por consulta. La aceptacion entra
+// justo despues de esa busqueda, que es donde estaba el hueco.
+function aceptanTrasLaBusqueda(db) {
+  return {
+    ...db,
+    collection: (nombre) => {
+      const coleccion = db.collection(nombre);
+
+      if (nombre !== COLLECTION) return coleccion;
+
+      return {
+        ...coleccion,
+        where: (campo, op, valor) => {
+          const consulta = coleccion.where(campo, op, valor);
+
+          return {
+            ...consulta,
+            get: async () => {
+              const resultado = await consulta.get();
+
+              db.guardados.set("pedido-1", {
+                ...db.guardados.get("pedido-1"),
+                status: ACCEPTED,
+                transferRequestId: "transfer-ya"
+              });
+
+              return resultado;
+            }
+          };
+        }
+      };
+    }
+  };
+}
+
+test("corregir un pedido ya aceptado no lo cambia: avisa que se resolvio", async () => {
+  // La correccion llegaba despues de la aceptacion y se escribia igual: el
+  // pedido quedaba aceptado con la fecha nueva, la transferencia con la vieja,
+  // y a quien corrigio se le decia que seguia pendiente.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, {
+    db: aceptanTrasLaBusqueda(db)
+  });
+
+  await assert.rejects(
+    () => requestWorkerHandoverHandler(
+      peticion({ ...PEDIDO_BASE, startDate: "2026-12-01" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  const pedido = guardado(db);
+
+  assert.equal(pedido.status, ACCEPTED);
+  assert.equal(pedido.startDate, "2026-11-03", "no se le cambio la fecha");
+});
+
+test("corregir uno que sigue pendiente funciona igual que antes", async () => {
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+  const resultado = await requestWorkerHandoverHandler(
+    peticion({ ...PEDIDO_BASE, startDate: "2026-12-01" }),
+    dependencias
+  );
+
+  assert.deepEqual(resultado, {
+    status: PENDING,
+    requestId: "pedido-1",
+    created: false,
+    updated: true
+  });
+  assert.equal(guardado(db).startDate, "2026-12-01");
+});

@@ -11838,6 +11838,20 @@ function scheduleHandoverIntakeRetry(delay = HANDOVER_INTAKE_RETRY_MS) {
     }, delay);
 }
 
+// Un traspaso que esta aplicación no puede aplicar sola. No se toca nada -ni se
+// toma la reserva- y se pide ayuda: el perfil que llega se identifica por RUT,
+// y elegir por cuenta propia entre dos personas que comparten nombre es
+// exactamente el error que esto evita.
+function noticeHandoverNeedsHand(solicitud, nombre, motivo) {
+    addBellNotice({
+        id: `traspaso-a-mano:${solicitud.id}`,
+        title: `Revisa el traspaso de ${nombre}`,
+        detail:
+            `No se creó su perfil porque ${motivo}. ` +
+            "Resuélvelo y vuelve a entrar a la unidad, o créalo a mano con sus datos."
+    });
+}
+
 function retryHandoverIntakes() {
     if (!pendingHandoverIntakes.length) return;
 
@@ -11860,12 +11874,42 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
 
         if (!nombre) continue;
 
+        // Quien llega se reconoce por su RUT, no por su nombre.
+        //
+        // Con el nombre, un homonimo activo hacia que el traspaso se diera por
+        // aplicado sin crear a nadie -la persona desaparecia-, y un homonimo
+        // inactivo era peor todavia: se reactivaba a OTRO y se le cargaban los
+        // saldos de vacaciones del que venia.
+        const rut = normalizeRut(solicitud.profile?.rut || "");
+
+        if (!rut) {
+            // Sin RUT no hay forma de saber a quien se refiere, y adivinar por
+            // nombre es justo lo que esto viene a evitar.
+            noticeHandoverNeedsHand(solicitud, nombre, "no trae el RUT");
+            continue;
+        }
+
+        const perfiles = getProfiles();
         // Puede existir pero estar INACTIVO: es el caso de quien se fue y
         // vuelve. Ahi no hay que crearlo de nuevo -se perderia su historial-,
         // hay que reactivarlo con la fecha y la rotativa que se acordaron.
-        const existente = getProfiles().find(item => item.name === nombre);
+        const existente = perfiles.find(item => normalizeRut(item.rut) === rut);
         const porReactivar = Boolean(existente) && !isProfileActive(existente);
         const hayQueTocarElPerfil = !existente || porReactivar;
+        // Otro trabajador ya ocupa ese nombre: los perfiles se identifican por
+        // nombre dentro de la unidad, asi que crear el que llega lo pisaria.
+        // Se avisa en vez de elegir por cuenta propia a cual de los dos daña.
+        const homonimo = !existente &&
+            perfiles.some(item => item.name === nombre);
+
+        if (homonimo) {
+            noticeHandoverNeedsHand(
+                solicitud,
+                nombre,
+                "ya hay otro trabajador con ese nombre en esta unidad"
+            );
+            continue;
+        }
 
         // No se mete en medio de un perfil a medio editar. Queda pendiente y
         // se reintenta al cerrarlo (retryHandoverIntakes).
@@ -11922,6 +11966,10 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
             noticeHandoverApplied(solicitud, nombre);
         } catch (error) {
             console.warn("No se pudo crear el perfil del traspaso.", error);
+            // Pudo fallar el claim, o el perfil Y ademas su liberacion: ahi no
+            // queda nada escrito que despierte al oyente, asi que el reintento
+            // tiene que pedirlo este lado.
+            scheduleHandoverIntakeRetry();
             addBellNotice({
                 id: `traspaso-fallido:${solicitud.id}`,
                 title: `No se pudo crear el perfil de ${nombre}`,

@@ -191,22 +191,40 @@ async function requestWorkerHandoverHandler(request, {
   // otra unidad respondiendo algo que ya nadie quiere -y al que pidio,
   // creyendo que pidio lo ultimo que eligio-.
   if (yaPedido) {
-    const previa = yaPedido.data() || {};
-    const cambio =
-      cleanText(previa.startDate, 10) !== startDate ||
-      cleanText(previa.rotationType, 40) !== rotationType ||
-      cleanText(previa.rotationFirstTurn, 40) !== rotationFirstTurn;
+    const ref = db.collection(COLLECTION).doc(yaPedido.id);
+    // Corregir tambien va en transaccion: la otra unidad pudo aceptarlo entre
+    // la busqueda y la escritura. Sin esto, el pedido quedaba aceptado pero con
+    // la fecha nueva, la transferencia se llevaba la vieja, y a quien corrigio
+    // se le decia que su pedido seguia pendiente.
+    const cambio = await db.runTransaction(async transaction => {
+      const actual = await transaction.get(ref);
+      const previa = actual.exists ? actual.data() || {} : {};
 
-    if (cambio) {
-      await db.collection(COLLECTION).doc(yaPedido.id).set({
-        startDate,
-        rotationType,
-        rotationFirstTurn,
-        requestedByUid: uid,
-        requestedByName: cleanText(data.requestedByName, 160),
-        updatedAt: new Date(ahora)
-      }, { merge: true });
-    }
+      if (!requestIsUsable(previa, Date.now())) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Ese pedido ya fue resuelto: no se puede corregir."
+        );
+      }
+
+      const distinto =
+        cleanText(previa.startDate, 10) !== startDate ||
+        cleanText(previa.rotationType, 40) !== rotationType ||
+        cleanText(previa.rotationFirstTurn, 40) !== rotationFirstTurn;
+
+      if (distinto) {
+        transaction.set(ref, {
+          startDate,
+          rotationType,
+          rotationFirstTurn,
+          requestedByUid: uid,
+          requestedByName: cleanText(data.requestedByName, 160),
+          updatedAt: new Date(ahora)
+        }, { merge: true });
+      }
+
+      return distinto;
+    });
 
     return {
       status: PENDING,

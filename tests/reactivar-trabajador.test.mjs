@@ -21,12 +21,41 @@ const puente = await leer("../js/workerUnitChangeNotices.js");
 const servidor = await leer("../functions/workerUnitChangeNotice.js");
 const servidorHandover = await leer("../functions/workerHandoverRequests.js");
 
-function extraer(fuente, nombre, largo = 3000) {
+// La funcion COMPLETA, por llaves. Cortarla a tantos caracteres del nombre hacia
+// que las pruebas empezaran a fallar cuando la funcion crecia, por mirar media
+// funcion y no porque algo se hubiera roto.
+function extraer(fuente, nombre) {
     const inicio = fuente.indexOf(`function ${nombre}(`);
 
     assert.notEqual(inicio, -1, `no encontre ${nombre}`);
 
-    return fuente.slice(inicio, inicio + largo);
+    let parentesis = 0;
+    let cuerpo = -1;
+
+    for (let i = fuente.indexOf("(", inicio); i < fuente.length; i += 1) {
+        if (fuente[i] === "(") parentesis += 1;
+        else if (fuente[i] === ")") {
+            parentesis -= 1;
+            if (!parentesis) {
+                cuerpo = fuente.indexOf("{", i);
+                break;
+            }
+        }
+    }
+
+    assert.notEqual(cuerpo, -1, `no encontre el cuerpo de ${nombre}`);
+
+    let profundidad = 0;
+
+    for (let i = cuerpo; i < fuente.length; i += 1) {
+        if (fuente[i] === "{") profundidad += 1;
+        else if (fuente[i] === "}") {
+            profundidad -= 1;
+            if (!profundidad) return fuente.slice(inicio, i + 1);
+        }
+    }
+
+    throw new Error(`sin cierre: ${nombre}`);
 }
 
 test("reactivar pregunta desde cuando y con que rotativa", () => {
@@ -103,7 +132,7 @@ test("una fecha mal formada no entra al aviso", () => {
 test("un traspaso sobre alguien que ya existe lo REACTIVA, no lo duplica", () => {
     // Si solo mirara si existe, al volver por traspaso el perfil se quedaria
     // inactivo y nadie lo notaria hasta que faltara en la planificacion.
-    const aplicar = extraer(main, "applyIncomingHandoverTransfers", 3400);
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
 
     assert.match(aplicar, /const porReactivar = Boolean\(existente\) && !isProfileActive\(existente\)/);
     assert.match(aplicar, /reactivateProfileFromHandover\(solicitud, existente\)/);
@@ -147,13 +176,13 @@ test("reactivar vuelve a escribir la rotativa aunque no cambie", () => {
 test("reactivar por traspaso trae los saldos", () => {
     // Es la promesa de pedir el traspaso: que vuelva con sus saldos. Sin esto
     // no se cumplia justo en el caso de quien vuelve, que es cuando importa.
-    const reactivar = extraer(main, "reactivateProfileFromHandover", 3000);
+    const reactivar = extraer(main, "reactivateProfileFromHandover");
 
     assert.match(reactivar, /transferredLeaveBalances\(solicitud\)/);
     assert.match(reactivar, /saveManualLeaveBalances\(\s*saldos\.year,\s*saldos\.balances,\s*profile\.name\s*\)/);
     // Y crear de cero los aplica por su propio camino: los dos cumplen.
     assert.match(
-        extraer(main, "createProfileFromHandover", 3000),
+        extraer(main, "createProfileFromHandover"),
         /transferredLeaveBalances\(solicitud\)/
     );
 });
