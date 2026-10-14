@@ -35,7 +35,15 @@ function extraer(desde, hasta) {
 
 // --- A quien se esta mirando despues de guardar ---
 
-function montarSeleccionDeLista({ profiles, showInactive, current, mode = "view" }) {
+function montarSeleccionDeLista({
+    profiles,
+    showInactive,
+    current,
+    mode = "view",
+    // Lo que el supervisor esta mirando a proposito. Vacio = recien abierta la
+    // aplicacion: nadie eligio nada.
+    mirando = ""
+}) {
     const bloque = extraer(
         "const profiles = syncWorkersState(getProfiles());",
         "const current = getCurrentProfile();"
@@ -50,6 +58,7 @@ function montarSeleccionDeLista({ profiles, showInactive, current, mode = "view"
         "setCurrentProfile",
         "profileDraft",
         "PROFILE_MODE",
+        "watchedInactiveProfile",
         `${bloque} return null;`
     );
 
@@ -61,7 +70,8 @@ function montarSeleccionDeLista({ profiles, showInactive, current, mode = "view"
         () => elegido,
         nombre => { elegido = nombre; },
         { mode },
-        { VIEW: "view", CREATE: "create" }
+        { VIEW: "view", CREATE: "create" },
+        mirando
     );
 
     return elegido;
@@ -75,18 +85,35 @@ test("el perfil recien inactivado se sigue viendo, aunque la lista no lo muestre
         montarSeleccionDeLista({
             profiles: [ANA, BEATRIZ],
             showInactive: false,
-            current: "Ana"
+            current: "Ana",
+            mirando: "Ana"
         }),
         "Ana"
     );
 });
 
-test("tampoco se suelta cuando la lista si muestra los inactivos", () => {
+test("al volver a abrir la aplicacion, el inactivo ya no aparece solo", () => {
+    // Lo que se mira a proposito no se guarda en ninguna parte, asi que al
+    // recargar nadie lo esta mirando: el inactivo vuelve a estar solo para
+    // quien lo busque o marque "ver inactivos".
+    assert.equal(
+        montarSeleccionDeLista({
+            profiles: [ANA, BEATRIZ],
+            showInactive: false,
+            current: "Ana",
+            mirando: ""
+        }),
+        "Beatriz"
+    );
+});
+
+test("con 'ver inactivos' marcado se queda, lo mire quien lo mire", () => {
     assert.equal(
         montarSeleccionDeLista({
             profiles: [ANA, BEATRIZ],
             showInactive: true,
-            current: "Ana"
+            current: "Ana",
+            mirando: ""
         }),
         "Ana"
     );
@@ -135,13 +162,35 @@ test("al guardar se vuelve al perfil guardado, sin mirar si quedo activo", () =>
     );
     const fabrica = new Function(
         "setCurrentProfile",
+        "watchInactiveProfile",
         `${seleccion} return selectProfileAfterSave;`
     );
     const elegidos = [];
+    const mirados = [];
 
-    fabrica(nombre => { elegidos.push(nombre); })("Ana");
+    fabrica(
+        nombre => { elegidos.push(nombre); },
+        nombre => { mirados.push(nombre); }
+    )("Ana");
 
     assert.deepEqual(elegidos, ["Ana"]);
+    // Y queda como "lo que se esta mirando", que es lo que impide que la lista
+    // lo suelte si acaba de quedar inactivo.
+    assert.deepEqual(mirados, ["Ana"]);
+});
+
+test("elegir un perfil a mano tambien cuenta como mirarlo", () => {
+    // Buscarlo con la lupa es la otra forma de llegar a un inactivo, y si no
+    // contara, la lista lo soltaria en el primer repintado.
+    const seleccionar = extraer(
+        "async function selectProfileByName",
+        "window.selectProfileByName"
+    );
+
+    assert.match(
+        seleccionar,
+        /watchInactiveProfile\(profile\.name\);\s*\n\s*setCurrentProfile\(profile\.name\);/
+    );
 });
 
 // --- Que se note que esta inactivo ---

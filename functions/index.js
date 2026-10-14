@@ -31,7 +31,8 @@ const {
 } = require("./workerLinkEmailSync");
 const {
   findWorkerInEstablishmentHandler,
-  findWorkerUnitsInEstablishment
+  findWorkerUnitsInEstablishment,
+  findWorkerProfileInWorkspace
 } = require("./workerEstablishmentLookup");
 const {
   cancelWorkerHandoverRequestHandler,
@@ -4720,7 +4721,10 @@ const workerHandoverDependencies = () => ({
   // implica -inactivar el perfil en origen, mudar el enlace de la app- es el
   // mismo codigo que cuando el destino responde una transferencia normal.
   applyTransferResponse,
-  cleanProfile: cleanTransferProfile
+  cleanProfile: cleanTransferProfile,
+  // Para mirar hasta que dia trabajo en la unidad de origen: pedir el
+  // traspaso desde antes reescribiria el calendario que ya cerraron.
+  findWorkerProfile: findWorkerProfileInWorkspace
 });
 
 exports.requestWorkerHandover = onCall(

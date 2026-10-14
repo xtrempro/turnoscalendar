@@ -33,6 +33,12 @@ function cleanText(value, max) {
   return String(value || "").trim().slice(0, max);
 }
 
+function cleanISODate(value) {
+  const texto = String(value || "").trim().slice(0, 10);
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(texto) ? texto : "";
+}
+
 // La lista de perfiles se lee con lib/stateReader, igual que en el resto del
 // servidor.
 //
@@ -91,17 +97,40 @@ async function findWorkerUnitsInEstablishment(db, workspaceId, rut) {
 
     if (!perfil) continue;
 
+    const activo = perfil.active !== false;
+
     encontradas.push({
       workspaceId: doc.id,
       workspaceName: cleanText(doc.data()?.name, 160),
       profileName: cleanText(perfil.name, 180),
       // Un perfil inactivo igual sirve: es justo el de alguien que se fue de
       // esa unidad, y sus saldos de vacaciones siguen ahi.
-      active: perfil.active !== false
+      active: activo,
+      // Su ultimo dia trabajado alla, cuando esa unidad ya lo decidio. Es lo
+      // unico que hace falta para que quien pide el traspaso no pueda hacerlo
+      // empezar antes y reescribir un calendario que ya estaba cerrado.
+      // Solo para el perfil inactivo: en uno activo el campo puede ser el
+      // sobrante de una inactivacion anterior.
+      exitDate: activo ? "" : cleanISODate(perfil.unitExitDate)
     });
   }
 
   return { establishment: establecimiento, unidades: encontradas };
+}
+
+/**
+ * El perfil de ese RUT en UNA unidad, o null.
+ *
+ * Mira una sola unidad, a diferencia de findWorkerUnitsInEstablishment: lo usa
+ * quien ya sabe cual es y solo necesita leer algo de ese perfil (p.ej. hasta
+ * que dia trabajo alla).
+ */
+async function findWorkerProfileInWorkspace(db, workspaceId, rut) {
+  const perfiles = await profilesOfWorkspace(db, workspaceId);
+
+  return perfiles.find(
+    (item) => item && normalizeRut(item.rut) === normalizeRut(rut)
+  ) || null;
 }
 
 async function findWorkerInEstablishmentHandler(request, {
@@ -137,7 +166,10 @@ async function findWorkerInEstablishmentHandler(request, {
     unidades: unidades.map((item) => ({
       workspaceId: item.workspaceId,
       workspaceName: item.workspaceName,
-      active: item.active
+      active: item.active,
+      // Una fecha de trabajo, no un dato de la persona: con ella la unidad que
+      // pide el traspaso sabe desde cuando puede hacerlo empezar aqui.
+      exitDate: item.exitDate || ""
     }))
   };
 }
@@ -145,8 +177,10 @@ async function findWorkerInEstablishmentHandler(request, {
 module.exports = {
   findWorkerInEstablishmentHandler,
   findWorkerUnitsInEstablishment,
+  findWorkerProfileInWorkspace,
   _private: {
     MAX_WORKSPACES,
+    cleanISODate,
     normalizeRut,
     profilesOfWorkspace
   }

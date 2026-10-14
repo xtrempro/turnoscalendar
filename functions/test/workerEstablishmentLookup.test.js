@@ -10,6 +10,7 @@ const assert = require("node:assert/strict");
 
 const {
   findWorkerInEstablishmentHandler,
+  findWorkerProfileInWorkspace,
   _private
 } = require("../workerEstablishmentLookup");
 
@@ -158,7 +159,7 @@ test("encuentra el RUT en otra unidad del mismo establecimiento", async () => {
 
   assert.equal(resultado.establishment, "hospital-claudio-vicuna");
   assert.deepEqual(resultado.unidades, [
-    { workspaceId: "ws-uci", workspaceName: "UCI", active: true }
+    { workspaceId: "ws-uci", workspaceName: "UCI", active: true, exitDate: "" }
   ]);
 });
 
@@ -220,7 +221,7 @@ test("un perfil inactivo igual se informa", async () => {
   );
 
   assert.deepEqual(resultado.unidades, [
-    { workspaceId: "ws-b", workspaceName: "B", active: false }
+    { workspaceId: "ws-b", workspaceName: "B", active: false, exitDate: "" }
   ]);
 });
 
@@ -255,7 +256,7 @@ test("encuentra un perfil que solo existe en items", async () => {
   );
 
   assert.deepEqual(resultado.unidades, [
-    { workspaceId: "ws-b", workspaceName: "B", active: true }
+    { workspaceId: "ws-b", workspaceName: "B", active: true, exitDate: "" }
   ]);
 });
 
@@ -339,7 +340,7 @@ test("una entrada con value y items aplica el value y encima los items", async (
   );
 
   assert.deepEqual(resultado.unidades, [
-    { workspaceId: "ws-b", workspaceName: "B", active: false }
+    { workspaceId: "ws-b", workspaceName: "B", active: false, exitDate: "" }
   ]);
 });
 
@@ -379,4 +380,95 @@ test("un RUT incompleto no dispara la busqueda", async () => {
 test("el RUT se compara normalizado", () => {
   assert.equal(_private.normalizeRut("17.816.632-8"), "178166328");
   assert.equal(_private.normalizeRut("17816632-8"), "178166328");
+});
+
+// --- Hasta que dia trabajo alla ---
+//
+// La unidad que pide el traspaso lo necesita para no hacerlo empezar antes y
+// vaciar un calendario que la otra ya habia cerrado. Es una fecha de trabajo,
+// no un dato de la persona.
+
+function unidadConPerfil(perfil) {
+  return [
+    { id: "ws-a", name: "A", establishment: "hcv" },
+    { id: "ws-b", name: "B", establishment: "hcv", base: [perfil] }
+  ];
+}
+
+test("de un perfil inactivo se informa su ultimo dia trabajado", async () => {
+  const resultado = await buscar(
+    unidadConPerfil({
+      id: "p-1",
+      rut: "17816632-8",
+      active: false,
+      unitExitDate: "2026-10-15"
+    }),
+    "17.816.632-8",
+    "ws-a"
+  );
+
+  assert.equal(resultado.unidades[0].exitDate, "2026-10-15");
+});
+
+test("de uno activo no: su fecha de salida puede ser de una vuelta anterior", async () => {
+  // Quien esta activo no tiene cerrado nada, y una fecha vieja ahi pondria un
+  // limite que no corresponde.
+  const resultado = await buscar(
+    unidadConPerfil({
+      id: "p-1",
+      rut: "17816632-8",
+      active: true,
+      unitExitDate: "2025-01-31"
+    }),
+    "17.816.632-8",
+    "ws-a"
+  );
+
+  assert.equal(resultado.unidades[0].exitDate, "");
+});
+
+test("una fecha con cualquier forma no se informa", async () => {
+  // Llegaria al cliente como piso de un calendario: mejor sin limite que con
+  // uno que no se entiende.
+  for (const valor of ["15-10-2026", "ayer", 20261015, null]) {
+    const resultado = await buscar(
+      unidadConPerfil({
+        id: "p-1",
+        rut: "17816632-8",
+        active: false,
+        unitExitDate: valor
+      }),
+      "17.816.632-8",
+      "ws-a"
+    );
+
+    assert.equal(resultado.unidades[0].exitDate, "", `con ${valor}`);
+  }
+});
+
+test("buscar el perfil en UNA unidad devuelve el perfil entero", async () => {
+  // Lo usa el pedido de traspaso para mirar su fecha de salida, y por eso
+  // devuelve el perfil y no una version recortada.
+  const perfil = await findWorkerProfileInWorkspace(
+    fakeDb(unidadConPerfil({
+      id: "p-1",
+      name: "ALAN PLAZA",
+      rut: "17816632-8",
+      active: false,
+      unitExitDate: "2026-10-15"
+    })),
+    "ws-b",
+    "17.816.632-8"
+  );
+
+  assert.equal(perfil.name, "ALAN PLAZA");
+  assert.equal(perfil.unitExitDate, "2026-10-15");
+
+  const ninguno = await findWorkerProfileInWorkspace(
+    fakeDb(unidadConPerfil({ id: "p-1", rut: "11111111-1" })),
+    "ws-b",
+    "17.816.632-8"
+  );
+
+  assert.equal(ninguno, null);
 });

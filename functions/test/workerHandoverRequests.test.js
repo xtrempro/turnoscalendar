@@ -778,3 +778,123 @@ test("pedirlo de nuevo con lo mismo no dice que cambio", async () => {
 
   assert.equal(segundo.updated, false);
 });
+
+// --- Lo que la otra unidad ya decidio no se puede reescribir ---
+//
+// Si alla ya cerraron su paso -perfil inactivo, con su ultimo dia trabajado-,
+// pedir que empiece aqui ese dia o antes vaciaria un calendario que ellos ya
+// validaron. Y no tienen como oponerse: aceptar el pedido lo aplica, con la
+// fecha que viene adentro.
+
+function depsConPerfilOrigen(db, perfil) {
+  return deps(db, {
+    findWorkerProfile: async () => perfil
+  });
+}
+
+test("no se puede pedir que empiece aqui antes de su ultimo dia alla", async () => {
+  const db = fakeDb();
+  const { deps: dependencias } = depsConPerfilOrigen(db, {
+    name: "Ana",
+    rut: "17.816.632-8",
+    active: false,
+    unitExitDate: "2026-11-10"
+  });
+
+  await assert.rejects(
+    () => requestWorkerHandoverHandler(
+      peticion({ ...PEDIDO_BASE, startDate: "2026-11-03" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(db.guardados.size, 0, "no queda pedido guardado");
+});
+
+test("tampoco el mismo dia: ese dia todavia es de la otra unidad", async () => {
+  const db = fakeDb();
+  const { deps: dependencias } = depsConPerfilOrigen(db, {
+    rut: "17.816.632-8",
+    active: false,
+    unitExitDate: "2026-11-03"
+  });
+
+  await assert.rejects(
+    () => requestWorkerHandoverHandler(
+      peticion({ ...PEDIDO_BASE, startDate: "2026-11-03" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+});
+
+test("desde el dia siguiente si se puede", async () => {
+  const db = fakeDb();
+  const { deps: dependencias } = depsConPerfilOrigen(db, {
+    rut: "17.816.632-8",
+    active: false,
+    unitExitDate: "2026-11-02"
+  });
+  const resultado = await requestWorkerHandoverHandler(
+    peticion({ ...PEDIDO_BASE, startDate: "2026-11-03" }),
+    dependencias
+  );
+
+  assert.equal(resultado.created, true);
+  assert.equal(guardado(db).startDate, "2026-11-03");
+});
+
+test("con el perfil activo alla no hay nada cerrado que respetar", async () => {
+  // Es el traspaso normal: la fecha la decide quien pide, y al aceptar la otra
+  // unidad vacia su calendario desde ahi. Su fecha de salida puede ser el
+  // sobrante de una inactivacion anterior, y no manda.
+  const db = fakeDb();
+  const { deps: dependencias } = depsConPerfilOrigen(db, {
+    rut: "17.816.632-8",
+    active: true,
+    unitExitDate: "2026-12-31"
+  });
+  const resultado = await requestWorkerHandoverHandler(
+    peticion({ ...PEDIDO_BASE, startDate: "2026-11-03" }),
+    dependencias
+  );
+
+  assert.equal(resultado.created, true);
+});
+
+test("si el perfil no esta alla, el pedido sigue su camino", async () => {
+  // Que no aparezca no es razon para cortar: lo resuelve quien recibe el
+  // pedido, que es quien sabe si todavia lo tiene.
+  const db = fakeDb();
+  const { deps: dependencias } = depsConPerfilOrigen(db, null);
+  const resultado = await requestWorkerHandoverHandler(
+    peticion(PEDIDO_BASE),
+    dependencias
+  );
+
+  assert.equal(resultado.created, true);
+});
+
+test("corregir un pedido pendiente tambien respeta ese limite", async () => {
+  // La correccion pasa por el mismo camino: si no, bastaba pedir bien primero
+  // y corregir despues con una fecha anterior.
+  const db = fakeDb();
+  const { deps: dependencias } = depsConPerfilOrigen(db, {
+    rut: "17.816.632-8",
+    active: false,
+    unitExitDate: "2026-11-02"
+  });
+
+  await requestWorkerHandoverHandler(peticion(PEDIDO_BASE), dependencias);
+
+  await assert.rejects(
+    () => requestWorkerHandoverHandler(
+      peticion({ ...PEDIDO_BASE, startDate: "2026-10-20" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(guardado(db).startDate, "2026-11-03", "sigue la fecha buena");
+});

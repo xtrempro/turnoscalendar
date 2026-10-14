@@ -76,6 +76,8 @@ function montar({
     const fechas = [];
     const configuraciones = [];
     const avisos = [];
+    const pisos = [];
+    const borrador = { rotationStart: "" };
     const fabrica = new Function(
         "isProfileEditing",
         "showChoice",
@@ -83,6 +85,10 @@ function montar({
         "showAlert",
         "transferTomorrowISO",
         "normalizeStoredStart",
+        "compareISODate",
+        "formatDisplayDate",
+        "setRotationStartFloor",
+        "profileDraft",
         "openRotationConfigModal",
         "requiresRotationFirstTurn",
         "getRotativaLabel",
@@ -105,6 +111,10 @@ function montar({
         async mensaje => { avisos.push(mensaje); },
         () => "2026-10-15",
         valor => String(valor || ""),
+        (a, b) => (a < b ? -1 : a > b ? 1 : 0),
+        iso => iso,
+        (fecha = "", mensaje = "") => { pisos.push({ fecha, mensaje }); },
+        borrador,
         (tipo, opciones) => {
             configuraciones.push(tipo);
             opciones.onSaved?.(rotativaGuardada);
@@ -115,7 +125,7 @@ function montar({
         () => "Larga"
     );
 
-    return { pedir, preguntas, fechas, configuraciones, avisos };
+    return { pedir, preguntas, fechas, configuraciones, avisos, pisos, borrador };
 }
 
 test("el cuadro ofrece 'Sin definir aún' junto a las rotativas", async () => {
@@ -194,11 +204,14 @@ test("cerrar el cuadro de la modalidad no pregunta nada mas", async () => {
 function montarPedido({ rotativa }) {
     const confirmaciones = [];
     const enviados = [];
+    const pedidos = [];
     const fabrica = new Function(
         "showChoice",
         "askHandoverSchedule",
         "showConfirm",
         "formatDisplayDate",
+        "normalizeStoredStart",
+        "nextCalendarISO",
         "requestWorkerHandover",
         "getCurrentActor",
         "addAuditLog",
@@ -213,9 +226,11 @@ function montarPedido({ rotativa }) {
     );
     const pedir = fabrica(
         async () => "",
-        async () => rotativa,
+        async (opciones) => { pedidos.push(opciones); return rotativa; },
         async mensaje => { confirmaciones.push(mensaje); return true; },
         iso => iso,
+        valor => String(valor || ""),
+        iso => `${iso}+1`,
         async datos => { enviados.push(datos); return { created: true }; },
         () => ({ name: "Supervisora" }),
         () => {},
@@ -227,7 +242,7 @@ function montarPedido({ rotativa }) {
         () => {}
     );
 
-    return { pedir, confirmaciones, enviados };
+    return { pedir, confirmaciones, enviados, pedidos };
 }
 
 const URGENCIA = [{ workspaceId: "ws-1", workspaceName: "Urgencia Adulto" }];
@@ -307,4 +322,184 @@ test("al guardar, una rotativa libre no se queda con una fecha de inicio", async
         guardar,
         /nextRotationType === "libre"\s*\?\s*""\s*:\s*profileDraft\.rotationStart/
     );
+});
+
+// --- Desde cuando se le puede hacer empezar aqui ---
+//
+// Si la otra unidad ya cerro su paso por alla -inactivo, con su ultimo dia
+// decidido-, empezar aqui ese dia o antes vaciaria el calendario que ellos ya
+// validaron. Y no tienen como oponerse: aceptar el pedido lo aplica.
+
+function montarPiso() {
+    const fabrica = new Function(
+        "normalizeStoredStart",
+        "compareISODate",
+        "formatDisplayDate",
+        "isBeforeDraftUnitEntryDate",
+        "rotationStartBeforeUnitEntryMessage",
+        `${extraer("setRotationStartFloor")}
+         ${extraer("rotationStartBlockedMessage")}
+         return { setRotationStartFloor, rotationStartBlockedMessage };`
+    );
+
+    return fabrica(
+        valor => String(valor || ""),
+        (a, b) => (a < b ? -1 : a > b ? 1 : 0),
+        iso => iso,
+        () => false,
+        () => "antes del ingreso"
+    );
+}
+
+test("sin piso, cualquier dia sirve", () => {
+    const api = montarPiso();
+
+    api.setRotationStartFloor();
+
+    assert.equal(api.rotationStartBlockedMessage("2026-01-01"), "");
+});
+
+test("con piso, los dias anteriores quedan bloqueados y el piso no", () => {
+    const api = montarPiso();
+
+    api.setRotationStartFloor("2026-10-16", "su último día allá es el 15");
+
+    assert.equal(api.rotationStartBlockedMessage("2026-10-15"), "su último día allá es el 15");
+    assert.equal(api.rotationStartBlockedMessage("2026-10-16"), "");
+    assert.equal(api.rotationStartBlockedMessage("2026-10-17"), "");
+});
+
+test("el piso se quita, no se queda puesto para la proxima rotativa", () => {
+    // El mismo cuadro configura rotativas que no tienen nada que ver con un
+    // traspaso: si el piso quedara, bloquearia fechas sin razon.
+    const api = montarPiso();
+
+    api.setRotationStartFloor("2026-10-16", "bloqueado");
+    api.setRotationStartFloor();
+
+    assert.equal(api.rotationStartBlockedMessage("2026-01-01"), "");
+});
+
+test("el ingreso a la unidad sigue mandando por su cuenta", () => {
+    const fabrica = new Function(
+        "normalizeStoredStart",
+        "compareISODate",
+        "formatDisplayDate",
+        "isBeforeDraftUnitEntryDate",
+        "rotationStartBeforeUnitEntryMessage",
+        `${extraer("setRotationStartFloor")}
+         ${extraer("rotationStartBlockedMessage")}
+         return rotationStartBlockedMessage;`
+    );
+    const bloqueado = fabrica(
+        valor => String(valor || ""),
+        (a, b) => (a < b ? -1 : a > b ? 1 : 0),
+        iso => iso,
+        () => true,
+        () => "antes del ingreso a la unidad"
+    );
+
+    assert.equal(bloqueado("2026-10-20"), "antes del ingreso a la unidad");
+});
+
+test("el cuadro de la rotativa se abre con piso y lo suelta al cerrarse", async () => {
+    const { pedir, pisos, borrador } = montar({ modalidad: "4turno" });
+
+    await pedir({
+        minStart: "2026-10-16",
+        minStartMessage: "En UCI su último día es el 15-10-2026."
+    });
+
+    // Uno al abrir con la fecha, y otro vacio al cerrar.
+    assert.deepEqual(pisos, [
+        { fecha: "2026-10-16", mensaje: "En UCI su último día es el 15-10-2026." },
+        { fecha: "", mensaje: "" }
+    ]);
+    // Y el calendario abre en el primer dia posible, no en uno deshabilitado.
+    assert.equal(borrador.rotationStart, "2026-10-16");
+});
+
+test("sin piso no se toca la fecha con que venia el borrador", async () => {
+    const { pedir, pisos, borrador } = montar({ modalidad: "4turno" });
+
+    borrador.rotationStart = "2026-01-01";
+    await pedir();
+
+    // Solo el reseteo al cerrar: ningun piso con fecha.
+    assert.deepEqual(pisos.map(piso => piso.fecha), [""]);
+    assert.equal(borrador.rotationStart, "2026-01-01");
+});
+
+test("sin rotativa, la fecha tampoco puede ser anterior al piso", async () => {
+    const { pedir, avisos } = montar({
+        modalidad: "libre",
+        fecha: "2026-10-15"
+    });
+
+    assert.equal(
+        await pedir({
+            minStart: "2026-10-16",
+            minStartMessage: "En UCI su último día es el 15-10-2026."
+        }),
+        null
+    );
+    assert.deepEqual(avisos, ["En UCI su último día es el 15-10-2026."]);
+});
+
+test("sin rotativa, el campo de fecha arranca en el primer dia posible", async () => {
+    // Por defecto propone mañana, que con un piso puede ser una fecha que no
+    // se puede elegir.
+    const { pedir, fechas } = montar({
+        modalidad: "libre",
+        fecha: "2026-10-16"
+    });
+
+    await pedir({ minStart: "2026-10-16" });
+
+    assert.equal(fechas[0].value, "2026-10-16");
+});
+
+test("el pedido deriva el piso del ultimo dia en la otra unidad", async () => {
+    const { pedir, pedidos } = montarPedido({
+        rotativa: {
+            startDate: "2026-10-16",
+            rotationType: "4turno",
+            rotationFirstTurn: "larga",
+            resumen: "4° Turno (Larga)"
+        }
+    });
+
+    await pedir(
+        [{
+            workspaceId: "ws-1",
+            workspaceName: "UCI",
+            active: false,
+            exitDate: "2026-10-15"
+        }],
+        "31.000.001-9"
+    );
+
+    // nextCalendarISO de mentira devuelve "<iso>+1": lo que importa es que el
+    // piso salga del dia SIGUIENTE al ultimo trabajado, no del mismo.
+    assert.equal(pedidos[0].minStart, "2026-10-15+1");
+    assert.match(pedidos[0].minStartMessage, /UCI/);
+});
+
+test("si la otra unidad lo tiene activo, no hay piso", async () => {
+    const { pedir, pedidos } = montarPedido({
+        rotativa: {
+            startDate: "2026-10-16",
+            rotationType: "4turno",
+            rotationFirstTurn: "larga",
+            resumen: "4° Turno (Larga)"
+        }
+    });
+
+    await pedir(
+        [{ workspaceId: "ws-1", workspaceName: "UCI", active: true, exitDate: "" }],
+        "31.000.001-9"
+    );
+
+    assert.equal(pedidos[0].minStart, "");
+    assert.equal(pedidos[0].minStartMessage, "");
 });

@@ -1348,14 +1348,20 @@ const HANDOVER_SIN_ROTATIVA = "libre";
 // -aqui no hay-: es la que usa la otra unidad para vaciar su calendario, dejar
 // su perfil inactivo y mudarle la app, asi que sin ella no hay pedido que
 // mandar. Devuelve "" si se cancela.
-async function askHandoverStartDate() {
+async function askHandoverStartDate(minStart = "", minStartMessage = "") {
+    const piso = normalizeStoredStart(minStart || "");
+    const porDefecto = transferTomorrowISO();
     const elegida = await showPrompt(
         "¿Desde qué día es de esta unidad?",
         {
             title: "Comienza en tu unidad",
             inputLabel: "Primer día en esta unidad",
             inputType: "date",
-            value: transferTomorrowISO(),
+            // Arranca en el primer dia posible, no en manana: con un piso, manana
+            // puede ser una fecha que no se puede elegir.
+            value: piso && compareISODate(porDefecto, piso) < 0
+                ? piso
+                : porDefecto,
             confirmText: "Continuar"
         }
     );
@@ -1372,10 +1378,22 @@ async function askHandoverStartDate() {
         return "";
     }
 
+    if (piso && compareISODate(startISO, piso) < 0) {
+        await showAlert(
+            minStartMessage ||
+            `No puede comenzar aquí antes del ${formatDisplayDate(piso)}.`,
+            { title: "Comienza en tu unidad", tone: "warning" }
+        );
+        return "";
+    }
+
     return startISO;
 }
 
-async function askHandoverSchedule() {
+async function askHandoverSchedule({
+    minStart = "",
+    minStartMessage = ""
+} = {}) {
     if (!isProfileEditing()) return null;
 
     const rotationType = await showChoice(
@@ -1402,7 +1420,7 @@ async function askHandoverSchedule() {
     // de configurarla: preguntar "desde cuando empieza la rotativa" cuando no
     // hay ninguna no significa nada.
     if (rotationType === HANDOVER_SIN_ROTATIVA) {
-        const startDate = await askHandoverStartDate();
+        const startDate = await askHandoverStartDate(minStart, minStartMessage);
 
         if (!startDate) return null;
 
@@ -1414,18 +1432,43 @@ async function askHandoverSchedule() {
         };
     }
 
-    const elegido = await new Promise(resolve => {
-        let guardado = null;
+    // El cuadro de la rotativa deja elegir cualquier dia; aqui no cualquiera
+    // sirve, asi que se le pone piso mientras esta abierto. Se quita siempre:
+    // el mismo cuadro se usa para configurar rotativas que no tienen nada que
+    // ver con un traspaso.
+    const piso = normalizeStoredStart(minStart || "");
 
-        openRotationConfigModal(rotationType, {
-            onSaved: datos => {
-                guardado = datos;
-            },
-            // Se resuelve al cerrarse, haya guardado o no: cancelar el
-            // cuadro cancela el pedido.
-            onClosed: () => resolve(guardado)
+    if (piso) {
+        setRotationStartFloor(piso, minStartMessage);
+
+        // Y se abre en el primer dia posible, en vez de en uno que esta
+        // deshabilitado.
+        if (
+            !profileDraft.rotationStart ||
+            compareISODate(profileDraft.rotationStart, piso) < 0
+        ) {
+            profileDraft.rotationStart = piso;
+        }
+    }
+
+    let elegido = null;
+
+    try {
+        elegido = await new Promise(resolve => {
+            let guardado = null;
+
+            openRotationConfigModal(rotationType, {
+                onSaved: datos => {
+                    guardado = datos;
+                },
+                // Se resuelve al cerrarse, haya guardado o no: cancelar el
+                // cuadro cancela el pedido.
+                onClosed: () => resolve(guardado)
+            });
         });
-    });
+    } finally {
+        setRotationStartFloor();
+    }
 
     if (!elegido?.rotationStart) return null;
 
@@ -1494,11 +1537,24 @@ async function requestHandoverFromUnits(unidades, rut, { discardDraft = false } 
     }
 
     const nombreUnidad = elegida.workspaceName || "la otra unidad";
+    // Si esa unidad ya cerro su paso por alla -perfil inactivo, con su ultimo
+    // dia trabajado decidido-, aqui solo puede empezar al dia siguiente.
+    // Empezar antes vaciaria un calendario que ellos ya habian validado, y la
+    // otra unidad no tiene como oponerse: aceptar el pedido lo aplica.
+    const ultimoDiaAlla = normalizeStoredStart(elegida.exitDate || "");
+    const primerDiaAqui = ultimoDiaAlla ? nextCalendarISO(ultimoDiaAlla) : "";
     // La fecha y la rotativa las decide ESTA unidad, que es la que recibe a la
     // persona y la unica que sabe en que turno la necesita. Se preguntan al
     // pedir y no al aceptar para que aceptar alcance: con todo decidido, la
     // otra unidad responde una sola vez y aqui no queda nada pendiente.
-    const rotativa = await askHandoverSchedule();
+    const rotativa = await askHandoverSchedule({
+        minStart: primerDiaAqui,
+        minStartMessage: primerDiaAqui
+            ? `En ${nombreUnidad} su último día es el ` +
+                `${formatDisplayDate(ultimoDiaAlla)}, así que aquí puede ` +
+                `comenzar desde el ${formatDisplayDate(primerDiaAqui)}.`
+            : ""
+    });
 
     if (!rotativa) return;
 
@@ -2900,6 +2956,41 @@ async function saveReplacementContractFromDraft(
     return replacementContract;
 }
 
+// Fecha mas temprana que se puede elegir como inicio de rotativa, APARTE del
+// ingreso a la unidad. Hoy la pone un solo caso: pedir el traspaso de alguien
+// cuya otra unidad ya cerro su paso por alla. Si la rotativa empezara antes de
+// su ultimo dia trabajado, aceptar el pedido reescribiria un calendario que esa
+// unidad ya habia validado.
+let rotationStartFloor = { date: "", message: "" };
+
+function setRotationStartFloor(date = "", message = "") {
+    rotationStartFloor = {
+        date: normalizeStoredStart(date || ""),
+        message
+    };
+}
+
+// Por que esta fecha no sirve como inicio, o "" si sirve. Un solo lugar para
+// los tres que preguntan -pintar el dia, elegirlo y guardar-: con la
+// comprobacion repetida, el dia se pintaba habilitado y el guardado lo
+// rechazaba.
+function rotationStartBlockedMessage(value) {
+    if (isBeforeDraftUnitEntryDate(value)) {
+        return rotationStartBeforeUnitEntryMessage(value);
+    }
+
+    if (
+        rotationStartFloor.date &&
+        value &&
+        compareISODate(value, rotationStartFloor.date) < 0
+    ) {
+        return rotationStartFloor.message ||
+            `No puede comenzar antes del ${formatDisplayDate(rotationStartFloor.date)}.`;
+    }
+
+    return "";
+}
+
 function openRotationConfigModal(
     type = profileDraft.rotationType,
     options = {}
@@ -3165,8 +3256,10 @@ function openRotationConfigModal(
         if (isReplacement) {
             return;
         } else {
-            if (isBeforeDraftUnitEntryDate(selected)) {
-                alert(rotationStartBeforeUnitEntryMessage(selected));
+            const bloqueado = rotationStartBlockedMessage(selected);
+
+            if (bloqueado) {
+                alert(bloqueado);
                 return;
             }
 
@@ -3411,8 +3504,11 @@ function openRotationConfigModal(
                 return;
             }
 
-            if (isBeforeDraftUnitEntryDate(state.rotationStart)) {
-                alert(rotationStartBeforeUnitEntryMessage(state.rotationStart));
+            const bloqueado =
+                rotationStartBlockedMessage(state.rotationStart);
+
+            if (bloqueado) {
+                alert(bloqueado);
                 return;
             }
 
@@ -3700,9 +3796,9 @@ function openRotationConfigModal(
             const outsideHonorariaContract =
                 isHonoraria &&
                 !honorariaContractCoversISO(iso);
-            const beforeUnitEntry =
-                !isReplacement &&
-                isBeforeDraftUnitEntryDate(iso);
+            const demasiadoTemprano = isReplacement
+                ? ""
+                : rotationStartBlockedMessage(iso);
 
             cell.type = "button";
             cell.className = isReplacement
@@ -3710,11 +3806,10 @@ function openRotationConfigModal(
                 : "profile-mini-day is-pickable";
             cell.dataset.key = key;
 
-            if (beforeUnitEntry) {
+            if (demasiadoTemprano) {
                 cell.classList.add("is-contract-disabled");
                 cell.disabled = true;
-                cell.title =
-                    `Anterior al ingreso a la unidad (${formatDisplayDate(getDraftUnitEntryDate())}).`;
+                cell.title = demasiadoTemprano;
             }
 
             if (outsideHonorariaContract) {
@@ -7954,10 +8049,25 @@ function renderProfiles(options = {}) {
         setCurrentProfile(selectableProfiles[0]?.name || null);
     }
 
-    // El filtro de la lista decide lo que se LISTA, no a quien se esta mirando:
-    // mientras el perfil exista, se sigue viendo. Antes, el perfil que se
-    // acababa de inactivar desaparecia de la lista y esto saltaba al primer
-    // activo, justo cuando el supervisor queria ver el resultado.
+    // Un inactivo no se lista, pero el que se esta MIRANDO se sigue viendo
+    // mientras siga abierto: al inactivar a alguien y guardar, saltar al primer
+    // activo dejaba al supervisor mirando a otra persona justo cuando queria
+    // ver el resultado.
+    //
+    // Es solo para este rato: `watchedInactiveProfile` no se guarda en ninguna
+    // parte, asi que al recargar la aplicacion el perfil inactivo ya no vuelve
+    // -hay que buscarlo o marcar "ver inactivos"-, que es lo que corresponde:
+    // ahi nadie lo eligio.
+    if (
+        profileDraft.mode === PROFILE_MODE.VIEW &&
+        getCurrentProfile() &&
+        getCurrentProfile() !== watchedInactiveProfile &&
+        !selectableProfiles.some(profile =>
+            profile.name === getCurrentProfile()
+        )
+    ) {
+        setCurrentProfile(selectableProfiles[0]?.name || null);
+    }
 
     const current = getCurrentProfile();
     const filtro = filters.role || "Todos";
@@ -9840,6 +9950,9 @@ async function selectProfileByName(profileName, options = {}) {
     resetProfileDraft();
     availabilityEditMode = false;
     profileDraft.mode = PROFILE_MODE.VIEW;
+    // Elegido a mano -de la lista o del buscador-: si esta inactivo,
+    // se queda a la vista aunque la lista no lo muestre.
+    watchInactiveProfile(profile.name);
     setCurrentProfile(profile.name);
     renderProfiles({ dashboard: false });
     renderBotones();
@@ -12321,6 +12434,8 @@ async function applyWorkerTransferAtSource(solicitud, profile) {
 
     // Se sigue viendo a quien se transfirio, ahora en gris: el aviso dice que
     // quedo inactivo aqui, y saltar a otra persona lo contradecia.
+    if (getCurrentProfile() === name) watchInactiveProfile(name);
+
     renderProfiles({ dashboard: false });
     renderBotones();
     refreshAll();
@@ -12458,11 +12573,21 @@ function exitProfileMode(selectedName = getCurrentProfile()) {
     retryHandoverIntakes();
 }
 
+// El inactivo que se esta mirando a proposito: no se lista, pero no se suelta
+// hasta que se mire otro. Vive solo en memoria -al recargar se pierde, y ahi el
+// perfil vuelve a estar solo para quien lo busque o marque "ver inactivos"-.
+let watchedInactiveProfile = "";
+
+function watchInactiveProfile(name) {
+    watchedInactiveProfile = String(name || "");
+}
+
 // Despues de guardar se sigue viendo el mismo perfil, tambien cuando acaba de
 // quedar inactivo: saltar al primer activo dejaba al supervisor mirando a otra
 // persona justo despues de inactivar, sin ver lo que acababa de hacer. La vista
 // del perfil inactivo se pinta en gris (ver .pf-inactive en styles.css).
 function selectProfileAfterSave(savedName) {
+    watchInactiveProfile(savedName);
     setCurrentProfile(savedName || null);
 }
 

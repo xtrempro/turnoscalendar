@@ -109,6 +109,7 @@ async function requestWorkerHandoverHandler(request, {
   HttpsError,
   requireProfileManager,
   requireSameEstablishment,
+  findWorkerProfile,
   idFactory = defaultIdFactory
 }) {
   const uid = requireAuth(request, HttpsError);
@@ -149,6 +150,25 @@ async function requestWorkerHandoverHandler(request, {
     workspaceId,
     sourceWorkspaceId
   );
+
+  // Si la otra unidad ya cerro su paso por alla -perfil inactivo con su ultimo
+  // dia trabajado-, empezar aqui ese dia o antes reescribiria un calendario que
+  // ellos ya validaron. Se comprueba en el servidor y no solo en la pantalla:
+  // la pantalla ayuda a elegir bien, esto es lo que lo garantiza.
+  if (findWorkerProfile) {
+    const perfilOrigen = await findWorkerProfile(db, sourceWorkspaceId, rut);
+    const ultimoDia = perfilOrigen && perfilOrigen.active === false
+      ? cleanText(perfilOrigen.unitExitDate, 10)
+      : "";
+
+    if (validISODate(ultimoDia) && startDate <= ultimoDia) {
+      throw new HttpsError(
+        "failed-precondition",
+        `En la otra unidad su ultimo dia es el ${ultimoDia}: aqui puede ` +
+        "comenzar desde el dia siguiente."
+      );
+    }
+  }
 
   const ahora = Date.now();
   const previas = await db

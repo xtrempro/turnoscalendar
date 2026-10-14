@@ -19,12 +19,43 @@ const campanita = await leer("../js/notificationsBell.js");
 const puente = await leer("../js/workerHandovers.js");
 const servidorTransferencias = await leer("../functions/workerTransferRequests.js");
 
-function extraer(fuente, nombre, largo = 2600) {
+// La funcion COMPLETA, por llaves. Antes se cortaba a tantos caracteres del
+// nombre, y cada vez que una funcion crecia las pruebas empezaban a fallar por
+// mirar media funcion, no porque algo se hubiera roto.
+function extraer(fuente, nombre) {
     const inicio = fuente.indexOf(`function ${nombre}(`);
 
     assert.notEqual(inicio, -1, `no encontre ${nombre}`);
 
-    return fuente.slice(inicio, inicio + largo);
+    // El cuerpo empieza despues de los parametros: uno con llaves
+    // -{ discardDraft = false } = {}- cortaria la funcion por la mitad.
+    let parentesis = 0;
+    let cuerpo = -1;
+
+    for (let i = fuente.indexOf("(", inicio); i < fuente.length; i += 1) {
+        if (fuente[i] === "(") parentesis += 1;
+        else if (fuente[i] === ")") {
+            parentesis -= 1;
+            if (!parentesis) {
+                cuerpo = fuente.indexOf("{", i);
+                break;
+            }
+        }
+    }
+
+    assert.notEqual(cuerpo, -1, `no encontre el cuerpo de ${nombre}`);
+
+    let profundidad = 0;
+
+    for (let i = cuerpo; i < fuente.length; i += 1) {
+        if (fuente[i] === "{") profundidad += 1;
+        else if (fuente[i] === "}") {
+            profundidad -= 1;
+            if (!profundidad) return fuente.slice(inicio, i + 1);
+        }
+    }
+
+    throw new Error(`sin cierre: ${nombre}`);
 }
 
 test("al pedir se eligen la fecha y la rotativa", () => {
@@ -63,14 +94,14 @@ test("enviar el pedido descarta el perfil a medio escribir", () => {
     // Si quedara abierto, cambiar de pestaña preguntaria "continuar sin
     // guardar" por un registro que ya no hay que crear: lo trae el traspaso.
     // Lo hace requestHandoverFromUnits, donde termina el camino del pedido.
-    const pedir = extraer(main, "requestHandoverFromUnits", 4200);
+    const pedir = extraer(main, "requestHandoverFromUnits");
 
     assert.match(pedir, /discardProfileDraftChangesBeforeLeaving\(\)/);
     assert.match(pedir, /forgetRutLookup\(\)/);
 });
 
 test("aceptar NO vuelve a preguntar la fecha: usa la del pedido", () => {
-    const aceptar = extraer(main, "startWorkerHandover", 3200);
+    const aceptar = extraer(main, "startWorkerHandover");
 
     assert.match(aceptar, /normalizeStoredStart\(String\(detail\?\.startDate \|\| ""\)\)/);
     // Nada de volver a pedirla.
@@ -79,21 +110,21 @@ test("aceptar NO vuelve a preguntar la fecha: usa la del pedido", () => {
 });
 
 test("aceptar manda lo mismo que una transferencia normal", () => {
-    const aceptar = extraer(main, "startWorkerHandover", 3200);
+    const aceptar = extraer(main, "startWorkerHandover");
 
     assert.match(aceptar, /profile: await transferProfilePayload\(profile, startISO\)/);
 });
 
 test("un pedido sin fecha no se puede aceptar", () => {
     // Los que quedaron de antes de que la fecha fuera parte del pedido.
-    const aceptar = extraer(main, "startWorkerHandover", 3200);
+    const aceptar = extraer(main, "startWorkerHandover");
 
     assert.match(aceptar, /test\(startISO\)/);
     assert.match(aceptar, /no trae la fecha en que comienza/);
 });
 
 test("quien pidio crea el perfil solo, y una sola sesion", () => {
-    const aplicar = extraer(main, "applyIncomingHandoverTransfers", 2600);
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
 
     assert.match(aplicar, /if \(!await claimWorkerTransferIntake\(solicitud\.id\)\) continue;/);
     assert.match(aplicar, /createProfileFromHandover\(solicitud, nombre\)/);
@@ -102,7 +133,7 @@ test("quien pidio crea el perfil solo, y una sola sesion", () => {
 });
 
 test("no se mete en medio de un perfil a medio editar", () => {
-    const aplicar = extraer(main, "applyIncomingHandoverTransfers", 2600);
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
 
     assert.match(
         aplicar,
@@ -111,7 +142,7 @@ test("no se mete en medio de un perfil a medio editar", () => {
 });
 
 test("el perfil se crea por el camino de siempre, con la rotativa pedida", () => {
-    const crear = extraer(main, "createProfileFromHandover", 2600);
+    const crear = extraer(main, "createProfileFromHandover");
 
     // Un solo camino de guardado: asi la rotativa, los saldos y la bitacora
     // salen igual que si lo hubiera guardado una persona.
@@ -125,7 +156,7 @@ test("si crear el perfil falla, el traspaso vuelve a la cola", () => {
     // Es lo que evita que un traspaso quede consumido para siempre: el claim
     // ya lo tomo, asi que sin soltarlo nadie volveria a intentarlo y la
     // persona se quedaria sin perfil.
-    const aplicar = extraer(main, "applyIncomingHandoverTransfers", 3200);
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
 
     assert.match(aplicar, /await releaseWorkerTransferIntake\(solicitud\.id\)/);
     assert.match(aplicar, /traspaso-fallido:/);
