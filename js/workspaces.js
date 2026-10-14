@@ -1,5 +1,6 @@
 import { normalizeEstablishment } from "./establishments.js";
 import { getJSON, setJSON } from "./persistence.js";
+import { updateDocSoon } from "./pendingDocWrites.js";
 import {
     getFirebaseServices,
     getCurrentFirebaseUser
@@ -234,17 +235,23 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
 // Solo el dueño, porque la regla de actualizacion lo exige: el establecimiento
 // decide con que otras unidades se puede pedir el traslado de un trabajador, y
 // no es algo que deba cambiar cualquiera con acceso a Ajustes.
-export async function setWorkspaceEstablishment(workspaceId, establishment) {
+// Devuelve `{ confirmed, pending }`: sin conexion la escritura queda anotada y
+// se manda sola al reconectar, en vez de dejar esperando a quien la pidio (ver
+// js/pendingDocWrites.js).
+export async function setWorkspaceEstablishment(
+    workspaceId,
+    establishment,
+    options = {}
+) {
     const id = String(workspaceId || "").trim();
 
     if (!id) throw new Error("Falta identificar la unidad.");
 
-    const { db, firestoreModule } = await getFirebaseServices();
-    const ref = firestoreModule.doc(db, "workspaces", id);
-
-    await firestoreModule.updateDoc(ref, {
-        establishment: normalizeEstablishment(establishment),
-        updatedAt: firestoreModule.serverTimestamp()
+    return updateDocSoon({
+        path: `workspaces/${id}`,
+        data: { establishment: normalizeEstablishment(establishment) },
+        timestampFields: ["updatedAt"],
+        ...options
     });
 }
 

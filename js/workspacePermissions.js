@@ -7,6 +7,7 @@ import {
     isFirebaseConfigured
 } from "./firebaseClient.js";
 import { getActiveWorkspace } from "./workspaces.js";
+import { updateDocSoon } from "./pendingDocWrites.js";
 
 export const MENU_PERMISSION_DEFS = [
     { key: "turnos", label: "Turnos", target: "calendarPanel" },
@@ -413,27 +414,21 @@ export async function listWorkspaceMembersForPermissions(
 export async function saveWorkspaceMemberPermissions(
     workspaceId,
     userId,
-    permissions
+    permissions,
+    options = {}
 ) {
     if (!workspaceId || !userId) {
         throw new Error("Falta la unidad o usuario para guardar permisos.");
     }
 
-    const { db, firestoreModule } = await getFirebaseServices();
-
-    await firestoreModule.updateDoc(
-        firestoreModule.doc(
-            db,
-            "workspaces",
-            workspaceId,
-            "members",
-            userId
-        ),
-        {
-            permissions: normalizeMenuPermissions(permissions),
-            permissionsUpdatedAt: firestoreModule.serverTimestamp()
-        }
-    );
+    // Sin conexion queda anotada y se manda sola al reconectar: esperar al
+    // servidor colgaba el modal de ajustes (ver js/pendingDocWrites.js).
+    return updateDocSoon({
+        path: `workspaces/${workspaceId}/members/${userId}`,
+        data: { permissions: normalizeMenuPermissions(permissions) },
+        timestampFields: ["permissionsUpdatedAt"],
+        ...options
+    });
 }
 
 export async function deleteWorkspaceMember(workspaceId, userId) {

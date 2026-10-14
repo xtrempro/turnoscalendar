@@ -4,7 +4,7 @@ import {
     normalizeEstablishment
 } from "./establishments.js";
 import { escapeHTML } from "./htmlUtils.js";
-import { showConfirm } from "./dialogs.js";
+import { showAlert, showConfirm } from "./dialogs.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import {
     isValidEmailFormat,
@@ -1476,13 +1476,33 @@ async function loadMemberPermissionDraft() {
     }
 }
 
+// Una escritura que no alcanzo a confirmarse sigue viva: el SDK la manda al
+// reconectar y, si no alcanza, queda anotada en este computador. Pero si el
+// servidor la RECHAZA mas tarde hay que decirlo, aunque el modal ya este
+// cerrado: callarlo dejaria a la persona creyendo que guardo.
+function avisarSiElServidorRechaza(envio, queEra) {
+    if (!envio || envio.confirmed) return;
+
+    envio.pending?.then(error => {
+        if (!error) return;
+
+        console.error(error);
+        showAlert(
+            `${queEra} no se pudo guardar en el servidor: ` +
+            (error?.message || "intentalo de nuevo") +
+            ". Vuelve a abrir Ajustes y guardalo otra vez.",
+            { title: "Quedo sin guardar", tone: "warning" }
+        );
+    });
+}
+
 async function saveMemberPermissionDrafts() {
     if (!isWorkspaceOwner()) return;
 
     const state = getWorkspacePermissionState();
     if (!state.workspaceId) return;
 
-    await Promise.all(
+    const envios = await Promise.all(
         memberPermissionDraft
             .filter(member => member.role !== "owner")
             .map(member =>
@@ -1492,6 +1512,10 @@ async function saveMemberPermissionDrafts() {
                     member.permissions
                 )
             )
+    );
+
+    envios.forEach(envio =>
+        avisarSiElServidorRechaza(envio, "Los permisos de los usuarios")
     );
 }
 
@@ -2057,19 +2081,18 @@ function bindBackdrop(backdrop) {
             try {
                 preserveActiveDraft(backdrop);
                 if (isWorkspaceOwner()) {
-                    // Primero lo unico que viaja al servidor. Si falla, se corta
-                    // sin haber guardado nada y el aviso puede decir la verdad.
+                    // Primero lo unico que viaja al servidor. Si lo RECHAZA, se
+                    // corta sin haber guardado nada y el aviso dice la verdad.
+                    // Si no contesta (sin conexion) no se corta nada: queda
+                    // encolada y se manda sola, como el resto de los cambios.
                     if (establishmentDraft !== null && canEditEstablishment()) {
+                        let envio = null;
+
                         try {
-                            await setWorkspaceEstablishment(
+                            envio = await setWorkspaceEstablishment(
                                 getActiveWorkspace()?.id,
                                 establishmentDraft
                             );
-
-                            // getActiveWorkspace() devuelve un objeto nuevo cada
-                            // vez, asi que mutarlo no guardaba nada: hay que
-                            // volver a escribir la copia local.
-                            rememberActiveEstablishment(establishmentDraft);
                         } catch (error) {
                             console.error(error);
                             alert(
@@ -2082,6 +2105,12 @@ function bindBackdrop(backdrop) {
                             // creeria que quedo guardado.
                             return;
                         }
+
+                        // getActiveWorkspace() devuelve un objeto nuevo cada
+                        // vez, asi que mutarlo no guardaba nada: hay que
+                        // volver a escribir la copia local.
+                        rememberActiveEstablishment(establishmentDraft);
+                        avisarSiElServidorRechaza(envio, "El establecimiento");
                     }
 
                     establishmentDraft = null;

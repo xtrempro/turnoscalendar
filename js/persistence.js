@@ -9,6 +9,10 @@ const INTERNAL_KEYS = new Set([
     // js/syncFreshness.js). Es del equipo, no de la unidad.
     "proturnos_last_server_sync",
     "shiftMovesAuditMigrationV1",
+    // Escrituras que este computador todavia no pudo mandar al servidor (ver
+    // js/pendingDocWrites.js). Son de ESTE equipo: si viajaran en la foto de la
+    // unidad, otro supervisor las reintentaria por su cuenta.
+    "proturnos_pending_doc_writes_v1",
     // La agenda es local por supervisor (no se sincroniza entre usuarios del
     // mismo entorno): cada uno edita/borra su propia copia.
     "agenda_contacts",

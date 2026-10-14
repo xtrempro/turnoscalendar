@@ -32,6 +32,10 @@ import {
     WORKSPACE_DELETION_GRACE_HOURS
 } from "./workspaces.js";
 import {
+    flushPendingDocWrites,
+    pendingDocWrites
+} from "./pendingDocWrites.js";
+import {
     isValidEmailFormat,
     normalizeEmailKey
 } from "./emailUtils.js";
@@ -1289,12 +1293,27 @@ function renderSignedOutModal(backdrop, options = {}) {
     bindModalActions(backdrop);
 }
 
+// Establecimiento guardado en este computador que todavia no llega al servidor.
+// Devuelve `undefined` cuando no hay nada esperando: "" es un valor valido (es
+// "Sin indicar") y no puede confundirse con "no hay".
+function pendingEstablishment(workspaceId) {
+    const anotada = pendingDocWrites().find(
+        entry => entry?.path === `workspaces/${workspaceId}`
+    );
+
+    return anotada?.data?.establishment;
+}
+
 async function refreshWorkspaces() {
     if (!currentUser || !isFirebaseConfigured()) {
         workspaceList = [];
         supervisorInviteState.invites = [];
         return;
     }
+
+    // Lo que este computador no alcanzo a mandar (se guardo sin conexion y se
+    // cerro el navegador antes de reconectar) se reintenta aqui.
+    flushPendingDocWrites(currentUser.uid);
 
     const list = await listUserWorkspaces(currentUser);
 
@@ -1304,13 +1323,19 @@ async function refreshWorkspaces() {
     workspaceList = await Promise.all(
         list.map(async workspace => {
             const info = await fetchWorkspaceDeletionInfo(workspace.id);
+            // Si todavia hay un establecimiento esperando salir de aqui, manda
+            // ese: el del servidor es el de antes, y mostrarlo seria deshacer
+            // en pantalla algo que la persona ya guardo.
+            const pendiente = pendingEstablishment(workspace.id);
 
             return {
                 ...workspace,
                 deletionStatus: info?.deletionStatus || "",
                 deletionScheduledMs: info?.deletionScheduledMs || null,
                 ownerUid: info?.ownerUid || workspace.ownerUid || "",
-                establishment: info?.establishment || workspace.establishment || "",
+                establishment: pendiente !== undefined
+                    ? pendiente
+                    : (info?.establishment || workspace.establishment || ""),
                 stateStorage: info?.stateStorage || "",
                 replacementStorage: info?.replacementStorage || "",
                 auditLogStorage: info?.auditLogStorage || ""
