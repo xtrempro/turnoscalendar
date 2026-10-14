@@ -797,6 +797,17 @@ async function claimWorkerTransferApplicationHandler(request, dependencies) {
   });
 }
 
+// Cuanto vale una reserva de traspaso sin confirmar. Lo bastante larga para
+// crear un perfil con calma, y lo bastante corta para que una sesion que se
+// corto no deje a nadie esperando mucho rato.
+const INTAKE_CLAIM_TTL_MS = 10 * 60 * 1000;
+
+function intakeClaimIsFresh(solicitud, now) {
+  const tomada = Number(solicitud && solicitud.targetIntakeClaimedAtMs) || 0;
+
+  return Boolean(tomada) && now - tomada < INTAKE_CLAIM_TTL_MS;
+}
+
 /**
  * La unidad DESTINO reclama crear el perfil de un traspaso que ya viene
  * aceptado (functions/workerHandoverRequests.js): ella lo pidio, con fecha y
@@ -854,15 +865,98 @@ async function claimWorkerTransferIntakeHandler(request, dependencies) {
       return { ok: true, requestId, claimed: false };
     }
 
+    // La toma VENCE. Antes se marcaba como aplicada aqui mismo, antes de crear
+    // el perfil: si esa sesion no llegaba a crearlo -se cierra la pestaña, se
+    // cae la conexion, el navegador se queda sin memoria-, el traspaso quedaba
+    // consumido para siempre y la persona sin perfil, sin que nadie volviera a
+    // intentarlo. El `release` solo cubria el fallo con excepcion.
+    //
+    // Ahora se reserva por un rato y la marca definitiva la pone el confirm,
+    // despues de guardar el perfil. Una reserva abandonada se recupera sola.
+    if (intakeClaimIsFresh(solicitud, Date.now())) {
+      return { ok: true, requestId, claimed: false };
+    }
+
+    const now = serverTimestamp();
+
+    transaction.update(ref, {
+      targetIntakeClaimedAt: now,
+      targetIntakeClaimedAtMs: Date.now(),
+      targetIntakeClaimedByUid: uid,
+      updatedAt: now
+    });
+
+    return { ok: true, requestId, claimed: true };
+  });
+}
+
+/**
+ * El perfil ya quedo guardado: la reserva se vuelve definitiva.
+ *
+ * Es el paso que faltaba. Sin el, "tomado" y "aplicado" eran lo mismo y un
+ * traspaso podia darse por hecho sin que existiera el perfil.
+ */
+async function confirmWorkerTransferIntakeHandler(request, dependencies) {
+  const {
+    db,
+    HttpsError,
+    serverTimestamp,
+    requireWorkspaceProfileManager
+  } = dependencies;
+  const { uid, workspaceId, requestId } =
+    validateBasePayload(request, HttpsError);
+
+  if (!requestId) {
+    callableError(
+      HttpsError,
+      "invalid-argument",
+      "No fue posible identificar la transferencia."
+    );
+  }
+
+  await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
+
+  const ref = db.collection(COLLECTION).doc(requestId);
+
+  return db.runTransaction(async transaction => {
+    const snap = await transaction.get(ref);
+
+    if (!snap.exists) {
+      callableError(HttpsError, "not-found", "La transferencia ya no existe.");
+    }
+
+    const solicitud = snap.data() || {};
+
+    if (solicitud.targetWorkspaceId !== workspaceId) {
+      callableError(
+        HttpsError,
+        "permission-denied",
+        "Solo la unidad que recibe confirma este traspaso."
+      );
+    }
+
+    if (solicitud.targetIntakeAppliedAt) {
+      return { ok: true, requestId, confirmed: false };
+    }
+
+    // Solo quien lo tiene reservado. Si su reserva vencio y otra sesion la
+    // tomo, confirma esa otra: es la que esta creando el perfil ahora.
+    if (solicitud.targetIntakeClaimedByUid !== uid) {
+      return { ok: true, requestId, confirmed: false };
+    }
+
     const now = serverTimestamp();
 
     transaction.update(ref, {
       targetIntakeAppliedAt: now,
       targetIntakeAppliedByUid: uid,
+      targetIntakeClaimedAt: null,
+      targetIntakeClaimedAtMs: null,
+      targetIntakeClaimedByUid: null,
       updatedAt: now
     });
 
-    return { ok: true, requestId, claimed: true };
+    return { ok: true, requestId, confirmed: true };
   });
 }
 
@@ -917,9 +1011,11 @@ async function releaseWorkerTransferIntakeHandler(request, dependencies) {
       );
     }
 
+    // Suelta la RESERVA, no la marca definitiva: un traspaso ya confirmado
+    // tiene su perfil creado y devolverlo a la cola lo crearia dos veces.
     if (
-      !solicitud.targetIntakeAppliedAt ||
-      solicitud.targetIntakeAppliedByUid !== uid
+      solicitud.targetIntakeAppliedAt ||
+      solicitud.targetIntakeClaimedByUid !== uid
     ) {
       return { ok: true, requestId, released: false };
     }
@@ -927,8 +1023,9 @@ async function releaseWorkerTransferIntakeHandler(request, dependencies) {
     const now = serverTimestamp();
 
     transaction.update(ref, {
-      targetIntakeAppliedAt: null,
-      targetIntakeAppliedByUid: null,
+      targetIntakeClaimedAt: null,
+      targetIntakeClaimedAtMs: null,
+      targetIntakeClaimedByUid: null,
       targetIntakeFailedAt: now,
       updatedAt: now
     });
@@ -1068,6 +1165,7 @@ module.exports = {
   chileTodayISO,
   claimWorkerTransferApplicationHandler,
   claimWorkerTransferIntakeHandler,
+  confirmWorkerTransferIntakeHandler,
   cleanProfile,
   createWorkerTransferRequestHandler,
   markSourceProfileTransferred,

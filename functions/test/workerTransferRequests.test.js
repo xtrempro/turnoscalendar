@@ -19,6 +19,7 @@ const {
   cancelWorkerTransferRequestHandler,
   claimWorkerTransferApplicationHandler,
   claimWorkerTransferIntakeHandler,
+  confirmWorkerTransferIntakeHandler,
   releaseWorkerTransferIntakeHandler,
   createWorkerTransferRequestHandler,
   respondWorkerTransferRequestHandler
@@ -351,7 +352,10 @@ test("crear el perfil del traspaso se reclama UNA vez", async () => {
 
   assert.equal((await pedir()).claimed, true);
   assert.equal((await pedir()).claimed, false);
-  assert.equal(db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt, "AHORA");
+  // Queda RESERVADO, no aplicado: lo aplicado lo marca el confirm, despues de
+  // que el perfil esta guardado.
+  assert.equal(db.documents.get(`${COLLECTION}/t-1`).targetIntakeClaimedAt, "AHORA");
+  assert.equal(db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt, undefined);
 });
 
 test("una transferencia normal no se aplica sola", async () => {
@@ -408,7 +412,7 @@ test("solo lo suelta la sesion que lo tomo", async () => {
   );
 
   assert.equal(ajena.released, false);
-  assert.equal(db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt, "AHORA");
+  assert.equal(db.documents.get(`${COLLECTION}/t-1`).targetIntakeClaimedAt, "AHORA");
 });
 
 test("la unidad de origen no suelta el traspaso de la otra", async () => {
@@ -791,4 +795,127 @@ test("sin enlace y sin establecimiento comun, no se transfiere", async () => {
   );
 
   assert.equal(db.documents.get(`${COLLECTION}/t-1`), undefined);
+});
+
+// --- La reserva vence (auditoria 2026-10-14) ---
+//
+// La toma se marcaba como aplicada ANTES de crear el perfil. Si esa sesion no
+// llegaba a crearlo -se cierra la pestaña, se cae la red, el navegador se queda
+// sin memoria-, el traspaso quedaba consumido para siempre y la persona sin
+// perfil. El `release` solo cubria el fallo con excepcion, que es el caso
+// amable.
+
+test("confirmar despues de guardar es lo que lo deja aplicado", async () => {
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+  const quien = peticion({ workspaceId: "w-destino", requestId: "t-1" });
+
+  await claimWorkerTransferIntakeHandler(quien, deps);
+
+  const confirmado = await confirmWorkerTransferIntakeHandler(quien, deps);
+  const doc = db.documents.get(`${COLLECTION}/t-1`);
+
+  assert.equal(confirmado.confirmed, true);
+  assert.equal(doc.targetIntakeAppliedAt, "AHORA");
+  // Y la reserva se suelta: ya no hace falta.
+  assert.equal(doc.targetIntakeClaimedByUid, null);
+});
+
+test("una reserva abandonada se recupera sola pasado el plazo", async () => {
+  // Es el caso que no tenia arreglo: nadie llama al release porque esa sesion
+  // ya no existe.
+  const vieja = traspaso({
+    targetIntakeClaimedAt: "ANTES",
+    targetIntakeClaimedAtMs: Date.now() - 11 * 60 * 1000,
+    targetIntakeClaimedByUid: "sesion-que-se-fue"
+  });
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: vieja });
+  const { deps } = dependencies(db);
+
+  const tomado = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  assert.equal(tomado.claimed, true);
+});
+
+test("una reserva reciente no se le quita a quien la tiene", async () => {
+  // Si venciera al tiro, dos sesiones crearian dos perfiles de la misma
+  // persona, que es justo lo que el claim existe para evitar.
+  const fresca = traspaso({
+    targetIntakeClaimedAt: "AHORA",
+    targetIntakeClaimedAtMs: Date.now() - 60 * 1000,
+    targetIntakeClaimedByUid: "otra-sesion"
+  });
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: fresca });
+  const { deps } = dependencies(db);
+
+  const tomado = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  assert.equal(tomado.claimed, false);
+});
+
+test("lo ya aplicado no se vuelve a tomar aunque pase el tiempo", async () => {
+  const aplicado = traspaso({
+    targetIntakeAppliedAt: "ANTES",
+    targetIntakeClaimedAtMs: Date.now() - 11 * 60 * 1000
+  });
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: aplicado });
+  const { deps } = dependencies(db);
+
+  assert.equal(
+    (await claimWorkerTransferIntakeHandler(
+      peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+      deps
+    )).claimed,
+    false
+  );
+});
+
+test("solo confirma quien tiene la reserva", async () => {
+  // Si su reserva vencio y otra sesion la tomo, confirma esa otra: es la que
+  // esta creando el perfil ahora.
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+
+  await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  const ajena = await confirmWorkerTransferIntakeHandler(
+    {
+      ...peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+      auth: { uid: "otra-sesion", token: {} }
+    },
+    deps
+  );
+
+  assert.equal(ajena.confirmed, false);
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt,
+    undefined
+  );
+});
+
+test("un traspaso ya confirmado no se devuelve a la cola", async () => {
+  // Devolverlo crearia un segundo perfil de alguien que ya lo tiene.
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+  const quien = peticion({ workspaceId: "w-destino", requestId: "t-1" });
+
+  await claimWorkerTransferIntakeHandler(quien, deps);
+  await confirmWorkerTransferIntakeHandler(quien, deps);
+
+  const soltado = await releaseWorkerTransferIntakeHandler(quien, deps);
+
+  assert.equal(soltado.released, false);
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt,
+    "AHORA"
+  );
 });

@@ -312,6 +312,7 @@ async function resolveWorkerHandoverRequestHandler(request, {
   serverTimestamp,
   applyTransferResponse,
   cleanProfile,
+  findWorkerProfile,
   transferCollection = TRANSFER_COLLECTION,
   transferIdFactory = defaultTransferIdFactory
 }) {
@@ -374,6 +375,35 @@ async function resolveWorkerHandoverRequestHandler(request, {
       "invalid-argument",
       "Falta el trabajador que se traspasa."
     );
+  }
+
+  // Lo que viaja tiene que ser QUIEN se pidio.
+  //
+  // El paquete lo arma el cliente, asi que el RUT es lo unico que lo ata al
+  // pedido: sin esta comprobacion, aceptar podia mandar a OTRA persona -con sus
+  // datos y sus saldos de vacaciones- a una unidad que habia pedido a esta, y
+  // alla el perfil se crea solo, sin que nadie lo revise.
+  const rutPedido = normalizeRut(solicitud.rut);
+
+  if (normalizeRut(profile.rut) !== rutPedido) {
+    throw new HttpsError(
+      "failed-precondition",
+      "El trabajador que envias no es el del pedido."
+    );
+  }
+
+  // Y tiene que ser de esta unidad. Lo comprueba el servidor contra los
+  // perfiles de origen, no la pantalla: es la misma regla que impide pedir el
+  // traspaso de alguien que no esta.
+  if (findWorkerProfile) {
+    const perfilOrigen = await findWorkerProfile(db, workspaceId, rutPedido);
+
+    if (!perfilOrigen) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Ese RUT ya no esta en tu unidad: rechaza el pedido."
+      );
+    }
   }
 
   const pedida = cleanText(solicitud.startDate, 10);
@@ -439,22 +469,57 @@ async function resolveWorkerHandoverRequestHandler(request, {
     updatedAt: ahora
   };
 
-  await transferRef.set(transferencia);
+  // Crear la transferencia y cerrar el pedido van JUNTAS o no van.
+  //
+  // Separadas, dos "aceptar" a la vez -dos pestañas, dos supervisores- creaban
+  // DOS transferencias del mismo trabajador, y cada una llegaba al otro lado
+  // como un perfil que crear. Y si fallaba el cierre, quedaba la transferencia
+  // viva con el pedido todavia pendiente, listo para aceptarse de nuevo.
+  //
+  // El estado del pedido se vuelve a leer DENTRO de la transaccion: lo leido al
+  // principio pudo quedar viejo mientras se comprobaban los permisos.
+  const yaResuelta = await db.runTransaction(async transaction => {
+    const actual = await transaction.get(ref);
+    const vigente = actual.exists ? actual.data() || {} : {};
 
-  // Cerrar el pedido ANTES de los efectos: si se cerrara despues y algo
-  // fallara en el medio, un segundo "aceptar" crearia una segunda
-  // transferencia del mismo trabajador.
-  await ref.set({
-    status: ACCEPTED,
-    transferRequestId,
-    // La fecha con que quedo, que puede no ser la pedida: asi la unidad que
-    // pidio ve en su tarjeta desde cuando lo recibe de verdad.
-    startDate,
-    requestedStartDate: pedida,
-    resolvedAt: ahora,
-    resolvedByUid: uid,
-    updatedAt: ahora
-  }, { merge: true });
+    // Alguien gano la carrera: su transferencia es la buena y esta ya se
+    // aplico (o se esta aplicando). No se crea una segunda.
+    if (vigente.status === ACCEPTED && vigente.transferRequestId) {
+      return cleanText(vigente.transferRequestId, 220);
+    }
+
+    if (!requestIsUsable(vigente, Date.now())) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Ese pedido ya fue resuelto o caduco."
+      );
+    }
+
+    transaction.set(transferRef, transferencia);
+    transaction.set(ref, {
+      status: ACCEPTED,
+      transferRequestId,
+      // La fecha con que quedo, que puede no ser la pedida: asi la unidad que
+      // pidio ve en su tarjeta desde cuando lo recibe de verdad.
+      startDate,
+      requestedStartDate: pedida,
+      resolvedAt: ahora,
+      resolvedByUid: uid,
+      updatedAt: ahora
+    }, { merge: true });
+
+    return "";
+  });
+
+  if (yaResuelta) {
+    return {
+      status: ACCEPTED,
+      requestId,
+      transferRequestId: yaResuelta,
+      startDate,
+      created: false
+    };
+  }
 
   await applyTransferResponse({
     db,
@@ -468,7 +533,7 @@ async function resolveWorkerHandoverRequestHandler(request, {
     serverTimestamp
   });
 
-  return { status: ACCEPTED, requestId, transferRequestId, startDate };
+  return { status: ACCEPTED, requestId, transferRequestId, startDate, created: true };
 }
 
 function escapeHtml(value) {

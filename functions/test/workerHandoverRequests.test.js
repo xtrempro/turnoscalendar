@@ -37,6 +37,13 @@ class HttpsError extends Error {
 function fakeDb({ docs = {}, members = {} } = {}) {
   const guardados = new Map(Object.entries(docs));
   const transferencias = new Map();
+  // Una version por documento: es lo que permite detectar que otro lo escribio
+  // entre la lectura y la escritura de una transaccion.
+  const versiones = new Map();
+
+  function versionar(ruta) {
+    versiones.set(ruta, (versiones.get(ruta) || 0) + 1);
+  }
 
   function almacen(nombre) {
     return nombre === TRANSFERENCIAS ? transferencias : guardados;
@@ -48,9 +55,44 @@ function fakeDb({ docs = {}, members = {} } = {}) {
     return { exists: Boolean(data), data: () => data || {} };
   }
 
-  return {
+  const db = {
     guardados,
     transferencias,
+    // Transaccion CON contencion, como la de verdad: si entre la lectura y la
+    // escritura alguien toco un documento leido, se aborta y se vuelve a
+    // correr. Un doble que solo encola escrituras no puede ver el error que
+    // esto viene a probar -dos aceptaciones a la vez-, porque las dos leerian
+    // el pedido pendiente y las dos escribirian.
+    runTransaction: async (work) => {
+      for (let intento = 0; intento < 5; intento += 1) {
+        const leidos = new Map();
+        const pendientes = [];
+        const resultado = await work({
+          get: async (ref) => {
+            leidos.set(ref.path, versiones.get(ref.path) || 0);
+
+            return ref.get();
+          },
+          set: (ref, valor, opciones) => pendientes.push(
+            () => { ref.set(valor, opciones); versionar(ref.path); }
+          ),
+          update: (ref, valor) => pendientes.push(
+            () => { ref.update(valor); versionar(ref.path); }
+          )
+        });
+        const cambiado = [...leidos].some(
+          ([ruta, version]) => (versiones.get(ruta) || 0) !== version
+        );
+
+        if (cambiado) continue;
+
+        for (const aplicar of pendientes) aplicar();
+
+        return resultado;
+      }
+
+      throw new Error("transaccion abortada tras varios intentos");
+    },
     collection: (nombre) => {
       if (nombre === COLLECTION || nombre === TRANSFERENCIAS) {
         const mapa = almacen(nombre);
@@ -58,6 +100,7 @@ function fakeDb({ docs = {}, members = {} } = {}) {
         return {
           doc: (id) => ({
             id,
+            path: `${nombre}/${id}`,
             get: async () => snap(mapa, id),
             set: async (data, options) => {
               const previo = options?.merge ? (mapa.get(id) || {}) : {};
@@ -98,6 +141,8 @@ function fakeDb({ docs = {}, members = {} } = {}) {
       };
     }
   };
+
+  return db;
 }
 
 function deps(db, overrides = {}) {
@@ -969,4 +1014,114 @@ test("el pedido queda anotado con la fecha acordada y con la pedida", async () =
 
   assert.equal(pedido.startDate, "2026-11-09");
   assert.equal(pedido.requestedStartDate, "2026-11-03");
+});
+
+// --- Hallazgos de la auditoria (2026-10-14) ---
+
+test("dos 'aceptar' a la vez crean UNA transferencia, no dos", async () => {
+  // Dos pestañas, o dos supervisores de la misma unidad. Con las escrituras
+  // sueltas, cada uno creaba su transferencia y al otro lado llegaban dos
+  // perfiles de la misma persona.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const ids = ["transfer-1", "transfer-2"];
+  const { deps: dependencias } = deps(db, {
+    transferIdFactory: () => ids.shift()
+  });
+
+  const [uno, dos] = await Promise.all([
+    resolveWorkerHandoverRequestHandler(aceptacion(), dependencias),
+    resolveWorkerHandoverRequestHandler(aceptacion(), dependencias)
+  ]);
+
+  assert.equal(db.transferencias.size, 1);
+  assert.equal(uno.transferRequestId, dos.transferRequestId);
+  // Una de las dos no creo nada y lo dice.
+  assert.deepEqual(
+    [uno.created, dos.created].sort(),
+    [false, true]
+  );
+});
+
+test("aceptar dos veces seguidas tampoco duplica", async () => {
+  // Aqui no es una carrera: el segundo llega con el pedido ya cerrado y se le
+  // dice que ya se resolvio, en vez de crearle otra transferencia.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const ids = ["transfer-1", "transfer-2"];
+  const { deps: dependencias, llamadas } = deps(db, {
+    transferIdFactory: () => ids.shift()
+  });
+
+  await resolveWorkerHandoverRequestHandler(aceptacion(), dependencias);
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(aceptacion(), dependencias),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(db.transferencias.size, 1);
+  // Y los efectos -inactivar el perfil, mudar el enlace- no se repiten.
+  assert.equal(llamadas.aplicadas.length, 1);
+});
+
+test("si el cierre del pedido falla, no queda una transferencia suelta", async () => {
+  // Antes eran dos escrituras: la transferencia quedaba viva y el pedido
+  // pendiente, listo para aceptarse otra vez.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, {
+    db: {
+      ...db,
+      runTransaction: async () => { throw new Error("sin red"); }
+    }
+  });
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(aceptacion(), dependencias),
+    /sin red/
+  );
+
+  assert.equal(db.transferencias.size, 0);
+  assert.equal(guardado(db).status, PENDING);
+});
+
+test("no se puede traspasar a una persona distinta de la pedida", async () => {
+  // El perfil lo arma el cliente: el RUT es lo unico que ata ese paquete al
+  // pedido. Sin comprobarlo, aceptar podia mandar a otra persona -con sus
+  // datos y sus saldos- a una unidad que habia pedido a esta.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(
+      aceptacion({ profile: { name: "OTRA PERSONA", rut: "11.111.111-1" } }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(db.transferencias.size, 0);
+  assert.equal(guardado(db).status, PENDING);
+});
+
+test("el RUT se compara normalizado, no con sus puntos", async () => {
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+  const resultado = await resolveWorkerHandoverRequestHandler(
+    aceptacion({ profile: { name: "ALAN PLAZA", rut: "17.816.632-8" } }),
+    dependencias
+  );
+
+  assert.equal(resultado.status, ACCEPTED);
+});
+
+test("y ese RUT tiene que seguir siendo de la unidad que acepta", async () => {
+  // Lo comprueba el servidor contra los perfiles de origen, no la pantalla.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, {
+    findWorkerProfile: async () => null
+  });
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(aceptacion(), dependencias),
+    (error) => error.code === "failed-precondition"
+  );
 });

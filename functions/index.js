@@ -89,6 +89,7 @@ const {
   claimWorkerTransferApplicationHandler,
   claimWorkerTransferBalancesHandler,
   claimWorkerTransferIntakeHandler,
+  confirmWorkerTransferIntakeHandler,
   cleanProfile: cleanTransferProfile,
   createWorkerTransferRequestHandler,
   moveDueWorkerLinksHandler,
@@ -4683,6 +4684,17 @@ exports.reportWorkerTransferBalances = onCall(
 exports.claimWorkerTransferIntake = onCall(
   { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
   (request) => claimWorkerTransferIntakeHandler(
+    request,
+    workerTransferDependencies()
+  )
+);
+
+// El perfil quedo guardado: la reserva se vuelve definitiva. Sin este paso,
+// "tomado" y "aplicado" eran lo mismo y una sesion que se cortaba antes de
+// guardar consumia el traspaso para siempre.
+exports.confirmWorkerTransferIntake = onCall(
+  { enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 30 },
+  (request) => confirmWorkerTransferIntakeHandler(
     request,
     workerTransferDependencies()
   )

@@ -639,6 +639,7 @@ import {
     claimWorkerTransferApplication,
     claimWorkerTransferBalances,
     claimWorkerTransferIntake,
+    confirmWorkerTransferIntake,
     releaseWorkerTransferIntake,
     reportWorkerTransferBalances,
     requestWorkerTransfer,
@@ -11876,6 +11877,13 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
                 });
                 throw error;
             }
+
+            // El perfil ya existe: recien ahora el traspaso esta aplicado. Si
+            // esto falla, la reserva vence sola y otra sesion lo retoma: ahi
+            // encontrara el perfil ya creado y solo confirmara.
+            await confirmWorkerTransferIntake(solicitud.id).catch(fallo => {
+                console.warn("No se pudo confirmar el traspaso.", fallo);
+            });
 
             noticeHandoverApplied(solicitud, nombre);
         } catch (error) {

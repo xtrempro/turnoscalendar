@@ -169,10 +169,24 @@ test("si crear el perfil falla, el traspaso vuelve a la cola", () => {
 test("solo lo suelta quien lo tomo", () => {
     // Si cualquiera pudiera soltarlo, una sesion devolveria a la cola un
     // traspaso que otra esta aplicando, y terminarian creando dos perfiles.
+    // Lo que se suelta es la RESERVA; lo ya confirmado tiene su perfil creado.
     assert.match(
         servidorTransferencias,
-        /solicitud\.targetIntakeAppliedByUid !== uid/
+        /solicitud\.targetIntakeClaimedByUid !== uid/
     );
+});
+
+test("el traspaso se confirma DESPUES de que el perfil existe", () => {
+    // Antes, tomarlo y darlo por aplicado eran lo mismo: una sesion que se
+    // cortaba antes de guardar consumia el traspaso para siempre y la persona
+    // se quedaba sin perfil, sin que nadie volviera a intentarlo.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+    const crear = aplicar.indexOf("createProfileFromHandover(solicitud, nombre)");
+    const confirmar = aplicar.indexOf("confirmWorkerTransferIntake(solicitud.id)");
+
+    assert.notEqual(crear, -1);
+    assert.notEqual(confirmar, -1);
+    assert.ok(confirmar > crear, "confirmar va despues de crear el perfil");
 });
 
 test("un perfil abierto no deja el traspaso esperando a una recarga", () => {

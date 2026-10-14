@@ -160,6 +160,23 @@ export async function claimWorkerTransferIntake(requestId) {
  * Sin esto, el claim lo consumiria para siempre: la persona se quedaria sin
  * perfil y ninguna sesion volveria a intentarlo.
  */
+/**
+ * El perfil ya quedo guardado: la reserva pasa a definitiva.
+ *
+ * Va DESPUES de guardar, nunca antes. La reserva vence sola, asi que una
+ * sesion que se corta antes de llegar aqui no deja el traspaso consumido: otra
+ * lo vuelve a tomar pasado el plazo.
+ */
+export async function confirmWorkerTransferIntake(requestId) {
+    const workspace = activeWorkspaceOrThrow();
+    const result = await callFunction("confirmWorkerTransferIntake", {
+        workspaceId: workspace.id,
+        requestId
+    });
+
+    return result?.confirmed === true;
+}
+
 export async function releaseWorkerTransferIntake(requestId) {
     const workspace = activeWorkspaceOrThrow();
     const result = await callFunction("releaseWorkerTransferIntake", {
