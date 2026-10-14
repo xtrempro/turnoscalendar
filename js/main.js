@@ -1337,6 +1337,44 @@ async function checkRutInEstablishment() {
 // Se puede reutilizar tal cual porque en este momento hay un perfil en modo
 // creacion -se esta ingresando a la persona-, que es de donde el cuadro lee y
 // donde escribe: profileDraft.rotationStart y rotationFirstTurn.
+// Llega sin rotativa: su calendario queda en blanco y los turnos se cargan a
+// mano. Es el caso del reemplazo, que entra antes de que se sepa en que turno
+// va a quedar. "libre" no es un valor inventado para esto: es la rotativa que
+// ya usa la app para un calendario base vacio, y por eso el perfil que se crea
+// al otro lado la entiende sin que haya que ensenarle nada nuevo.
+const HANDOVER_SIN_ROTATIVA = "libre";
+
+// Desde cuando la persona es de esta unidad. NO es la fecha de una rotativa
+// -aqui no hay-: es la que usa la otra unidad para vaciar su calendario, dejar
+// su perfil inactivo y mudarle la app, asi que sin ella no hay pedido que
+// mandar. Devuelve "" si se cancela.
+async function askHandoverStartDate() {
+    const elegida = await showPrompt(
+        "¿Desde qué día es de esta unidad?",
+        {
+            title: "Comienza en tu unidad",
+            inputLabel: "Primer día en esta unidad",
+            inputType: "date",
+            value: transferTomorrowISO(),
+            confirmText: "Continuar"
+        }
+    );
+
+    if (elegida === null) return "";
+
+    const startISO = normalizeStoredStart(String(elegida || ""));
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
+        await showAlert(
+            "Selecciona una fecha válida.",
+            { title: "Comienza en tu unidad", tone: "warning" }
+        );
+        return "";
+    }
+
+    return startISO;
+}
+
 async function askHandoverSchedule() {
     if (!isProfileEditing()) return null;
 
@@ -1348,12 +1386,33 @@ async function askHandoverSchedule() {
             choices: [
                 { value: "3turno", label: "3er Turno" },
                 { value: "4turno", label: "4° Turno" },
-                { value: "diurno", label: "Diurno" }
+                { value: "diurno", label: "Diurno" },
+                {
+                    value: HANDOVER_SIN_ROTATIVA,
+                    label: "Sin definir aún",
+                    hint: "Su calendario queda libre y los turnos se cargan a mano hasta que se sepa en qué rotativa queda."
+                }
             ]
         }
     );
 
     if (!rotationType) return null;
+
+    // Sin rotativa no hay secuencia que anclar, asi que no se abre el cuadro
+    // de configurarla: preguntar "desde cuando empieza la rotativa" cuando no
+    // hay ninguna no significa nada.
+    if (rotationType === HANDOVER_SIN_ROTATIVA) {
+        const startDate = await askHandoverStartDate();
+
+        if (!startDate) return null;
+
+        return {
+            startDate,
+            rotationType: HANDOVER_SIN_ROTATIVA,
+            rotationFirstTurn: "",
+            resumen: ""
+        };
+    }
 
     const elegido = await new Promise(resolve => {
         let guardado = null;
@@ -1445,8 +1504,13 @@ async function requestHandoverFromUnits(unidades, rut, { discardDraft = false } 
 
     const confirmado = await showConfirm(
         `Se le pedirá a ${nombreUnidad} el traspaso de esta persona.\n\n` +
-        `Comenzaría aquí el ${formatDisplayDate(rotativa.startDate)}, en ` +
-        `${rotativa.resumen}.\n\n` +
+        `Comenzaría aquí el ${formatDisplayDate(rotativa.startDate)}` +
+        // Sin rotativa definida no hay "en 4° Turno" que decir, y la frase
+        // tiene que seguir leyendose como una frase.
+        (rotativa.resumen
+            ? `, en ${rotativa.resumen}.`
+            : ", con su calendario libre hasta que definas su rotativa.") +
+        "\n\n" +
         "Si aceptan, su perfil se crea aquí solo, con sus saldos de vacaciones, " +
         "y su calendario allá se vacía desde esa fecha. No tendrás que aceptar " +
         "nada más.\n\n" +

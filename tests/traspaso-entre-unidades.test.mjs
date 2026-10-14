@@ -62,7 +62,8 @@ test("una modalidad sin secuencia no manda un primer turno inventado", () => {
 test("enviar el pedido descarta el perfil a medio escribir", () => {
     // Si quedara abierto, cambiar de pestaña preguntaria "continuar sin
     // guardar" por un registro que ya no hay que crear: lo trae el traspaso.
-    const pedir = extraer(main, "askWorkerHandover", 4200);
+    // Lo hace requestHandoverFromUnits, donde termina el camino del pedido.
+    const pedir = extraer(main, "requestHandoverFromUnits", 4200);
 
     assert.match(pedir, /discardProfileDraftChangesBeforeLeaving\(\)/);
     assert.match(pedir, /forgetRutLookup\(\)/);
