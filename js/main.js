@@ -418,7 +418,7 @@ import {
     fetchHolidays,
     getCachedHolidays
 } from "./holidays.js";
-import { calcHours, isBusinessDay } from "./calculations.js";
+import { calcHours, isBusinessDay, isWeekend } from "./calculations.js";
 import { TURNO } from "./constants.js";
 import { getTurnoColorConfig } from "./turnoColors.js";
 import {
@@ -435,7 +435,10 @@ import {
     motivoBloqueoReglas24
 } from "./turnEngine.js";
 import {
+    aplicarClasesEspeciales,
+    esAusenciaInjustificada,
     esTurnoCapacitacionValido,
+    getAbsenceType,
     moveShiftConfigBlockReason,
     moveShiftTargetCombina24
 } from "./rulesEngine.js";
@@ -13326,16 +13329,43 @@ function cancelFutureWorkerRequests(profileName, startISO) {
     return canceled;
 }
 
-function profileInactivationDayLabel(profileName, key) {
-    const admin = getAdminDays(profileName)[key];
+function inactivationAbsenceLabel(absence) {
+    const type = getAbsenceType(absence);
 
-    if (getLegalDays(profileName)[key]) return "F. Legal";
-    if (getCompDays(profileName)[key]) return "F. Comp.";
-    if (getAbsences(profileName)[key]) return "Licencia";
-    if (admin) return admin === 1 ? "P. Administrativo" : "1/2 P. Admin.";
+    if (type === "training") return "Capacitacion";
+    if (type === "professional_license") return "LM Profesional";
+    if (type === "union_leave") return "P. Gremial";
+    if (type === "unpaid_leave") return "Sin Goce";
+    if (esAusenciaInjustificada(absence)) return "Ausencia";
 
+    return "Licencia";
+}
+
+// El dia del perfil, con los mismos datos que usa el calendario para pintarlo.
+function profileInactivationDay(profileName, key, dias) {
+    const admin = dias.admin[key];
+    const absence = dias.absences[key];
     const turn = getTurnoProgramado(profileName, key);
-    return turn ? turnoLabel(turn) : "Libre";
+    const label = dias.legal[key]
+        ? "F. Legal"
+        : dias.comp[key]
+            ? "F. Comp."
+            : absence
+                ? inactivationAbsenceLabel(absence)
+                : admin
+                    ? (admin === 1 ? "P. Administrativo" : "1/2 P. Admin.")
+                    : turn
+                        ? turnoLabel(turn)
+                        : "Libre";
+
+    return {
+        label,
+        turn,
+        // El turno de la rotativa, sin el permiso encima: decide si el permiso
+        // cayo sobre un dia de trabajo o sobre uno libre (que se pinta mas
+        // tenue), igual que en el calendario.
+        baseTurn: Number(getTurnoBase(profileName, key)) || TURNO.LIBRE
+    };
 }
 
 function requestProfileInactivationDate(profileName, displayName = profileName) {
@@ -13360,11 +13390,47 @@ function requestProfileInactivationDate(profileName, displayName = profileName) 
             backdrop.remove();
             resolve(value);
         };
+        // Los feriados llegan de la red. Se piden una vez por año y el mes se
+        // vuelve a pintar cuando llegan: sin ellos el calendario se ve igual,
+        // solo que un feriado no se distingue de un dia cualquiera.
+        const holidaysByYear = new Map();
+        const requestedYears = new Set();
+        const holidaysOf = year => {
+            if (holidaysByYear.has(year)) return holidaysByYear.get(year);
+
+            const cached = getCachedHolidays(year);
+
+            if (Object.keys(cached).length) {
+                holidaysByYear.set(year, cached);
+                return cached;
+            }
+
+            if (!requestedYears.has(year)) {
+                requestedYears.add(year);
+                fetchHolidays(year)
+                    .then(feriados => {
+                        holidaysByYear.set(year, feriados || {});
+                        if (backdrop.isConnected) render();
+                    })
+                    .catch(() => {});
+            }
+
+            return {};
+        };
         const render = () => {
             const year = state.month.getFullYear();
             const month = state.month.getMonth();
             const first = (new Date(year, month, 1).getDay() + 6) % 7;
             const days = new Date(year, month + 1, 0).getDate();
+            // Los mapas del perfil se leen una vez por mes pintado, no una vez
+            // por dia: son el estado completo del trabajador.
+            const dias = {
+                admin: getAdminDays(profileName),
+                legal: getLegalDays(profileName),
+                comp: getCompDays(profileName),
+                absences: getAbsences(profileName)
+            };
+            const holidays = holidaysOf(year);
             let cells = "";
 
             for (let index = 0; index < first; index += 1) {
@@ -13375,19 +13441,41 @@ function requestProfileInactivationDate(profileName, displayName = profileName) 
                 const key = `${year}-${month}-${day}`;
                 const iso = calendarKeyToInputDate(key);
                 const selected = iso === state.selectedISO;
-                const label = profileInactivationDayLabel(profileName, key);
+                const dia = profileInactivationDay(profileName, key, dias);
+                const date = new Date(year, month, day);
+                const cell = document.createElement("button");
 
-                cells += `
-                    <button
-                        class="profile-mini-day is-pickable${selected ? " is-selected" : ""}"
-                        type="button"
-                        data-inactivation-date="${escapeHTML(iso)}"
-                        aria-pressed="${selected ? "true" : "false"}"
-                    >
-                        <span>${day}</span>
-                        <small>${escapeHTML(label)}</small>
-                    </button>
+                cell.type = "button";
+                cell.className = "profile-mini-day is-pickable";
+                cell.dataset.inactivationDate = iso;
+                cell.setAttribute("aria-pressed", selected ? "true" : "false");
+
+                if (selected) cell.classList.add("is-selected");
+
+                // El MISMO pintor del calendario: turnos, permisos, licencias,
+                // fin de semana y feriados. Elegir el ultimo dia a ciegas, sin
+                // ver de que dia se trata, era la mitad del trabajo.
+                aplicarClasesEspeciales(
+                    cell,
+                    key,
+                    dia.turn,
+                    isBusinessDay(date, holidays),
+                    isWeekend(date),
+                    Boolean(holidays[key]),
+                    dias.admin,
+                    dias.legal,
+                    dias.comp,
+                    dias.absences,
+                    aplicarClaseTurno,
+                    dia.baseTurn
+                );
+
+                cell.innerHTML = `
+                    <span>${day}</span>
+                    <small>${escapeHTML(dia.label)}</small>
                 `;
+
+                cells += cell.outerHTML;
             }
 
             backdrop.innerHTML = `

@@ -13618,9 +13618,11 @@ body.theme-light .holiday:not(.green):not(.blue):not(.purple):not(.lightgreen):n
 /* Permiso/ausencia sobre un dia LIBRE por rotativa (sin turno base): el trabajador
    no tenia turno ese dia, asi que la casilla se pinta al 50% de transparencia. Con
    turno base se mantiene solida. Uniforme para todos los tipos de permiso, en el
-   calendario (.day) y en el timeline (.mini). */
+   calendario (.day), en el timeline (.mini) y en los calendarios chicos de los
+   modales (.profile-mini-day). */
 .day.leave-free-day,
-.mini.leave-free-day {
+.mini.leave-free-day,
+.profile-mini-day.leave-free-day {
     opacity: 0.5;
 }
 

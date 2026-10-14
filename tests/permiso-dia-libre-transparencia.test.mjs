@@ -51,11 +51,17 @@ test("sin permiso no se agrega la transparencia aunque el dia sea libre", () => 
   assert.equal(run({ baseTurn: 0 }).has("leave-free-day"), false);
 });
 
-test("el CSS del supervisor define la transparencia en calendario y timeline", async () => {
+test("el CSS del supervisor define la transparencia en calendario, timeline y modales", async () => {
   const css = await (await import("node:fs/promises")).readFile(
     new URL("../styles.css", import.meta.url), "utf8"
   );
-  assert.match(css, /\.day\.leave-free-day,\s*\n\s*\.mini\.leave-free-day \{\s*\n?\s*opacity: 0\.5;/);
+  // Los tres sitios que pintan dias comparten la regla: el calendario (.day), el
+  // timeline (.mini) y los calendarios chicos de los modales (.profile-mini-day,
+  // ej: elegir el ultimo dia al inactivar un perfil).
+  assert.match(
+    css,
+    /\.day\.leave-free-day,\s*\n\s*\.mini\.leave-free-day,\s*\n\s*\.profile-mini-day\.leave-free-day \{\s*\n?\s*opacity: 0\.5;/
+  );
 });
 
 test("el timeline tambien aplica la transparencia (dia libre dentro de un permiso)", async () => {
