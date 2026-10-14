@@ -56,6 +56,7 @@ import {
 } from "./turnoColors.js";
 import {
     getActiveWorkspace,
+    rememberActiveEstablishment,
     sendSupervisorInvitationEmail,
     setWorkspaceEstablishment
 } from "./workspaces.js";
@@ -2065,9 +2066,10 @@ function bindBackdrop(backdrop) {
                                 establishmentDraft
                             );
 
-                            const activa = getActiveWorkspace();
-
-                            if (activa) activa.establishment = establishmentDraft;
+                            // getActiveWorkspace() devuelve un objeto nuevo cada
+                            // vez, asi que mutarlo no guardaba nada: hay que
+                            // volver a escribir la copia local.
+                            rememberActiveEstablishment(establishmentDraft);
                         } catch (error) {
                             console.error(error);
                             alert(

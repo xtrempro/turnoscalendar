@@ -74,10 +74,30 @@ export function setActiveWorkspace(workspace) {
         id: workspace.id,
         name: workspaceLabel(workspace),
         role: workspace.role || "member",
+        // Esta copia es la que lee la pantalla de Ajustes. Sin el
+        // establecimiento aqui, guardarlo funcionaba -el documento quedaba
+        // bien- pero al volver a abrir mostraba "Sin indicar", porque leia
+        // este objeto y no el servidor.
+        establishment: normalizeEstablishment(workspace.establishment),
         stateStorage: String(workspace.stateStorage || ""),
         replacementStorage: String(workspace.replacementStorage || ""),
         auditLogStorage: String(workspace.auditLogStorage || "")
     });
+}
+
+/**
+ * Deja el establecimiento recien guardado en la copia local de la unidad.
+ *
+ * getActiveWorkspace() devuelve un objeto NUEVO cada vez -lo lee del
+ * almacenamiento-, asi que mutar lo que devuelve no guarda nada: hay que
+ * volver a escribirlo.
+ */
+export function rememberActiveEstablishment(establishment) {
+    const activa = getActiveWorkspace();
+
+    if (!activa?.id) return;
+
+    setActiveWorkspace({ ...activa, establishment });
 }
 
 // Programa la eliminacion del entorno (solo el creador). Marca el doc con la
@@ -193,6 +213,9 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
 
         return {
             ownerUid: data.ownerUid || "",
+            // El documento de la unidad es la fuente del establecimiento; si no
+            // viaja desde aqui, nadie mas lo tiene.
+            establishment: normalizeEstablishment(data.establishment),
             stateStorage: String(data.stateStorage || ""),
             replacementStorage: String(data.replacementStorage || ""),
             auditLogStorage: String(data.auditLogStorage || ""),

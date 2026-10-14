@@ -1310,6 +1310,7 @@ async function refreshWorkspaces() {
                 deletionStatus: info?.deletionStatus || "",
                 deletionScheduledMs: info?.deletionScheduledMs || null,
                 ownerUid: info?.ownerUid || workspace.ownerUid || "",
+                establishment: info?.establishment || workspace.establishment || "",
                 stateStorage: info?.stateStorage || "",
                 replacementStorage: info?.replacementStorage || "",
                 auditLogStorage: info?.auditLogStorage || ""
