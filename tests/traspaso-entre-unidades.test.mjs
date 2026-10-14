@@ -112,7 +112,10 @@ test("aceptar NO vuelve a preguntar la fecha: usa la del pedido", () => {
 test("aceptar manda lo mismo que una transferencia normal", () => {
     const aceptar = extraer(main, "startWorkerHandover");
 
-    assert.match(aceptar, /profile: await transferProfilePayload\(profile, startISO\)/);
+    // Con la fecha ACORDADA, que puede no ser la pedida: la ultima palabra la
+    // tiene esta unidad, que es la que entrega (ver resolveHandoverStartDate).
+    assert.match(aceptar, /profile: await transferProfilePayload\(profile, acordada\)/);
+    assert.match(aceptar, /startDate: acordada/);
 });
 
 test("un pedido sin fecha no se puede aceptar", () => {

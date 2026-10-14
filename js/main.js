@@ -11650,6 +11650,53 @@ async function sendWorkerTransfer({
 // desde la fecha, perfil inactivo, saldos que viajan-, con el mismo codigo.
 // Lo unico que no se pregunta es la fecha: la eligio quien pidio, porque es
 // su unidad la que recibe a la persona.
+// Desde cuando se acepta el traspaso. Normalmente, la fecha pedida.
+//
+// Pero el pedido pudo enviarse ANTES de que esta unidad decidiera hasta que dia
+// trabajaba aqui: si ya se inactivo su perfil con un ultimo dia posterior,
+// aceptar la fecha pedida vaciaria dias que esta unidad ya dio por trabajados
+// -y no hay vuelta atras, porque aceptar aplica el traspaso-. Ahi se avisa del
+// cruce y decide quien entrega, que es quien sabe que paso con esos dias.
+//
+// Devuelve la fecha acordada, o "" si se cancela.
+async function resolveHandoverStartDate(profile, startISO, targetName) {
+    const ultimoDiaAqui = isProfileActive(profile)
+        ? ""
+        : normalizeStoredStart(profile.unitExitDate || "");
+
+    // Sin cruce no hay nada que preguntar: lo pedido manda.
+    if (!ultimoDiaAqui || compareISODate(startISO, ultimoDiaAqui) > 0) {
+        return startISO;
+    }
+
+    const desdeMiSalida = nextCalendarISO(ultimoDiaAqui);
+    const elegida = await showChoice(
+        `${targetName} pide a ${profile.name} desde el ` +
+        `${formatDisplayDate(startISO)}, pero aquí ya habías cerrado su paso ` +
+        `por esta unidad: su último día es el ${formatDisplayDate(ultimoDiaAqui)}.` +
+        "\n\nDecides tú desde cuándo se lo entregas.",
+        {
+            title: "Las fechas no calzan",
+            tone: "warning",
+            confirmText: "Aceptar el traspaso",
+            choices: [
+                {
+                    value: desdeMiSalida,
+                    label: `Desde el ${formatDisplayDate(desdeMiSalida)}`,
+                    hint: `Mantienes sus turnos hasta el ${formatDisplayDate(ultimoDiaAqui)}, como los habías dejado.`
+                },
+                {
+                    value: startISO,
+                    label: `Desde el ${formatDisplayDate(startISO)}, como lo piden`,
+                    hint: `Su calendario aquí se vacía desde esa fecha: pierdes lo que tuviera entre el ${formatDisplayDate(startISO)} y el ${formatDisplayDate(ultimoDiaAqui)}.`
+                }
+            ]
+        }
+    );
+
+    return normalizeStoredStart(String(elegida || ""));
+}
+
 async function startWorkerHandover(detail) {
     const rut = normalizeRut(detail?.rut);
     const targetWorkspaceId = String(detail?.requestingWorkspaceId || "");
@@ -11682,9 +11729,20 @@ async function startWorkerHandover(detail) {
         return;
     }
 
+    // Quien entrega tiene la ultima palabra sobre la fecha. El pedido pudo
+    // enviarse antes de que aqui se decidiera hasta que dia trabajaba, y
+    // aceptarlo tal cual vaciaria dias que esta unidad ya dio por trabajados.
+    const acordada = await resolveHandoverStartDate(
+        profile,
+        startISO,
+        targetName
+    );
+
+    if (!acordada) return;
+
     const confirmado = await showConfirm(
         `${targetName} pide el traspaso de ${profile.name}, para que comience ` +
-        `allá el ${formatDisplayDate(startISO)}.\n\n` +
+        `allá el ${formatDisplayDate(acordada)}.\n\n` +
         "Al aceptar, su calendario en esta unidad se vaciará desde esa fecha " +
         "y su perfil quedará inactivo. Sus saldos de vacaciones pasan a esa " +
         "unidad y su app se cambia a ella el día en que empieza.\n\n" +
@@ -11704,8 +11762,9 @@ async function startWorkerHandover(detail) {
             approve: true,
             // Lo que se lleva lo arma el mismo sitio que en una
             // transferencia normal.
-            profile: await transferProfilePayload(profile, startISO),
-            resolvedByName: getCurrentActor().name
+            profile: await transferProfilePayload(profile, acordada),
+            resolvedByName: getCurrentActor().name,
+            startDate: acordada
         });
     } catch (error) {
         console.warn("No se pudo aceptar el traspaso.", error);
@@ -11716,11 +11775,19 @@ async function startWorkerHandover(detail) {
     addAuditLog(
         AUDIT_CATEGORY.COLLABORATOR_UPDATED,
         "Acepto el traspaso de un trabajador",
-        `${profile.name}: traspaso aceptado hacia ${targetName} desde el ${formatDisplayDate(startISO)}.`,
-        { profile: profile.name, targetWorkspaceId, startDate: startISO }
+        `${profile.name}: traspaso aceptado hacia ${targetName} desde el ${formatDisplayDate(acordada)}` +
+        (acordada === startISO
+            ? "."
+            : ` (lo pedían desde el ${formatDisplayDate(startISO)}).`),
+        {
+            profile: profile.name,
+            targetWorkspaceId,
+            startDate: acordada,
+            requestedStartDate: startISO
+        }
     );
     await showAlert(
-        `${profile.name} pasa a ${targetName} desde el ${formatDisplayDate(startISO)}. ` +
+        `${profile.name} pasa a ${targetName} desde el ${formatDisplayDate(acordada)}. ` +
         "Su calendario aquí se vacía desde esa fecha y su perfil queda inactivo.",
         { title: "Traspaso aceptado", tone: "success" }
     );
@@ -11847,6 +11914,9 @@ async function createProfileFromHandover(solicitud, nombre) {
         grade: String(datos.grade || ""),
         unionLeaveEnabled: Boolean(datos.unionLeaveEnabled),
         unitEntryDate: inicio,
+        // La fecha la acordaron las dos unidades: antes de ella la persona
+        // era de la otra, y aqui su calendario no se toca.
+        unitEntryLocked: true,
         // La rotativa que esta unidad eligio al pedir el traspaso.
         rotationType: String(rotativa.type || ""),
         rotationStart: normalizeStoredStart(rotativa.start || inicio),
@@ -12191,6 +12261,9 @@ async function acceptWorkerTransfer(solicitud = {}) {
         grade: String(datos.grade || ""),
         unionLeaveEnabled: Boolean(datos.unionLeaveEnabled),
         unitEntryDate: inicio,
+        // La fecha la acordaron las dos unidades: antes de ella la persona
+        // era de la otra, y aqui su calendario no se toca.
+        unitEntryLocked: true,
         rotationStart: inicio,
         rotationType: "",
         active: true
@@ -14108,6 +14181,14 @@ async function guardarPerfil() {
             : [],
         active: profileDraft.active !== false,
         unitEntryDate: nextUnitEntryDate,
+        // Esa fecha de ingreso la acordaron dos unidades: antes de ella la
+        // persona era de la otra, y aqui no se le pueden cargar turnos (ver
+        // unitEntryBlockReason en js/profileQueries.js). Se conserva al editar:
+        // lo acordado no deja de serlo porque alguien guarde el perfil.
+        unitEntryLocked: Boolean(
+            profileDraft.unitEntryLocked ||
+            previousSnapshot?.unitEntryLocked
+        ),
         unitExitDate: willBeActive
             ? ""
             : normalizeStoredStart(previousSnapshot?.unitExitDate || ""),

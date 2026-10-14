@@ -376,14 +376,36 @@ async function resolveWorkerHandoverRequestHandler(request, {
     );
   }
 
-  const startDate = cleanText(solicitud.startDate, 10);
+  const pedida = cleanText(solicitud.startDate, 10);
 
-  if (!validISODate(startDate)) {
+  if (!validISODate(pedida)) {
     throw new HttpsError(
       "failed-precondition",
       "El pedido no trae la fecha en que comienza."
     );
   }
+
+  // La ultima palabra la tiene esta unidad, que es la que entrega: el pedido
+  // puede ser de antes de que aqui decidieran hasta que dia trabajaba, y
+  // aceptarlo tal cual borraria dias que ya habian validado.
+  //
+  // Solo puede CORRERLA HACIA ADELANTE. Adelantarla seria quitarle dias a la
+  // otra unidad sin que ellos lo pidieran, y ellos ya no vuelven a responder:
+  // aceptar aplica el traspaso.
+  const elegida = cleanText(data.startDate, 10);
+
+  if (elegida && !validISODate(elegida)) {
+    throw new HttpsError("invalid-argument", "La fecha elegida no es valida.");
+  }
+
+  if (elegida && elegida < pedida) {
+    throw new HttpsError(
+      "failed-precondition",
+      `El pedido es desde el ${pedida}: solo puedes aceptarlo desde ese dia o uno posterior.`
+    );
+  }
+
+  const startDate = elegida || pedida;
 
   const transferRequestId = transferIdFactory();
   const transferRef = db.collection(transferCollection).doc(transferRequestId);
@@ -425,6 +447,10 @@ async function resolveWorkerHandoverRequestHandler(request, {
   await ref.set({
     status: ACCEPTED,
     transferRequestId,
+    // La fecha con que quedo, que puede no ser la pedida: asi la unidad que
+    // pidio ve en su tarjeta desde cuando lo recibe de verdad.
+    startDate,
+    requestedStartDate: pedida,
     resolvedAt: ahora,
     resolvedByUid: uid,
     updatedAt: ahora
@@ -442,7 +468,7 @@ async function resolveWorkerHandoverRequestHandler(request, {
     serverTimestamp
   });
 
-  return { status: ACCEPTED, requestId, transferRequestId };
+  return { status: ACCEPTED, requestId, transferRequestId, startDate };
 }
 
 function escapeHtml(value) {

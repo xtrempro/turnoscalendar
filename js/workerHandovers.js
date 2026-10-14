@@ -148,7 +148,11 @@ export async function resolveWorkerHandoverRequest({
     approve,
     profile = null,
     rejectReason = "",
-    resolvedByName = ""
+    resolvedByName = "",
+    // Desde cuando se acepta, cuando no es la fecha pedida. La decide esta
+    // unidad, que es la que entrega, y el servidor solo deja correrla hacia
+    // adelante (ver workerHandoverRequests.js).
+    startDate = ""
 }) {
     const workspace = activeWorkspaceOrThrow();
 
@@ -159,6 +163,7 @@ export async function resolveWorkerHandoverRequest({
         approve,
         profile,
         rejectReason,
-        resolvedByName
+        resolvedByName,
+        startDate
     });
 }

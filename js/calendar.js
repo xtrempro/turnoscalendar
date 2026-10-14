@@ -67,6 +67,7 @@ import {
     setNoCoverageDay,
     getCompensationProfileAt
 } from "./storage.js";
+import { unitEntryBlockReason } from "./profileQueries.js";
 import { workerMonthHTML } from "./workerMonthCalendar.js";
 import {
     tieneAusencia,
@@ -1198,6 +1199,19 @@ async function handleCalendarCellFallbackClick(cell, event) {
     if (!activeProfileEnabled) {
         event.stopPropagation();
         alert("Este perfil esta desactivado. Reactivalo desde Perfil para modificar su calendario.");
+        return;
+    }
+
+    // La edicion directa escribe el turno sin pasar por clickDia: el mismo
+    // limite se comprueba aqui o se cuela por esta puerta.
+    const antesDeEntrar = unitEntryBlockReason(
+        activeWorker,
+        isoFromKeyDay(keyDay)
+    );
+
+    if (antesDeEntrar) {
+        event.stopPropagation();
+        alert(antesDeEntrar);
         return;
     }
 
@@ -10855,6 +10869,18 @@ async function clickDia(
         return true;
     }
 
+    // Llego por traspaso: antes de su fecha de ingreso la persona era de otra
+    // unidad, y alla su calendario sigue en pie.
+    const antesDeEntrar = unitEntryBlockReason(
+        getProfiles().find(item => item.name === profileName),
+        isoFromKeyDay(keyDay)
+    );
+
+    if (antesDeEntrar) {
+        alert(antesDeEntrar);
+        return true;
+    }
+
     const turnChange =
         getCambioTurnoCalendario(profileName, keyDay)?.swap;
 
@@ -12174,6 +12200,10 @@ async function renderCalendarImpl(options = {}) {
         const isHoliday = holidays[keyDay];
         const isHab = isBusinessDay(date, holidays);
         const isoDay = isoFromKeyDay(keyDay);
+        // Dia anterior al ingreso de quien llego por traspaso: no se toca, y
+        // se ve que no se toca. El bloqueo de verdad esta en clickDia y en la
+        // edicion directa; esto es para no hacer apretar al vacio.
+        const beforeUnitEntry = unitEntryBlockReason(activeWorker, isoDay);
         const honorariaContractDay =
             Boolean(getHonorariaContractForDate(activeProfile, isoDay));
         const shiftAssigned = shiftAssignedForDate(date);
@@ -12780,12 +12810,18 @@ async function renderCalendarImpl(options = {}) {
                 absences
             });
 
+        if (beforeUnitEntry) {
+            div.classList.add("day-before-unit-entry");
+            div.title = beforeUnitEntry;
+        }
+
         if (window.selectionMode || !activeProfileEnabled) {
             div.classList.add(
                 bloqueado ||
                 addTurnBlocked ||
                 contingencyBlocked ||
                 removeTurnBlocked ||
+                beforeUnitEntry ||
                 !activeProfileEnabled
                     ? "mpa-disabled"
                     : "mpa-enabled"

@@ -451,19 +451,11 @@ test("la transferencia lleva la rotativa que eligio quien pidio", async () => {
   });
 });
 
-test("la fecha sale del pedido, no de quien acepta", async () => {
-  // Quien acepta no puede cambiarle la fecha a la unidad que recibe: es ella
-  // la que sabe desde cuando lo necesita.
-  const db = fakeDb({ docs: pedidoPendiente() });
-  const { deps: dependencias } = deps(db);
-
-  await resolveWorkerHandoverRequestHandler(
-    aceptacion({ startDate: "2027-01-01" }),
-    dependencias
-  );
-
-  assert.equal(db.transferencias.get("transfer-1").startDate, "2026-11-03");
-});
+// Aqui habia una prueba que exigia que quien acepta NO pudiera tocar la fecha.
+// Dejo de ser cierto a proposito el 2026-10-14: el pedido puede ser anterior a
+// que esta unidad decidiera hasta que dia trabajaba aqui, y entonces la fecha
+// pedida borraria dias ya validados. Ahora puede correrla hacia adelante -nunca
+// hacia atras-, y eso se prueba al final de este archivo.
 
 test("aceptar pasa por la aplicacion de siempre", async () => {
   // Inactivar el perfil aqui y mudar el enlace no se reimplementa: es el mismo
@@ -897,4 +889,84 @@ test("corregir un pedido pendiente tambien respeta ese limite", async () => {
   );
 
   assert.equal(guardado(db).startDate, "2026-11-03", "sigue la fecha buena");
+});
+
+// --- La ultima palabra sobre la fecha la tiene quien entrega ---
+//
+// El pedido pudo enviarse antes de que esta unidad decidiera hasta que dia
+// trabajaba aqui. Aceptar la fecha pedida vaciaria dias ya validados, y no hay
+// vuelta atras: aceptar aplica el traspaso.
+
+test("al aceptar se puede correr la fecha hacia adelante", async () => {
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+  const resultado = await resolveWorkerHandoverRequestHandler(
+    aceptacion({ startDate: "2026-11-09" }),
+    dependencias
+  );
+
+  assert.equal(resultado.startDate, "2026-11-09");
+
+  const transferencia = db.transferencias.get("transfer-1");
+
+  assert.equal(transferencia.startDate, "2026-11-09");
+  // Y la rotativa arranca ahi: antes de ese dia la persona todavia no es suya.
+  assert.equal(transferencia.targetRotation.start, "2026-11-09");
+});
+
+test("sin fecha elegida manda la pedida, como siempre", async () => {
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+
+  await resolveWorkerHandoverRequestHandler(aceptacion(), dependencias);
+
+  assert.equal(db.transferencias.get("transfer-1").startDate, "2026-11-03");
+});
+
+test("no se puede adelantar: eso seria quitarle dias a la otra unidad", async () => {
+  // Ellos ya no vuelven a responder -aceptar aplica el traspaso-, asi que
+  // correrla hacia atras les sacaria dias sin que pudieran oponerse.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(
+      aceptacion({ startDate: "2026-10-20" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(db.transferencias.size, 0, "no se crea la transferencia");
+  assert.equal(guardado(db).status, PENDING, "y el pedido sigue en pie");
+});
+
+test("una fecha con cualquier forma se rechaza", async () => {
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(
+      aceptacion({ startDate: "mañana" }),
+      dependencias
+    ),
+    (error) => error.code === "invalid-argument"
+  );
+});
+
+test("el pedido queda anotado con la fecha acordada y con la pedida", async () => {
+  // La unidad que pidio ve en su tarjeta desde cuando lo recibe de verdad, sin
+  // tener que deducirlo.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db);
+
+  await resolveWorkerHandoverRequestHandler(
+    aceptacion({ startDate: "2026-11-09" }),
+    dependencias
+  );
+
+  const pedido = guardado(db);
+
+  assert.equal(pedido.startDate, "2026-11-09");
+  assert.equal(pedido.requestedStartDate, "2026-11-03");
 });

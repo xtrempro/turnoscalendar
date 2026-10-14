@@ -24900,6 +24900,28 @@ body.mode-active .day.draft-selected {
         0 18px 28px rgba(var(--brand-blue-rgb), 0.18);
 }
 
+/* Dia anterior al ingreso de quien llego por TRASPASO. Hasta esa fecha la
+   persona era de otra unidad y su calendario de esos dias vive alla: cargarle
+   turnos aqui la pondria trabajando en dos unidades el mismo dia. El bloqueo
+   esta en el codigo (clickDia y la edicion directa); esto es para que se vea
+   antes de apretar. */
+.day.day-before-unit-entry {
+    background:
+        repeating-linear-gradient(
+            135deg,
+            transparent 0 7px,
+            rgba(148, 163, 184, 0.16) 7px 14px
+        ),
+        var(--calendar-disabled);
+    color: var(--text-muted);
+    cursor: not-allowed;
+}
+
+.day.day-before-unit-entry:hover {
+    transform: none;
+    box-shadow: none;
+}
+
 .day.mpa-disabled {
     background: var(--calendar-disabled) !important;
     color: var(--text-muted) !important;

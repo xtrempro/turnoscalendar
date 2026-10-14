@@ -62,6 +62,9 @@ function clearedDraftValues() {
         active: true,
         unit: "",
         unitEntryDate: "",
+        // Fecha de ingreso acordada entre dos unidades (llego por
+        // traspaso): el calendario anterior a ella no se toca.
+        unitEntryLocked: false,
         contractType: "",
         estamento: "",
         profession: "Sin informacion",
