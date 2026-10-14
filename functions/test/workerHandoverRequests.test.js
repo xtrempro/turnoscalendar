@@ -1125,3 +1125,139 @@ test("y ese RUT tiene que seguir siendo de la unidad que acepta", async () => {
     (error) => error.code === "failed-precondition"
   );
 });
+
+// --- Segunda vuelta de la auditoria (2026-10-14) ---
+
+test("la transferencia lleva lo que el pedido dice AL ACEPTAR, no antes", async () => {
+  // La unidad que pide puede corregir fecha y rotativa mientras su pedido sigue
+  // pendiente. Armando el contenido fuera de la transaccion, se mandaba lo que
+  // decia la tarjeta cuando se abrio, no lo que la otra unidad tiene escrito.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, {
+    // Se corrige DESPUES de la lectura inicial y ANTES de la transaccion: ese
+    // es el hueco. Hacerlo antes de leer no probaria nada.
+    findWorkerProfile: async () => {
+      const previo = db.guardados.get("pedido-1");
+
+      db.guardados.set("pedido-1", {
+        ...previo,
+        startDate: "2026-11-10",
+        rotationType: "diurno",
+        rotationFirstTurn: ""
+      });
+
+      return { name: "ALAN PLAZA", rut: "17816632-8" };
+    }
+  });
+
+  await resolveWorkerHandoverRequestHandler(aceptacion(), dependencias);
+
+  const transferencia = db.transferencias.get("transfer-1");
+
+  assert.equal(transferencia.startDate, "2026-11-10");
+  assert.equal(transferencia.targetRotation.type, "diurno");
+  assert.equal(transferencia.targetRotation.start, "2026-11-10");
+  assert.equal(guardado(db).requestedStartDate, "2026-11-10");
+});
+
+test("y el limite de la fecha se mide contra el pedido corregido", async () => {
+  // Aceptar "desde el 3" era valido para el pedido viejo y es adelantarse al
+  // nuevo: la comprobacion tiene que ser contra el que esta escrito.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, {
+    findWorkerProfile: async () => {
+      const previo = db.guardados.get("pedido-1");
+
+      db.guardados.set("pedido-1", { ...previo, startDate: "2026-11-10" });
+
+      return { name: "ALAN PLAZA", rut: "17816632-8" };
+    }
+  });
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(
+      aceptacion({ startDate: "2026-11-03" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(db.transferencias.size, 0);
+});
+
+// La aceptacion entra JUSTO DESPUES de la lectura inicial: es la unica forma de
+// probar la carrera. Si el pedido ya estuviera aceptado al leerlo, lo que corta
+// es la comprobacion de la entrada, no la de la transaccion, y la prueba pasaria
+// aunque la transaccion no existiera.
+function aceptanTrasLaPrimeraLectura(db) {
+  let leidas = 0;
+
+  return {
+    ...db,
+    collection: (nombre) => {
+      const coleccion = db.collection(nombre);
+
+      if (nombre !== COLLECTION) return coleccion;
+
+      return {
+        ...coleccion,
+        doc: (id) => {
+          const documento = coleccion.doc(id);
+
+          return {
+            ...documento,
+            get: async () => {
+              const snap = await documento.get();
+
+              if (id === "pedido-1" && leidas === 0) {
+                leidas += 1;
+                db.guardados.set(id, {
+                  ...db.guardados.get(id),
+                  status: ACCEPTED,
+                  transferRequestId: "transfer-ya"
+                });
+              }
+
+              return snap;
+            }
+          };
+        }
+      };
+    }
+  };
+}
+
+test("rechazar no pisa un traspaso ya aceptado", async () => {
+  // Si el rechazo llega justo despues de la aceptacion, escribirlo dejaria el
+  // pedido "rechazado" con la transferencia creada y el perfil creandose al
+  // otro lado.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, { db: aceptanTrasLaPrimeraLectura(db) });
+
+  await assert.rejects(
+    () => resolveWorkerHandoverRequestHandler(
+      aceptacion({ approve: false, rejectReason: "me arrepenti" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(guardado(db).status, ACCEPTED);
+  assert.equal(guardado(db).transferRequestId, "transfer-ya");
+});
+
+test("retirar el pedido tampoco pisa una aceptacion", async () => {
+  // Lo retira la unidad que pidio, que no se entera de que ya lo aceptaron.
+  const db = fakeDb({ docs: pedidoPendiente() });
+  const { deps: dependencias } = deps(db, { db: aceptanTrasLaPrimeraLectura(db) });
+
+  await assert.rejects(
+    () => cancelWorkerHandoverRequestHandler(
+      peticion({ workspaceId: "ws-urgencias", requestId: "pedido-1" }),
+      dependencias
+    ),
+    (error) => error.code === "failed-precondition"
+  );
+
+  assert.equal(guardado(db).status, ACCEPTED);
+});

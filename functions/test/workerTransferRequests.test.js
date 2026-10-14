@@ -153,6 +153,7 @@ function dependencies(db, overrides = {}) {
       HttpsError,
       serverTimestamp: () => "AHORA",
       idFactory: () => "t-1",
+      claimTokenFactory: () => "tok-1",
       today: "2026-09-29",
       requireWorkspaceProfileManager: async (workspaceId, uid) => {
         calls.manager.push({ workspaceId, uid });
@@ -383,10 +384,12 @@ test("si crear el perfil falla, el traspaso vuelve a la cola", async () => {
     deps
   );
 
-  assert.equal((await tomar()).claimed, true);
+  const { claimToken } = await tomar();
+
+  assert.equal(Boolean(claimToken), true);
 
   const soltado = await releaseWorkerTransferIntakeHandler(
-    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    peticion({ workspaceId: "w-destino", requestId: "t-1", claimToken }),
     deps
   );
 
@@ -810,9 +813,12 @@ test("confirmar despues de guardar es lo que lo deja aplicado", async () => {
   const { deps } = dependencies(db);
   const quien = peticion({ workspaceId: "w-destino", requestId: "t-1" });
 
-  await claimWorkerTransferIntakeHandler(quien, deps);
+  const { claimToken } = await claimWorkerTransferIntakeHandler(quien, deps);
 
-  const confirmado = await confirmWorkerTransferIntakeHandler(quien, deps);
+  const confirmado = await confirmWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1", claimToken }),
+    deps
+  );
   const doc = db.documents.get(`${COLLECTION}/t-1`);
 
   assert.equal(confirmado.confirmed, true);
@@ -908,14 +914,109 @@ test("un traspaso ya confirmado no se devuelve a la cola", async () => {
   const { deps } = dependencies(db);
   const quien = peticion({ workspaceId: "w-destino", requestId: "t-1" });
 
-  await claimWorkerTransferIntakeHandler(quien, deps);
-  await confirmWorkerTransferIntakeHandler(quien, deps);
+  const { claimToken } = await claimWorkerTransferIntakeHandler(quien, deps);
+  const conTestigo = peticion({
+    workspaceId: "w-destino",
+    requestId: "t-1",
+    claimToken
+  });
 
-  const soltado = await releaseWorkerTransferIntakeHandler(quien, deps);
+  await confirmWorkerTransferIntakeHandler(conTestigo, deps);
+
+  const soltado = await releaseWorkerTransferIntakeHandler(conTestigo, deps);
 
   assert.equal(soltado.released, false);
   assert.equal(
     db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt,
     "AHORA"
+  );
+});
+
+test("la pestaña cuya reserva vencio no confirma la de la otra", async () => {
+  // Las dos son del mismo supervisor, asi que comparten uid: con el uid solo,
+  // la primera daba por creado un perfil que la segunda todavia esta creando.
+  const tokens = ["tok-1", "tok-2"];
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db, { claimTokenFactory: () => tokens.shift() });
+  const pedir = () => claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  const primera = await pedir();
+
+  // Se le vence: el documento queda como si la hubiera tomado hace rato.
+  db.documents.get(`${COLLECTION}/t-1`).targetIntakeClaimedAtMs =
+    Date.now() - 11 * 60 * 1000;
+
+  const segunda = await pedir();
+
+  assert.equal(segunda.claimed, true);
+  assert.notEqual(primera.claimToken, segunda.claimToken);
+
+  const tarde = await confirmWorkerTransferIntakeHandler(
+    peticion({
+      workspaceId: "w-destino",
+      requestId: "t-1",
+      claimToken: primera.claimToken
+    }),
+    deps
+  );
+
+  assert.equal(tarde.confirmed, false);
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).targetIntakeAppliedAt,
+    undefined
+  );
+});
+
+test("ni suelta la reserva que esta usando la otra", async () => {
+  // Soltarla la devolveria a la cola mientras esa pestaña crea el perfil, y
+  // terminarian creando dos.
+  const tokens = ["tok-1", "tok-2"];
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db, { claimTokenFactory: () => tokens.shift() });
+  const pedir = () => claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  const primera = await pedir();
+
+  db.documents.get(`${COLLECTION}/t-1`).targetIntakeClaimedAtMs =
+    Date.now() - 11 * 60 * 1000;
+
+  await pedir();
+
+  const soltado = await releaseWorkerTransferIntakeHandler(
+    peticion({
+      workspaceId: "w-destino",
+      requestId: "t-1",
+      claimToken: primera.claimToken
+    }),
+    deps
+  );
+
+  assert.equal(soltado.released, false);
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).targetIntakeClaimToken,
+    "tok-2"
+  );
+});
+
+test("sin testigo no se confirma ni se suelta nada", async () => {
+  const db = new FakeDb({ [`${COLLECTION}/t-1`]: traspaso() });
+  const { deps } = dependencies(db);
+  const quien = peticion({ workspaceId: "w-destino", requestId: "t-1" });
+
+  await claimWorkerTransferIntakeHandler(quien, deps);
+
+  assert.equal(
+    (await confirmWorkerTransferIntakeHandler(quien, deps)).confirmed,
+    false
+  );
+  assert.equal(
+    (await releaseWorkerTransferIntakeHandler(quien, deps)).released,
+    false
   );
 });

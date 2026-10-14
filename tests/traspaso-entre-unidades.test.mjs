@@ -129,7 +129,7 @@ test("un pedido sin fecha no se puede aceptar", () => {
 test("quien pidio crea el perfil solo, y una sola sesion", () => {
     const aplicar = extraer(main, "applyIncomingHandoverTransfers");
 
-    assert.match(aplicar, /if \(!await claimWorkerTransferIntake\(solicitud\.id\)\) continue;/);
+    assert.match(aplicar, /const testigo = await claimWorkerTransferIntake\(solicitud\.id\)/);
     assert.match(aplicar, /createProfileFromHandover\(solicitud, nombre\)/);
     // Y se entera por la campanita.
     assert.match(aplicar, /noticeHandoverApplied\(solicitud, nombre\)/);
@@ -161,7 +161,7 @@ test("si crear el perfil falla, el traspaso vuelve a la cola", () => {
     // persona se quedaria sin perfil.
     const aplicar = extraer(main, "applyIncomingHandoverTransfers");
 
-    assert.match(aplicar, /await releaseWorkerTransferIntake\(solicitud\.id\)/);
+    assert.match(aplicar, /await releaseWorkerTransferIntake\(solicitud\.id, testigo\)/);
     assert.match(aplicar, /traspaso-fallido:/);
     assert.match(aplicar, /addBellNotice\(/);
 });
@@ -182,7 +182,7 @@ test("el traspaso se confirma DESPUES de que el perfil existe", () => {
     // se quedaba sin perfil, sin que nadie volviera a intentarlo.
     const aplicar = extraer(main, "applyIncomingHandoverTransfers");
     const crear = aplicar.indexOf("createProfileFromHandover(solicitud, nombre)");
-    const confirmar = aplicar.indexOf("confirmWorkerTransferIntake(solicitud.id)");
+    const confirmar = aplicar.indexOf("confirmWorkerTransferIntake(solicitud.id, testigo)");
 
     assert.notEqual(crear, -1);
     assert.notEqual(confirmar, -1);
@@ -235,4 +235,45 @@ test("aceptar lleva el perfil; el cliente nunca manda el id de una transferencia
     // podria apuntar un pedido a una transferencia que no le corresponde.
     assert.match(puente, /profile = null/);
     assert.doesNotMatch(puente, /transferRequestId/);
+});
+
+test("una reserva ajena se reintenta sola al vencer", () => {
+    // El servidor deja retomarla pasados los diez minutos, pero el tiempo no
+    // produce un cambio en el documento: sin un temporizador, la pestaña
+    // abierta espera un evento que no llega y el traspaso queda para la
+    // proxima recarga.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+    const programar = extraer(main, "scheduleHandoverIntakeRetry");
+
+    // Se programa cuando la reserva es de otra sesion...
+    assert.match(
+        aplicar,
+        /if \(!testigo\) \{[\s\S]{0,400}scheduleHandoverIntakeRetry\(\)/
+    );
+    // ...y tambien si no se pudo confirmar despues de crear el perfil.
+    assert.match(
+        aplicar,
+        /No se pudo confirmar el traspaso[\s\S]{0,200}scheduleHandoverIntakeRetry\(\)/
+    );
+
+    // Un solo temporizador, y mas largo que el plazo del servidor: si fuera
+    // mas corto, reintentaria contra una reserva todavia viva.
+    assert.match(programar, /clearTimeout\(handoverIntakeRetryTimer\)/);
+    assert.match(programar, /applyIncomingHandoverTransfers\(pendingHandoverIntakes\)/);
+
+    const plazoCliente = Number(
+        main.match(/HANDOVER_INTAKE_RETRY_MS = (\d+) \* 60 \* 1000/)?.[1]
+    );
+
+    assert.ok(plazoCliente > 10, `el reintento (${plazoCliente} min) debe pasar los 10 del servidor`);
+});
+
+test("el testigo de la reserva viaja a confirmar y a soltar", () => {
+    // Sin el, una pestaña del mismo supervisor confirmaba o soltaba la reserva
+    // que habia tomado la otra.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+
+    assert.match(aplicar, /const testigo = await claimWorkerTransferIntake\(solicitud\.id\)/);
+    assert.match(aplicar, /confirmWorkerTransferIntake\(solicitud\.id, testigo\)/);
+    assert.match(aplicar, /releaseWorkerTransferIntake\(solicitud\.id, testigo\)/);
 });

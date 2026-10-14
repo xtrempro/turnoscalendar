@@ -151,7 +151,10 @@ export async function claimWorkerTransferIntake(requestId) {
         requestId
     });
 
-    return result?.claimed === true;
+    // El testigo identifica ESTA toma, no a la cuenta: dos pestañas del mismo
+    // supervisor comparten uid, y sin el, la que perdio su reserva por
+    // vencimiento podria confirmar o soltar la que tomo la otra.
+    return result?.claimed === true ? String(result.claimToken || "") : "";
 }
 
 /**
@@ -167,21 +170,23 @@ export async function claimWorkerTransferIntake(requestId) {
  * sesion que se corta antes de llegar aqui no deja el traspaso consumido: otra
  * lo vuelve a tomar pasado el plazo.
  */
-export async function confirmWorkerTransferIntake(requestId) {
+export async function confirmWorkerTransferIntake(requestId, claimToken = "") {
     const workspace = activeWorkspaceOrThrow();
     const result = await callFunction("confirmWorkerTransferIntake", {
         workspaceId: workspace.id,
-        requestId
+        requestId,
+        claimToken
     });
 
     return result?.confirmed === true;
 }
 
-export async function releaseWorkerTransferIntake(requestId) {
+export async function releaseWorkerTransferIntake(requestId, claimToken = "") {
     const workspace = activeWorkspaceOrThrow();
     const result = await callFunction("releaseWorkerTransferIntake", {
         workspaceId: workspace.id,
-        requestId
+        requestId,
+        claimToken
     });
 
     return result?.released === true;

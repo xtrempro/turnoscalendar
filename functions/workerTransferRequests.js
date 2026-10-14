@@ -802,6 +802,13 @@ async function claimWorkerTransferApplicationHandler(request, dependencies) {
 // corto no deje a nadie esperando mucho rato.
 const INTAKE_CLAIM_TTL_MS = 10 * 60 * 1000;
 
+// Un testigo por TOMA, no por cuenta: dos pestañas del mismo supervisor
+// comparten uid, asi que con el uid solo, la pestaña cuya reserva vencio podia
+// confirmar -o soltar- la reserva que tomo la otra.
+function defaultClaimTokenFactory() {
+  return `clm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function intakeClaimIsFresh(solicitud, now) {
   const tomada = Number(solicitud && solicitud.targetIntakeClaimedAtMs) || 0;
 
@@ -821,7 +828,8 @@ async function claimWorkerTransferIntakeHandler(request, dependencies) {
     db,
     HttpsError,
     serverTimestamp,
-    requireWorkspaceProfileManager
+    requireWorkspaceProfileManager,
+    claimTokenFactory = defaultClaimTokenFactory
   } = dependencies;
   const { uid, workspaceId, requestId } =
     validateBasePayload(request, HttpsError);
@@ -878,15 +886,17 @@ async function claimWorkerTransferIntakeHandler(request, dependencies) {
     }
 
     const now = serverTimestamp();
+    const claimToken = claimTokenFactory();
 
     transaction.update(ref, {
       targetIntakeClaimedAt: now,
       targetIntakeClaimedAtMs: Date.now(),
       targetIntakeClaimedByUid: uid,
+      targetIntakeClaimToken: claimToken,
       updatedAt: now
     });
 
-    return { ok: true, requestId, claimed: true };
+    return { ok: true, requestId, claimed: true, claimToken };
   });
 }
 
@@ -905,6 +915,7 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
   } = dependencies;
   const { uid, workspaceId, requestId } =
     validateBasePayload(request, HttpsError);
+  const claimToken = cleanText(request.data && request.data.claimToken, 80);
 
   if (!requestId) {
     callableError(
@@ -939,9 +950,15 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
       return { ok: true, requestId, confirmed: false };
     }
 
-    // Solo quien lo tiene reservado. Si su reserva vencio y otra sesion la
-    // tomo, confirma esa otra: es la que esta creando el perfil ahora.
-    if (solicitud.targetIntakeClaimedByUid !== uid) {
+    // Solo quien tiene ESTA reserva. El uid no alcanza: dos pestañas del mismo
+    // supervisor lo comparten, y la que perdio su reserva por vencimiento
+    // confirmaria la que tomo la otra -dando por creado un perfil que esa
+    // todavia esta creando-.
+    if (
+      !claimToken ||
+      solicitud.targetIntakeClaimToken !== claimToken ||
+      solicitud.targetIntakeClaimedByUid !== uid
+    ) {
       return { ok: true, requestId, confirmed: false };
     }
 
@@ -981,6 +998,7 @@ async function releaseWorkerTransferIntakeHandler(request, dependencies) {
   } = dependencies;
   const { uid, workspaceId, requestId } =
     validateBasePayload(request, HttpsError);
+  const claimToken = cleanText(request.data && request.data.claimToken, 80);
 
   if (!requestId) {
     callableError(
@@ -1013,8 +1031,13 @@ async function releaseWorkerTransferIntakeHandler(request, dependencies) {
 
     // Suelta la RESERVA, no la marca definitiva: un traspaso ya confirmado
     // tiene su perfil creado y devolverlo a la cola lo crearia dos veces.
+    //
+    // Y suelta SOLO la suya: con el uid a secas, una pestaña cuya reserva
+    // vencio devolvia a la cola la que otra estaba aplicando en ese momento.
     if (
       solicitud.targetIntakeAppliedAt ||
+      !claimToken ||
+      solicitud.targetIntakeClaimToken !== claimToken ||
       solicitud.targetIntakeClaimedByUid !== uid
     ) {
       return { ok: true, requestId, released: false };

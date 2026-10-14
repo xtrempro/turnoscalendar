@@ -277,12 +277,27 @@ async function cancelWorkerHandoverRequestHandler(request, {
     throw new HttpsError("failed-precondition", "Ese pedido ya fue resuelto.");
   }
 
-  await ref.set({
-    status: CANCELED,
-    resolvedAt: new Date(),
-    resolvedByUid: uid,
-    updatedAt: new Date()
-  }, { merge: true });
+  // En transaccion, como aceptar y rechazar: entre leer y escribir, la otra
+  // unidad pudo aceptarlo. Retirarlo entonces dejaria el pedido "cancelado"
+  // con la transferencia ya creada y el perfil creandose al otro lado.
+  await db.runTransaction(async transaction => {
+    const actual = await transaction.get(ref);
+    const vigente = actual.exists ? actual.data() || {} : {};
+
+    if (String(vigente.status || "") !== PENDING) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Ese pedido ya fue resuelto."
+      );
+    }
+
+    transaction.set(ref, {
+      status: CANCELED,
+      resolvedAt: new Date(),
+      resolvedByUid: uid,
+      updatedAt: new Date()
+    }, { merge: true });
+  });
 
   return { status: CANCELED };
 }
@@ -354,14 +369,29 @@ async function resolveWorkerHandoverRequestHandler(request, {
   const ahora = new Date();
 
   if (!approve) {
-    await ref.set({
-      status: REJECTED,
-      rejectReason: cleanText(data.rejectReason, 300),
-      transferRequestId: "",
-      resolvedAt: ahora,
-      resolvedByUid: uid,
-      updatedAt: ahora
-    }, { merge: true });
+    // Tambien en transaccion: un rechazo que llegue justo despues de una
+    // aceptacion escribiria "rechazado" encima, con la transferencia ya creada
+    // y el perfil creandose al otro lado.
+    await db.runTransaction(async transaction => {
+      const actual = await transaction.get(ref);
+      const vigente = actual.exists ? actual.data() || {} : {};
+
+      if (!requestIsUsable(vigente, Date.now())) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Ese pedido ya fue resuelto o caduco."
+        );
+      }
+
+      transaction.set(ref, {
+        status: REJECTED,
+        rejectReason: cleanText(data.rejectReason, 300),
+        transferRequestId: "",
+        resolvedAt: ahora,
+        resolvedByUid: uid,
+        updatedAt: ahora
+      }, { merge: true });
+    });
 
     return { status: REJECTED, requestId };
   }
@@ -406,68 +436,18 @@ async function resolveWorkerHandoverRequestHandler(request, {
     }
   }
 
-  const pedida = cleanText(solicitud.startDate, 10);
-
-  if (!validISODate(pedida)) {
-    throw new HttpsError(
-      "failed-precondition",
-      "El pedido no trae la fecha en que comienza."
-    );
-  }
-
-  // La ultima palabra la tiene esta unidad, que es la que entrega: el pedido
-  // puede ser de antes de que aqui decidieran hasta que dia trabajaba, y
-  // aceptarlo tal cual borraria dias que ya habian validado.
-  //
-  // Solo puede CORRERLA HACIA ADELANTE. Adelantarla seria quitarle dias a la
-  // otra unidad sin que ellos lo pidieran, y ellos ya no vuelven a responder:
-  // aceptar aplica el traspaso.
+  // Lo que sigue se vuelve a comprobar DENTRO de la transaccion, contra el
+  // pedido que este en ese momento. Esto es solo para fallar temprano y con un
+  // mensaje claro: la unidad que pide puede corregir fecha y rotativa mientras
+  // su pedido sigue pendiente, y el que mande es el ultimo.
   const elegida = cleanText(data.startDate, 10);
 
   if (elegida && !validISODate(elegida)) {
     throw new HttpsError("invalid-argument", "La fecha elegida no es valida.");
   }
 
-  if (elegida && elegida < pedida) {
-    throw new HttpsError(
-      "failed-precondition",
-      `El pedido es desde el ${pedida}: solo puedes aceptarlo desde ese dia o uno posterior.`
-    );
-  }
-
-  const startDate = elegida || pedida;
-
   const transferRequestId = transferIdFactory();
   const transferRef = db.collection(transferCollection).doc(transferRequestId);
-  // Nace aceptada y no pendiente a proposito: si algo fallara despues, lo peor
-  // que puede pasar es que el otro lado tenga que crear el perfil -que es lo
-  // que iba a hacer igual-. Dejarla pendiente, en cambio, le pediria aceptar
-  // una transferencia que el mismo pidio.
-  const transferencia = {
-    sourceWorkspaceId: workspaceId,
-    sourceWorkspaceName: cleanText(data.workspaceName, 160),
-    targetWorkspaceId: cleanText(solicitud.requestingWorkspaceId, 160),
-    targetWorkspaceName: cleanText(solicitud.requestingWorkspaceName, 160),
-    // Sin enlace: lo que autorizo el pedido fue compartir establecimiento.
-    linkId: "",
-    profileName: profile.name,
-    profile,
-    startDate,
-    // La rotativa que eligio quien pidio. Viaja con la transferencia para que
-    // su aplicacion cree el perfil sin preguntarle nada.
-    targetRotation: {
-      type: cleanText(solicitud.rotationType, 40),
-      firstTurn: cleanText(solicitud.rotationFirstTurn, 40),
-      start: startDate
-    },
-    handoverRequestId: requestId,
-    requestedByUid: uid,
-    requestedByName: cleanText(data.resolvedByName, 160),
-    status: ACCEPTED,
-    targetProfileName: profile.name,
-    createdAt: ahora,
-    updatedAt: ahora
-  };
 
   // Crear la transferencia y cerrar el pedido van JUNTAS o no van.
   //
@@ -476,16 +456,17 @@ async function resolveWorkerHandoverRequestHandler(request, {
   // como un perfil que crear. Y si fallaba el cierre, quedaba la transferencia
   // viva con el pedido todavia pendiente, listo para aceptarse de nuevo.
   //
-  // El estado del pedido se vuelve a leer DENTRO de la transaccion: lo leido al
-  // principio pudo quedar viejo mientras se comprobaban los permisos.
-  const yaResuelta = await db.runTransaction(async transaction => {
+  // Lo que viaja se arma aqui adentro, con el pedido recien leido: armarlo
+  // afuera mandaba la fecha y la rotativa de cuando se abrio la tarjeta, no las
+  // que la otra unidad tiene escritas al aceptar.
+  const resuelta = await db.runTransaction(async transaction => {
     const actual = await transaction.get(ref);
     const vigente = actual.exists ? actual.data() || {} : {};
 
     // Alguien gano la carrera: su transferencia es la buena y esta ya se
     // aplico (o se esta aplicando). No se crea una segunda.
     if (vigente.status === ACCEPTED && vigente.transferRequestId) {
-      return cleanText(vigente.transferRequestId, 220);
+      return { yaResuelta: cleanText(vigente.transferRequestId, 220) };
     }
 
     if (!requestIsUsable(vigente, Date.now())) {
@@ -494,6 +475,69 @@ async function resolveWorkerHandoverRequestHandler(request, {
         "Ese pedido ya fue resuelto o caduco."
       );
     }
+
+    // La persona tambien se comprueba contra el pedido vigente: corregir un
+    // pedido no cambia de quien es, pero esto no depende de eso.
+    if (normalizeRut(profile.rut) !== normalizeRut(vigente.rut)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El trabajador que envias no es el del pedido."
+      );
+    }
+
+    const pedida = cleanText(vigente.startDate, 10);
+
+    if (!validISODate(pedida)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "El pedido no trae la fecha en que comienza."
+      );
+    }
+
+    // La ultima palabra sobre la fecha la tiene esta unidad, que es la que
+    // entrega: el pedido puede ser de antes de que aqui decidieran hasta que
+    // dia trabajaba, y aceptarlo tal cual borraria dias ya validados.
+    //
+    // Solo puede CORRERLA HACIA ADELANTE. Adelantarla seria quitarle dias a la
+    // otra unidad sin que ellos lo pidieran, y ellos ya no vuelven a responder:
+    // aceptar aplica el traspaso.
+    if (elegida && elegida < pedida) {
+      throw new HttpsError(
+        "failed-precondition",
+        `El pedido es desde el ${pedida}: solo puedes aceptarlo desde ese dia o uno posterior.`
+      );
+    }
+
+    const startDate = elegida || pedida;
+    // Nace aceptada y no pendiente a proposito: si algo fallara despues, lo
+    // peor que puede pasar es que el otro lado tenga que crear el perfil -que
+    // es lo que iba a hacer igual-. Dejarla pendiente, en cambio, le pediria
+    // aceptar una transferencia que el mismo pidio.
+    const transferencia = {
+      sourceWorkspaceId: workspaceId,
+      sourceWorkspaceName: cleanText(data.workspaceName, 160),
+      targetWorkspaceId: cleanText(vigente.requestingWorkspaceId, 160),
+      targetWorkspaceName: cleanText(vigente.requestingWorkspaceName, 160),
+      // Sin enlace: lo que autorizo el pedido fue compartir establecimiento.
+      linkId: "",
+      profileName: profile.name,
+      profile,
+      startDate,
+      // La rotativa que eligio quien pidio. Viaja con la transferencia para que
+      // su aplicacion cree el perfil sin preguntarle nada.
+      targetRotation: {
+        type: cleanText(vigente.rotationType, 40),
+        firstTurn: cleanText(vigente.rotationFirstTurn, 40),
+        start: startDate
+      },
+      handoverRequestId: requestId,
+      requestedByUid: uid,
+      requestedByName: cleanText(data.resolvedByName, 160),
+      status: ACCEPTED,
+      targetProfileName: profile.name,
+      createdAt: ahora,
+      updatedAt: ahora
+    };
 
     transaction.set(transferRef, transferencia);
     transaction.set(ref, {
@@ -508,18 +552,20 @@ async function resolveWorkerHandoverRequestHandler(request, {
       updatedAt: ahora
     }, { merge: true });
 
-    return "";
+    return { transferencia, startDate };
   });
 
-  if (yaResuelta) {
+  if (resuelta.yaResuelta) {
     return {
       status: ACCEPTED,
       requestId,
-      transferRequestId: yaResuelta,
-      startDate,
+      transferRequestId: resuelta.yaResuelta,
+      startDate: "",
       created: false
     };
   }
+
+  const { transferencia, startDate } = resuelta;
 
   await applyTransferResponse({
     db,

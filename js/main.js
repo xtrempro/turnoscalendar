@@ -11817,6 +11817,27 @@ let pendingHandoverReactivation = null;
 // cerrarlo" dependia de recargar la unidad.
 let pendingHandoverIntakes = [];
 
+// Reintento por TIEMPO, no por evento.
+//
+// Una reserva ajena vence sola en el servidor, pero el tiempo no produce un
+// cambio en el documento y el oyente no vuelve a hablar: sin esto, la pestaña
+// abierta se quedaba esperando un evento que no iba a llegar y el traspaso
+// esperaba a una recarga. Un solo temporizador, siempre el ultimo.
+const HANDOVER_INTAKE_RETRY_MS = 11 * 60 * 1000;
+let handoverIntakeRetryTimer = null;
+
+function scheduleHandoverIntakeRetry(delay = HANDOVER_INTAKE_RETRY_MS) {
+    clearTimeout(handoverIntakeRetryTimer);
+
+    handoverIntakeRetryTimer = setTimeout(() => {
+        handoverIntakeRetryTimer = null;
+
+        if (!pendingHandoverIntakes.length) return;
+
+        void applyIncomingHandoverTransfers(pendingHandoverIntakes);
+    }, delay);
+}
+
 function retryHandoverIntakes() {
     if (!pendingHandoverIntakes.length) return;
 
@@ -11859,8 +11880,17 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
 
         try {
             // Solo una sesion lo crea: dos pestañas abiertas crearian dos
-            // perfiles de la misma persona.
-            if (!await claimWorkerTransferIntake(solicitud.id)) continue;
+            // perfiles de la misma persona. La reserva vence, asi que si esta
+            // sesion no llega a crear el perfil, otra lo retoma.
+            const testigo = await claimWorkerTransferIntake(solicitud.id);
+
+            if (!testigo) {
+                // La tiene otra sesion. Se vuelve a intentar cuando venza, por
+                // si esa se corto: el tiempo no genera un evento del servidor y
+                // sin esto habria que recargar.
+                scheduleHandoverIntakeRetry();
+                continue;
+            }
 
             try {
                 if (!existente) {
@@ -11872,18 +11902,22 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
                 // Devolverlo a la cola antes de rendirse: si quedara tomado,
                 // el traspaso estaria consumido para siempre y la persona se
                 // quedaria sin perfil sin que nadie vuelva a intentarlo.
-                await releaseWorkerTransferIntake(solicitud.id).catch(fallo => {
-                    console.warn("No se pudo liberar el traspaso.", fallo);
-                });
+                await releaseWorkerTransferIntake(solicitud.id, testigo)
+                    .catch(fallo => {
+                        console.warn("No se pudo liberar el traspaso.", fallo);
+                    });
                 throw error;
             }
 
             // El perfil ya existe: recien ahora el traspaso esta aplicado. Si
             // esto falla, la reserva vence sola y otra sesion lo retoma: ahi
             // encontrara el perfil ya creado y solo confirmara.
-            await confirmWorkerTransferIntake(solicitud.id).catch(fallo => {
-                console.warn("No se pudo confirmar el traspaso.", fallo);
-            });
+            await confirmWorkerTransferIntake(solicitud.id, testigo)
+                .catch(fallo => {
+                    console.warn("No se pudo confirmar el traspaso.", fallo);
+                    // Si no se confirmo, la reserva vence y hay que volver.
+                    scheduleHandoverIntakeRetry();
+                });
 
             noticeHandoverApplied(solicitud, nombre);
         } catch (error) {
