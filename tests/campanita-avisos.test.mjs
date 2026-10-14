@@ -102,7 +102,9 @@ test("un aviso creado dentro del refresco no se llama a si mismo", () => {
 
 test("el recuadro sigue el tema claro y el oscuro", () => {
     // Con colores fijos, en tema oscuro quedaria un recuadro claro con texto
-    // oscuro encima del fondo oscuro.
+    // oscuro encima del fondo oscuro. Le paso lo mismo al aviso del RUT, que
+    // hoy ya no es una tarjeta sino un cuadro de dialogo: esos toman el tema
+    // de las variables y por eso no necesitan una regla aparte.
     assert.match(estilos, /\.bell-panel \{[\s\S]{0,400}var\(--panel/);
-    assert.match(estilos, /body\.theme-dark \.profile-rut-notice/);
+    assert.match(estilos, /\.app-dialog \{[\s\S]{0,600}var\(--panel\)/);
 });

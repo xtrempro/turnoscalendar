@@ -1246,21 +1246,19 @@ function profileRutLookupAllowed() {
         !isPracticeWorkspace(getActiveWorkspace());
 }
 
-function hideProfileRutNotice() {
+function forgetRutLookup() {
     rutLookupState = { rut: "", unidades: [] };
-
-    if (DOM.profileRutNotice) {
-        DOM.profileRutNotice.hidden = true;
-    }
 }
 
-function renderProfileRutNotice() {
-    if (!DOM.profileRutNotice || !DOM.profileRutNoticeText) return;
-
-    if (!rutLookupState.unidades.length) {
-        DOM.profileRutNotice.hidden = true;
-        return;
-    }
+// El hallazgo se avisa en un cuadro y no en una tarjeta dentro del formulario:
+// ahi se perdia entre los campos, y la decision -traer su informacion o
+// escribirla de nuevo- conviene tomarla antes de seguir llenando.
+//
+// Aparece UNA vez por RUT: escribir en el campo borra lo consultado, asi que
+// vuelve a salir cuando se termina de escribir otro RUT (o el mismo de nuevo),
+// y no cada vez que se pasa por el campo.
+async function announceRutInEstablishment() {
+    if (!rutLookupState.unidades.length) return;
 
     // "Inactivo" alla no es un problema, es la mejor senal: quiere decir que
     // ya se fue de esa unidad y que sus saldos quedaron ahi esperando. Vale
@@ -1274,14 +1272,24 @@ function renderProfileRutNotice() {
                 : nombre;
         })
         .join(", ");
-    // No hay estado de "ya pedido" en esta tarjeta: al enviar el pedido el
+    // No hay estado de "ya pedido" en este cuadro: al enviar el pedido el
     // formulario se descarta entero, asi que nunca se vuelve a ver con el
     // pedido en pie. El seguimiento vive en el menu Solicitudes.
-    DOM.profileRutNoticeText.textContent =
-        `Este RUT ya está registrado en ${nombres}, del mismo establecimiento. ` +
-        "Puedes pedir el traspaso de su información o ingresarla de cero.";
+    const pedir = await showConfirm(
+        `Este RUT ya está registrado en ${nombres}, del mismo establecimiento.\n\n` +
+        "Puedes pedir el traspaso de su información, que trae sus datos y sus " +
+        "saldos de vacaciones, o ingresarla de cero.",
+        {
+            title: "Ese RUT ya está en el establecimiento",
+            tone: "warning",
+            confirmText: "Pedir el traspaso de su información",
+            cancelText: "Ingresar desde cero"
+        }
+    );
 
-    DOM.profileRutNotice.hidden = false;
+    if (!pedir) return;
+
+    await askWorkerHandover();
 }
 
 async function checkRutInEstablishment() {
@@ -1290,23 +1298,28 @@ async function checkRutInEstablishment() {
     const rut = String(DOM.profileRutInput.value || "").trim();
 
     if (!rut || getRutValidationMessage(rut)) {
-        hideProfileRutNotice();
+        forgetRutLookup();
         return;
     }
 
-    if (rutLookupState.rut === rut) {
-        renderProfileRutNotice();
-        return;
-    }
+    // Ya se consulto y ya se aviso por este RUT: pasar de nuevo por el campo no
+    // vuelve a preguntar lo mismo.
+    if (rutLookupState.rut === rut) return;
 
     try {
         const { unidades } = await findWorkerInEstablishment(rut);
 
-        // Mientras respondia el servidor pudo cambiar lo que hay escrito.
-        if (String(DOM.profileRutInput.value || "").trim() !== rut) return;
+        // Mientras respondia el servidor pudo cambiar lo que hay escrito, o
+        // haberse cerrado el formulario.
+        if (
+            !profileRutLookupAllowed() ||
+            String(DOM.profileRutInput.value || "").trim() !== rut
+        ) {
+            return;
+        }
 
         rutLookupState = { rut, unidades };
-        renderProfileRutNotice();
+        await announceRutInEstablishment();
     } catch (error) {
         // Sin aviso en pantalla: que esta ayuda falle no debe estorbar a
         // quien solo quiere ingresar a una persona.
@@ -1473,7 +1486,7 @@ async function requestHandoverFromUnits(unidades, rut, { discardDraft = false } 
         // ya no hay que crear: lo va a traer el traspaso, con sus datos y sus
         // saldos. Lo unico que queda en pie es el pedido.
         if (discardDraft) {
-            hideProfileRutNotice();
+            forgetRutLookup();
             discardProfileDraftChangesBeforeLeaving();
         }
         await showAlert(
@@ -7075,7 +7088,7 @@ function renderDashboardState() {
     DOM.profileEmailInput.value = data.email || "";
     syncEmailValidity(false);
     hideProfileEmailHint();
-    hideProfileRutNotice();
+    forgetRutLookup();
     DOM.profileRutInput.value = data.rut || "";
     syncRutValidity(false);
     DOM.profilePhoneInput.value = data.phone || "";
@@ -16171,7 +16184,7 @@ function bindProfileForm() {
         DOM.profileRutInput.value = formatted;
         profileDraft.rut = formatted;
         syncRutValidity(false);
-        hideProfileRutNotice();
+        forgetRutLookup();
     };
 
     DOM.profileRutInput.onblur = () => {
@@ -16179,10 +16192,6 @@ function bindProfileForm() {
         syncRutValidity(true);
         checkRutInEstablishment();
     };
-
-    if (DOM.profileRutHandoverBtn) {
-        DOM.profileRutHandoverBtn.onclick = askWorkerHandover;
-    }
 
     DOM.profilePhoneInput.oninput = () => {
         if (!isProfileEditing()) return;

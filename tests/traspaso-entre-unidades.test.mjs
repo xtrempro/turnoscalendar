@@ -65,7 +65,7 @@ test("enviar el pedido descarta el perfil a medio escribir", () => {
     const pedir = extraer(main, "askWorkerHandover", 4200);
 
     assert.match(pedir, /discardProfileDraftChangesBeforeLeaving\(\)/);
-    assert.match(pedir, /hideProfileRutNotice\(\)/);
+    assert.match(pedir, /forgetRutLookup\(\)/);
 });
 
 test("aceptar NO vuelve a preguntar la fecha: usa la del pedido", () => {
