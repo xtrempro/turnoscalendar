@@ -427,8 +427,12 @@ test("el aviso de la campanita si se va cuando retiran el pedido", async () => {
 
     const olvidar = extraer(main, "forgetHandoverRequestNotices");
 
-    // Con el MISMO id que se uso al avisar, que lleva cuando se pidio.
-    assert.match(olvidar, /removeBellNotice\(handoverNoticeId\(pedido\)\)/);
+    // Por documento, no por generacion: una sesion que estuvo desconectada
+    // puede tener guardado el aviso de un pedido anterior del mismo documento.
+    assert.match(
+        olvidar,
+        /removeBellNoticesByPrefix\(`pedido-traspaso:\$\{pedido\.id\}:`\)/
+    );
 
     // Y lo llama el oyente: la funcion sola no quita ningun aviso.
     assert.match(

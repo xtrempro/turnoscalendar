@@ -526,7 +526,6 @@ import {
 import {
     addBellNotice,
     initNotificationsBell,
-    removeBellNotice,
     removeBellNoticesByPrefix
 } from "./notificationsBell.js";
 import { initPendingLeaveBlinkSync } from "./pendingLeaveBlinkSync.js";
@@ -12362,7 +12361,11 @@ function noticeRejectedHandovers(rechazados = []) {
 // aviso decia "acéptalo o recházalo" y eso ya no se puede hacer.
 function forgetHandoverRequestNotices(resueltos = []) {
     for (const pedido of resueltos) {
-        removeBellNotice(handoverNoticeId(pedido));
+        // TODOS los de ese documento, no solo el de esta generacion. Si la
+        // sesion estuvo desconectada mientras se pidio de nuevo y se retiro,
+        // vuelve viendo solo la ultima: quitando el id exacto, el aviso de la
+        // anterior se quedaba invitando a responder algo que ya no esta.
+        removeBellNoticesByPrefix(`pedido-traspaso:${pedido.id}:`);
     }
 }
 

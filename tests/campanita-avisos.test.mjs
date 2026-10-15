@@ -321,7 +321,8 @@ test("un pedido nuevo en el mismo documento suena como nuevo", () => {
     const olvidar = extraer(principal, "forgetHandoverRequestNotices");
 
     assert.match(avisar, /const avisoId = handoverNoticeId\(pedido\)/);
-    assert.match(olvidar, /removeBellNotice\(handoverNoticeId\(pedido\)\)/);
+    // Por prefijo, no por generacion: ver la prueba de mas abajo.
+    assert.match(olvidar, /removeBellNoticesByPrefix\(`pedido-traspaso:/);
 });
 
 test("un pedido nuevo deja UN aviso, no dos del mismo documento", async () => {
@@ -393,4 +394,43 @@ test("el aviso de entrada y el de rechazo sueltan sus generaciones viejas", () =
         rechazo,
         /removeBellNoticesByPrefix\(`traspaso-rechazado:\$\{pedido\.id\}:`, avisoId\)/
     );
+});
+
+test("cuando el documento deja de admitir respuesta, se van TODOS sus avisos", () => {
+    // La sesion estuvo desconectada mientras se pidio de nuevo y se retiro:
+    // vuelve viendo solo la ultima generacion. Quitando el id exacto, el aviso
+    // de la anterior se quedaba invitando a responder algo que ya no esta.
+    bell.clearBellNotices();
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:111",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 06-10-2026."
+    });
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:222",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 20-11-2026."
+    });
+    bell.addBellNotice({ id: "pedido-traspaso:otro-doc:111", title: "Otro" });
+
+    // Sin conservar ninguna: el documento ya no admite respuesta.
+    assert.equal(
+        bell.removeBellNoticesByPrefix("pedido-traspaso:whr_a_b_1:"),
+        2
+    );
+    assert.deepEqual(
+        bell.getBellNotices().map(item => item.id),
+        ["pedido-traspaso:otro-doc:111"]
+    );
+});
+
+test("retirar un pedido suelta el documento entero, no una generacion", () => {
+    const olvidar = extraer(principal, "forgetHandoverRequestNotices");
+
+    assert.match(
+        olvidar,
+        /removeBellNoticesByPrefix\(`pedido-traspaso:\$\{pedido\.id\}:`\)/
+    );
+    // Y sin conservar ninguna: ya no hay nada que responder ahi.
+    assert.doesNotMatch(olvidar, /avisoId/);
 });
