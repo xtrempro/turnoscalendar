@@ -19,6 +19,29 @@ import { getActiveWorkspace } from "./workspaces.js";
 
 const COLLECTION = "workerHandoverRequests";
 
+// Milisegundos de una marca de Firestore, o 0 si no hay.
+function millisFrom(value) {
+    const date = value?.toDate?.() || (value ? new Date(value) : null);
+
+    return date && !Number.isNaN(date.getTime()) ? date.getTime() : 0;
+}
+
+/**
+ * Un pedido que todavia se puede responder.
+ *
+ * Es la MISMA regla del servidor (requestIsUsable en
+ * functions/workerHandoverRequests.js): pendiente y sin caducar. Mirar solo el
+ * estado hacia que la campanita invitara a aceptar pedidos que el servidor ya
+ * no deja resolver.
+ */
+export function handoverRequestIsUsable(pedido, ahora = Date.now()) {
+    if (String(pedido?.status || "") !== "pending") return false;
+
+    const expira = millisFrom(pedido?.expiresAt);
+
+    return !expira || expira > ahora;
+}
+
 async function callFunction(name, payload) {
     const { functions, functionsModule } = await getFirebaseServices();
     const callable = functionsModule.httpsCallable(functions, name);
@@ -206,7 +229,7 @@ export async function watchIncomingHandoverRequests(workspace, onPending) {
             // Los pendientes para avisar, y los retirados para quitar el aviso
             // que ya no manda a ninguna parte.
             onPending(
-                pedidos.filter(item => item.status === "pending"),
+                pedidos.filter(item => handoverRequestIsUsable(item)),
                 pedidos.filter(item => item.status === "canceled")
             );
         },

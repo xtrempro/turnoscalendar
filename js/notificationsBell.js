@@ -80,24 +80,47 @@ export function getBellNotices() {
 
 // El id evita repetir el mismo aviso: la transferencia se aplica una vez, pero
 // el oyente puede volver a dispararse antes de que el estado se asiente.
+//
+// Y si lo que hay que decir CAMBIO -el pedido se corrigio, o uno nuevo reuso el
+// mismo documento-, el aviso se reescribe en vez de quedarse con el texto
+// viejo: un aviso que miente es peor que no tenerlo.
 function pushNotice({ id, title, detail = "" }) {
     const clave = String(id || "").trim();
 
     if (!clave) return false;
 
     const previos = getBellNotices();
+    const anterior = previos.find(item => item?.id === clave);
+    const aviso = {
+        id: clave,
+        title: String(title || ""),
+        detail: String(detail || ""),
+        createdAt: new Date().toISOString()
+    };
 
-    if (previos.some(item => item?.id === clave)) return false;
+    if (anterior) {
+        if (
+            anterior.title === aviso.title &&
+            anterior.detail === aviso.detail
+        ) {
+            return false;
+        }
 
-    setJSON(NOTICES_KEY, [
-        {
-            id: clave,
-            title: String(title || ""),
-            detail: String(detail || ""),
-            createdAt: new Date().toISOString()
-        },
-        ...previos
-    ].slice(0, MAX_NOTICES));
+        setJSON(
+            NOTICES_KEY,
+            previos.map(item => (
+                item?.id === clave
+                    // Conserva CUANDO llego: lo que cambio es lo que dice, no
+                    // el momento en que esto empezo a esperar respuesta.
+                    ? { ...aviso, createdAt: item.createdAt || aviso.createdAt }
+                    : item
+            ))
+        );
+
+        return true;
+    }
+
+    setJSON(NOTICES_KEY, [aviso, ...previos].slice(0, MAX_NOTICES));
 
     return true;
 }

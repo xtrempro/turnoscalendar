@@ -394,7 +394,7 @@ test("un pedido retirado queda en Anuladas, no se borra de la vista", async () =
 
     assert.match(
         cargar,
-        /\["pending", "accepted", "rejected", "canceled"\]/
+        /\["pending", "accepted", "rejected", "canceled", "expired"\]/
     );
 
     // Y la tarjeta dice quien lo retiro, distinto para cada lado.
@@ -417,12 +417,13 @@ test("el aviso de la campanita si se va cuando retiran el pedido", async () => {
     );
     const observar = extraer(traspasos, "watchIncomingHandoverRequests");
 
-    assert.match(observar, /item\.status === "pending"/);
+    assert.match(observar, /handoverRequestIsUsable\(item\)/);
     assert.match(observar, /item\.status === "canceled"/);
 
     const olvidar = extraer(main, "forgetHandoverRequestNotices");
 
-    assert.match(olvidar, /removeBellNotice\(`pedido-traspaso:\$\{pedido\.id\}`\)/);
+    // Con el MISMO id que se uso al avisar, que lleva cuando se pidio.
+    assert.match(olvidar, /removeBellNotice\(handoverNoticeId\(pedido\)\)/);
 
     // Y lo llama el oyente: la funcion sola no quita ningun aviso.
     assert.match(
@@ -467,4 +468,36 @@ test("y la tarjeta de Solicitudes muestra ese motivo", async () => {
     assert.match(panel, /String\(item\.rejectReason \|\| ""\)\.trim\(\)/);
     // Y se pregunta al rechazar.
     assert.match(panel, /¿Por qué rechazas el pedido de/);
+});
+
+test("un pedido caducado no se ofrece para responder", async () => {
+    // El servidor ya no deja resolverlo: mostrarlo como pendiente invitaba a
+    // apretar Aceptar para recibir un error.
+    const panel = await (await import("node:fs/promises")).readFile(
+        new URL("../js/workerRequests.js", import.meta.url),
+        "utf8"
+    );
+    const cargar = extraer(panel, "getWorkerHandoverPanelRequests");
+
+    assert.match(cargar, /!handoverRequestIsUsable\(item\)/);
+    assert.match(cargar, /status: caducado \? "expired" : item\.status/);
+
+    const nota = extraer(panel, "handoverNote");
+
+    assert.match(nota, /caducó sin respuesta/);
+});
+
+test("aceptar con una fecha anterior a su salida dice lo que se pierde", async () => {
+    // Quien entrega puede aceptar desde la fecha pedida aunque sea anterior a
+    // su ultimo dia: ahi SI se vacia calendario, y decir "no cambia nada"
+    // mentia.
+    const aceptar = extraer(main, "startWorkerHandover");
+
+    assert.match(
+        aceptar,
+        /yaInactivo && compareISODate\(acordada, yaInactivo\) <= 0/
+    );
+    assert.match(aceptar, /pierdes lo que tuviera entre el/);
+    // Y el otro caso sigue diciendo que no cambia nada.
+    assert.match(aceptar, /Al aceptar no cambia nada de eso/);
 });

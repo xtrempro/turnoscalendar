@@ -46,6 +46,7 @@ import {
 } from "./rotationUtils.js";
 import {
     cancelWorkerHandoverRequest,
+    handoverRequestIsUsable,
     listWorkerHandoverRequests,
     resolveWorkerHandoverRequest
 } from "./workerHandovers.js";
@@ -1799,7 +1800,7 @@ async function getWorkerHandoverPanelRequests() {
             // vista y desaparecer sin mas deja a alguien preguntandose si lo
             // respondio o se lo imagino. Queda en "Anuladas".
             .filter(item =>
-                ["pending", "accepted", "rejected", "canceled"]
+                ["pending", "accepted", "rejected", "canceled", "expired"]
                     .includes(item.status)
             )
             .map(item => {
@@ -1811,12 +1812,18 @@ async function getWorkerHandoverPanelRequests() {
                     : item.sourceWorkspaceName || "La otra unidad";
                 const rutLegible = formatRut(item.rut) || item.rut;
 
+                // Un pedido que caduco ya no se puede responder: el
+                // servidor lo rechaza. Mostrarlo como pendiente invitaba a
+                // apretar Aceptar para recibir un error.
+                const caducado = item.status === "pending" &&
+                    !handoverRequestIsUsable(item);
+
                 return {
                     kind: recibido ? "worker_handover" : "worker_handover_sent",
                     id: `worker_handover:${item.id}`,
                     handover: item,
                     type: "worker_handover",
-                    status: item.status,
+                    status: caducado ? "expired" : item.status,
                     profile: nombre || `RUT ${rutLegible}`,
                     workerRut: rutLegible,
                     otherWorkspaceName: otra,
@@ -1892,6 +1899,13 @@ function handoverNote(status, recibido, otra, exitDate = "", startDate = "", rej
             ? `No lo aceptaron: "${rejectReason}". Puedes ingresar a la ` +
                 "persona de cero."
             : "No lo aceptaron. Puedes ingresar a la persona de cero.";
+    }
+
+    if (status === "expired") {
+        return recibido
+            ? `El pedido de ${otra} caducó sin respuesta.`
+            : "El pedido caducó sin respuesta. Puedes volver a pedirlo o " +
+                "ingresar a la persona de cero.";
     }
 
     if (status === "canceled") {

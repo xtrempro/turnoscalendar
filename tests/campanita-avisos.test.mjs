@@ -154,10 +154,15 @@ test("hay un oyente de los pedidos que esta unidad debe responder", () => {
     const observar = extraer(traspasos, "watchIncomingHandoverRequests");
 
     assert.match(observar, /where\("sourceWorkspaceId", "==", workspace\.id\)/);
-    // Trae todos los de esta unidad y separa en el cliente: los pendientes
-    // para avisar, y los retirados para quitar el aviso que ya no sirve.
-    assert.match(observar, /item\.status === "pending"/);
+    // Trae todos los de esta unidad y separa en el cliente: los que todavia se
+    // pueden responder, y los retirados para quitar el aviso que ya no sirve.
+    assert.match(observar, /handoverRequestIsUsable\(item\)/);
     assert.match(observar, /item\.status === "canceled"/);
+    // Y "usable" es la MISMA regla del servidor: pendiente y sin caducar.
+    const usable = extraer(traspasos, "handoverRequestIsUsable");
+
+    assert.match(usable, /!== "pending"\) return false/);
+    assert.match(usable, /return !expira \|\| expira > ahora/);
     // Y se suelta al cambiar de unidad.
     assert.match(traspasos, /export function stopWatchingIncomingHandoverRequests/);
     assert.match(principal, /stopWatchingIncomingHandoverRequests\(\);/);
@@ -168,9 +173,9 @@ test("cada pedido pendiente deja un aviso en la campanita", () => {
 
     assert.match(avisar, /addBellNotice\(/);
     // Un id por pedido: el aviso no se repite en cada repintado.
-    assert.match(avisar, /id: `pedido-traspaso:\$\{pedido\.id\}`/);
     // El pedido trae RUT y no nombre, pero esta unidad si puede nombrarla.
     assert.match(avisar, /normalizeRut\(item\.rut\) === rut/);
+    assert.match(avisar, /id: handoverNoticeId\(pedido\)/);
     assert.match(avisar, /requestingWorkspaceName/);
 });
 
@@ -197,4 +202,111 @@ test("quitar un aviso que dejo de ser cierto", () => {
     // Sin el, no se repinta de mas.
     assert.match(quitar, /if \(quedan\.length === previos\.length\) return false;/);
     assert.match(quitar, /scheduleRefresh\(\)/);
+});
+
+// --- Un aviso que cambio tiene que decir lo nuevo (auditoria 2026-10-15) ---
+
+// Los avisos de verdad, sobre un almacenamiento de mentira: comprobar que el
+// codigo "menciona" el reemplazo no habria visto si de verdad reescribe.
+class MemoriaFalsa {
+    constructor() { this.valores = new Map(); }
+    get length() { return this.valores.size; }
+    clear() { this.valores.clear(); }
+    getItem(clave) { return this.valores.has(clave) ? this.valores.get(clave) : null; }
+    key(indice) { return [...this.valores.keys()][indice] ?? null; }
+    removeItem(clave) { this.valores.delete(clave); }
+    setItem(clave, valor) { this.valores.set(clave, String(valor)); }
+}
+
+globalThis.localStorage = new MemoriaFalsa();
+globalThis.window = {
+    dispatchEvent: () => true,
+    addEventListener() {},
+    removeEventListener() {}
+};
+globalThis.CustomEvent = class {
+    constructor(type, init = {}) { this.type = type; this.detail = init.detail; }
+};
+
+const bell = await import("../js/notificationsBell.js");
+
+test("el aviso reescrito dice lo nuevo y conserva cuando llego", async () => {
+    bell.clearBellNotices();
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:111",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 06-10-2026."
+    });
+
+    const [primero] = bell.getBellNotices();
+
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:111",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 20-10-2026."
+    });
+
+    const avisos = bell.getBellNotices();
+
+    assert.equal(avisos.length, 1, "no se duplica");
+    assert.match(avisos[0].detail, /20-10-2026/);
+    assert.equal(avisos[0].createdAt, primero.createdAt, "sigue siendo el mismo");
+});
+
+test("un pedido nuevo en el mismo documento es otro aviso", async () => {
+    bell.clearBellNotices();
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:111",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 06-10-2026."
+    });
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:222",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 20-11-2026."
+    });
+
+    assert.equal(bell.getBellNotices().length, 2);
+});
+
+test("quitar un aviso saca solo ese", async () => {
+    bell.clearBellNotices();
+    bell.addBellNotice({ id: "uno", title: "Uno" });
+    bell.addBellNotice({ id: "dos", title: "Dos" });
+
+    assert.equal(bell.removeBellNotice("uno"), true);
+    assert.deepEqual(bell.getBellNotices().map(item => item.id), ["dos"]);
+    // Y quitar lo que no esta no hace nada.
+    assert.equal(bell.removeBellNotice("uno"), false);
+});
+
+test("un aviso con el mismo id se reescribe si cambio lo que dice", () => {
+    // El documento del pedido se reusa: con el id a secas, el aviso se quedaba
+    // con la fecha del pedido anterior.
+    const empujar = extraer(campanita, "pushNotice");
+
+    assert.match(empujar, /const anterior = previos\.find\(item => item\?\.id === clave\)/);
+    // Si no cambio nada, no se toca ni se repinta.
+    assert.match(
+        empujar,
+        /anterior\.title === aviso\.title &&\s*\n\s*anterior\.detail === aviso\.detail\s*\n\s*\) \{\s*\n\s*return false;/
+    );
+    // Y al reescribir conserva cuando llego.
+    assert.match(empujar, /createdAt: item\.createdAt \|\| aviso\.createdAt/);
+});
+
+test("un pedido nuevo en el mismo documento suena como nuevo", () => {
+    // El id del aviso lleva cuando se pidio: sin eso, el segundo pedido entre
+    // las mismas unidades se tomaba por repetido y no sonaba.
+    const idDelAviso = extraer(principal, "handoverNoticeId");
+
+    assert.match(idDelAviso, /pedido\?\.createdAt/);
+    assert.match(idDelAviso, /`pedido-traspaso:\$\{pedido\?\.id\}:\$\{marca\}`/);
+
+    // Lo usan los dos lados: el que avisa y el que quita el aviso.
+    const avisar = extraer(principal, "noticeHandoverRequests");
+    const olvidar = extraer(principal, "forgetHandoverRequestNotices");
+
+    assert.match(avisar, /id: handoverNoticeId\(pedido\)/);
+    assert.match(olvidar, /removeBellNotice\(handoverNoticeId\(pedido\)\)/);
 });

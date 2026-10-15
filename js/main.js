@@ -11758,7 +11758,19 @@ async function startWorkerHandover(detail) {
     const confirmado = await showConfirm(
         `${targetName} pide el traspaso de ${profile.name}, para que comience ` +
         `allá el ${formatDisplayDate(acordada)}.\n\n` +
-        (yaInactivo
+        // Con el perfil ya inactivo hay DOS historias distintas, y decir
+        // siempre "no cambia nada" era falso en la segunda: si la fecha
+        // acordada queda ANTES de su último día, aceptar vacía esos días que
+        // aquí ya estaban dados por trabajados.
+        (yaInactivo && compareISODate(acordada, yaInactivo) <= 0
+            ? "Aquí ya estaba inactivo, con su último día el " +
+                `${formatDisplayDate(yaInactivo)}. Como el traspaso empieza ` +
+                "antes, al aceptar se vacía su calendario desde esa fecha: " +
+                `pierdes lo que tuviera entre el ${formatDisplayDate(acordada)} ` +
+                `y el ${formatDisplayDate(yaInactivo)}. Sus saldos de ` +
+                "vacaciones pasan a esa unidad y su app se cambia a ella el " +
+                "día en que empieza.\n\n"
+            : yaInactivo
             ? "Aquí ya estaba inactivo: su último día fue el " +
                 `${formatDisplayDate(yaInactivo)}, y su calendario se vació ` +
                 "entonces. Al aceptar no cambia nada de eso: lo que pasa a esa " +
@@ -11810,7 +11822,10 @@ async function startWorkerHandover(detail) {
     );
     await showAlert(
         `${profile.name} pasa a ${targetName} desde el ${formatDisplayDate(acordada)}. ` +
-        (yaInactivo
+        (yaInactivo && compareISODate(acordada, yaInactivo) <= 0
+            ? `Aquí estaba inactivo desde el ${formatDisplayDate(yaInactivo)} ` +
+                "y su calendario se vació desde la fecha del traspaso."
+            : yaInactivo
             ? "Aquí seguía inactivo desde el " +
                 `${formatDisplayDate(yaInactivo)}: lo que pasa a esa unidad ` +
                 "son sus saldos de vacaciones."
@@ -12266,6 +12281,23 @@ function noticeMovedWorkers(pendientes = []) {
 //
 // El pedido trae el RUT y no el nombre -la busqueda que lo origina no devuelve
 // datos de la persona-, pero ESTA unidad si puede nombrarla: el perfil es suyo.
+// El id del aviso lleva CUANDO se pidio, no solo cual es el documento.
+//
+// Un pedido nuevo entre las mismas unidades por la misma persona reusa el
+// documento del anterior -esa es la clave que impide duplicarlos-, asi que con
+// el id a secas el segundo pedido se tomaba por repetido y no sonaba. Con la
+// fecha de creacion, uno nuevo es un aviso nuevo; una correccion del mismo
+// pedido conserva el id y solo reescribe lo que dice.
+function handoverNoticeId(pedido) {
+    const creado = pedido?.createdAt?.toDate?.() ||
+        (pedido?.createdAt ? new Date(pedido.createdAt) : null);
+    const marca = creado && !Number.isNaN(creado.getTime())
+        ? creado.getTime()
+        : "";
+
+    return `pedido-traspaso:${pedido?.id}:${marca}`;
+}
+
 function noticeHandoverRequests(pendientes = []) {
     for (const pedido of pendientes) {
         const rut = normalizeRut(pedido.rut);
@@ -12278,7 +12310,7 @@ function noticeHandoverRequests(pendientes = []) {
         const desde = normalizeStoredStart(pedido.startDate || "");
 
         addBellNotice({
-            id: `pedido-traspaso:${pedido.id}`,
+            id: handoverNoticeId(pedido),
             title: `${unidad} pide el traspaso de ${quien}`,
             detail: desde
                 ? `Comenzaría allá el ${formatDisplayDate(desde)}. ` +
@@ -12316,7 +12348,7 @@ function noticeRejectedHandovers(rechazados = []) {
 // se puede hacer.
 function forgetHandoverRequestNotices(retirados = []) {
     for (const pedido of retirados) {
-        removeBellNotice(`pedido-traspaso:${pedido.id}`);
+        removeBellNotice(handoverNoticeId(pedido));
     }
 }
 
