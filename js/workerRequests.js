@@ -1662,10 +1662,19 @@ export async function refreshWorkerRequestsNavBadge() {
     const transferRequests = await getWorkerTransferPanelRequests();
     const supervisorInviteRequests =
         await getSupervisorInviteRequests();
+    // Las mismas fuentes que lista el panel. Faltaban tres -pedidos de
+    // traspaso, accesos por RUT y avisos de cambio de unidad-, asi que el menu
+    // no anunciaba nada y solo se veian entrando a mirar.
+    const handoverRequests = await getWorkerHandoverPanelRequests();
+    const workerJoinRequests = await getWorkerJoinRequests();
+    const unitChangeNotices = await getWorkerUnitChangeNotices();
     const pending = [
         ...supervisorInviteRequests,
         ...linkRequests,
         ...transferRequests,
+        ...handoverRequests,
+        ...workerJoinRequests,
+        ...unitChangeNotices,
         ...workerRequests,
         ...replacementRequests
     ].filter(request => request.status === "pending");
@@ -1678,16 +1687,27 @@ export async function refreshWorkerRequestsNavBadge() {
 // El pedido guarda el RUT y NO el nombre: la busqueda que lo origina no
 // devuelve datos de la persona. Quien lo recibe si puede nombrarla, porque el
 // perfil es suyo; y quien lo pidio tambien, si ya lo creo mientras esperaba.
-function handoverProfileName(rut) {
+function handoverProfile(rut) {
     const buscado = normalizeRut(rut);
 
-    if (!buscado) return "";
+    if (!buscado) return null;
 
-    const profile = getProfiles().find(item =>
+    return getProfiles().find(item =>
         normalizeRut(item.rut) === buscado
-    );
+    ) || null;
+}
 
-    return profile?.name || "";
+function handoverProfileName(rut) {
+    return handoverProfile(rut)?.name || "";
+}
+
+// Hasta que dia trabajo aqui, si su perfil YA estaba inactivo.
+function handoverExitDate(rut) {
+    const profile = handoverProfile(rut);
+
+    if (!profile || profile.active !== false) return "";
+
+    return String(profile.unitExitDate || "").trim();
 }
 
 async function getWorkerUnitChangeNotices() {
@@ -1798,7 +1818,13 @@ async function getWorkerHandoverPanelRequests() {
                     otherWorkspaceName: otra,
                     startDate: item.startDate || "",
                     rotationLabel: handoverRotationLabel(item),
-                    note: handoverNote(item.status, recibido, otra),
+                    note: handoverNote(
+                        item.status,
+                        recibido,
+                        otra,
+                        recibido ? handoverExitDate(item.rut) : "",
+                        item.startDate || ""
+                    ),
                     createdAt: timestampISO(
                         item.createdAt || item.updatedAt || new Date()
                     )
@@ -1824,16 +1850,28 @@ function handoverRotationLabel(item = {}) {
         : etiqueta;
 }
 
-function handoverNote(status, recibido, otra) {
+function handoverNote(status, recibido, otra, exitDate = "", startDate = "") {
     if (status === "pending") {
         // Aceptar ya no envia una solicitud de vuelta: la fecha y la rotativa
         // vinieron en el pedido, asi que la transferencia queda hecha.
-        return recibido
-            ? "Al aceptar se transfiere: su calendario aquí se vacía desde esa " +
-                "fecha y su perfil queda inactivo. No tendrán que aceptar nada más."
-            : `${otra} todavía no responde. Cuando acepten, el perfil se crea ` +
-                "aquí solo. Si decides ingresar a la persona de cero, retira " +
-                "antes el pedido.";
+        if (!recibido) {
+            return `${otra} todavía no responde. Cuando acepten, el perfil se ` +
+                "crea aquí solo. Si decides ingresar a la persona de cero, " +
+                "retira antes el pedido.";
+        }
+
+        // A quien ya se fue de aqui no se le puede prometer que "quedara
+        // inactivo": lo esta hace rato, y su calendario ya se vacio ese dia.
+        // Decirlo asi hacia dudar de si aceptar deshacia algo.
+        if (exitDate) {
+            return `Aquí ya estaba inactivo: su último día fue el ` +
+                `${formatDate(exitDate)}. Al aceptar pasa a ${otra}` +
+                (startDate ? ` desde el ${formatDate(startDate)}` : "") +
+                ", con sus saldos de vacaciones. No tendrán que aceptar nada más.";
+        }
+
+        return "Al aceptar se transfiere: su calendario aquí se vacía desde esa " +
+            "fecha y su perfil queda inactivo. No tendrán que aceptar nada más.";
     }
 
     if (status === "accepted") {

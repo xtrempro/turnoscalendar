@@ -96,7 +96,15 @@ test("la transferencia llega al menu Solicitudes de la unidad destino", async ()
     const solicitudes = await leer("../js/workerRequests.js");
 
     assert.match(solicitudes, /worker_transfer: "Transferencia de Trabajador"/);
-    assert.match(solicitudes, /const transferRequests = await getWorkerTransferPanelRequests\(\);[\s\S]{0,300}\.\.\.transferRequests,/);
+    // Las dos listas que las muestran: la del panel y la que cuenta el badge.
+    // Sin ventana de caracteres: la lista crece con cada tipo nuevo y medirla
+    // asi hacia fallar la prueba por algo que no se habia roto.
+    assert.match(solicitudes, /const transferRequests = await getWorkerTransferPanelRequests\(\);/);
+    assert.equal(
+        (solicitudes.match(/\.\.\.transferRequests,/g) || []).length,
+        2,
+        "las transferencias van en el panel y en el badge"
+    );
     assert.match(solicitudes, /item\.targetWorkspaceId === activeWorkspace\.id/);
     // En vivo, con el mismo aviso que los enlaces entre unidades.
     assert.match(solicitudes, /collection\(db, "workerTransferRequests"\),\s*firestoreModule\.where\("targetWorkspaceId", "==", workspaceId\)/);

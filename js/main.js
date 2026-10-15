@@ -660,7 +660,9 @@ import {
 import {
     findWorkerInEstablishment,
     requestWorkerHandover,
-    resolveWorkerHandoverRequest
+    resolveWorkerHandoverRequest,
+    stopWatchingIncomingHandoverRequests,
+    watchIncomingHandoverRequests
 } from "./workerHandovers.js";
 
 initPerformanceMonitor();
@@ -11741,12 +11743,25 @@ async function startWorkerHandover(detail) {
 
     if (!acordada) return;
 
+    // A quien ya se fue de aqui no se le puede prometer que "quedara inactivo":
+    // lo esta hace rato y su calendario se vacio ese dia. Decirlo asi hacia
+    // dudar de si aceptar deshacia algo.
+    const yaInactivo = isProfileActive(profile)
+        ? ""
+        : normalizeStoredStart(profile.unitExitDate || "");
     const confirmado = await showConfirm(
         `${targetName} pide el traspaso de ${profile.name}, para que comience ` +
         `allá el ${formatDisplayDate(acordada)}.\n\n` +
-        "Al aceptar, su calendario en esta unidad se vaciará desde esa fecha " +
-        "y su perfil quedará inactivo. Sus saldos de vacaciones pasan a esa " +
-        "unidad y su app se cambia a ella el día en que empieza.\n\n" +
+        (yaInactivo
+            ? "Aquí ya estaba inactivo: su último día fue el " +
+                `${formatDisplayDate(yaInactivo)}, y su calendario se vació ` +
+                "entonces. Al aceptar no cambia nada de eso: lo que pasa a esa " +
+                "unidad son sus saldos de vacaciones, y su app se cambia a " +
+                "ella el día en que empieza.\n\n"
+            : "Al aceptar, su calendario en esta unidad se vaciará desde esa " +
+                "fecha y su perfil quedará inactivo. Sus saldos de vacaciones " +
+                "pasan a esa unidad y su app se cambia a ella el día en que " +
+                "empieza.\n\n") +
         "No tendrán que aceptar nada más: su perfil se crea allá solo.",
         {
             title: "Aceptar el traspaso",
@@ -11789,7 +11804,11 @@ async function startWorkerHandover(detail) {
     );
     await showAlert(
         `${profile.name} pasa a ${targetName} desde el ${formatDisplayDate(acordada)}. ` +
-        "Su calendario aquí se vacía desde esa fecha y su perfil queda inactivo.",
+        (yaInactivo
+            ? "Aquí seguía inactivo desde el " +
+                `${formatDisplayDate(yaInactivo)}: lo que pasa a esa unidad ` +
+                "son sus saldos de vacaciones."
+            : "Su calendario aquí se vacía desde esa fecha y su perfil queda inactivo."),
         { title: "Traspaso aceptado", tone: "success" }
     );
     window.dispatchEvent(new CustomEvent("proturnos:workerRequestsChanged"));
@@ -12233,6 +12252,36 @@ function noticeMovedWorkers(pendientes = []) {
     }
 }
 
+// Pedidos de traspaso que llegaron y esperan respuesta.
+//
+// En Solicitudes ya salen, pero eso no sirve para enterarse: el pedido llega
+// desde otra unidad y aqui no pasa nada hasta que alguien entra a mirar. Al
+// otro lado hay alguien esperando para terminar de ingresar a una persona.
+//
+// El pedido trae el RUT y no el nombre -la busqueda que lo origina no devuelve
+// datos de la persona-, pero ESTA unidad si puede nombrarla: el perfil es suyo.
+function noticeHandoverRequests(pendientes = []) {
+    for (const pedido of pendientes) {
+        const rut = normalizeRut(pedido.rut);
+        const perfil = getProfiles().find(item =>
+            normalizeRut(item.rut) === rut
+        );
+        const quien = perfil?.name || `el trabajador con RUT ${formatRut(rut) || rut}`;
+        const unidad = String(pedido.requestingWorkspaceName || "").trim() ||
+            "Otra unidad";
+        const desde = normalizeStoredStart(pedido.startDate || "");
+
+        addBellNotice({
+            id: `pedido-traspaso:${pedido.id}`,
+            title: `${unidad} pide el traspaso de ${quien}`,
+            detail: desde
+                ? `Comenzaría allá el ${formatDisplayDate(desde)}. ` +
+                    "Acéptalo o recházalo en Solicitudes."
+                : "Acéptalo o recházalo en Solicitudes."
+        });
+    }
+}
+
 // Los saldos que envio la unidad de origen, si son de este año.
 function transferredLeaveBalances(solicitud = {}) {
     const saldos = solicitud.profile?.leaveBalances;
@@ -12556,7 +12605,11 @@ async function applyWorkerTransferAtSource(solicitud, profile) {
         }
     }
 
-    if (isProfileActive(profile)) {
+    // Si ya se habia ido de aqui, su calendario se vacio entonces y no hay nada
+    // que inactivar: lo unico que viaja son sus saldos.
+    const yaEstabaInactivo = !isProfileActive(profile);
+
+    if (!yaEstabaInactivo) {
         updateProfile(name, {
             ...profile,
             active: false,
@@ -12609,10 +12662,20 @@ async function applyWorkerTransferAtSource(solicitud, profile) {
     renderBotones();
     refreshAll();
 
-    void showAlert(
-        `${destino} aceptó la transferencia de ${name}. Su perfil quedó inactivo aquí y su calendario se vació desde el ${formatDisplayDate(startISO)}.`,
-        { title: "Transferencia aplicada", tone: "success" }
-    );
+    // Un traspaso que esta unidad acabo de aceptar ya tiene su propio aviso:
+    // este es para cuando responde la OTRA unidad, y repetirlo deja dos cuadros
+    // seguidos diciendo lo mismo -y el segundo al reves, como si hubieran
+    // aceptado ellos-.
+    if (!solicitud.handoverRequestId) {
+        void showAlert(
+            yaEstabaInactivo
+                ? `${destino} recibe a ${name} desde el ${formatDisplayDate(startISO)}. ` +
+                    "Aquí ya estaba inactivo: lo que pasa a esa unidad son sus " +
+                    "saldos de vacaciones."
+                : `${destino} aceptó la transferencia de ${name}. Su perfil quedó inactivo aquí y su calendario se vació desde el ${formatDisplayDate(startISO)}.`,
+            { title: "Transferencia aplicada", tone: "success" }
+        );
+    }
 }
 
 // ───────── Estado de enlace de la app del trabajador ─────────
@@ -18931,6 +18994,22 @@ initFirebaseShell({
                         error
                     );
                 });
+                // Pedidos de traspaso que esta unidad tiene que responder.
+                // En Solicitudes ya salen; esto es para enterarse sin entrar.
+                void watchIncomingHandoverRequests(
+                    workspace,
+                    pendientes => {
+                        if (generacion !== workspaceChangeGeneration) return;
+
+                        noticeHandoverRequests(pendientes);
+                        void refreshWorkerRequestsNavBadge();
+                    }
+                ).catch(error => {
+                    console.warn(
+                        "No se pudieron escuchar los pedidos de traspaso.",
+                        error
+                    );
+                });
                 // Avisos de trabajadores que se enlazaron en otra unidad.
                 void watchWorkerUnitChangeNotices(
                     workspace,
@@ -19040,6 +19119,7 @@ initFirebaseShell({
             startAutoCoverageScheduler();
         } else {
             stopWatchingAcceptedOutgoingTransfers();
+            stopWatchingIncomingHandoverRequests();
             stopWatchingIncomingHandoverTransfers();
             stopWatchingWorkerUnitChangeNotices();
             stopWatchingIncomingTransferBalances();

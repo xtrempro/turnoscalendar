@@ -167,3 +167,46 @@ export async function resolveWorkerHandoverRequest({
         startDate
     });
 }
+
+let stopRequestsListener = null;
+let requestsGeneration = 0;
+
+/**
+ * Los pedidos de traspaso que ESTA unidad tiene que responder, en vivo.
+ *
+ * El panel de Solicitudes los lee al abrirse, y eso alcanza para verlos pero no
+ * para enterarse: un pedido llega desde otra unidad y aqui no pasa nada hasta
+ * que alguien entra a mirar. Con esto la campanita lo canta cuando llega.
+ */
+export async function watchIncomingHandoverRequests(workspace, onPending) {
+    stopWatchingIncomingHandoverRequests();
+
+    if (!workspace?.id || typeof onPending !== "function") return;
+
+    const generation = requestsGeneration;
+    const { db, firestoreModule } = await getFirebaseServices();
+
+    if (generation !== requestsGeneration) return;
+
+    stopRequestsListener = firestoreModule.onSnapshot(
+        firestoreModule.query(
+            firestoreModule.collection(db, COLLECTION),
+            firestoreModule.where("sourceWorkspaceId", "==", workspace.id),
+            firestoreModule.where("status", "==", "pending")
+        ),
+        snap => {
+            onPending(
+                snap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+            );
+        },
+        error => {
+            console.warn("No se pudieron leer los pedidos de traspaso.", error);
+        }
+    );
+}
+
+export function stopWatchingIncomingHandoverRequests() {
+    requestsGeneration++;
+    stopRequestsListener?.();
+    stopRequestsListener = null;
+}

@@ -108,3 +108,79 @@ test("el recuadro sigue el tema claro y el oscuro", () => {
     assert.match(estilos, /\.bell-panel \{[\s\S]{0,400}var\(--panel/);
     assert.match(estilos, /\.app-dialog \{[\s\S]{0,600}var\(--panel\)/);
 });
+
+// --- Un pedido de traspaso tambien se canta ---
+//
+// En Solicitudes ya salia, pero eso no sirve para enterarse: el pedido llega
+// desde otra unidad y aqui no pasa nada hasta que alguien entra a mirar. Al
+// otro lado hay alguien esperando para terminar de ingresar a una persona.
+
+const principal = await leer("../js/main.js");
+const traspasos = await leer("../js/workerHandovers.js");
+const solicitudes = await leer("../js/workerRequests.js");
+
+function extraer(fuente, nombre) {
+    const inicio = fuente.indexOf(`function ${nombre}(`);
+
+    assert.notEqual(inicio, -1, `no encontre ${nombre}`);
+
+    let parentesis = 0;
+    let cuerpo = -1;
+
+    for (let i = fuente.indexOf("(", inicio); i < fuente.length; i += 1) {
+        if (fuente[i] === "(") parentesis += 1;
+        else if (fuente[i] === ")") {
+            parentesis -= 1;
+            if (!parentesis) { cuerpo = fuente.indexOf("{", i); break; }
+        }
+    }
+
+    let profundidad = 0;
+
+    for (let i = cuerpo; i < fuente.length; i += 1) {
+        if (fuente[i] === "{") profundidad += 1;
+        else if (fuente[i] === "}") {
+            profundidad -= 1;
+            if (!profundidad) return fuente.slice(inicio, i + 1);
+        }
+    }
+
+    throw new Error(`sin cierre: ${nombre}`);
+}
+
+test("hay un oyente de los pedidos que esta unidad debe responder", () => {
+    // Sin el, la campanita solo se enteraba al abrir Solicitudes, que es justo
+    // lo que no pasa cuando nadie sabe que hay algo que mirar.
+    const observar = extraer(traspasos, "watchIncomingHandoverRequests");
+
+    assert.match(observar, /where\("sourceWorkspaceId", "==", workspace\.id\)/);
+    assert.match(observar, /where\("status", "==", "pending"\)/);
+    // Y se suelta al cambiar de unidad.
+    assert.match(traspasos, /export function stopWatchingIncomingHandoverRequests/);
+    assert.match(principal, /stopWatchingIncomingHandoverRequests\(\);/);
+});
+
+test("cada pedido pendiente deja un aviso en la campanita", () => {
+    const avisar = extraer(principal, "noticeHandoverRequests");
+
+    assert.match(avisar, /addBellNotice\(/);
+    // Un id por pedido: el aviso no se repite en cada repintado.
+    assert.match(avisar, /id: `pedido-traspaso:\$\{pedido\.id\}`/);
+    // El pedido trae RUT y no nombre, pero esta unidad si puede nombrarla.
+    assert.match(avisar, /normalizeRut\(item\.rut\) === rut/);
+    assert.match(avisar, /requestingWorkspaceName/);
+});
+
+test("el badge de Solicitudes cuenta lo mismo que muestra el panel", () => {
+    // El panel listaba pedidos de traspaso, solicitudes de acceso por RUT y
+    // avisos de cambio de unidad que el badge no contaba: quedaban sin anunciar.
+    const badge = extraer(solicitudes, "refreshWorkerRequestsNavBadge");
+
+    for (const fuente of [
+        "getWorkerHandoverPanelRequests",
+        "getWorkerJoinRequests",
+        "getWorkerUnitChangeNotices"
+    ]) {
+        assert.ok(badge.includes(fuente), `al badge le falta ${fuente}`);
+    }
+});

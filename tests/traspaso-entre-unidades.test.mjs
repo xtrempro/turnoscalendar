@@ -337,3 +337,46 @@ test("al confirmar se manda el nombre con que quedo AQUI", () => {
         /confirmWorkerTransferIntake\(\s*solicitud\.id,\s*testigo,\s*existente\?\.name \|\| nombre\s*\)/
     );
 });
+
+// --- Aceptar a alguien que ya estaba inactivo aqui ---
+
+test("no se promete inactivar a quien ya estaba inactivo", () => {
+    // Su calendario se vacio el dia que se fue: decirle que "quedara inactivo"
+    // hacia dudar de si aceptar deshacia algo.
+    const aceptar = extraer(main, "startWorkerHandover");
+
+    assert.match(aceptar, /const yaInactivo = isProfileActive\(profile\)/);
+    assert.match(aceptar, /normalizeStoredStart\(profile\.unitExitDate \|\| ""\)/);
+    // El cuadro de confirmar y el de exito dicen desde cuando lo estaba.
+    assert.match(aceptar, /Aquí ya estaba inactivo: su último día fue el/);
+    assert.match(aceptar, /Aquí seguía inactivo desde el/);
+});
+
+test("aceptar un traspaso no deja dos cuadros diciendo lo mismo", () => {
+    // La transferencia que nace del traspaso la escucha esta misma unidad: sin
+    // esto salia tambien el aviso de "la otra unidad acepto", al reves y
+    // repetido.
+    const aplicar = extraer(main, "applyWorkerTransferAtSource");
+
+    assert.match(aplicar, /if \(!solicitud\.handoverRequestId\) \{[\s\S]{0,600}Transferencia aplicada/);
+});
+
+test("al aplicar no se reinactiva a quien ya estaba inactivo", () => {
+    const aplicar = extraer(main, "applyWorkerTransferAtSource");
+
+    assert.match(aplicar, /const yaEstabaInactivo = !isProfileActive\(profile\)/);
+    assert.match(aplicar, /if \(!yaEstabaInactivo\) \{\s*\n\s*updateProfile\(/);
+});
+
+test("la tarjeta de Solicitudes tambien lo dice", async () => {
+    const panel = await (await import("node:fs/promises")).readFile(
+        new URL("../js/workerRequests.js", import.meta.url),
+        "utf8"
+    );
+    const nota = extraer(panel, "handoverNote");
+
+    assert.match(nota, /Aquí ya estaba inactivo: su último día fue el/);
+    // Con las dos fechas y la unidad que lo recibe.
+    assert.match(nota, /formatDate\(startDate\)/);
+    assert.match(panel, /function handoverExitDate\(rut\)/);
+});
