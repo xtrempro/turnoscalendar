@@ -160,6 +160,9 @@ function dependencies(db, overrides = {}) {
       serverTimestamp: () => "AHORA",
       idFactory: () => "t-1",
       claimTokenFactory: () => "tok-1",
+      // El perfil que la unidad de destino tiene para ese RUT: con el se
+      // comprueba el nombre que informa al confirmar.
+      findWorkerProfile: async () => ({ name: "Ana Rojas Campos", rut: "17816632-8" }),
       today: "2026-09-29",
       requireWorkspaceProfileManager: async (workspaceId, uid) => {
         calls.manager.push({ workspaceId, uid });
@@ -345,6 +348,9 @@ function traspaso(extra = {}) {
   return pendiente({
     status: ACCEPTED,
     handoverRequestId: "whr-1",
+    // El perfil viaja con la transferencia, y su RUT es con lo que se
+    // comprueba el nombre que informa la unidad que recibe.
+    profile: { name: "Ana Perez", rut: "17.816.632-8" },
     ...extra
   });
 }
@@ -1115,7 +1121,10 @@ test("con el mismo nombre no se renombra nada", async () => {
   const db = new FakeDb({
     [`${COLLECTION}/t-1`]: traspaso({ targetProfileName: "ANA ROJAS" })
   });
-  const { deps } = dependencies(db);
+  // Alla se llama igual que en la transferencia.
+  const { deps } = dependencies(db, {
+    findWorkerProfile: async () => ({ name: "ANA ROJAS", rut: "17816632-8" })
+  });
   const { claimToken } = await claimWorkerTransferIntakeHandler(
     peticion({ workspaceId: "w-destino", requestId: "t-1" }),
     deps
@@ -1153,5 +1162,104 @@ test("renombrar un enlace que no esta activo no hace nada", async () => {
   assert.equal(
     db.documents.get("workspaces/w-destino/workerLinks/uid-ana").profileName,
     "ANA ROJAS"
+  );
+});
+
+test("un nombre que no es el de esa persona se rechaza", async () => {
+  // El testigo acredita la reserva, no la identidad: con un nombre cualquiera,
+  // el enlace de su aplicacion terminaria apuntando a otro perfil.
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({ targetProfileName: "ANA ROJAS" })
+  });
+  const { deps } = dependencies(db, {
+    findWorkerProfile: async () => ({ name: "Ana Rojas Campos", rut: "17816632-8" })
+  });
+  const { claimToken } = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  await falla(
+    confirmWorkerTransferIntakeHandler(
+      peticion({
+        workspaceId: "w-destino",
+        requestId: "t-1",
+        claimToken,
+        profileName: "Otro Trabajador"
+      }),
+      deps
+    ),
+    "failed-precondition"
+  );
+
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).targetProfileName,
+    "ANA ROJAS"
+  );
+});
+
+test("si el renombrado del enlace falla, queda anotado para reintentarlo", async () => {
+  // Antes se daba por confirmado y nadie volvia a mirarlo: el enlace se
+  // quedaba apuntando a un perfil que no existe.
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      linkMovedAt: "ANTES"
+    })
+  });
+  const { deps } = dependencies(db);
+  const { claimToken } = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+  // No hay enlace activo que renombrar: el renombrado no se completa.
+  const resultado = await confirmWorkerTransferIntakeHandler(
+    peticion({
+      workspaceId: "w-destino",
+      requestId: "t-1",
+      claimToken,
+      profileName: "Ana Rojas Campos"
+    }),
+    deps
+  );
+  const doc = db.documents.get(`${COLLECTION}/t-1`);
+
+  assert.equal(resultado.confirmed, true);
+  assert.equal(resultado.linkRenamePending, true);
+  assert.equal(doc.linkRenamePendingFrom, "ANA ROJAS");
+  assert.equal(doc.linkRenamePendingTo, "Ana Rojas Campos");
+});
+
+test("la tarea diaria retoma el renombrado pendiente", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "Ana Rojas Campos",
+      linkMovedAt: "ANTES",
+      linkRenamePendingFrom: "ANA ROJAS",
+      linkRenamePendingTo: "Ana Rojas Campos"
+    }),
+    "workspaces/w-destino/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "active"
+    },
+    "users/uid-ana/workerLinks/w-destino": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "active"
+    }
+  });
+  const { deps } = dependencies(db);
+
+  await moveDueWorkerLinksHandler({ ...deps, today: "2026-10-05" });
+
+  assert.equal(
+    db.documents.get("workspaces/w-destino/workerLinks/uid-ana").profileName,
+    "Ana Rojas Campos"
+  );
+  // Y se borra la anotacion: ya no hay nada que reparar.
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).linkRenamePendingTo,
+    null
   );
 });

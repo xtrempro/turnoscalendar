@@ -657,11 +657,22 @@ async function notifyWorkerHandoverRequestHandler(event, {
   sendEmail,
   logger
 }) {
-  const data = event?.data?.data() || {};
+  // Se dispara en cada ESCRITURA, no solo al crear el documento: un pedido
+  // nuevo entre las mismas unidades por la misma persona reusa el documento del
+  // anterior -esa es la clave que impide duplicarlos-, y con "al crear" ese
+  // segundo pedido no avisaba a nadie.
+  const data = event?.data?.after?.data?.() ||
+    event?.data?.data?.() ||
+    {};
+  const antes = event?.data?.before?.data?.() || {};
   const sourceWorkspaceId = String(data.sourceWorkspaceId || "");
 
   if (!sourceWorkspaceId) return;
   if (String(data.status || "") !== PENDING) return;
+
+  // Solo cuando ENTRA en pendiente. Corregir la fecha o la rotativa de un
+  // pedido vivo no es un pedido nuevo y no vuelve a avisar.
+  if (String(antes.status || "") === PENDING) return;
 
   const membersSnap = await db
     .collection("workspaces")

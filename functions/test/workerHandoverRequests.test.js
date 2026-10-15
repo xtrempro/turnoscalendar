@@ -1398,3 +1398,93 @@ test("un pedido viejo y resuelto no bloquea uno nuevo", async () => {
   // Y no se arrastra el rastro del anterior.
   assert.equal(pedido.rejectReason, "");
 });
+
+// El aviso se dispara en cada escritura, no solo al crear: un pedido nuevo
+// entre las mismas unidades reusa el documento del anterior.
+function escritura(antes, despues) {
+  return {
+    data: {
+      before: { data: () => antes },
+      after: { data: () => despues }
+    }
+  };
+}
+
+test("el segundo pedido en el mismo documento tambien avisa", async () => {
+  const db = fakeDb({
+    members: {
+      "ws-uci": [{ uid: "jefa-uci", role: "admin" }]
+    }
+  });
+  const correos = [];
+
+  await notifyWorkerHandoverRequestHandler(
+    escritura(
+      { sourceWorkspaceId: "ws-uci", status: REJECTED },
+      {
+        sourceWorkspaceId: "ws-uci",
+        requestingWorkspaceName: "Urgencias",
+        rut: "178166328",
+        status: PENDING
+      }
+    ),
+    {
+      db,
+      canManageProfiles: async () => true,
+      getUserEmail: async () => "jefa@uci.cl",
+      sendEmail: async (mensaje) => { correos.push(mensaje); },
+      logger: { warn() {} }
+    }
+  );
+
+  assert.equal(correos.length, 1);
+});
+
+test("corregir un pedido vivo no vuelve a avisar", async () => {
+  // Es el mismo pedido con otra fecha: dos correos por lo mismo serian ruido.
+  // Con destinatarios de verdad: sin ellos, la prueba pasaria aunque el aviso
+  // se mandara igual.
+  const db = fakeDb({
+    members: { "ws-uci": [{ uid: "jefa-uci", role: "admin" }] }
+  });
+  const correos = [];
+
+  await notifyWorkerHandoverRequestHandler(
+    escritura(
+      { sourceWorkspaceId: "ws-uci", status: PENDING, startDate: "2026-11-03" },
+      { sourceWorkspaceId: "ws-uci", status: PENDING, startDate: "2026-11-10" }
+    ),
+    {
+      db,
+      canManageProfiles: async () => true,
+      getUserEmail: async () => "jefa@uci.cl",
+      sendEmail: async (mensaje) => { correos.push(mensaje); },
+      logger: { warn() {} }
+    }
+  );
+
+  assert.deepEqual(correos, []);
+});
+
+test("resolver un pedido tampoco manda correos", async () => {
+  const db = fakeDb({
+    members: { "ws-uci": [{ uid: "jefa-uci", role: "admin" }] }
+  });
+  const correos = [];
+
+  await notifyWorkerHandoverRequestHandler(
+    escritura(
+      { sourceWorkspaceId: "ws-uci", status: PENDING },
+      { sourceWorkspaceId: "ws-uci", status: ACCEPTED }
+    ),
+    {
+      db,
+      canManageProfiles: async () => true,
+      getUserEmail: async () => "jefa@uci.cl",
+      sendEmail: async (mensaje) => { correos.push(mensaje); },
+      logger: { warn() {} }
+    }
+  );
+
+  assert.deepEqual(correos, []);
+});

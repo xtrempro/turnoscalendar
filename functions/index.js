@@ -4613,7 +4613,10 @@ const workerTransferDependencies = () => ({
   serverTimestamp: () => admin.firestore.FieldValue.serverTimestamp(),
   requireWorkspaceProfileManager,
   requireAcceptedWorkspaceLink,
-  requireSameEstablishment
+  requireSameEstablishment,
+  // Para comprobar, al confirmar un traspaso, que el nombre que informa la
+  // unidad que recibe sea de verdad el de esa persona alli.
+  findWorkerProfile: findWorkerProfileInWorkspace
 });
 
 // El enlace de la app de un trabajador transferido se muda a la unidad nueva
@@ -4769,7 +4772,11 @@ exports.cancelWorkerHandoverRequest = onCall(
 // Avisarle por correo a la unidad que tiene al trabajador, por lo mismo que
 // en las solicitudes de acceso: los supervisores no tienen push, y al otro
 // lado hay alguien esperando para terminar de ingresar a una persona.
-exports.notifyWorkerHandoverRequest = onDocumentCreated(
+// En cada escritura y no solo al crear: un pedido nuevo entre las mismas
+// unidades por la misma persona reusa el documento del anterior, y con "al
+// crear" ese segundo pedido no avisaba a nadie. El handler solo manda cuando el
+// pedido ENTRA en pendiente.
+exports.notifyWorkerHandoverRequest = onDocumentWritten(
   {
     document: "workerHandoverRequests/{requestId}",
     timeoutSeconds: 60,

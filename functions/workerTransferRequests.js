@@ -54,6 +54,12 @@ const PROFILE_TEXT_FIELDS = {
   sourceRotationType: 40
 };
 
+// Mismo criterio que en el resto del servidor: el RUT se compara sin puntos ni
+// guion, para que "17.816.632-8" y "178166328" sean el mismo.
+function normalizeRut(value) {
+  return String(value || "").replace(/[^0-9kK]/g, "").toUpperCase();
+}
+
 function cleanText(value, max = 160) {
   return String(value == null ? "" : value).trim().slice(0, max);
 }
@@ -384,6 +390,33 @@ async function moveDueWorkerLinksHandler(dependencies) {
 
   for (const docSnap of snap.docs) {
     const solicitud = { id: docSnap.id, ...(docSnap.data() || {}) };
+
+    // Un renombrado de enlace que quedo pendiente -fallo al confirmar, o el
+    // perfil de destino todavia no estaba publicado-. Se reintenta aqui: si no,
+    // el enlace se queda apuntando a un perfil que no existe y el trabajador
+    // deja de ver sus turnos.
+    if (solicitud.linkRenamePendingTo) {
+      try {
+        const resultado = await renameMovedWorkerLink(db, {
+          targetWorkspaceId: solicitud.targetWorkspaceId,
+          previousProfileName: solicitud.linkRenamePendingFrom,
+          profileName: solicitud.linkRenamePendingTo
+        }, serverTimestamp);
+
+        if (resultado.renamed) {
+          await docSnap.ref.update({
+            linkRenamePendingFrom: null,
+            linkRenamePendingTo: null,
+            updatedAt: serverTimestamp()
+          });
+        }
+      } catch (error) {
+        logger?.warn?.("No se pudo renombrar el enlace pendiente.", {
+          requestId: solicitud.id,
+          error: error?.message || String(error)
+        });
+      }
+    }
 
     if (solicitud.linkMovedAt || solicitud.startDate > today) continue;
 
@@ -962,7 +995,8 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
     db,
     HttpsError,
     serverTimestamp,
-    requireWorkspaceProfileManager
+    requireWorkspaceProfileManager,
+    findWorkerProfile
   } = dependencies;
   const { uid, workspaceId, requestId } =
     validateBasePayload(request, HttpsError);
@@ -980,6 +1014,36 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
   await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
 
   const ref = db.collection(COLLECTION).doc(requestId);
+  // Que ese nombre sea de VERDAD el de esta persona en esta unidad.
+  //
+  // El testigo acredita la reserva, no la identidad: con un nombre cualquiera,
+  // el enlace de la aplicacion del trabajador terminaria apuntando a otro
+  // perfil. Se comprueba contra los perfiles de la unidad, buscando por el RUT
+  // que viaja en la transferencia.
+  let nombreVerificado = false;
+
+  if (profileName && findWorkerProfile) {
+    const previo = await ref.get();
+    const rut = normalizeRut(
+      (previo.exists ? previo.data() || {} : {}).profile?.rut
+    );
+    const perfil = rut
+      ? await findWorkerProfile(db, workspaceId, rut)
+      : null;
+
+    if (perfil && cleanText(perfil.name, 180) !== profileName) {
+      callableError(
+        HttpsError,
+        "failed-precondition",
+        "Ese nombre no es el del trabajador que se traspasa."
+      );
+    }
+
+    // Sin perfil a la vista -su estado todavia no se publica- no se descarta:
+    // queda pendiente y la tarea diaria lo reintenta.
+    nombreVerificado = Boolean(perfil);
+  }
+
   const resultado = await db.runTransaction(async transaction => {
     const snap = await transaction.get(ref);
 
@@ -1026,8 +1090,22 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
     );
     const renombrado = Boolean(profileName) && profileName !== anterior;
 
+    // La reparacion del enlace queda ANOTADA antes de intentarla: si falla
+    // -o si el nombre todavia no se pudo verificar-, la tarea diaria la
+    // retoma. Sin la anotacion, el traspaso quedaba confirmado y el enlace
+    // apuntando a un perfil que no existe, sin nadie que volviera a mirarlo.
+    const reparaEnlace = renombrado && Boolean(solicitud.linkMovedAt);
+
     transaction.update(ref, {
-      ...(renombrado ? { targetProfileName: profileName } : {}),
+      ...(renombrado && nombreVerificado
+        ? { targetProfileName: profileName }
+        : {}),
+      ...(reparaEnlace
+        ? {
+          linkRenamePendingFrom: anterior,
+          linkRenamePendingTo: profileName
+        }
+        : {}),
       targetIntakeAppliedAt: now,
       targetIntakeAppliedByUid: uid,
       targetIntakeClaimedAt: null,
@@ -1042,22 +1120,30 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
       confirmed: true,
       renombrado,
       anterior,
-      // Si el enlace ya se mudo -transferencia que empezaba hoy-, lleva el
-      // nombre viejo y hay que corregirlo.
-      enlaceMudado: Boolean(solicitud.linkMovedAt),
+      reparaEnlace,
       targetWorkspaceId: workspaceId
     };
   });
 
-  if (resultado.confirmed && resultado.renombrado && resultado.enlaceMudado) {
+  let enlaceRenombrado = false;
+
+  if (resultado.confirmed && resultado.reparaEnlace && nombreVerificado) {
     try {
-      await renameMovedWorkerLink(db, {
+      enlaceRenombrado = (await renameMovedWorkerLink(db, {
         targetWorkspaceId: resultado.targetWorkspaceId,
         previousProfileName: resultado.anterior,
         profileName
-      }, serverTimestamp);
+      }, serverTimestamp)).renamed;
+
+      if (enlaceRenombrado) {
+        await ref.update({
+          linkRenamePendingFrom: null,
+          linkRenamePendingTo: null,
+          updatedAt: serverTimestamp()
+        });
+      }
     } catch (error) {
-      // El traspaso ya quedo aplicado: el enlace se puede corregir despues.
+      // Queda la anotacion: la tarea diaria lo reintenta.
       dependencies.logger?.warn?.("No se pudo renombrar el enlace mudado.", {
         requestId,
         error: error?.message || String(error)
@@ -1069,7 +1155,10 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
     ok: true,
     requestId,
     confirmed: resultado.confirmed === true,
-    renamed: resultado.renombrado === true
+    // Lo que paso de verdad, no lo que se pidio: el nombre quedo guardado solo
+    // si se pudo verificar, y el enlace solo si ademas se pudo renombrar.
+    renamed: Boolean(resultado.renombrado && nombreVerificado),
+    linkRenamePending: Boolean(resultado.reparaEnlace && !enlaceRenombrado)
   };
 }
 
