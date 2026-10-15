@@ -182,7 +182,7 @@ test("el traspaso se confirma DESPUES de que el perfil existe", () => {
     // se quedaba sin perfil, sin que nadie volviera a intentarlo.
     const aplicar = extraer(main, "applyIncomingHandoverTransfers");
     const crear = aplicar.indexOf("createProfileFromHandover(solicitud, nombre)");
-    const confirmar = aplicar.indexOf("confirmWorkerTransferIntake(solicitud.id, testigo)");
+    const confirmar = aplicar.indexOf("confirmWorkerTransferIntake(");
 
     assert.notEqual(crear, -1);
     assert.notEqual(confirmar, -1);
@@ -274,7 +274,7 @@ test("el testigo de la reserva viaja a confirmar y a soltar", () => {
     const aplicar = extraer(main, "applyIncomingHandoverTransfers");
 
     assert.match(aplicar, /const testigo = await claimWorkerTransferIntake\(solicitud\.id\)/);
-    assert.match(aplicar, /confirmWorkerTransferIntake\(solicitud\.id, testigo\)/);
+    assert.match(aplicar, /confirmWorkerTransferIntake\(\s*solicitud\.id,\s*testigo/);
     assert.match(aplicar, /releaseWorkerTransferIntake\(solicitud\.id, testigo\)/);
 });
 
@@ -325,4 +325,15 @@ test("si falla crear Y liberar, igual se reintenta", () => {
 
     assert.match(fallo, /scheduleHandoverIntakeRetry\(\)/);
     assert.match(fallo, /traspaso-fallido:/);
+});
+
+test("al confirmar se manda el nombre con que quedo AQUI", () => {
+    // Si existia con otro nombre, mandar el de origen deja el enlace de su
+    // aplicacion apuntando a un perfil que no existe.
+    const aplicar = extraer(main, "applyIncomingHandoverTransfers");
+
+    assert.match(
+        aplicar,
+        /confirmWorkerTransferIntake\(\s*solicitud\.id,\s*testigo,\s*existente\?\.name \|\| nombre\s*\)/
+    );
 });

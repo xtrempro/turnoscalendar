@@ -901,6 +901,57 @@ async function claimWorkerTransferIntakeHandler(request, dependencies) {
 }
 
 /**
+ * El enlace de la aplicacion ya se habia mudado con el nombre de origen y aqui
+ * la persona se llama de otra forma: se corrige el nombre en las dos copias del
+ * enlace -la de la unidad y la del usuario-.
+ *
+ * No toca nada mas: el enlace es el mismo, con el mismo uid; lo unico que
+ * estaba mal era a que perfil apuntaba.
+ */
+async function renameMovedWorkerLink(db, datos, serverTimestamp) {
+  const targetWorkspaceId = cleanText(datos.targetWorkspaceId, 160);
+  const previousProfileName = cleanText(datos.previousProfileName, 180);
+  const profileName = cleanText(datos.profileName, 180);
+
+  if (!targetWorkspaceId || !previousProfileName || !profileName) {
+    return { renamed: false };
+  }
+
+  const targetRef = db.collection("workspaces").doc(targetWorkspaceId);
+  const snap = await targetRef
+    .collection("workerLinks")
+    .where("profileName", "==", previousProfileName)
+    .get();
+  const linkDoc = snap.docs.find(docSnap =>
+    String((docSnap.data() || {}).status || "active") === "active"
+  );
+
+  if (!linkDoc) return { renamed: false };
+
+  const uid = cleanText((linkDoc.data() || {}).uid || linkDoc.id, 160);
+
+  if (!uid) return { renamed: false };
+
+  const now = serverTimestamp();
+  const batch = db.batch();
+
+  batch.set(
+    targetRef.collection("workerLinks").doc(uid),
+    { profileName, updatedAt: now },
+    { merge: true }
+  );
+  batch.set(
+    db.collection("users").doc(uid).collection("workerLinks").doc(targetWorkspaceId),
+    { profileName, updatedAt: now },
+    { merge: true }
+  );
+
+  await batch.commit();
+
+  return { renamed: true, uid };
+}
+
+/**
  * El perfil ya quedo guardado: la reserva se vuelve definitiva.
  *
  * Es el paso que faltaba. Sin el, "tomado" y "aplicado" eran lo mismo y un
@@ -916,6 +967,7 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
   const { uid, workspaceId, requestId } =
     validateBasePayload(request, HttpsError);
   const claimToken = cleanText(request.data && request.data.claimToken, 80);
+  const profileName = cleanText(request.data && request.data.profileName, 180);
 
   if (!requestId) {
     callableError(
@@ -928,8 +980,7 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
   await requireWorkspaceProfileManager(workspaceId, uid, request.auth.token);
 
   const ref = db.collection(COLLECTION).doc(requestId);
-
-  return db.runTransaction(async transaction => {
+  const resultado = await db.runTransaction(async transaction => {
     const snap = await transaction.get(ref);
 
     if (!snap.exists) {
@@ -963,8 +1014,20 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
     }
 
     const now = serverTimestamp();
+    // Con que nombre quedo de verdad en la unidad que recibe.
+    //
+    // Puede no ser el de origen: la persona se reconoce por su RUT, y alla
+    // podia existir ya con el nombre escrito de otra forma. El enlace de su
+    // aplicacion se muda por NOMBRE, asi que sin esto quedaba apuntando a un
+    // perfil que no existe y el trabajador dejaba de ver sus turnos.
+    const anterior = cleanText(
+      solicitud.targetProfileName || solicitud.profileName,
+      180
+    );
+    const renombrado = Boolean(profileName) && profileName !== anterior;
 
     transaction.update(ref, {
+      ...(renombrado ? { targetProfileName: profileName } : {}),
       targetIntakeAppliedAt: now,
       targetIntakeAppliedByUid: uid,
       targetIntakeClaimedAt: null,
@@ -973,8 +1036,41 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
       updatedAt: now
     });
 
-    return { ok: true, requestId, confirmed: true };
+    return {
+      ok: true,
+      requestId,
+      confirmed: true,
+      renombrado,
+      anterior,
+      // Si el enlace ya se mudo -transferencia que empezaba hoy-, lleva el
+      // nombre viejo y hay que corregirlo.
+      enlaceMudado: Boolean(solicitud.linkMovedAt),
+      targetWorkspaceId: workspaceId
+    };
   });
+
+  if (resultado.confirmed && resultado.renombrado && resultado.enlaceMudado) {
+    try {
+      await renameMovedWorkerLink(db, {
+        targetWorkspaceId: resultado.targetWorkspaceId,
+        previousProfileName: resultado.anterior,
+        profileName
+      }, serverTimestamp);
+    } catch (error) {
+      // El traspaso ya quedo aplicado: el enlace se puede corregir despues.
+      dependencies.logger?.warn?.("No se pudo renombrar el enlace mudado.", {
+        requestId,
+        error: error?.message || String(error)
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    requestId,
+    confirmed: resultado.confirmed === true,
+    renamed: resultado.renombrado === true
+  };
 }
 
 /**
@@ -1189,6 +1285,7 @@ module.exports = {
   claimWorkerTransferApplicationHandler,
   claimWorkerTransferIntakeHandler,
   confirmWorkerTransferIntakeHandler,
+  renameMovedWorkerLink,
   cleanProfile,
   createWorkerTransferRequestHandler,
   markSourceProfileTransferred,

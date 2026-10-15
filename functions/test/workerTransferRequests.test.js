@@ -20,6 +20,7 @@ const {
   claimWorkerTransferApplicationHandler,
   claimWorkerTransferIntakeHandler,
   confirmWorkerTransferIntakeHandler,
+  renameMovedWorkerLink,
   releaseWorkerTransferIntakeHandler,
   createWorkerTransferRequestHandler,
   respondWorkerTransferRequestHandler
@@ -44,8 +45,13 @@ class FakeDoc {
     return Promise.resolve({ exists: data !== undefined, data: () => data });
   }
 
-  set(value) {
-    this.db.documents.set(this.path, value);
+  set(value, options) {
+    this.db.documents.set(
+      this.path,
+      options && options.merge
+        ? { ...(this.db.documents.get(this.path) || {}), ...value }
+        : value
+    );
     return Promise.resolve();
   }
 
@@ -121,7 +127,7 @@ class FakeDb {
     const ops = [];
 
     return {
-      set: (ref, value) => ops.push(() => ref.set(value)),
+      set: (ref, value, options) => ops.push(() => ref.set(value, options)),
       delete: ref => ops.push(() => ref.delete()),
       commit: async () => {
         for (const op of ops) await op();
@@ -1018,5 +1024,134 @@ test("sin testigo no se confirma ni se suelta nada", async () => {
   assert.equal(
     (await releaseWorkerTransferIntakeHandler(quien, deps)).released,
     false
+  );
+});
+
+// --- El nombre con que quedo en destino (auditoria 2026-10-14) ---
+//
+// A la persona se la reconoce por su RUT, asi que en destino puede existir con
+// el nombre escrito de otra forma. El enlace de su aplicacion se muda por
+// NOMBRE: sin corregirlo, apunta a un perfil que no existe y el trabajador deja
+// de ver sus turnos.
+
+test("confirmar guarda el nombre que de verdad tiene en destino", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({ targetProfileName: "ANA ROJAS" })
+  });
+  const { deps } = dependencies(db);
+  const { claimToken } = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  const resultado = await confirmWorkerTransferIntakeHandler(
+    peticion({
+      workspaceId: "w-destino",
+      requestId: "t-1",
+      claimToken,
+      profileName: "Ana Rojas Campos"
+    }),
+    deps
+  );
+
+  assert.equal(resultado.renamed, true);
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).targetProfileName,
+    "Ana Rojas Campos"
+  );
+});
+
+test("si el enlace ya se habia mudado, se corrige su nombre", async () => {
+  // Transferencia que empezaba hoy: el enlace se mudo al aceptar, con el
+  // nombre de origen.
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      linkMovedAt: "ANTES"
+    }),
+    "workspaces/w-destino/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "active"
+    },
+    "users/uid-ana/workerLinks/w-destino": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "active"
+    }
+  });
+  const { deps } = dependencies(db);
+  const { claimToken } = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  await confirmWorkerTransferIntakeHandler(
+    peticion({
+      workspaceId: "w-destino",
+      requestId: "t-1",
+      claimToken,
+      profileName: "Ana Rojas Campos"
+    }),
+    deps
+  );
+
+  assert.equal(
+    db.documents.get("workspaces/w-destino/workerLinks/uid-ana").profileName,
+    "Ana Rojas Campos"
+  );
+  assert.equal(
+    db.documents.get("users/uid-ana/workerLinks/w-destino").profileName,
+    "Ana Rojas Campos"
+  );
+  // Y no se toca nada mas del enlace.
+  assert.equal(
+    db.documents.get("workspaces/w-destino/workerLinks/uid-ana").uid,
+    "uid-ana"
+  );
+});
+
+test("con el mismo nombre no se renombra nada", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({ targetProfileName: "ANA ROJAS" })
+  });
+  const { deps } = dependencies(db);
+  const { claimToken } = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+
+  const resultado = await confirmWorkerTransferIntakeHandler(
+    peticion({
+      workspaceId: "w-destino",
+      requestId: "t-1",
+      claimToken,
+      profileName: "ANA ROJAS"
+    }),
+    deps
+  );
+
+  assert.equal(resultado.renamed, false);
+});
+
+test("renombrar un enlace que no esta activo no hace nada", async () => {
+  const db = new FakeDb({
+    "workspaces/w-destino/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "unlinked"
+    }
+  });
+
+  const resultado = await renameMovedWorkerLink(db, {
+    targetWorkspaceId: "w-destino",
+    previousProfileName: "ANA ROJAS",
+    profileName: "Ana Rojas Campos"
+  }, () => "AHORA");
+
+  assert.equal(resultado.renamed, false);
+  assert.equal(
+    db.documents.get("workspaces/w-destino/workerLinks/uid-ana").profileName,
+    "ANA ROJAS"
   );
 });

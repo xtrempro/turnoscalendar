@@ -215,7 +215,8 @@ test("crea el pedido pendiente con el RUT normalizado", async () => {
   assert.deepEqual(resultado, {
     status: PENDING,
     requestId: "pedido-1",
-    created: true
+    created: true,
+    updated: false
   });
 
   const pedido = guardado(db);
@@ -1335,4 +1336,65 @@ test("corregir uno que sigue pendiente funciona igual que antes", async () => {
     updated: true
   });
   assert.equal(guardado(db).startDate, "2026-12-01");
+});
+
+test("dos pedidos a la vez por la misma persona dejan UNO", async () => {
+  // La consulta no veia al otro porque todavia no existia: quedaban dos
+  // pedidos vivos, y cada uno podia aceptarse por su cuenta -dos
+  // transferencias de la misma persona-.
+  const db = fakeDb();
+  const { deps: dependencias } = deps(db);
+
+  const [uno, dos] = await Promise.all([
+    requestWorkerHandoverHandler(peticion(PEDIDO_BASE), dependencias),
+    requestWorkerHandoverHandler(peticion(PEDIDO_BASE), dependencias)
+  ]);
+
+  assert.equal(db.guardados.size, 1);
+  assert.equal(uno.requestId, dos.requestId);
+  assert.deepEqual([uno.created, dos.created].sort(), [false, true]);
+});
+
+test("la clave del pedido sale de las dos unidades y el RUT", async () => {
+  // Es lo que hace que dos llamadas simultaneas caigan en el mismo documento.
+  const db = fakeDb();
+  // Sin idFactory de prueba: el de verdad deriva el id de la clave.
+  const { deps: dependencias } = deps(db, { idFactory: undefined });
+  const resultado = await requestWorkerHandoverHandler(
+    peticion(PEDIDO_BASE),
+    dependencias
+  );
+
+  assert.equal(resultado.requestId, "whr_ws-urgencias_ws-uci_178166328");
+});
+
+test("un pedido viejo y resuelto no bloquea uno nuevo", async () => {
+  // Misma clave, pero el anterior ya no sirve: el nuevo ocupa su lugar en vez
+  // de quedarse sin poder pedirse.
+  const db = fakeDb({
+    docs: {
+      "pedido-1": {
+        requestingWorkspaceId: "ws-urgencias",
+        sourceWorkspaceId: "ws-uci",
+        rut: "178166328",
+        status: REJECTED,
+        rejectReason: "ahora no",
+        expiresAt: new Date(Date.now() + 86400000)
+      }
+    }
+  });
+  const { deps: dependencias } = deps(db);
+  const resultado = await requestWorkerHandoverHandler(
+    peticion(PEDIDO_BASE),
+    dependencias
+  );
+
+  assert.equal(resultado.created, true);
+
+  const pedido = guardado(db);
+
+  assert.equal(pedido.status, PENDING);
+  assert.equal(pedido.startDate, "2026-11-03");
+  // Y no se arrastra el rastro del anterior.
+  assert.equal(pedido.rejectReason, "");
 });

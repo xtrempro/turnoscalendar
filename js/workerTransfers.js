@@ -170,12 +170,20 @@ export async function claimWorkerTransferIntake(requestId) {
  * sesion que se corta antes de llegar aqui no deja el traspaso consumido: otra
  * lo vuelve a tomar pasado el plazo.
  */
-export async function confirmWorkerTransferIntake(requestId, claimToken = "") {
+export async function confirmWorkerTransferIntake(
+    requestId,
+    claimToken = "",
+    profileName = ""
+) {
     const workspace = activeWorkspaceOrThrow();
     const result = await callFunction("confirmWorkerTransferIntake", {
         workspaceId: workspace.id,
         requestId,
-        claimToken
+        claimToken,
+        // Con que nombre quedo aqui: puede no ser el de origen, porque a la
+        // persona se la reconoce por su RUT. El enlace de su aplicacion se muda
+        // por nombre, asi que el servidor necesita el de verdad.
+        profileName
     });
 
     return result?.confirmed === true;

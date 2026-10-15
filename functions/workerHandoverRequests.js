@@ -52,8 +52,16 @@ const REQUEST_TTL_DAYS = 30;
 // unidad con muchos supervisores no deberia convertir un pedido en una rafaga.
 const MAX_NOTIFIED = 20;
 
-function defaultIdFactory() {
-  return `whr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+// Un pedido por trabajador y por par de unidades. La clave lo dice: asi dos
+// llamadas simultaneas escriben el MISMO documento en vez de dos, y una sola
+// gana.
+function handoverRequestKey(workspaceId, sourceWorkspaceId, rut) {
+  return `whr_${workspaceId}_${sourceWorkspaceId}_${rut}`;
+}
+
+function defaultIdFactory(clave) {
+  return cleanText(clave, 220) ||
+    `whr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 // El mismo formato que usan las transferencias creadas por el camino normal.
@@ -234,27 +242,55 @@ async function requestWorkerHandoverHandler(request, {
     };
   }
 
-  const requestId = idFactory();
+  // El identificador sale de QUIENES son, no del azar: dos pedidos a la vez
+  // -dos pestañas, dos supervisores- escribian cada uno su documento y la
+  // consulta de arriba no veia al otro porque todavia no existia. Quedaban dos
+  // pedidos vivos por la misma persona, y cada uno podia aceptarse por su
+  // cuenta: dos transferencias. Con la misma clave, el segundo cae en el mismo
+  // documento y la transaccion decide.
+  const requestId = idFactory(handoverRequestKey(workspaceId, sourceWorkspaceId, rut));
+  const ref = db.collection(COLLECTION).doc(requestId);
+  const creado = await db.runTransaction(async transaction => {
+    const actual = await transaction.get(ref);
+    const previa = actual.exists ? actual.data() || {} : {};
 
-  await db.collection(COLLECTION).doc(requestId).set({
-    requestingWorkspaceId: workspaceId,
-    requestingWorkspaceName: cleanText(data.workspaceName, 160),
-    sourceWorkspaceId,
-    sourceWorkspaceName: cleanText(data.sourceWorkspaceName, 160),
-    establishment,
-    rut,
-    startDate,
-    rotationType,
-    rotationFirstTurn,
-    requestedByUid: uid,
-    requestedByName: cleanText(data.requestedByName, 160),
-    status: PENDING,
-    createdAt: new Date(ahora),
-    updatedAt: new Date(ahora),
-    expiresAt: new Date(ahora + REQUEST_TTL_DAYS * 24 * 60 * 60 * 1000)
+    // Lo creo la otra llamada mientras esta venia en camino.
+    if (requestIsUsable(previa, ahora)) return false;
+
+    // Si hay uno viejo en esta misma clave -rechazado, retirado o caducado-,
+    // el pedido nuevo ocupa su lugar: el anterior ya no sirve para nada y su
+    // rastro quedo en la bitacora de cada unidad.
+    transaction.set(ref, {
+      requestingWorkspaceId: workspaceId,
+      requestingWorkspaceName: cleanText(data.workspaceName, 160),
+      sourceWorkspaceId,
+      sourceWorkspaceName: cleanText(data.sourceWorkspaceName, 160),
+      establishment,
+      rut,
+      startDate,
+      rotationType,
+      rotationFirstTurn,
+      requestedByUid: uid,
+      requestedByName: cleanText(data.requestedByName, 160),
+      status: PENDING,
+      transferRequestId: "",
+      resolvedAt: null,
+      resolvedByUid: "",
+      rejectReason: "",
+      createdAt: new Date(ahora),
+      updatedAt: new Date(ahora),
+      expiresAt: new Date(ahora + REQUEST_TTL_DAYS * 24 * 60 * 60 * 1000)
+    });
+
+    return true;
   });
 
-  return { status: PENDING, requestId, created: true };
+  return {
+    status: PENDING,
+    requestId,
+    created: creado,
+    updated: false
+  };
 }
 
 /**

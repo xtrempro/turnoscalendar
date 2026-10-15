@@ -11956,7 +11956,13 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
             // El perfil ya existe: recien ahora el traspaso esta aplicado. Si
             // esto falla, la reserva vence sola y otra sesion lo retoma: ahi
             // encontrara el perfil ya creado y solo confirmara.
-            await confirmWorkerTransferIntake(solicitud.id, testigo)
+            // Con el nombre LOCAL: si ya existia con otro, el enlace de su
+            // aplicacion tiene que apuntar a este, no al de origen.
+            await confirmWorkerTransferIntake(
+                solicitud.id,
+                testigo,
+                existente?.name || nombre
+            )
                 .catch(fallo => {
                     console.warn("No se pudo confirmar el traspaso.", fallo);
                     // Si no se confirmo, la reserva vence y hay que volver.
