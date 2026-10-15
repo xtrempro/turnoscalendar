@@ -48,7 +48,7 @@ const STATUS_PRINTED = "printed";
 const STATUS_ARCHIVED = "archived";
 
 // La calificacion CON NOTAS es otro instrumento y ocurre una vez al ano, en
-// septiembre, apoyada en los tres informes cuatrimestrales ya escritos
+// septiembre, apoyada en los informes cuatrimestrales ya escritos
 // (art. 19). Vive como un "periodo" mas para reutilizar el mismo almacen.
 export const ANNUAL_PERIOD_ID = "anual";
 const MAX_NOTE_LENGTH = 1600;
@@ -159,16 +159,11 @@ const PERIOD_DEFS = [
         endDay: 30,
         yearOffset: 1
     },
-    {
-        id: "may-aug",
-        label: "Mayo a agosto",
-        shortLabel: "May-Ago",
-        startMonth: 4,
-        startDay: 1,
-        endMonth: 7,
-        endDay: 31,
-        yearOffset: 1
-    }
+    // Mayo a agosto NO esta: ese cuatrimestre lo cubre la calificacion anual,
+    // que se escribe en septiembre y abarca los doce meses del ciclo. Tenerlo
+    // aqui pedia escribir dos veces lo mismo. El formulario impreso si conserva
+    // su linea: es la reproduccion del papel del ministerio, donde estan los
+    // tres y se marca el que corresponde.
 ];
 
 let selectedCycleStartYear = evaluationCycleStartYear();
@@ -176,7 +171,7 @@ let selectedPeriodId = currentPeriodId(new Date(), selectedCycleStartYear);
 let selectedStatus = STATUS_ALL;
 // Trabajador con la ficha ABIERTA. Vacio = se ve la bandeja.
 let openProfileKey = "";
-// Cual de los tres informes cuatrimestrales se lee desplegado en la anual.
+// Cual de los informes cuatrimestrales se lee desplegado en la anual.
 let openReportId = "";
 let searchText = "";
 let searchRenderTimer = null;
@@ -452,7 +447,7 @@ export function qualificationPeriods(cycleStartYear = selectedCycleStartYear) {
 
 /**
  * La calificacion anual del ciclo. Cubre los doce meses del articulo 3 (1 de
- * septiembre al 31 de agosto) y se hace en septiembre, cuando los tres
+ * septiembre al 31 de agosto) y se hace en septiembre, cuando los
  * informes cuatrimestrales ya estan escritos.
  */
 export function annualPeriod(cycleStartYear = selectedCycleStartYear) {
@@ -465,7 +460,7 @@ export function annualPeriod(cycleStartYear = selectedCycleStartYear) {
         label: "Calificacion anual",
         shortLabel: "Anual",
         annual: true,
-        order: 4,
+        order: PERIOD_DEFS.length + 1,
         cycleStartYear: startYear,
         startDate,
         endDate,
@@ -481,7 +476,7 @@ export function isAnnualPeriod(period) {
     return Boolean(period?.annual) || period?.id === ANNUAL_PERIOD_ID;
 }
 
-/** Los tres informes escritos MAS la calificacion anual. */
+/** Los informes cuatrimestrales escritos MAS la calificacion anual. */
 export function qualificationCycleSteps(cycleStartYear = selectedCycleStartYear) {
     return [...qualificationPeriods(cycleStartYear), annualPeriod(cycleStartYear)];
 }
@@ -496,10 +491,19 @@ function periodById(id, cycleStartYear = selectedCycleStartYear) {
 
 function currentPeriodId(date = new Date(), cycleStartYear = selectedCycleStartYear) {
     const iso = toISODate(date instanceof Date ? date : new Date(date));
-
-    return qualificationPeriods(cycleStartYear).find(period =>
+    const periodos = qualificationPeriods(cycleStartYear);
+    const enCurso = periodos.find(period =>
         period.startISO <= iso && iso <= period.endISO
-    )?.id || "sep-dec";
+    );
+
+    if (enCurso) return enCurso.id;
+
+    // De mayo a agosto ya no hay cuatrimestre que escribir -lo cubre la anual-,
+    // asi que se abre el ultimo cerrado y no el primero del ciclo, que para
+    // entonces quedo meses atras.
+    const ultimo = periodos[periodos.length - 1];
+
+    return ultimo && iso > ultimo.endISO ? ultimo.id : periodos[0]?.id || "sep-dec";
 }
 
 export function isISODateInPeriod(value, period) {
@@ -2010,7 +2014,7 @@ function quarterReportsHTML(summary, period) {
     return `
         <section class="qual-reports">
             <div class="qual-subhead">
-                <h4>Los tres informes cuatrimestrales del periodo</h4>
+                <h4>Los informes cuatrimestrales del periodo</h4>
                 <span>Art. 19: antecedente relevante de la precalificacion</span>
             </div>
             <div class="qual-reports__cards">

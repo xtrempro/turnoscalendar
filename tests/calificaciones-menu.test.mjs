@@ -46,8 +46,11 @@ test("Calificaciones queda enganchado como menu supervisor", async () => {
     assert.match(css, /\.qual-subfactor/);
 });
 
-test("Calificaciones usa tres periodos cuatrimestrales del ciclo septiembre-agosto", async () => {
+test("Calificaciones usa dos periodos cuatrimestrales del ciclo septiembre-agosto", async () => {
+    // Mayo a agosto no esta: ese cuatrimestre lo cubre la calificacion anual,
+    // que se escribe en septiembre y abarca los doce meses del ciclo.
     const {
+        annualPeriod,
         evaluationCycleStartYear,
         isISODateInPeriod,
         qualificationPeriods
@@ -64,11 +67,15 @@ test("Calificaciones usa tres periodos cuatrimestrales del ciclo septiembre-agos
         ]),
         [
             ["sep-dec", "2026-09-01", "2026-12-31"],
-            ["jan-apr", "2027-01-01", "2027-04-30"],
-            ["may-aug", "2027-05-01", "2027-08-31"]
+            ["jan-apr", "2027-01-01", "2027-04-30"]
         ]
     );
-    assert.equal(periods.length, 3);
+    assert.equal(periods.length, 2);
+    // El ciclo completo lo cierra la anual, que si cubre mayo a agosto.
+    assert.equal(
+        isISODateInPeriod("2027-06-15", annualPeriod(2026)),
+        true
+    );
     assert.equal(isISODateInPeriod("2026-12-31", periods[0]), true);
     assert.equal(isISODateInPeriod("2027-01-01", periods[0]), false);
 });
@@ -204,4 +211,45 @@ test("Calificaciones se activa por defecto solo para admins heredados completos"
         view: true,
         edit: false
     });
+});
+
+test("de mayo a agosto se abre el ultimo cuatrimestre cerrado", async () => {
+    // Antes caia en "septiembre a diciembre", que para mayo llevaba meses
+    // cerrado. El que interesa es el ultimo escrito, enero a abril.
+    const qualifications = await import("../js/qualifications.js");
+    const fuente = await (await import("node:fs/promises")).readFile(
+        new URL("../js/qualifications.js", import.meta.url),
+        "utf8"
+    );
+    const inicio = fuente.indexOf("function currentPeriodId(");
+
+    assert.notEqual(inicio, -1);
+
+    let profundidad = 0;
+    let fin = inicio;
+
+    for (let i = fuente.indexOf("{", fuente.indexOf(")", inicio)); i < fuente.length; i += 1) {
+        if (fuente[i] === "{") profundidad += 1;
+        else if (fuente[i] === "}") {
+            profundidad -= 1;
+            if (!profundidad) { fin = i + 1; break; }
+        }
+    }
+
+    const elegir = new Function(
+        "toISODate",
+        "qualificationPeriods",
+        `${fuente.slice(inicio, fin)} return currentPeriodId;`
+    )(
+        fecha => fecha.toISOString().slice(0, 10),
+        qualifications.qualificationPeriods
+    );
+
+    assert.equal(elegir(new Date(Date.UTC(2026, 9, 15)), 2026), "sep-dec");
+    assert.equal(elegir(new Date(Date.UTC(2027, 1, 10)), 2026), "jan-apr");
+    // Mayo, junio, julio y agosto: el ciclo ya no tiene cuatrimestre abierto.
+    assert.equal(elegir(new Date(Date.UTC(2027, 5, 20)), 2026), "jan-apr");
+    assert.equal(elegir(new Date(Date.UTC(2027, 7, 31)), 2026), "jan-apr");
+    // Antes del ciclo: el primero.
+    assert.equal(elegir(new Date(Date.UTC(2026, 7, 31)), 2026), "sep-dec");
 });

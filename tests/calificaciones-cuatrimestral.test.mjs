@@ -26,7 +26,7 @@ const read = path => readFile(new URL(path, import.meta.url), "utf8");
 
 const SAMPLE = {
     folio: "ABC123",
-    periodId: "may-aug",
+    periodId: "jan-apr",
     year: 2026,
     profile: {
         name: "Soto Herrera, Amanda",
@@ -95,7 +95,32 @@ test("el periodo evaluado va marcado con X y los otros dos en blanco", () => {
 
     assert.equal(marks.length, FORM_PERIOD_LINES.length);
     assert.equal(marks.filter(mark => mark.includes("X")).length, 1);
-    assert.match(html, /Mayo a agosto del a[nñ]o[\s\S]{0,80}2026/);
+    assert.match(html, /Enero a abril del a[nñ]o[\s\S]{0,80}2026/);
+});
+
+test("el papel conserva las tres lineas, aunque el menu ofrezca dos", async () => {
+    // El formulario es la reproduccion del documento del ministerio: alli estan
+    // los tres cuatrimestres y se marca el que corresponde. Que la aplicacion
+    // ya no ofrezca mayo a agosto -lo cubre la calificacion anual- no cambia el
+    // papel, y borrarle la linea lo haria distinto del oficial.
+    const { qualificationPeriods } = await import("../js/qualifications.js");
+
+    assert.equal(FORM_PERIOD_LINES.length, 3);
+    assert.ok(
+        FORM_PERIOD_LINES.some(period => period.id === "may-aug"),
+        "la linea de mayo a agosto se queda en el papel"
+    );
+    assert.equal(qualificationPeriods(2026).length, 2);
+    assert.equal(
+        qualificationPeriods(2026).some(period => period.id === "may-aug"),
+        false
+    );
+
+    // Y sin periodo marcado, el papel sale igual: ninguna X.
+    const sinMarcar = qualificationFormHTML({ ...SAMPLE, periodId: "may-aug" });
+    const marcas = sinMarcar.match(/class="mark">([^<]*)</g) || [];
+
+    assert.equal(marcas.filter(marca => marca.includes("X")).length, 1);
 });
 
 test("el texto escrito por la jefatura viaja al papel, escapado", () => {
