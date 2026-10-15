@@ -1382,3 +1382,94 @@ test("y la tarea diaria lo deja listo antes de que llegue la fecha", async () =>
   assert.equal(doc.linkRenamePendingTo, null);
   assert.equal(doc.linkMovedAt, undefined);
 });
+
+// --- La mudanza del dia usa el nombre resuelto (auditoria 2026-10-15) ---
+
+test("al llegar la fecha, el enlace se muda con el nombre resuelto", async () => {
+  // El bucle seguia con la copia que leyo al empezar: resolvia el nombre en el
+  // documento y mudaba el enlace con el de origen, que es justo el error que
+  // esta reparacion viene a evitar.
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      startDate: "2026-10-01",
+      linkRenamePendingFrom: "ANA ROJAS",
+      linkRenamePendingTo: "Ana Rojas Campos"
+    }),
+    "workspaces/w-origen/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "Ana Perez",
+      status: "active"
+    }
+  });
+  const { deps } = dependencies(db);
+
+  await moveDueWorkerLinksHandler({ ...deps, today: "2026-10-05" });
+
+  const enlace = db.documents.get("workspaces/w-destino/workerLinks/uid-ana");
+
+  assert.equal(enlace.profileName, "Ana Rojas Campos");
+  assert.equal(
+    db.documents.get("users/uid-ana/workerLinks/w-destino").profileName,
+    "Ana Rojas Campos"
+  );
+});
+
+test("sin saber el nombre de destino, el enlace NO se muda", async () => {
+  // Mudarlo con el de origen lo deja apuntando a un perfil que no existe, y
+  // ademas marca la mudanza como hecha: nadie volveria a mirarla.
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      startDate: "2026-10-01",
+      linkRenamePendingFrom: "ANA ROJAS",
+      linkRenamePendingTo: "Ana Rojas Campos"
+    }),
+    "workspaces/w-origen/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "Ana Perez",
+      status: "active"
+    }
+  });
+  const { deps } = dependencies(db, { findWorkerProfile: async () => null });
+
+  await moveDueWorkerLinksHandler({ ...deps, today: "2026-10-05" });
+
+  const doc = db.documents.get(`${COLLECTION}/t-1`);
+
+  assert.equal(
+    db.documents.get("workspaces/w-destino/workerLinks/uid-ana"),
+    undefined,
+    "no se creo el enlace en destino"
+  );
+  // El de origen sigue en pie y la mudanza no se da por hecha.
+  assert.equal(
+    db.documents.get("workspaces/w-origen/workerLinks/uid-ana").profileName,
+    "Ana Perez"
+  );
+  assert.equal(doc.linkMovedAt, undefined);
+  assert.equal(doc.linkRenamePendingTo, "Ana Rojas Campos", "sigue pendiente");
+});
+
+test("una transferencia sin nombre pendiente se muda como siempre", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({ startDate: "2026-10-01" }),
+    "workspaces/w-origen/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "Ana Perez",
+      status: "active"
+    }
+  });
+  const { deps } = dependencies(db);
+
+  const resultado = await moveDueWorkerLinksHandler({
+    ...deps,
+    today: "2026-10-05"
+  });
+
+  assert.equal(resultado.moved, 1);
+  assert.equal(
+    db.documents.get("workspaces/w-destino/workerLinks/uid-ana").profileName,
+    "Ana Perez"
+  );
+});

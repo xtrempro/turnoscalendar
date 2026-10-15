@@ -454,8 +454,10 @@ async function moveDueWorkerLinksHandler(dependencies) {
     // RUT de la transferencia, y manda ese. Asi la reparacion no puede escribir
     // en el enlace un nombre que nadie verifico.
     if (solicitud.linkRenamePendingTo) {
+      let resuelto = { resolved: false };
+
       try {
-        await resolvePendingProfileName(docSnap, solicitud, {
+        resuelto = await resolvePendingProfileName(docSnap, solicitud, {
           db,
           findWorkerProfile,
           serverTimestamp
@@ -466,6 +468,16 @@ async function moveDueWorkerLinksHandler(dependencies) {
           error: error?.message || String(error)
         });
       }
+
+      // Mientras no se sepa con que nombre quedo alla, esta transferencia no
+      // se toca mas hoy. Seguir y mudarle el enlace con el nombre de origen lo
+      // dejaria apuntando a un perfil que no existe, y encima daria la mudanza
+      // por hecha: nadie volveria a mirarla.
+      if (!resuelto.resolved) continue;
+
+      // Y lo que sigue usa el nombre recien resuelto, no la copia con que se
+      // leyo el documento al empezar.
+      solicitud.targetProfileName = resuelto.profileName;
     }
 
     if (solicitud.linkMovedAt || solicitud.startDate > today) continue;
