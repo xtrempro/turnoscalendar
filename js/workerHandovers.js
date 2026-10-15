@@ -193,6 +193,49 @@ export async function resolveWorkerHandoverRequest({
 
 let stopRequestsListener = null;
 let requestsGeneration = 0;
+let lastRequests = [];
+let expiryTimer = null;
+
+// Nunca mas de un rato: setTimeout con dias de por medio es poco de fiar, y
+// revisar de mas aqui no cuesta nada.
+const MAX_EXPIRY_WAIT_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Reparte lo ultimo que trajo el oyente: lo que todavia se puede responder y lo
+ * que ya no.
+ *
+ * Lo que ya no incluye lo retirado, lo aceptado, lo rechazado Y lo caducado. El
+ * aviso de cualquiera de esos manda a hacer algo que no se puede hacer.
+ *
+ * Y la caducidad NO produce un evento de Firestore: el documento no cambia al
+ * vencer. Por eso se programa una vuelta para cuando venza el primero, o el
+ * pedido caducado seguiria anunciandose hasta recargar.
+ */
+function emitRequests(onPending) {
+    clearTimeout(expiryTimer);
+
+    const ahora = Date.now();
+    const vigentes = lastRequests.filter(item =>
+        handoverRequestIsUsable(item, ahora)
+    );
+
+    onPending(
+        vigentes,
+        lastRequests.filter(item => !handoverRequestIsUsable(item, ahora))
+    );
+
+    const proxima = vigentes
+        .map(item => millisFrom(item.expiresAt))
+        .filter(ms => ms > ahora)
+        .sort((uno, otro) => uno - otro)[0];
+
+    if (!proxima) return;
+
+    expiryTimer = setTimeout(
+        () => emitRequests(onPending),
+        Math.min(proxima - ahora + 1000, MAX_EXPIRY_WAIT_MS)
+    );
+}
 
 /**
  * Los pedidos de traspaso que ESTA unidad tiene que responder, en vivo.
@@ -221,17 +264,12 @@ export async function watchIncomingHandoverRequests(workspace, onPending) {
             firestoreModule.where("sourceWorkspaceId", "==", workspace.id)
         ),
         snap => {
-            const pedidos = snap.docs.map(docSnap => ({
+            lastRequests = snap.docs.map(docSnap => ({
                 id: docSnap.id,
                 ...docSnap.data()
             }));
 
-            // Los pendientes para avisar, y los retirados para quitar el aviso
-            // que ya no manda a ninguna parte.
-            onPending(
-                pedidos.filter(item => handoverRequestIsUsable(item)),
-                pedidos.filter(item => item.status === "canceled")
-            );
+            emitRequests(onPending);
         },
         error => {
             console.warn("No se pudieron leer los pedidos de traspaso.", error);
@@ -241,6 +279,9 @@ export async function watchIncomingHandoverRequests(workspace, onPending) {
 
 export function stopWatchingIncomingHandoverRequests() {
     requestsGeneration++;
+    clearTimeout(expiryTimer);
+    expiryTimer = null;
+    lastRequests = [];
     stopRequestsListener?.();
     stopRequestsListener = null;
 }

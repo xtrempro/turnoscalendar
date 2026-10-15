@@ -417,8 +417,13 @@ test("el aviso de la campanita si se va cuando retiran el pedido", async () => {
     );
     const observar = extraer(traspasos, "watchIncomingHandoverRequests");
 
-    assert.match(observar, /handoverRequestIsUsable\(item\)/);
-    assert.match(observar, /item\.status === "canceled"/);
+    assert.match(observar, /emitRequests\(onPending\)/);
+
+    const repartir = extraer(traspasos, "emitRequests");
+
+    // Lo que ya no se puede responder incluye lo retirado, lo resuelto y lo
+    // caducado: el aviso de cualquiera manda a hacer algo imposible.
+    assert.match(repartir, /!handoverRequestIsUsable\(item, ahora\)/);
 
     const olvidar = extraer(main, "forgetHandoverRequestNotices");
 
@@ -428,7 +433,7 @@ test("el aviso de la campanita si se va cuando retiran el pedido", async () => {
     // Y lo llama el oyente: la funcion sola no quita ningun aviso.
     assert.match(
         main,
-        /\(pendientes, retirados\) => \{[\s\S]{0,300}noticeHandoverRequests\(pendientes\);[\s\S]{0,120}forgetHandoverRequestNotices\(retirados\);/
+        /\(pendientes, resueltos\) => \{[\s\S]{0,300}noticeHandoverRequests\(pendientes\);[\s\S]{0,120}forgetHandoverRequestNotices\(resueltos\);/
     );
 });
 
@@ -448,7 +453,9 @@ test("la campanita avisa cuando rechazan el traspaso que pediste", async () => {
 
     const avisar = extraer(main, "noticeRejectedHandovers");
 
-    assert.match(avisar, /id: `traspaso-rechazado:\$\{pedido\.id\}`/);
+    // Con el mismo id compuesto que el aviso de entrada: el documento se reusa,
+    // asi que un segundo rechazo tiene que ser otro aviso.
+    assert.match(avisar, /handoverNoticeId\(pedido, "traspaso-rechazado"\)/);
     assert.match(avisar, /rechazó el traspaso que pediste/);
     // Con el motivo, si lo escribieron.
     assert.match(avisar, /pedido\.rejectReason/);

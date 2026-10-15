@@ -12288,14 +12288,14 @@ function noticeMovedWorkers(pendientes = []) {
 // el id a secas el segundo pedido se tomaba por repetido y no sonaba. Con la
 // fecha de creacion, uno nuevo es un aviso nuevo; una correccion del mismo
 // pedido conserva el id y solo reescribe lo que dice.
-function handoverNoticeId(pedido) {
+function handoverNoticeId(pedido, prefijo = "pedido-traspaso") {
     const creado = pedido?.createdAt?.toDate?.() ||
         (pedido?.createdAt ? new Date(pedido.createdAt) : null);
     const marca = creado && !Number.isNaN(creado.getTime())
         ? creado.getTime()
         : "";
 
-    return `pedido-traspaso:${pedido?.id}:${marca}`;
+    return `${prefijo}:${pedido?.id}:${marca}`;
 }
 
 function noticeHandoverRequests(pendientes = []) {
@@ -12332,7 +12332,7 @@ function noticeRejectedHandovers(rechazados = []) {
         const motivo = String(pedido.rejectReason || "").trim();
 
         addBellNotice({
-            id: `traspaso-rechazado:${pedido.id}`,
+            id: handoverNoticeId(pedido, "traspaso-rechazado"),
             title: `${unidad} rechazó el traspaso que pediste`,
             detail: (motivo ? `Motivo: "${motivo}". ` : "") +
                 `Puedes ingresar de cero a la persona con RUT ` +
@@ -12341,13 +12341,13 @@ function noticeRejectedHandovers(rechazados = []) {
     }
 }
 
-// El pedido se retiro: su aviso ya no manda a ninguna parte.
+// El pedido ya no se puede responder: su aviso sale de la campanita.
 //
-// La tarjeta NO desaparece -queda en "Anuladas", para que quien la vio sepa que
-// paso-, pero el aviso de la campanita decia "acéptalo o recházalo" y eso ya no
-// se puede hacer.
-function forgetHandoverRequestNotices(retirados = []) {
-    for (const pedido of retirados) {
+// Vale para los retirados, los resueltos y los caducados. La tarjeta NO
+// desaparece -queda en su filtro, para que quien la vio sepa que paso-, pero el
+// aviso decia "acéptalo o recházalo" y eso ya no se puede hacer.
+function forgetHandoverRequestNotices(resueltos = []) {
+    for (const pedido of resueltos) {
         removeBellNotice(handoverNoticeId(pedido));
     }
 }
@@ -14500,15 +14500,23 @@ async function guardarPerfil() {
     // En un perfil que sigue en la unidad NO se toca: ahi lo anterior al inicio
     // nuevo es su historia, y hay un camino aparte para acortar la rotativa
     // vigente (rotationOverlapDecision).
-    const rotationClearBeforeStart =
-        (profileDraft.mode === PROFILE_MODE.CREATE || isReactivating) &&
-        nextRotationStart
-            ? (
-                normalizeStoredStart(profileDraft.originalRotationStart) ||
-                normalizeStoredStart(nextUnitEntryDate) ||
-                ""
+    // Desde donde se limpia lo que haya quedado ANTES del inicio nuevo.
+    //
+    // Al REACTIVAR, el piso es el dia siguiente a su ultimo dia trabajado: lo
+    // anterior a su salida es historia y no se toca. Tomar el inicio de su
+    // rotativa anterior -que puede ser de hace años- borraba todo lo que esa
+    // persona trabajo aqui antes de irse.
+    //
+    // Al CREAR, su ingreso a la unidad: antes de eso no puede haber nada suyo.
+    const rotationClearBeforeStart = !nextRotationStart
+        ? ""
+        : isReactivating
+            ? nextCalendarISO(
+                normalizeStoredStart(previousSnapshot?.unitExitDate || "")
             )
-            : "";
+            : profileDraft.mode === PROFILE_MODE.CREATE
+                ? normalizeStoredStart(nextUnitEntryDate)
+                : "";
     const shouldSaveReplacementContract =
         replacementContract &&
         requiresReplacementContract();
@@ -19101,11 +19109,11 @@ initFirebaseShell({
                 // En Solicitudes ya salen; esto es para enterarse sin entrar.
                 void watchIncomingHandoverRequests(
                     workspace,
-                    (pendientes, retirados) => {
+                    (pendientes, resueltos) => {
                         if (generacion !== workspaceChangeGeneration) return;
 
                         noticeHandoverRequests(pendientes);
-                        forgetHandoverRequestNotices(retirados);
+                        forgetHandoverRequestNotices(resueltos);
                         void refreshWorkerRequestsNavBadge();
                     }
                 ).catch(error => {

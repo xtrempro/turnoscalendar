@@ -156,8 +156,16 @@ test("hay un oyente de los pedidos que esta unidad debe responder", () => {
     assert.match(observar, /where\("sourceWorkspaceId", "==", workspace\.id\)/);
     // Trae todos los de esta unidad y separa en el cliente: los que todavia se
     // pueden responder, y los retirados para quitar el aviso que ya no sirve.
-    assert.match(observar, /handoverRequestIsUsable\(item\)/);
-    assert.match(observar, /item\.status === "canceled"/);
+    // Reparte en dos: lo que todavia se puede responder y lo que ya no
+    // -retirado, resuelto o caducado-.
+    assert.match(observar, /emitRequests\(onPending\)/);
+
+    const repartir = extraer(traspasos, "emitRequests");
+
+    assert.match(repartir, /handoverRequestIsUsable\(item, ahora\)/);
+    assert.match(repartir, /!handoverRequestIsUsable\(item, ahora\)/);
+    // La caducidad no produce evento: se programa una vuelta para cuando venza.
+    assert.match(repartir, /expiryTimer = setTimeout\(/);
     // Y "usable" es la MISMA regla del servidor: pendiente y sin caducar.
     const usable = extraer(traspasos, "handoverRequestIsUsable");
 
@@ -301,7 +309,12 @@ test("un pedido nuevo en el mismo documento suena como nuevo", () => {
     const idDelAviso = extraer(principal, "handoverNoticeId");
 
     assert.match(idDelAviso, /pedido\?\.createdAt/);
-    assert.match(idDelAviso, /`pedido-traspaso:\$\{pedido\?\.id\}:\$\{marca\}`/);
+    assert.match(idDelAviso, /`\$\{prefijo\}:\$\{pedido\?\.id\}:\$\{marca\}`/);
+    // El mismo esquema para el aviso de rechazo.
+    assert.match(
+        principal,
+        /id: handoverNoticeId\(pedido, "traspaso-rechazado"\)/
+    );
 
     // Lo usan los dos lados: el que avisa y el que quita el aviso.
     const avisar = extraer(principal, "noticeHandoverRequests");

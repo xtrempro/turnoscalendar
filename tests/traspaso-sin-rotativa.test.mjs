@@ -506,38 +506,47 @@ test("si la otra unidad lo tiene activo, no hay piso", async () => {
 
 // --- Mover el inicio hacia adelante no deja turnos atras ---
 
-test("al crear o reactivar se limpia lo que quedo antes del inicio", () => {
-    // Se elige un dia, se mira el calendario y se elige otro mas adelante: la
-    // rotativa de la primera fecha quedaba pintada atras, como si la persona
-    // hubiera trabajado dias en que todavia no estaba.
+test("al reactivar solo se limpia desde que se fue, no su historia", () => {
+    // Tomar el inicio de su rotativa anterior -que puede ser de hace años-
+    // borraba todo lo que esa persona trabajo aqui antes de irse.
     const guardar = extraer("guardarPerfil");
-
-    assert.match(guardar, /const rotationClearBeforeStart =/);
-    assert.match(
-        guardar,
-        /profileDraft\.mode === PROFILE_MODE\.CREATE \|\| isReactivating/
+    const piso = guardar.slice(
+        guardar.indexOf("const rotationClearBeforeStart ="),
+        guardar.indexOf("clearBeforeStart: rotationClearBeforeStart")
     );
-    // El piso sale de la fecha anterior o del ingreso a la unidad, no de un
-    // rango inventado.
-    assert.match(guardar, /normalizeStoredStart\(profileDraft\.originalRotationStart\)/);
-    assert.match(guardar, /normalizeStoredStart\(nextUnitEntryDate\)/);
-    assert.match(guardar, /clearBeforeStart: rotationClearBeforeStart/);
+
+    assert.match(
+        piso,
+        /isReactivating[\s\S]{0,40}nextCalendarISO\([\s\S]{0,60}previousSnapshot\?\.unitExitDate/
+    );
+    // Y nunca desde el inicio de la rotativa anterior.
+    assert.doesNotMatch(piso, /originalRotationStart/);
+});
+
+test("al crear, el piso es su ingreso a la unidad", () => {
+    const guardar = extraer("guardarPerfil");
+    const piso = guardar.slice(
+        guardar.indexOf("const rotationClearBeforeStart ="),
+        guardar.indexOf("clearBeforeStart: rotationClearBeforeStart")
+    );
+
+    assert.match(
+        piso,
+        /PROFILE_MODE\.CREATE[\s\S]{0,40}normalizeStoredStart\(nextUnitEntryDate\)/
+    );
 });
 
 test("un perfil que sigue en la unidad no pierde su historia", () => {
     // Ahi lo anterior al inicio nuevo es lo que trabajo, y para acortar la
     // rotativa vigente hay un camino aparte.
     const guardar = extraer("guardarPerfil");
-    const condicion = guardar.slice(
+    const piso = guardar.slice(
         guardar.indexOf("const rotationClearBeforeStart ="),
-        guardar.indexOf("const rotationClearBeforeStart =") + 420
+        guardar.indexOf("clearBeforeStart: rotationClearBeforeStart")
     );
 
-    assert.ok(
-        condicion.includes("PROFILE_MODE.CREATE") &&
-        condicion.includes("isReactivating"),
-        "solo al crear o reactivar"
-    );
+    // Editar un perfil activo cae en el caso vacio: no se limpia nada atras.
+    assert.match(piso, /:\s*"";/);
 });
 
 test("la limpieza va desde el inicio viejo hasta el dia anterior al nuevo", () => {

@@ -1830,7 +1830,7 @@ async function getWorkerHandoverPanelRequests() {
                     startDate: item.startDate || "",
                     rotationLabel: handoverRotationLabel(item),
                     note: handoverNote(
-                        item.status,
+                        caducado ? "expired" : item.status,
                         recibido,
                         otra,
                         recibido ? handoverExitDate(item.rut) : "",
