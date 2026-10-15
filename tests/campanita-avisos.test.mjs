@@ -154,7 +154,10 @@ test("hay un oyente de los pedidos que esta unidad debe responder", () => {
     const observar = extraer(traspasos, "watchIncomingHandoverRequests");
 
     assert.match(observar, /where\("sourceWorkspaceId", "==", workspace\.id\)/);
-    assert.match(observar, /where\("status", "==", "pending"\)/);
+    // Trae todos los de esta unidad y separa en el cliente: los pendientes
+    // para avisar, y los retirados para quitar el aviso que ya no sirve.
+    assert.match(observar, /item\.status === "pending"/);
+    assert.match(observar, /item\.status === "canceled"/);
     // Y se suelta al cambiar de unidad.
     assert.match(traspasos, /export function stopWatchingIncomingHandoverRequests/);
     assert.match(principal, /stopWatchingIncomingHandoverRequests\(\);/);
@@ -183,4 +186,15 @@ test("el badge de Solicitudes cuenta lo mismo que muestra el panel", () => {
     ]) {
         assert.ok(badge.includes(fuente), `al badge le falta ${fuente}`);
     }
+});
+
+test("quitar un aviso que dejo de ser cierto", () => {
+    // Un aviso manda a hacer algo: si eso ya no esta, dejarlo puesto manda a
+    // buscar lo que no existe.
+    const quitar = extraer(campanita, "removeBellNotice");
+
+    assert.match(quitar, /filter\(item => item\?\.id !== clave\)/);
+    // Sin el, no se repinta de mas.
+    assert.match(quitar, /if \(quedan\.length === previos\.length\) return false;/);
+    assert.match(quitar, /scheduleRefresh\(\)/);
 });

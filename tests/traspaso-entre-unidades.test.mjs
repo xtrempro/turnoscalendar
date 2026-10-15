@@ -380,3 +380,91 @@ test("la tarjeta de Solicitudes tambien lo dice", async () => {
     assert.match(nota, /formatDate\(startDate\)/);
     assert.match(panel, /function handoverExitDate\(rut\)/);
 });
+
+// --- Retirar un pedido no lo hace desaparecer de la otra unidad ---
+
+test("un pedido retirado queda en Anuladas, no se borra de la vista", async () => {
+    // En la otra unidad el pedido estaba a la vista: desaparecer sin mas deja a
+    // alguien preguntandose si lo respondio o se lo imagino.
+    const panel = await (await import("node:fs/promises")).readFile(
+        new URL("../js/workerRequests.js", import.meta.url),
+        "utf8"
+    );
+    const cargar = extraer(panel, "getWorkerHandoverPanelRequests");
+
+    assert.match(
+        cargar,
+        /\["pending", "accepted", "rejected", "canceled"\]/
+    );
+
+    // Y la tarjeta dice quien lo retiro, distinto para cada lado.
+    const nota = extraer(panel, "handoverNote");
+
+    assert.match(nota, /if \(status === "canceled"\)/);
+    assert.match(nota, /retiró el pedido: no hay nada que responder/);
+    assert.match(nota, /Retiraste el pedido/);
+
+    // El filtro "Anuladas" del panel usa ese mismo estado.
+    assert.match(panel, /statusButtonHTML\("canceled", "Anuladas"/);
+});
+
+test("el aviso de la campanita si se va cuando retiran el pedido", async () => {
+    // La tarjeta se queda para contar lo que paso; el aviso mandaba a aceptar
+    // o rechazar algo que ya no esta.
+    const traspasos = await (await import("node:fs/promises")).readFile(
+        new URL("../js/workerHandovers.js", import.meta.url),
+        "utf8"
+    );
+    const observar = extraer(traspasos, "watchIncomingHandoverRequests");
+
+    assert.match(observar, /item\.status === "pending"/);
+    assert.match(observar, /item\.status === "canceled"/);
+
+    const olvidar = extraer(main, "forgetHandoverRequestNotices");
+
+    assert.match(olvidar, /removeBellNotice\(`pedido-traspaso:\$\{pedido\.id\}`\)/);
+
+    // Y lo llama el oyente: la funcion sola no quita ningun aviso.
+    assert.match(
+        main,
+        /\(pendientes, retirados\) => \{[\s\S]{0,300}noticeHandoverRequests\(pendientes\);[\s\S]{0,120}forgetHandoverRequestNotices\(retirados\);/
+    );
+});
+
+// --- Un rechazo tiene que llegar a alguna parte ---
+
+test("la campanita avisa cuando rechazan el traspaso que pediste", async () => {
+    // Aceptar se nota solo -el perfil aparece-; un rechazo no deja rastro, y
+    // mientras tanto la persona sigue sin ingresar.
+    const traspasos = await (await import("node:fs/promises")).readFile(
+        new URL("../js/workerHandovers.js", import.meta.url),
+        "utf8"
+    );
+    const observar = extraer(traspasos, "watchOwnHandoverRequests");
+
+    assert.match(observar, /where\("requestingWorkspaceId", "==", workspace\.id\)/);
+    assert.match(observar, /where\("status", "==", "rejected"\)/);
+
+    const avisar = extraer(main, "noticeRejectedHandovers");
+
+    assert.match(avisar, /id: `traspaso-rechazado:\$\{pedido\.id\}`/);
+    assert.match(avisar, /rechazó el traspaso que pediste/);
+    // Con el motivo, si lo escribieron.
+    assert.match(avisar, /pedido\.rejectReason/);
+    assert.match(main, /noticeRejectedHandovers\(rechazados\);/);
+    assert.match(main, /stopWatchingOwnHandoverRequests\(\);/);
+});
+
+test("y la tarjeta de Solicitudes muestra ese motivo", async () => {
+    const panel = await (await import("node:fs/promises")).readFile(
+        new URL("../js/workerRequests.js", import.meta.url),
+        "utf8"
+    );
+    const nota = extraer(panel, "handoverNote");
+
+    assert.match(nota, /No lo aceptaron: "\$\{rejectReason\}"/);
+    // El motivo sale del pedido, no de otra parte.
+    assert.match(panel, /String\(item\.rejectReason \|\| ""\)\.trim\(\)/);
+    // Y se pregunta al rechazar.
+    assert.match(panel, /¿Por qué rechazas el pedido de/);
+});

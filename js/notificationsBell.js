@@ -108,6 +108,29 @@ export function addBellNotice(notice) {
     if (pushNotice(notice)) scheduleRefresh();
 }
 
+/**
+ * Saca un aviso que dejo de ser cierto.
+ *
+ * Un aviso de la campanita manda a hacer algo. Si eso ya no esta -el pedido lo
+ * retiraron, la solicitud la resolvio otro supervisor-, dejarlo puesto manda a
+ * buscar algo que no existe.
+ */
+export function removeBellNotice(id) {
+    const clave = String(id || "").trim();
+
+    if (!clave) return false;
+
+    const previos = getBellNotices();
+    const quedan = previos.filter(item => item?.id !== clave);
+
+    if (quedan.length === previos.length) return false;
+
+    setJSON(NOTICES_KEY, quedan);
+    scheduleRefresh();
+
+    return true;
+}
+
 export function clearBellNotices() {
     if (!getBellNotices().length) return;
 

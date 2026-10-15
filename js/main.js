@@ -523,7 +523,11 @@ import {
     startSupervisorInviteRequestsListener,
     stopSupervisorInviteRequestsListener
 } from "./workerRequests.js";
-import { addBellNotice, initNotificationsBell } from "./notificationsBell.js";
+import {
+    addBellNotice,
+    initNotificationsBell,
+    removeBellNotice
+} from "./notificationsBell.js";
 import { initPendingLeaveBlinkSync } from "./pendingLeaveBlinkSync.js";
 import {
     WORKER_LINK_STATE,
@@ -662,7 +666,9 @@ import {
     requestWorkerHandover,
     resolveWorkerHandoverRequest,
     stopWatchingIncomingHandoverRequests,
-    watchIncomingHandoverRequests
+    stopWatchingOwnHandoverRequests,
+    watchIncomingHandoverRequests,
+    watchOwnHandoverRequests
 } from "./workerHandovers.js";
 
 initPerformanceMonitor();
@@ -12282,6 +12288,38 @@ function noticeHandoverRequests(pendientes = []) {
     }
 }
 
+// La otra unidad rechazo un pedido de esta.
+//
+// Aceptar se nota solo: el perfil aparece. Un rechazo no deja rastro en ningun
+// lado, y mientras tanto la persona sigue sin ingresar aqui.
+function noticeRejectedHandovers(rechazados = []) {
+    for (const pedido of rechazados) {
+        const rut = normalizeRut(pedido.rut);
+        const unidad = String(pedido.sourceWorkspaceName || "").trim() ||
+            "La otra unidad";
+        const motivo = String(pedido.rejectReason || "").trim();
+
+        addBellNotice({
+            id: `traspaso-rechazado:${pedido.id}`,
+            title: `${unidad} rechazó el traspaso que pediste`,
+            detail: (motivo ? `Motivo: "${motivo}". ` : "") +
+                `Puedes ingresar de cero a la persona con RUT ` +
+                `${formatRut(rut) || rut}.`
+        });
+    }
+}
+
+// El pedido se retiro: su aviso ya no manda a ninguna parte.
+//
+// La tarjeta NO desaparece -queda en "Anuladas", para que quien la vio sepa que
+// paso-, pero el aviso de la campanita decia "acéptalo o recházalo" y eso ya no
+// se puede hacer.
+function forgetHandoverRequestNotices(retirados = []) {
+    for (const pedido of retirados) {
+        removeBellNotice(`pedido-traspaso:${pedido.id}`);
+    }
+}
+
 // Los saldos que envio la unidad de origen, si son de este año.
 function transferredLeaveBalances(solicitud = {}) {
     const saldos = solicitud.profile?.leaveBalances;
@@ -14013,6 +14051,22 @@ async function applyDraftRotation(
 
     const startDate = parseInputDate(rotationStart);
 
+    // Mover el inicio hacia ADELANTE deja atras los turnos de la fecha anterior.
+    //
+    // Pasa al corregirse: se elige un dia, se mira el calendario y se elige
+    // otro mas adelante. Limpiar solo desde el inicio nuevo dejaba la rotativa
+    // vieja pintada antes, como si la persona hubiera trabajado dias en que
+    // todavia no estaba. Solo al crear o reactivar: en un perfil que sigue en
+    // la unidad, lo de antes del inicio nuevo es su historia y no se toca.
+    if (options.clearBeforeStart) {
+        const desde = parseInputDate(options.clearBeforeStart);
+        const hasta = previousCalendarISO(rotationStart);
+
+        if (desde && hasta && compareISODate(options.clearBeforeStart, hasta) <= 0) {
+            await cleanupFutureSchedule(desde, { endISO: hasta });
+        }
+    }
+
     await cleanupFutureSchedule(startDate, { endISO });
 
     if (rotationType === "reemplazo") {
@@ -14406,6 +14460,22 @@ async function guardarPerfil() {
             ? (getHonorariaContractsForProfile(
                 honorariaContractProfileName()
             )[0]?.start || "")
+            : "";
+    // Al crear o reactivar, antes del inicio de la rotativa no puede quedar
+    // nada: la persona no estaba aqui. Si se eligio una fecha y despues otra
+    // mas adelante, los turnos de la primera quedaban pintados atras.
+    //
+    // En un perfil que sigue en la unidad NO se toca: ahi lo anterior al inicio
+    // nuevo es su historia, y hay un camino aparte para acortar la rotativa
+    // vigente (rotationOverlapDecision).
+    const rotationClearBeforeStart =
+        (profileDraft.mode === PROFILE_MODE.CREATE || isReactivating) &&
+        nextRotationStart
+            ? (
+                normalizeStoredStart(profileDraft.originalRotationStart) ||
+                normalizeStoredStart(nextUnitEntryDate) ||
+                ""
+            )
             : "";
     const shouldSaveReplacementContract =
         replacementContract &&
@@ -14817,7 +14887,8 @@ async function guardarPerfil() {
                 nextRotationFirstTurn,
                 {
                     cleanupStart: rotationCleanupStart,
-                    endISO: rotationOverlapDecision.endISO
+                    endISO: rotationOverlapDecision.endISO,
+                    clearBeforeStart: rotationClearBeforeStart
                 }
             );
 
@@ -18998,15 +19069,31 @@ initFirebaseShell({
                 // En Solicitudes ya salen; esto es para enterarse sin entrar.
                 void watchIncomingHandoverRequests(
                     workspace,
-                    pendientes => {
+                    (pendientes, retirados) => {
                         if (generacion !== workspaceChangeGeneration) return;
 
                         noticeHandoverRequests(pendientes);
+                        forgetHandoverRequestNotices(retirados);
                         void refreshWorkerRequestsNavBadge();
                     }
                 ).catch(error => {
                     console.warn(
                         "No se pudieron escuchar los pedidos de traspaso.",
+                        error
+                    );
+                });
+                // Y la respuesta a los que ESTA unidad pidio: aceptar se nota
+                // solo -el perfil aparece-, pero un rechazo no deja rastro.
+                void watchOwnHandoverRequests(
+                    workspace,
+                    rechazados => {
+                        if (generacion !== workspaceChangeGeneration) return;
+
+                        noticeRejectedHandovers(rechazados);
+                    }
+                ).catch(error => {
+                    console.warn(
+                        "No se pudieron escuchar las respuestas a los pedidos.",
                         error
                     );
                 });
@@ -19120,6 +19207,7 @@ initFirebaseShell({
         } else {
             stopWatchingAcceptedOutgoingTransfers();
             stopWatchingIncomingHandoverRequests();
+            stopWatchingOwnHandoverRequests();
             stopWatchingIncomingHandoverTransfers();
             stopWatchingWorkerUnitChangeNotices();
             stopWatchingIncomingTransferBalances();

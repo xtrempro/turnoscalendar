@@ -1795,8 +1795,12 @@ async function getWorkerHandoverPanelRequests() {
         const pedidos = await listWorkerHandoverRequests();
 
         return pedidos
+            // Tambien los retirados: en la otra unidad el pedido estaba a la
+            // vista y desaparecer sin mas deja a alguien preguntandose si lo
+            // respondio o se lo imagino. Queda en "Anuladas".
             .filter(item =>
-                ["pending", "accepted", "rejected"].includes(item.status)
+                ["pending", "accepted", "rejected", "canceled"]
+                    .includes(item.status)
             )
             .map(item => {
                 const recibido =
@@ -1823,7 +1827,8 @@ async function getWorkerHandoverPanelRequests() {
                         recibido,
                         otra,
                         recibido ? handoverExitDate(item.rut) : "",
-                        item.startDate || ""
+                        item.startDate || "",
+                        String(item.rejectReason || "").trim()
                     ),
                     createdAt: timestampISO(
                         item.createdAt || item.updatedAt || new Date()
@@ -1850,7 +1855,7 @@ function handoverRotationLabel(item = {}) {
         : etiqueta;
 }
 
-function handoverNote(status, recibido, otra, exitDate = "", startDate = "") {
+function handoverNote(status, recibido, otra, exitDate = "", startDate = "", rejectReason = "") {
     if (status === "pending") {
         // Aceptar ya no envia una solicitud de vuelta: la fecha y la rotativa
         // vinieron en el pedido, asi que la transferencia queda hecha.
@@ -1881,7 +1886,19 @@ function handoverNote(status, recibido, otra, exitDate = "", startDate = "") {
     }
 
     if (status === "rejected" && !recibido) {
-        return "No lo aceptaron. Puedes ingresar a la persona de cero.";
+        // Con el motivo, si lo escribieron: es lo unico que explica por que, y
+        // sin el la tarjeta obliga a ir a preguntar a la otra unidad.
+        return rejectReason
+            ? `No lo aceptaron: "${rejectReason}". Puedes ingresar a la ` +
+                "persona de cero."
+            : "No lo aceptaron. Puedes ingresar a la persona de cero.";
+    }
+
+    if (status === "canceled") {
+        return recibido
+            ? `${otra} retiró el pedido: no hay nada que responder.`
+            : "Retiraste el pedido. Puedes volver a pedirlo o ingresar a la " +
+                "persona de cero.";
     }
 
     return "";

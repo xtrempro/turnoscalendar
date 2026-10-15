@@ -177,6 +177,10 @@ let requestsGeneration = 0;
  * El panel de Solicitudes los lee al abrirse, y eso alcanza para verlos pero no
  * para enterarse: un pedido llega desde otra unidad y aqui no pasa nada hasta
  * que alguien entra a mirar. Con esto la campanita lo canta cuando llega.
+ *
+ * Llama con DOS listas: los que esperan respuesta y los que la otra unidad
+ * retiro, para que el aviso de un pedido retirado no quede mandando a
+ * responder algo que ya no esta.
  */
 export async function watchIncomingHandoverRequests(workspace, onPending) {
     stopWatchingIncomingHandoverRequests();
@@ -191,12 +195,19 @@ export async function watchIncomingHandoverRequests(workspace, onPending) {
     stopRequestsListener = firestoreModule.onSnapshot(
         firestoreModule.query(
             firestoreModule.collection(db, COLLECTION),
-            firestoreModule.where("sourceWorkspaceId", "==", workspace.id),
-            firestoreModule.where("status", "==", "pending")
+            firestoreModule.where("sourceWorkspaceId", "==", workspace.id)
         ),
         snap => {
+            const pedidos = snap.docs.map(docSnap => ({
+                id: docSnap.id,
+                ...docSnap.data()
+            }));
+
+            // Los pendientes para avisar, y los retirados para quitar el aviso
+            // que ya no manda a ninguna parte.
             onPending(
-                snap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+                pedidos.filter(item => item.status === "pending"),
+                pedidos.filter(item => item.status === "canceled")
             );
         },
         error => {
@@ -209,4 +220,48 @@ export function stopWatchingIncomingHandoverRequests() {
     requestsGeneration++;
     stopRequestsListener?.();
     stopRequestsListener = null;
+}
+
+let stopOwnRequestsListener = null;
+let ownRequestsGeneration = 0;
+
+/**
+ * Los pedidos que ESTA unidad hizo, para enterarse de la respuesta.
+ *
+ * Aceptar ya se nota solo -el perfil aparece-, pero un rechazo no deja rastro
+ * en ninguna parte: sin esto habia que acordarse de ir a mirar Solicitudes para
+ * descubrir que la otra unidad dijo que no, y mientras tanto la persona seguia
+ * sin ingresar.
+ */
+export async function watchOwnHandoverRequests(workspace, onResolved) {
+    stopWatchingOwnHandoverRequests();
+
+    if (!workspace?.id || typeof onResolved !== "function") return;
+
+    const generation = ownRequestsGeneration;
+    const { db, firestoreModule } = await getFirebaseServices();
+
+    if (generation !== ownRequestsGeneration) return;
+
+    stopOwnRequestsListener = firestoreModule.onSnapshot(
+        firestoreModule.query(
+            firestoreModule.collection(db, COLLECTION),
+            firestoreModule.where("requestingWorkspaceId", "==", workspace.id),
+            firestoreModule.where("status", "==", "rejected")
+        ),
+        snap => {
+            onResolved(
+                snap.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }))
+            );
+        },
+        error => {
+            console.warn("No se pudieron leer los pedidos propios.", error);
+        }
+    );
+}
+
+export function stopWatchingOwnHandoverRequests() {
+    ownRequestsGeneration++;
+    stopOwnRequestsListener?.();
+    stopOwnRequestsListener = null;
 }

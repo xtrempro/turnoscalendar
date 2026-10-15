@@ -503,3 +503,52 @@ test("si la otra unidad lo tiene activo, no hay piso", async () => {
     assert.equal(pedidos[0].minStart, "");
     assert.equal(pedidos[0].minStartMessage, "");
 });
+
+// --- Mover el inicio hacia adelante no deja turnos atras ---
+
+test("al crear o reactivar se limpia lo que quedo antes del inicio", () => {
+    // Se elige un dia, se mira el calendario y se elige otro mas adelante: la
+    // rotativa de la primera fecha quedaba pintada atras, como si la persona
+    // hubiera trabajado dias en que todavia no estaba.
+    const guardar = extraer("guardarPerfil");
+
+    assert.match(guardar, /const rotationClearBeforeStart =/);
+    assert.match(
+        guardar,
+        /profileDraft\.mode === PROFILE_MODE\.CREATE \|\| isReactivating/
+    );
+    // El piso sale de la fecha anterior o del ingreso a la unidad, no de un
+    // rango inventado.
+    assert.match(guardar, /normalizeStoredStart\(profileDraft\.originalRotationStart\)/);
+    assert.match(guardar, /normalizeStoredStart\(nextUnitEntryDate\)/);
+    assert.match(guardar, /clearBeforeStart: rotationClearBeforeStart/);
+});
+
+test("un perfil que sigue en la unidad no pierde su historia", () => {
+    // Ahi lo anterior al inicio nuevo es lo que trabajo, y para acortar la
+    // rotativa vigente hay un camino aparte.
+    const guardar = extraer("guardarPerfil");
+    const condicion = guardar.slice(
+        guardar.indexOf("const rotationClearBeforeStart ="),
+        guardar.indexOf("const rotationClearBeforeStart =") + 420
+    );
+
+    assert.ok(
+        condicion.includes("PROFILE_MODE.CREATE") &&
+        condicion.includes("isReactivating"),
+        "solo al crear o reactivar"
+    );
+});
+
+test("la limpieza va desde el inicio viejo hasta el dia anterior al nuevo", () => {
+    const aplicar = extraer("applyDraftRotation");
+
+    assert.match(aplicar, /if \(options\.clearBeforeStart\)/);
+    assert.match(aplicar, /const hasta = previousCalendarISO\(rotationStart\)/);
+    assert.match(aplicar, /cleanupFutureSchedule\(desde, \{ endISO: hasta \}\)/);
+    // Y nunca al reves: si el inicio nuevo es anterior, no hay nada que borrar.
+    assert.match(
+        aplicar,
+        /compareISODate\(options\.clearBeforeStart, hasta\) <= 0/
+    );
+});
