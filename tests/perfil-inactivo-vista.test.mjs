@@ -49,6 +49,12 @@ function montarSeleccionDeLista({
         "const current = getCurrentProfile();"
     );
     let elegido = current;
+    // Con la funcion REAL que decide que se ofrece: reimplementarla aqui seria
+    // probar la copia de la regla y no la regla.
+    const listable = extraer(
+        "function selectableProfileList",
+        "function renderProfiles"
+    );
     const fabrica = new Function(
         "syncWorkersState",
         "getProfiles",
@@ -59,7 +65,7 @@ function montarSeleccionDeLista({
         "profileDraft",
         "PROFILE_MODE",
         "watchedInactiveProfile",
-        `${bloque} return null;`
+        `${listable} ${bloque} return null;`
     );
 
     fabrica(
@@ -275,4 +281,37 @@ test("el CSS despinta las tarjetas del perfil inactivo", async () => {
     }
 
     assert.match(css, /\.pf-v2\.pf-inactive[\s\S]{0,400}filter: grayscale\(1\);/);
+});
+
+// --- Entrar a una unidad no abre a quien ya no trabaja ahi ---
+
+test("al cambiar de unidad se abre el primero que la lista OFRECE", () => {
+    // Antes tomaba el primero del estado, que puede estar inactivo: entrar a
+    // una unidad abria el perfil de alguien que ya se fue, sin que nadie lo
+    // hubiera buscado.
+    const sincronizar = extraer(
+        "function syncWorkspaceStateViews",
+        "async function reloadAppToLatestVersion"
+    );
+
+    assert.match(
+        sincronizar,
+        /setCurrentProfile\(\s*selectableProfileList\(profiles\)\[0\]\?\.name \|\| null\s*\)/
+    );
+    assert.doesNotMatch(sincronizar, /setCurrentProfile\(profiles\[0\]\.name\)/);
+});
+
+test("la regla de que se ofrece esta escrita en un solo lugar", () => {
+    // Dos lugares eligen "el primero" y tienen que elegir igual.
+    const listable = extraer(
+        "function selectableProfileList",
+        "function renderProfiles"
+    );
+
+    assert.match(listable, /getAppFilters\("profiles"\)\.showInactive/);
+    assert.match(listable, /showInactive \|\| isProfileActive\(profile\)/);
+
+    const lista = extraer("function renderProfiles", "function hheeInitials");
+
+    assert.match(lista, /const selectableProfiles = selectableProfileList\(profiles\)/);
 });

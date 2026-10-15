@@ -8040,13 +8040,25 @@ const PROFILE_LIST_PAGE_SIZE = 30;
 let profileListLimit = PROFILE_LIST_PAGE_SIZE;
 let profileListSignature = "";
 
+// Los perfiles que la lista OFRECE: los inactivos solo si se pidieron.
+//
+// Vive aparte porque hay dos momentos que eligen "el primero" y tienen que
+// elegir igual: repintar la lista y entrar a una unidad. Con la regla escrita
+// en un solo lado, cambiarse de unidad caia en el primero del estado -que puede
+// estar inactivo- y lo abria sin que nadie lo hubiera buscado.
+function selectableProfileList(profiles = getProfiles()) {
+    const showInactive = Boolean(getAppFilters("profiles").showInactive);
+
+    return profiles.filter(profile =>
+        showInactive || isProfileActive(profile)
+    );
+}
+
 function renderProfiles(options = {}) {
     const profiles = syncWorkersState(getProfiles());
     const filters = getAppFilters("profiles");
     const showInactive = Boolean(filters.showInactive);
-    const selectableProfiles = profiles.filter(profile =>
-        showInactive || isProfileActive(profile)
-    );
+    const selectableProfiles = selectableProfileList(profiles);
 
     if (
         profiles.length > 0 &&
@@ -18621,7 +18633,12 @@ function syncWorkspaceStateViews() {
                     profile.name === current
                 )
             ) {
-                setCurrentProfile(profiles[0].name);
+                // El primero que la lista OFRECE, no el primero del estado:
+                // ese puede estar inactivo, y entrar a una unidad abriria el
+                // perfil de alguien que ya no trabaja ahi.
+                setCurrentProfile(
+                    selectableProfileList(profiles)[0]?.name || null
+                );
             }
 
             if (!profiles.length) {
