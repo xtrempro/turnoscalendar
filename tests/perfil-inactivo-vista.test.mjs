@@ -40,9 +40,11 @@ function montarSeleccionDeLista({
     showInactive,
     current,
     mode = "view",
-    // Lo que el supervisor esta mirando a proposito. Vacio = recien abierta la
-    // aplicacion: nadie eligio nada.
-    mirando = ""
+    // Lo que el supervisor esta mirando a proposito, Y en que unidad. Vacio =
+    // recien abierta la aplicacion: nadie eligio nada.
+    mirando = "",
+    mirandoEn = "ws-1",
+    unidad = "ws-1"
 }) {
     const bloque = extraer(
         "const profiles = syncWorkersState(getProfiles());",
@@ -64,7 +66,7 @@ function montarSeleccionDeLista({
         "setCurrentProfile",
         "profileDraft",
         "PROFILE_MODE",
-        "watchedInactiveProfile",
+        "isWatchedInactiveProfile",
         `${listable} ${bloque} return null;`
     );
 
@@ -77,7 +79,9 @@ function montarSeleccionDeLista({
         nombre => { elegido = nombre; },
         { mode },
         { VIEW: "view", CREATE: "create" },
-        mirando
+        // La funcion REAL compara nombre Y unidad; aqui se le da el mismo
+        // criterio con los datos de la prueba.
+        nombre => Boolean(nombre) && nombre === mirando && unidad === mirandoEn
     );
 
     return elegido;
@@ -314,4 +318,83 @@ test("la regla de que se ofrece esta escrita en un solo lugar", () => {
     const lista = extraer("function renderProfiles", "function hheeInitials");
 
     assert.match(lista, /const selectableProfiles = selectableProfileList\(profiles\)/);
+});
+
+test("la marca no viaja de una unidad a otra", () => {
+    // Dos unidades del mismo hospital pueden tener a alguien que se llame
+    // igual: con solo el nombre, cambiar de unidad dejaba abierto alla un
+    // perfil inactivo que nadie busco.
+    assert.equal(
+        montarSeleccionDeLista({
+            profiles: [ANA, BEATRIZ],
+            showInactive: false,
+            current: "Ana",
+            mirando: "Ana",
+            mirandoEn: "ws-origen",
+            unidad: "ws-destino"
+        }),
+        "Beatriz"
+    );
+});
+
+test("y en su propia unidad sigue valiendo", () => {
+    assert.equal(
+        montarSeleccionDeLista({
+            profiles: [ANA, BEATRIZ],
+            showInactive: false,
+            current: "Ana",
+            mirando: "Ana",
+            mirandoEn: "ws-destino",
+            unidad: "ws-destino"
+        }),
+        "Ana"
+    );
+});
+
+test("la marca real solo vale en la unidad donde se puso", () => {
+    // Las pruebas de arriba ejercitan el guard con un criterio propio; esta
+    // ejecuta el criterio DE VERDAD.
+    const marcar = extraer(
+        "function watchInactiveProfile",
+        "// Despues de guardar se sigue viendo"
+    );
+    let unidad = "ws-origen";
+    const api = new Function(
+        "getActiveWorkspace",
+        `let watchedInactiveProfile = { workspaceId: "", name: "" };
+         ${marcar}
+         return { watchInactiveProfile, isWatchedInactiveProfile };`
+    )(() => ({ id: unidad }));
+
+    api.watchInactiveProfile("Ana");
+
+    assert.equal(api.isWatchedInactiveProfile("Ana"), true);
+    assert.equal(api.isWatchedInactiveProfile("Beatriz"), false);
+    assert.equal(api.isWatchedInactiveProfile(""), false);
+
+    unidad = "ws-destino";
+
+    assert.equal(
+        api.isWatchedInactiveProfile("Ana"),
+        false,
+        "en otra unidad no vale, aunque se llame igual"
+    );
+});
+
+test("la marca real guarda unidad y nombre, y los compara juntos", () => {
+    const marcar = extraer(
+        "function watchInactiveProfile",
+        "function isWatchedInactiveProfile"
+    );
+    const comparar = extraer(
+        "function isWatchedInactiveProfile",
+        "// Despues de guardar se sigue viendo"
+    );
+
+    assert.match(marcar, /workspaceId: getActiveWorkspace\(\)\?\.id \|\| ""/);
+    assert.match(comparar, /watchedInactiveProfile\.name === name/);
+    assert.match(
+        comparar,
+        /watchedInactiveProfile\.workspaceId === \(getActiveWorkspace\(\)\?\.id \|\| ""\)/
+    );
 });

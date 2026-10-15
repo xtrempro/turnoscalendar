@@ -8082,7 +8082,7 @@ function renderProfiles(options = {}) {
     if (
         profileDraft.mode === PROFILE_MODE.VIEW &&
         getCurrentProfile() &&
-        getCurrentProfile() !== watchedInactiveProfile &&
+        !isWatchedInactiveProfile(getCurrentProfile()) &&
         !selectableProfiles.some(profile =>
             profile.name === getCurrentProfile()
         )
@@ -12907,10 +12907,22 @@ function exitProfileMode(selectedName = getCurrentProfile()) {
 // El inactivo que se esta mirando a proposito: no se lista, pero no se suelta
 // hasta que se mire otro. Vive solo en memoria -al recargar se pierde, y ahi el
 // perfil vuelve a estar solo para quien lo busque o marque "ver inactivos"-.
-let watchedInactiveProfile = "";
+let watchedInactiveProfile = { workspaceId: "", name: "" };
 
 function watchInactiveProfile(name) {
-    watchedInactiveProfile = String(name || "");
+    watchedInactiveProfile = {
+        // Con la unidad, no solo el nombre: dos unidades del mismo hospital
+        // pueden tener a alguien que se llame igual, y la marca viajaba de una
+        // a otra dejando abierto alla un perfil inactivo que nadie busco.
+        workspaceId: getActiveWorkspace()?.id || "",
+        name: String(name || "")
+    };
+}
+
+function isWatchedInactiveProfile(name) {
+    return Boolean(name) &&
+        watchedInactiveProfile.name === name &&
+        watchedInactiveProfile.workspaceId === (getActiveWorkspace()?.id || "");
 }
 
 // Despues de guardar se sigue viendo el mismo perfil, tambien cuando acaba de
