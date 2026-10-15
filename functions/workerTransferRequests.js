@@ -377,11 +377,66 @@ async function markSourceProfileTransferred(db, solicitud, dependencies) {
 }
 
 /**
+ * Termina de dejar el nombre de destino donde corresponde.
+ *
+ * El nombre no se toma de lo anotado: se lee el perfil que esa unidad tiene
+ * para el RUT de la transferencia. Lo anotado vino de un cliente y pudo no
+ * verificarse, y escribirlo a ciegas en el enlace es exactamente lo que no
+ * puede pasar: el trabajador terminaria viendo los turnos de otro.
+ *
+ * Mientras el perfil no aparezca, la anotacion se queda y se reintenta manana.
+ */
+async function resolvePendingProfileName(docSnap, solicitud, dependencies) {
+  const { db, findWorkerProfile, serverTimestamp } = dependencies;
+  const rut = normalizeRut(solicitud.profile && solicitud.profile.rut);
+
+  if (!findWorkerProfile || !rut) return { resolved: false };
+
+  const perfil = await findWorkerProfile(
+    db,
+    solicitud.targetWorkspaceId,
+    rut
+  );
+
+  if (!perfil) return { resolved: false };
+
+  const nombre = cleanText(perfil.name, 180);
+
+  if (!nombre) return { resolved: false };
+
+  if (solicitud.linkMovedAt) {
+    const resultado = await renameMovedWorkerLink(db, {
+      targetWorkspaceId: solicitud.targetWorkspaceId,
+      previousProfileName: cleanText(solicitud.linkRenamePendingFrom, 180),
+      profileName: nombre
+    }, serverTimestamp);
+
+    // El enlace todavia no esta donde deberia: se reintenta.
+    if (!resultado.renamed) return { resolved: false };
+  }
+
+  await docSnap.ref.update({
+    targetProfileName: nombre,
+    linkRenamePendingFrom: null,
+    linkRenamePendingTo: null,
+    updatedAt: serverTimestamp()
+  });
+
+  return { resolved: true, profileName: nombre };
+}
+
+/**
  * Muda los enlaces de las transferencias aceptadas cuya fecha ya llego. Lo
  * llama la tarea diaria; al aceptar, si la fecha ya paso, se muda en el acto.
  */
 async function moveDueWorkerLinksHandler(dependencies) {
-  const { db, serverTimestamp, logger, today = chileTodayISO() } = dependencies;
+  const {
+    db,
+    serverTimestamp,
+    logger,
+    findWorkerProfile,
+    today = chileTodayISO()
+  } = dependencies;
   const snap = await db
     .collection(COLLECTION)
     .where("status", "==", ACCEPTED)
@@ -391,27 +446,22 @@ async function moveDueWorkerLinksHandler(dependencies) {
   for (const docSnap of snap.docs) {
     const solicitud = { id: docSnap.id, ...(docSnap.data() || {}) };
 
-    // Un renombrado de enlace que quedo pendiente -fallo al confirmar, o el
-    // perfil de destino todavia no estaba publicado-. Se reintenta aqui: si no,
-    // el enlace se queda apuntando a un perfil que no existe y el trabajador
-    // deja de ver sus turnos.
+    // Un nombre de destino que quedo por resolver: o el perfil todavia no
+    // estaba publicado al confirmar, o el renombrado del enlace fallo.
+    //
+    // El nombre NO sale de lo que quedo anotado -eso lo mando un cliente y
+    // nunca se pudo comprobar-: se vuelve a leer el perfil de la unidad por el
+    // RUT de la transferencia, y manda ese. Asi la reparacion no puede escribir
+    // en el enlace un nombre que nadie verifico.
     if (solicitud.linkRenamePendingTo) {
       try {
-        const resultado = await renameMovedWorkerLink(db, {
-          targetWorkspaceId: solicitud.targetWorkspaceId,
-          previousProfileName: solicitud.linkRenamePendingFrom,
-          profileName: solicitud.linkRenamePendingTo
-        }, serverTimestamp);
-
-        if (resultado.renamed) {
-          await docSnap.ref.update({
-            linkRenamePendingFrom: null,
-            linkRenamePendingTo: null,
-            updatedAt: serverTimestamp()
-          });
-        }
+        await resolvePendingProfileName(docSnap, solicitud, {
+          db,
+          findWorkerProfile,
+          serverTimestamp
+        });
       } catch (error) {
-        logger?.warn?.("No se pudo renombrar el enlace pendiente.", {
+        logger?.warn?.("No se pudo resolver el nombre pendiente.", {
           requestId: solicitud.id,
           error: error?.message || String(error)
         });
@@ -1090,17 +1140,21 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
     );
     const renombrado = Boolean(profileName) && profileName !== anterior;
 
-    // La reparacion del enlace queda ANOTADA antes de intentarla: si falla
-    // -o si el nombre todavia no se pudo verificar-, la tarea diaria la
-    // retoma. Sin la anotacion, el traspaso quedaba confirmado y el enlace
-    // apuntando a un perfil que no existe, sin nadie que volviera a mirarlo.
+    // Queda ANOTADO lo que falte, antes de intentarlo.
+    //
+    // Falta algo en dos casos: el nombre no se pudo verificar todavia -el
+    // perfil de destino no esta publicado-, o hay que renombrar un enlace que
+    // ya se mudo. El primero importa aunque el enlace no se haya movido: si no
+    // se anota, el traspaso queda con el nombre de origen y la mudanza del dia
+    // de inicio lo usaria.
     const reparaEnlace = renombrado && Boolean(solicitud.linkMovedAt);
+    const quedaPendiente = renombrado && (!nombreVerificado || reparaEnlace);
 
     transaction.update(ref, {
       ...(renombrado && nombreVerificado
         ? { targetProfileName: profileName }
         : {}),
-      ...(reparaEnlace
+      ...(quedaPendiente
         ? {
           linkRenamePendingFrom: anterior,
           linkRenamePendingTo: profileName
@@ -1121,6 +1175,7 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
       renombrado,
       anterior,
       reparaEnlace,
+      quedaPendiente,
       targetWorkspaceId: workspaceId
     };
   });
@@ -1158,7 +1213,9 @@ async function confirmWorkerTransferIntakeHandler(request, dependencies) {
     // Lo que paso de verdad, no lo que se pidio: el nombre quedo guardado solo
     // si se pudo verificar, y el enlace solo si ademas se pudo renombrar.
     renamed: Boolean(resultado.renombrado && nombreVerificado),
-    linkRenamePending: Boolean(resultado.reparaEnlace && !enlaceRenombrado)
+    linkRenamePending: Boolean(
+      resultado.quedaPendiente && !(nombreVerificado && enlaceRenombrado)
+    )
   };
 }
 

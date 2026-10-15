@@ -1263,3 +1263,122 @@ test("la tarea diaria retoma el renombrado pendiente", async () => {
     null
   );
 });
+
+// --- La reparacion no se fia de lo anotado (auditoria 2026-10-15) ---
+
+test("la reparacion escribe el nombre del PERFIL, no el anotado", async () => {
+  // Lo anotado lo mando un cliente y nunca se pudo comprobar: escribirlo a
+  // ciegas en el enlace dejaria al trabajador viendo los turnos de otro.
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      linkMovedAt: "ANTES",
+      linkRenamePendingFrom: "ANA ROJAS",
+      linkRenamePendingTo: "Otro Trabajador"
+    }),
+    "workspaces/w-destino/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "active"
+    },
+    "users/uid-ana/workerLinks/w-destino": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "active"
+    }
+  });
+  const { deps } = dependencies(db);
+
+  await moveDueWorkerLinksHandler({ ...deps, today: "2026-10-05" });
+
+  const enlace = db.documents.get("workspaces/w-destino/workerLinks/uid-ana");
+
+  assert.equal(enlace.profileName, "Ana Rojas Campos");
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).targetProfileName,
+    "Ana Rojas Campos"
+  );
+});
+
+test("mientras el perfil no aparezca, la reparacion espera", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      linkMovedAt: "ANTES",
+      linkRenamePendingFrom: "ANA ROJAS",
+      linkRenamePendingTo: "Ana Rojas Campos"
+    }),
+    "workspaces/w-destino/workerLinks/uid-ana": {
+      uid: "uid-ana",
+      profileName: "ANA ROJAS",
+      status: "active"
+    }
+  });
+  const { deps } = dependencies(db, { findWorkerProfile: async () => null });
+
+  await moveDueWorkerLinksHandler({ ...deps, today: "2026-10-05" });
+
+  assert.equal(
+    db.documents.get("workspaces/w-destino/workerLinks/uid-ana").profileName,
+    "ANA ROJAS"
+  );
+  // Y sigue anotado para manana.
+  assert.equal(
+    db.documents.get(`${COLLECTION}/t-1`).linkRenamePendingTo,
+    "Ana Rojas Campos"
+  );
+});
+
+test("un traslado futuro con el nombre sin verificar queda anotado", async () => {
+  // El enlace se muda el dia de inicio: sin anotarlo, esa mudanza usaria el
+  // nombre de origen y nadie lo habria revisado.
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      startDate: "2026-12-01"
+    })
+  });
+  const { deps } = dependencies(db, { findWorkerProfile: async () => null });
+  const { claimToken } = await claimWorkerTransferIntakeHandler(
+    peticion({ workspaceId: "w-destino", requestId: "t-1" }),
+    deps
+  );
+  const resultado = await confirmWorkerTransferIntakeHandler(
+    peticion({
+      workspaceId: "w-destino",
+      requestId: "t-1",
+      claimToken,
+      profileName: "Ana Rojas Campos"
+    }),
+    deps
+  );
+  const doc = db.documents.get(`${COLLECTION}/t-1`);
+
+  assert.equal(resultado.confirmed, true);
+  assert.equal(resultado.renamed, false, "no se verifico, no se guardo");
+  assert.equal(resultado.linkRenamePending, true);
+  assert.equal(doc.linkRenamePendingTo, "Ana Rojas Campos");
+  assert.equal(doc.targetProfileName, "ANA ROJAS", "sigue el de origen");
+});
+
+test("y la tarea diaria lo deja listo antes de que llegue la fecha", async () => {
+  const db = new FakeDb({
+    [`${COLLECTION}/t-1`]: traspaso({
+      targetProfileName: "ANA ROJAS",
+      startDate: "2026-12-01",
+      linkRenamePendingFrom: "ANA ROJAS",
+      linkRenamePendingTo: "Ana Rojas Campos"
+    })
+  });
+  const { deps } = dependencies(db);
+
+  await moveDueWorkerLinksHandler({ ...deps, today: "2026-10-05" });
+
+  const doc = db.documents.get(`${COLLECTION}/t-1`);
+
+  // El enlace todavia no se mueve -falta para la fecha-, pero el nombre con
+  // que se movera ya quedo bien.
+  assert.equal(doc.targetProfileName, "Ana Rojas Campos");
+  assert.equal(doc.linkRenamePendingTo, null);
+  assert.equal(doc.linkMovedAt, undefined);
+});
