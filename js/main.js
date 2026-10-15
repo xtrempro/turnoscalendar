@@ -662,7 +662,10 @@ import {
     watchWorkerUnitChangeNotices
 } from "./workerUnitChangeNotices.js";
 import {
+    cancelWorkerHandoverRequest,
     findWorkerInEstablishment,
+    handoverRequestIsUsable,
+    listWorkerHandoverRequests,
     requestWorkerHandover,
     resolveWorkerHandoverRequest,
     stopWatchingIncomingHandoverRequests,
@@ -1266,6 +1269,80 @@ function forgetRutLookup() {
 // Aparece UNA vez por RUT: escribir en el campo borra lo consultado, asi que
 // vuelve a salir cuando se termina de escribir otro RUT (o el mismo de nuevo),
 // y no cada vez que se pasa por el campo.
+// El pedido de traspaso que ESTA unidad ya hizo por ese RUT y sigue vivo.
+async function pendingOwnHandoverRequest(rut) {
+    const workspace = getActiveWorkspace();
+    const buscado = normalizeRut(rut);
+
+    if (!workspace?.id || !buscado) return null;
+
+    try {
+        return (await listWorkerHandoverRequests()).find(item =>
+            item.requestingWorkspaceId === workspace.id &&
+            normalizeRut(item.rut) === buscado &&
+            handoverRequestIsUsable(item)
+        ) || null;
+    } catch (error) {
+        // Es una ayuda: que falle no puede impedir pedir el traspaso.
+        console.warn("No se pudieron leer los pedidos propios.", error);
+        return null;
+    }
+}
+
+// Ya hay un pedido en pie: se decide sobre ESE, no se empieza otro a ciegas.
+async function resolvePendingHandoverRequest(pedido) {
+    const unidad = String(pedido.sourceWorkspaceName || "").trim() ||
+        "la otra unidad";
+    const desde = normalizeStoredStart(pedido.startDate || "");
+    const eleccion = await showChoice(
+        `Ya le pediste a ${unidad} el traspaso de esta persona` +
+        (desde ? `, para que comience aquí el ${formatDisplayDate(desde)}` : "") +
+        ". Sigue pendiente de su respuesta.",
+        {
+            title: "Ya pediste este traspaso",
+            tone: "warning",
+            confirmText: "Continuar",
+            choices: [
+                {
+                    value: "reemplazar",
+                    label: "Hacer un pedido nuevo que reemplace al anterior",
+                    hint: "Vuelves a elegir desde cuándo empieza aquí y con qué rotativa."
+                },
+                {
+                    value: "retirar",
+                    label: "Retirar el pedido",
+                    hint: "Queda sin efecto y puedes ingresar a la persona de cero."
+                }
+            ]
+        }
+    );
+
+    if (eleccion === "reemplazar") {
+        await askWorkerHandover();
+        return;
+    }
+
+    if (eleccion !== "retirar") return;
+
+    try {
+        await cancelWorkerHandoverRequest(pedido.id);
+    } catch (error) {
+        console.warn("No se pudo retirar el pedido.", error);
+        await showAlert(
+            error?.message || "No se pudo retirar el pedido.",
+            { title: "Retirar el pedido", tone: "warning" }
+        );
+        return;
+    }
+
+    window.dispatchEvent(new CustomEvent("proturnos:workerRequestsChanged"));
+    await showAlert(
+        `El pedido a ${unidad} quedó retirado. Puedes ingresar a la persona ` +
+        "de cero, o volver a pedirlo cuando quieras.",
+        { title: "Pedido retirado", tone: "success" }
+    );
+}
+
 async function announceRutInEstablishment() {
     if (!rutLookupState.unidades.length) return;
 
@@ -1281,9 +1358,17 @@ async function announceRutInEstablishment() {
                 : nombre;
         })
         .join(", ");
-    // No hay estado de "ya pedido" en este cuadro: al enviar el pedido el
-    // formulario se descarta entero, asi que nunca se vuelve a ver con el
-    // pedido en pie. El seguimiento vive en el menu Solicitudes.
+    // Si ya hay un pedido vivo por este RUT, eso es lo primero que hay que
+    // decir. Antes se callaba: el supervisor recorria todo el camino -modalidad,
+    // rotativa, calendario, confirmacion- y recien al final se enteraba de que
+    // ya lo habia pedido, con el formulario descartado de todas formas.
+    const pendiente = await pendingOwnHandoverRequest(rutLookupState.rut);
+
+    if (pendiente) {
+        await resolvePendingHandoverRequest(pendiente);
+        return;
+    }
+
     const pedir = await showConfirm(
         `Este RUT ya está registrado en ${nombres}, del mismo establecimiento.\n\n` +
         "Puedes pedir el traspaso de su información, que trae sus datos y sus " +
@@ -1620,8 +1705,14 @@ async function requestHandoverFromUnits(unidades, rut, { discardDraft = false } 
         }
         await showAlert(
             respuesta?.created === false
-                ? `Ya le habías pedido el traspaso a ${nombreUnidad}. Sigue ` +
-                    "pendiente de su respuesta."
+                ? (
+                    respuesta?.updated
+                        ? `Tu pedido a ${nombreUnidad} quedó reemplazado por ` +
+                            "este. Sigue pendiente de su respuesta, ahora con " +
+                            "la fecha y la rotativa que acabas de elegir."
+                        : `Ya le habías pedido el traspaso a ${nombreUnidad}, ` +
+                            "con lo mismo. Sigue pendiente de su respuesta."
+                )
                 : `El pedido quedó enviado a ${nombreUnidad}. Les llega un ` +
                     "correo y lo verán en su menú Solicitudes.\n\n" +
                     "No la ingreses de cero: cuando acepten, su perfil se crea " +

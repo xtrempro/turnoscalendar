@@ -50,6 +50,8 @@ function montarAviso({ unidades, respuesta = false }) {
         "showConfirm",
         "askWorkerHandover",
         "rutLookupState",
+        "pendingOwnHandoverRequest",
+        "resolvePendingHandoverRequest",
         `${extraer("announceRutInEstablishment")}
          return announceRutInEstablishment;`
     );
@@ -63,7 +65,10 @@ function montarAviso({ unidades, respuesta = false }) {
                 return respuesta;
             },
             async () => { traspasos.push(true); },
-            { rut: "1-9", unidades }
+            { rut: "1-9", unidades },
+            // Sin pedido vivo: ese caso tiene sus propias pruebas.
+            async () => null,
+            async () => {}
         )
     };
 }
@@ -295,4 +300,161 @@ test("la tarjeta vieja ya no existe en el formulario", async () => {
 
     assert.doesNotMatch(html, /profileRutNotice|profileRutHandoverBtn/);
     assert.doesNotMatch(dom, /profileRutNotice|profileRutHandoverBtn/);
+});
+
+// --- Si ya se pidió, se decide sobre ESE pedido ---
+//
+// Antes se callaba: el supervisor recorría todo el camino -modalidad, rotativa,
+// calendario, confirmación- y recién al final le decían que ya lo había pedido,
+// con el formulario descartado igual.
+
+function montarAvisoConPendiente({ pendiente, respuesta = false }) {
+    const cuadros = [];
+    const traspasos = [];
+    const resueltos = [];
+    const fabrica = new Function(
+        "showConfirm",
+        "askWorkerHandover",
+        "rutLookupState",
+        "pendingOwnHandoverRequest",
+        "resolvePendingHandoverRequest",
+        `${extraer("announceRutInEstablishment")}
+         return announceRutInEstablishment;`
+    );
+
+    return {
+        cuadros,
+        traspasos,
+        resueltos,
+        avisar: fabrica(
+            async (mensaje, opciones) => {
+                cuadros.push({ mensaje, ...opciones });
+                return respuesta;
+            },
+            async () => { traspasos.push(true); },
+            { rut: "31.000.001-9", unidades: [URGENCIA] },
+            async () => pendiente,
+            async (pedido) => { resueltos.push(pedido); }
+        )
+    };
+}
+
+test("con un pedido vivo no se ofrece pedirlo de nuevo a ciegas", async () => {
+    const { avisar, cuadros, traspasos, resueltos } = montarAvisoConPendiente({
+        pendiente: { id: "whr-1", sourceWorkspaceName: "Urgencia Adulto" }
+    });
+
+    await avisar();
+
+    assert.deepEqual(cuadros, [], "no sale el cuadro de siempre");
+    assert.deepEqual(traspasos, [], "ni se empieza otro camino");
+    assert.equal(resueltos.length, 1, "se decide sobre el que ya hay");
+    assert.equal(resueltos[0].id, "whr-1");
+});
+
+test("sin pedido vivo, el cuadro de siempre", async () => {
+    const { avisar, cuadros, resueltos } = montarAvisoConPendiente({
+        pendiente: null
+    });
+
+    await avisar();
+
+    assert.equal(cuadros.length, 1);
+    assert.deepEqual(resueltos, []);
+});
+
+function montarDecision({ eleccion }) {
+    const cuadros = [];
+    const traspasos = [];
+    const retirados = [];
+    const avisos = [];
+    const fabrica = new Function(
+        "showChoice",
+        "showAlert",
+        "askWorkerHandover",
+        "cancelWorkerHandoverRequest",
+        "normalizeStoredStart",
+        "formatDisplayDate",
+        "window",
+        "CustomEvent",
+        "console",
+        `${extraer("resolvePendingHandoverRequest")}
+         return resolvePendingHandoverRequest;`
+    );
+
+    return {
+        cuadros,
+        traspasos,
+        retirados,
+        avisos,
+        decidir: fabrica(
+            async (mensaje, opciones) => {
+                cuadros.push({ mensaje, ...opciones });
+                return eleccion;
+            },
+            async (mensaje) => { avisos.push(mensaje); },
+            async () => { traspasos.push(true); },
+            async (id) => { retirados.push(id); },
+            valor => String(valor || ""),
+            iso => iso,
+            { dispatchEvent: () => true },
+            class { constructor(tipo) { this.type = tipo; } },
+            { warn() {} }
+        )
+    };
+}
+
+const PEDIDO = {
+    id: "whr-1",
+    sourceWorkspaceName: "Urgencia Adulto",
+    startDate: "2026-11-03"
+};
+
+test("el cuadro dice a quién se le pidió y desde cuándo, y ofrece las dos salidas", async () => {
+    const { decidir, cuadros } = montarDecision({ eleccion: null });
+
+    await decidir(PEDIDO);
+
+    assert.equal(cuadros.length, 1);
+    assert.match(cuadros[0].mensaje, /Urgencia Adulto/);
+    assert.match(cuadros[0].mensaje, /2026-11-03/);
+    assert.deepEqual(
+        cuadros[0].choices.map(opcion => opcion.value),
+        ["reemplazar", "retirar"]
+    );
+});
+
+test("reemplazar vuelve a preguntar fecha y rotativa", async () => {
+    const { decidir, traspasos, retirados } = montarDecision({
+        eleccion: "reemplazar"
+    });
+
+    await decidir(PEDIDO);
+
+    assert.deepEqual(traspasos, [true]);
+    assert.deepEqual(retirados, []);
+});
+
+test("retirar lo anula y lo dice", async () => {
+    const { decidir, retirados, avisos, traspasos } = montarDecision({
+        eleccion: "retirar"
+    });
+
+    await decidir(PEDIDO);
+
+    assert.deepEqual(retirados, ["whr-1"]);
+    assert.deepEqual(traspasos, []);
+    assert.match(avisos[0], /quedó retirado/);
+});
+
+test("cerrar el cuadro no hace nada", async () => {
+    const { decidir, retirados, traspasos, avisos } = montarDecision({
+        eleccion: null
+    });
+
+    await decidir(PEDIDO);
+
+    assert.deepEqual(retirados, []);
+    assert.deepEqual(traspasos, []);
+    assert.deepEqual(avisos, []);
 });
