@@ -154,6 +154,36 @@ export function removeBellNotice(id) {
     return true;
 }
 
+/**
+ * Saca los avisos VIEJOS de algo que acaba de volver a pasar.
+ *
+ * El documento de un pedido se reusa entre las mismas unidades, y el id del
+ * aviso lleva cuando se pidio. Sin esto, el aviso del pedido anterior se queda
+ * al lado del nuevo: dos cuadros del mismo documento diciendo "acéptalo o
+ * recházalo", con fechas distintas.
+ *
+ * Una sola escritura y un solo repintado, aunque saque varios.
+ */
+export function removeBellNoticesByPrefix(prefix, keepId = "") {
+    const inicio = String(prefix || "").trim();
+
+    if (!inicio) return 0;
+
+    const previos = getBellNotices();
+    const quedan = previos.filter(item => {
+        const id = String(item?.id || "");
+
+        return id === keepId || !id.startsWith(inicio);
+    });
+
+    if (quedan.length === previos.length) return 0;
+
+    setJSON(NOTICES_KEY, quedan);
+    scheduleRefresh();
+
+    return previos.length - quedan.length;
+}
+
 export function clearBellNotices() {
     if (!getBellNotices().length) return;
 

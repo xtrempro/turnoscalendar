@@ -183,7 +183,7 @@ test("cada pedido pendiente deja un aviso en la campanita", () => {
     // Un id por pedido: el aviso no se repite en cada repintado.
     // El pedido trae RUT y no nombre, pero esta unidad si puede nombrarla.
     assert.match(avisar, /normalizeRut\(item\.rut\) === rut/);
-    assert.match(avisar, /id: handoverNoticeId\(pedido\)/);
+    assert.match(avisar, /const avisoId = handoverNoticeId\(pedido\)/);
     assert.match(avisar, /requestingWorkspaceName/);
 });
 
@@ -313,13 +313,84 @@ test("un pedido nuevo en el mismo documento suena como nuevo", () => {
     // El mismo esquema para el aviso de rechazo.
     assert.match(
         principal,
-        /id: handoverNoticeId\(pedido, "traspaso-rechazado"\)/
+        /handoverNoticeId\(pedido, "traspaso-rechazado"\)/
     );
 
     // Lo usan los dos lados: el que avisa y el que quita el aviso.
     const avisar = extraer(principal, "noticeHandoverRequests");
     const olvidar = extraer(principal, "forgetHandoverRequestNotices");
 
-    assert.match(avisar, /id: handoverNoticeId\(pedido\)/);
+    assert.match(avisar, /const avisoId = handoverNoticeId\(pedido\)/);
     assert.match(olvidar, /removeBellNotice\(handoverNoticeId\(pedido\)\)/);
+});
+
+test("un pedido nuevo deja UN aviso, no dos del mismo documento", async () => {
+    // El documento se reusa entre las mismas unidades. Si la sesion no vio la
+    // resolucion del anterior, su aviso seguia guardado al lado del nuevo: dos
+    // cuadros diciendo "acéptalo o recházalo" con fechas distintas.
+    bell.clearBellNotices();
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:111",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 06-10-2026."
+    });
+
+    assert.equal(
+        bell.removeBellNoticesByPrefix(
+            "pedido-traspaso:whr_a_b_1:",
+            "pedido-traspaso:whr_a_b_1:222"
+        ),
+        1
+    );
+
+    bell.addBellNotice({
+        id: "pedido-traspaso:whr_a_b_1:222",
+        title: "SAMU pide el traspaso de Ana",
+        detail: "Comenzaría allá el 20-11-2026."
+    });
+
+    const avisos = bell.getBellNotices();
+
+    assert.equal(avisos.length, 1);
+    assert.match(avisos[0].detail, /20-11-2026/);
+});
+
+test("quitar por prefijo respeta el que se quiere conservar y lo ajeno", () => {
+    bell.clearBellNotices();
+    bell.addBellNotice({ id: "pedido-traspaso:doc-1:111", title: "Viejo" });
+    bell.addBellNotice({ id: "pedido-traspaso:doc-1:222", title: "Nuevo" });
+    bell.addBellNotice({ id: "pedido-traspaso:doc-2:111", title: "Otro doc" });
+    bell.addBellNotice({ id: "traspaso-rechazado:doc-1:111", title: "Rechazo" });
+
+    assert.equal(
+        bell.removeBellNoticesByPrefix(
+            "pedido-traspaso:doc-1:",
+            "pedido-traspaso:doc-1:222"
+        ),
+        1
+    );
+    assert.deepEqual(
+        bell.getBellNotices().map(item => item.id).sort(),
+        [
+            "pedido-traspaso:doc-1:222",
+            "pedido-traspaso:doc-2:111",
+            "traspaso-rechazado:doc-1:111"
+        ]
+    );
+    // Sin nada que sacar, no escribe ni repinta.
+    assert.equal(bell.removeBellNoticesByPrefix("pedido-traspaso:doc-9:"), 0);
+});
+
+test("el aviso de entrada y el de rechazo sueltan sus generaciones viejas", () => {
+    const avisar = extraer(principal, "noticeHandoverRequests");
+    const rechazo = extraer(principal, "noticeRejectedHandovers");
+
+    assert.match(
+        avisar,
+        /removeBellNoticesByPrefix\(`pedido-traspaso:\$\{pedido\.id\}:`, avisoId\)/
+    );
+    assert.match(
+        rechazo,
+        /removeBellNoticesByPrefix\(`traspaso-rechazado:\$\{pedido\.id\}:`, avisoId\)/
+    );
 });

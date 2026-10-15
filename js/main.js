@@ -526,7 +526,8 @@ import {
 import {
     addBellNotice,
     initNotificationsBell,
-    removeBellNotice
+    removeBellNotice,
+    removeBellNoticesByPrefix
 } from "./notificationsBell.js";
 import { initPendingLeaveBlinkSync } from "./pendingLeaveBlinkSync.js";
 import {
@@ -12309,8 +12310,15 @@ function noticeHandoverRequests(pendientes = []) {
             "Otra unidad";
         const desde = normalizeStoredStart(pedido.startDate || "");
 
+        const avisoId = handoverNoticeId(pedido);
+
+        // El documento se reusa: si este pedido es nuevo, el aviso del anterior
+        // sigue guardado con SU fecha, mandando a responder algo que ya no
+        // esta. Se va antes de poner el de ahora.
+        removeBellNoticesByPrefix(`pedido-traspaso:${pedido.id}:`, avisoId);
+
         addBellNotice({
-            id: handoverNoticeId(pedido),
+            id: avisoId,
             title: `${unidad} pide el traspaso de ${quien}`,
             detail: desde
                 ? `Comenzaría allá el ${formatDisplayDate(desde)}. ` +
@@ -12331,8 +12339,14 @@ function noticeRejectedHandovers(rechazados = []) {
             "La otra unidad";
         const motivo = String(pedido.rejectReason || "").trim();
 
+        const avisoId = handoverNoticeId(pedido, "traspaso-rechazado");
+
+        // Lo mismo si se vuelve a pedir y lo vuelven a rechazar: un rechazo por
+        // documento, el ultimo.
+        removeBellNoticesByPrefix(`traspaso-rechazado:${pedido.id}:`, avisoId);
+
         addBellNotice({
-            id: handoverNoticeId(pedido, "traspaso-rechazado"),
+            id: avisoId,
             title: `${unidad} rechazó el traspaso que pediste`,
             detail: (motivo ? `Motivo: "${motivo}". ` : "") +
                 `Puedes ingresar de cero a la persona con RUT ` +
