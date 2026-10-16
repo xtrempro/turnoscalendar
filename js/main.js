@@ -1318,7 +1318,12 @@ async function resolvePendingHandoverRequest(pedido) {
     );
 
     if (eleccion === "reemplazar") {
-        await askWorkerHandover();
+        // El pedido nuevo va a la MISMA unidad: es lo que lo convierte en un
+        // reemplazo. El servidor identifica cada pedido por el par de unidades
+        // y el RUT, asi que pedirselo a otra no reemplaza nada -crea un
+        // segundo pedido vivo por la misma persona, y la traspasa quien
+        // conteste primero-.
+        await askWorkerHandover({ replacing: pedido });
         return;
     }
 
@@ -1588,9 +1593,24 @@ async function askHandoverSchedule({
 // El pedido no mueve nada: cuando lo aceptan, esa unidad crea una
 // transferencia normal y de ahi en adelante todo es el camino de siempre.
 // Por eso la fecha la elige quien acepta: es su calendario el que se vacia.
-async function askWorkerHandover() {
+// replacing es el pedido que este nuevo viene a reemplazar: entonces no se
+// vuelve a preguntar a que unidad, porque la respuesta ya esta dada. Si el
+// perfil de alla ya no apareciera en la consulta -lo borraron, por ejemplo-,
+// basta la unidad que el propio pedido recuerda.
+async function askWorkerHandover({ replacing = null } = {}) {
+    const unidades = !replacing
+        ? rutLookupState.unidades
+        : [
+            rutLookupState.unidades.find(
+                unidad => unidad.workspaceId === replacing.sourceWorkspaceId
+            ) || {
+                workspaceId: replacing.sourceWorkspaceId,
+                workspaceName: replacing.sourceWorkspaceName || ""
+            }
+        ];
+
     return requestHandoverFromUnits(
-        rutLookupState.unidades,
+        unidades,
         String(DOM.profileRutInput.value || "").trim(),
         { discardDraft: true }
     );

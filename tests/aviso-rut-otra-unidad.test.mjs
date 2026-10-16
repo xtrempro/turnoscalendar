@@ -20,21 +20,34 @@ function extraer(nombre) {
 
     assert.notEqual(inicio, -1, `no encontre ${nombre}`);
 
+    // Se devuelve desde "async" o "function", lo que venga antes.
+    const asincrona = main.lastIndexOf("async function", inicio);
+    const desde = asincrona === inicio - 6 ? asincrona : inicio;
+    // El cuerpo empieza DESPUES de los parametros: un parametro con llaves
+    // -{ replacing = null } = {}- cortaba la funcion por la mitad.
+    let parentesis = 0;
+    let cuerpo = -1;
+
+    for (let i = main.indexOf("(", inicio); i < main.length; i += 1) {
+        if (main[i] === "(") parentesis += 1;
+        else if (main[i] === ")") {
+            parentesis -= 1;
+            if (!parentesis) {
+                cuerpo = main.indexOf("{", i);
+                break;
+            }
+        }
+    }
+
+    assert.notEqual(cuerpo, -1, `no encontre el cuerpo de ${nombre}`);
+
     let profundidad = 0;
 
-    for (let i = main.indexOf("{", inicio); i < main.length; i += 1) {
+    for (let i = cuerpo; i < main.length; i += 1) {
         if (main[i] === "{") profundidad += 1;
         else if (main[i] === "}") {
             profundidad -= 1;
-            if (!profundidad) {
-                // Se devuelve desde "async" o "function", lo que venga antes.
-                const asincrona = main.lastIndexOf("async function", inicio);
-
-                return main.slice(
-                    asincrona === inicio - 6 ? asincrona : inicio,
-                    i + 1
-                );
-            }
+            if (!profundidad) return main.slice(desde, i + 1);
         }
     }
 
@@ -393,7 +406,7 @@ function montarDecision({ eleccion }) {
                 return eleccion;
             },
             async (mensaje) => { avisos.push(mensaje); },
-            async () => { traspasos.push(true); },
+            async (opciones) => { traspasos.push(opciones || null); },
             async (id) => { retirados.push(id); },
             valor => String(valor || ""),
             iso => iso,
@@ -406,6 +419,7 @@ function montarDecision({ eleccion }) {
 
 const PEDIDO = {
     id: "whr-1",
+    sourceWorkspaceId: "ws-1",
     sourceWorkspaceName: "Urgencia Adulto",
     startDate: "2026-11-03"
 };
@@ -424,14 +438,16 @@ test("el cuadro dice a quién se le pidió y desde cuándo, y ofrece las dos sal
     );
 });
 
-test("reemplazar vuelve a preguntar fecha y rotativa", async () => {
+test("reemplazar vuelve a preguntar fecha y rotativa, por ESE pedido", async () => {
     const { decidir, traspasos, retirados } = montarDecision({
         eleccion: "reemplazar"
     });
 
     await decidir(PEDIDO);
 
-    assert.deepEqual(traspasos, [true]);
+    assert.equal(traspasos.length, 1);
+    // Sin el pedido a cuestas, el camino volvia a ofrecer todas las unidades.
+    assert.equal(traspasos[0]?.replacing, PEDIDO);
     assert.deepEqual(retirados, []);
 });
 
@@ -457,4 +473,74 @@ test("cerrar el cuadro no hace nada", async () => {
     assert.deepEqual(retirados, []);
     assert.deepEqual(traspasos, []);
     assert.deepEqual(avisos, []);
+});
+
+// --- A quien se le pide el reemplazo ---
+//
+// El servidor identifica cada pedido por el par de unidades y el RUT
+// (handoverRequestKey). Un "reemplazo" dirigido a otra unidad no reemplaza
+// nada: crea un segundo pedido vivo por la misma persona, el anterior sigue
+// pendiente y la traspasa quien conteste primero.
+
+function montarPedidoDeTraspaso({ unidades }) {
+    const pedidos = [];
+    const fabrica = new Function(
+        "rutLookupState",
+        "DOM",
+        "requestHandoverFromUnits",
+        `${extraer("askWorkerHandover")}
+         return askWorkerHandover;`
+    );
+
+    return {
+        pedidos,
+        pedir: fabrica(
+            { rut: "31.000.001-9", unidades },
+            { profileRutInput: { value: "31.000.001-9" } },
+            async (unidadesPedidas, rut, opciones) => {
+                pedidos.push({ unidades: unidadesPedidas, rut, opciones });
+                return true;
+            }
+        )
+    };
+}
+
+const UNIDADES = [
+    { workspaceId: "ws-1", workspaceName: "Urgencia Adulto", exitDate: "2026-10-15" },
+    { workspaceId: "ws-2", workspaceName: "Imagenología" }
+];
+
+test("un pedido nuevo si puede ir a cualquiera de las unidades", async () => {
+    const { pedir, pedidos } = montarPedidoDeTraspaso({ unidades: UNIDADES });
+
+    await pedir();
+
+    assert.deepEqual(pedidos[0].unidades, UNIDADES);
+    assert.equal(pedidos[0].rut, "31.000.001-9");
+    assert.deepEqual(pedidos[0].opciones, { discardDraft: true });
+});
+
+test("el que reemplaza va a la unidad del pedido, sin volver a elegir", async () => {
+    const { pedir, pedidos } = montarPedidoDeTraspaso({ unidades: UNIDADES });
+
+    await pedir({ replacing: PEDIDO });
+
+    // Una sola unidad: requestHandoverFromUnits no abre el cuadro de eleccion.
+    assert.deepEqual(pedidos[0].unidades, [UNIDADES[0]]);
+    // Con su ultimo dia alla, que es lo que fija desde cuando puede empezar
+    // aqui.
+    assert.equal(pedidos[0].unidades[0].exitDate, "2026-10-15");
+});
+
+test("si el perfil de alla ya no aparece, basta la unidad que el pedido recuerda", async () => {
+    const { pedir, pedidos } = montarPedidoDeTraspaso({
+        unidades: [UNIDADES[1]]
+    });
+
+    await pedir({ replacing: PEDIDO });
+
+    assert.deepEqual(pedidos[0].unidades, [{
+        workspaceId: "ws-1",
+        workspaceName: "Urgencia Adulto"
+    }]);
 });
