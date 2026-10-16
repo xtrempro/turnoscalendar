@@ -61,7 +61,9 @@ function extraer(fuente, nombre) {
 test("reactivar pregunta desde cuando y con que rotativa", () => {
     const resolver = extraer(main, "resolveProfileReactivation");
 
-    assert.match(resolver, /askHandoverSchedule\(\)/);
+    // Sin fecha preseleccionada y abriendo donde se puede empezar: el dia
+    // siguiente a su ultimo dia trabajado (ver reactivar-desde-cuando).
+    assert.match(resolver, /askHandoverSchedule\(\{\s*\n[\s\S]*?startEmpty: true,\s*\n\s*openAt: primerDiaLibre\s*\n\s*\}\)/);
     // Y lo elegido se aplica al borrador ANTES de leer la rotativa al guardar.
     assert.match(main, /profileDraft\.rotationStart = decision\.startDate;/);
     assert.match(main, /const isReactivating = isEditing && !wasActive && willBeActive;/);

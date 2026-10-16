@@ -1498,7 +1498,9 @@ async function askHandoverStartDate(minStart = "", minStartMessage = "") {
 
 async function askHandoverSchedule({
     minStart = "",
-    minStartMessage = ""
+    minStartMessage = "",
+    startEmpty = false,
+    openAt = ""
 } = {}) {
     if (!isProfileEditing()) return null;
 
@@ -1548,10 +1550,15 @@ async function askHandoverSchedule({
         setRotationStartFloor(piso, minStartMessage);
 
         // Y se abre en el primer dia posible, en vez de en uno que esta
-        // deshabilitado.
+        // deshabilitado. Salvo que se haya pedido abrir sin fecha puesta: ahi
+        // el piso solo deshabilita los dias anteriores y la fecha la pone el
+        // supervisor con un clic.
         if (
-            !profileDraft.rotationStart ||
-            compareISODate(profileDraft.rotationStart, piso) < 0
+            !startEmpty &&
+            (
+                !profileDraft.rotationStart ||
+                compareISODate(profileDraft.rotationStart, piso) < 0
+            )
         ) {
             profileDraft.rotationStart = piso;
         }
@@ -1564,6 +1571,8 @@ async function askHandoverSchedule({
             let guardado = null;
 
             openRotationConfigModal(rotationType, {
+                startEmpty,
+                monthISO: openAt || piso,
                 onSaved: datos => {
                     guardado = datos;
                 },
@@ -1770,7 +1779,7 @@ async function requestHandoverFromUnits(unidades, rut, { discardDraft = false } 
 //
 // Devuelve null si se cancela, { handoverRequested: true } si quedo pedido el
 // traspaso -y entonces no se reactiva ahora-, o la fecha y la rotativa.
-async function resolveProfileReactivation(nombre, rut) {
+async function resolveProfileReactivation(nombre, rut, exitDate = "") {
     const limpio = normalizeRut(rut);
     let enOtras = [];
 
@@ -1815,12 +1824,122 @@ async function resolveProfileReactivation(nombre, rut) {
         }
     }
 
-    const rotativa = await askHandoverSchedule();
+    // Su ultimo dia trabajado aqui. Lo que viene despues ya es tiempo con el
+    // perfil inactivo: ahi no hay nada escrito y es donde conviene empezar.
+    const ultimoDia = normalizeStoredStart(exitDate);
+    const primerDiaLibre = ultimoDia ? nextCalendarISO(ultimoDia) : "";
 
-    if (!rotativa) return null;
+    // Se pregunta hasta que la fecha quede decidida: elegir una anterior a su
+    // salida es posible -a veces hay que corregir hacia atras- pero no puede
+    // pasar sin que se diga lo que cuesta.
+    for (;;) {
+        const rotativa = await askHandoverSchedule({
+            // Sin fecha puesta: la rotativa empieza donde el supervisor
+            // haga clic. Antes venia preseleccionada la de su rotativa
+            // anterior y aceptar sin mirar la aplicaba desde ahi.
+            startEmpty: true,
+            openAt: primerDiaLibre
+        });
 
-    return { ...rotativa, handoverRequested: false };
+        if (!rotativa) return null;
+
+        if (
+            !ultimoDia ||
+            compareISODate(rotativa.startDate, ultimoDia) > 0
+        ) {
+            return { ...rotativa, handoverRequested: false };
+        }
+
+        const seguro = await showConfirm(
+            `${nombre} estuvo activo en esta unidad hasta el ` +
+            `${formatDisplayDate(ultimoDia)}, y esos días ya tienen turnos ` +
+            "programados.\n\n" +
+            `Aplicar la rotativa desde el ${formatDisplayDate(rotativa.startDate)} ` +
+            "los reescribe, y con ellos los permisos, las ausencias y los " +
+            "cambios de turno de ese tramo.",
+            {
+                title: "Vas a sobrescribir turnos ya programados",
+                tone: "warning",
+                confirmText: "Sobrescribir de todos modos",
+                cancelText: "Elegir otra fecha"
+            }
+        );
+
+        if (seguro) {
+            return { ...rotativa, handoverRequested: false };
+        }
+    }
 }
+
+// Marcar o desmarcar "Perfil activo" pregunta EN EL ACTO: cual fue su
+// ultimo turno, o con que rotativa vuelve. Antes esas preguntas salian
+// recien al apretar Guardar, lejos del gesto que las provoca, y hasta
+// entonces la casilla prometia algo que todavia no estaba decidido.
+//
+// Lo respondido queda en el borrador y el guardado lo usa tal cual.
+// Cancelar el cuadro devuelve la casilla a como estaba: no se puede
+// inactivar a alguien sin decir hasta cuando trabajo.
+async function resolveProfileActiveToggle() {
+    const perfil = getPerfilActual();
+
+    // Al crear no hay nada que reactivar: el perfil nace como se lo deje.
+    if (!perfil || profileDraft.mode !== PROFILE_MODE.EDIT) return;
+
+    const estaba = isProfileActive(perfil);
+    const queda = profileDraft.active !== false;
+
+    // Cambiar de idea con la casilla borra lo respondido antes.
+    profileDraft.pendingExitDate = "";
+    profileDraft.pendingReactivation = null;
+
+    if (estaba === queda) return;
+
+    const volverAtras = () => {
+        profileDraft.active = estaba;
+        DOM.profileActiveToggle.checked = estaba;
+        renderDashboardState();
+    };
+
+    if (!queda) {
+        const ultimoDia = await requestProfileInactivationDate(
+            profileDraft.originalName,
+            profileDraft.name || perfil.name
+        );
+
+        if (!ultimoDia) {
+            volverAtras();
+            return;
+        }
+
+        profileDraft.pendingExitDate = ultimoDia;
+        renderDashboardState();
+        return;
+    }
+
+    // Volviendo por un traspaso ya acordado no hay nada que preguntar: la
+    // fecha y la rotativa las trae el pedido.
+    if (pendingHandoverReactivation) return;
+
+    const decision = await resolveProfileReactivation(
+        profileDraft.name || perfil.name,
+        profileDraft.rut,
+        perfil.unitExitDate
+    );
+
+    // Sin decision -o con el traspaso pedido, que lo reactiva cuando
+    // llegue- el perfil sigue inactivo.
+    if (!decision || decision.handoverRequested) {
+        volverAtras();
+        return;
+    }
+
+    profileDraft.rotationType = decision.rotationType;
+    profileDraft.rotationStart = decision.startDate;
+    profileDraft.rotationFirstTurn = decision.rotationFirstTurn;
+    profileDraft.pendingReactivation = decision;
+    renderDashboardState();
+}
+
 
 async function openAttachment(doc) {
     try {
@@ -3144,11 +3263,24 @@ function openRotationConfigModal(
     const isHonoraria = !isReplacement && isHonorariaDraft();
     const defaultRotationStart =
         getRotationConfigDefaultStart(type);
+    // Abrir sin fecha puesta. Lo usa la reactivacion: la fecha de la rotativa
+    // anterior venia preseleccionada y pintada, asi que aceptar sin tocar nada
+    // aplicaba una rotativa que nadie eligio -y encima desde una fecha en la
+    // que esa persona ya no estaba en la unidad-.
+    const startEmpty = Boolean(options.startEmpty);
+    // En que mes se abre, cuando quien llama sabe cual conviene (al reactivar,
+    // el del primer dia disponible).
+    const openAtISO = normalizeStoredStart(options.monthISO || "");
+    const openAtDate = openAtISO ? parseInputDate(openAtISO) : null;
     const state = {
-        monthDate: getRotationModalMonth(type),
-        rotationStart: isReplacement
-            ? profileDraft.rotationStart
-            : profileDraft.rotationStart || defaultRotationStart,
+        monthDate: openAtDate && !Number.isNaN(openAtDate.getTime())
+            ? new Date(openAtDate.getFullYear(), openAtDate.getMonth(), 1)
+            : getRotationModalMonth(type),
+        rotationStart: startEmpty
+            ? ""
+            : isReplacement
+                ? profileDraft.rotationStart
+                : profileDraft.rotationStart || defaultRotationStart,
         firstTurn: normalizeRotationFirstTurnForType(
             type,
             profileDraft.rotationFirstTurn
@@ -14623,10 +14755,15 @@ async function guardarPerfil() {
     let reactivationFrom = "";
 
     if (isReactivating && !pendingHandoverReactivation) {
-        const decision = await resolveProfileReactivation(
-            nextName,
-            profileDraft.rut
-        );
+        // Lo normal es que ya este respondido: la casilla "Perfil activo"
+        // pregunta al marcarse. Se vuelve a preguntar aqui para los caminos
+        // que reactivan sin pasar por ella.
+        const decision = profileDraft.pendingReactivation ||
+            await resolveProfileReactivation(
+                nextName,
+                profileDraft.rut,
+                previousSnapshot?.unitExitDate || ""
+            );
 
         if (!decision || decision.handoverRequested) return false;
 
@@ -14833,10 +14970,14 @@ async function guardarPerfil() {
     let inactivationLastDate = "";
 
     if (isDeactivating) {
-        inactivationLastDate = await requestProfileInactivationDate(
-            profileDraft.originalName,
-            nextName
-        );
+        // Igual que al reactivar: normalmente ya se respondio al desmarcar la
+        // casilla, y aqui solo se pregunta si se llego por otro camino.
+        inactivationLastDate =
+            normalizeStoredStart(profileDraft.pendingExitDate || "") ||
+            await requestProfileInactivationDate(
+                profileDraft.originalName,
+                nextName
+            );
 
         if (!inactivationLastDate) return false;
 
@@ -15299,6 +15440,12 @@ async function guardarPerfil() {
                 );
             }
         }
+
+        // Guardado: lo que se respondio en la casilla ya quedo escrito. Se
+        // limpia aqui y no antes, para que un guardado fallido no obligue a
+        // responderlo de nuevo.
+        profileDraft.pendingExitDate = "";
+        profileDraft.pendingReactivation = null;
 
         return true;
     } catch (error) {
@@ -17337,6 +17484,7 @@ function bindProfileForm() {
         if (isProfileEditing()) {
             profileDraft.active =
                 DOM.profileActiveToggle.checked;
+            void resolveProfileActiveToggle();
             return;
         }
 

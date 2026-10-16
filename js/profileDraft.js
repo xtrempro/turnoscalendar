@@ -86,7 +86,13 @@ function clearedDraftValues() {
         honorariaMaxMonthlyHours: "",
         honorariaLimitPeriod: "weekly",
         unionLeaveEnabled: false,
-        shiftAssigned: false
+        shiftAssigned: false,
+        // Lo que ya se respondio al marcar o desmarcar "Perfil activo": su
+        // ultimo dia trabajado, o la rotativa con la que vuelve. Se pregunta
+        // ahi mismo -no al guardar- y se guarda aqui para no volver a
+        // preguntarlo. Cambiar de idea con la casilla lo borra.
+        pendingExitDate: "",
+        pendingReactivation: null
     };
 }
 
@@ -296,6 +302,10 @@ export function loadDraftFromProfile(profile){
         ? [...profile.docs]
         : [];
     profileDraft.active = isProfileActive(profile);
+    // Abrir una ficha para editarla empieza sin nada respondido: lo que se
+    // haya contestado antes en la casilla "Perfil activo" era de esa edicion.
+    profileDraft.pendingExitDate = "";
+    profileDraft.pendingReactivation = null;
     profileDraft.unit = "";
     profileDraft.unitEntryDate = PROFILE_UNIT_ENTRY_DATE_ENABLED
         ? profile.unitEntryDate || ""

@@ -39,10 +39,14 @@ test("guardar una inactivacion exige fecha y limpia desde el dia siguiente", asy
         "utf8"
     );
 
+    // La fecha la responde la casilla "Perfil activo" al desmarcarse
+    // (pendingExitDate); guardar la usa, y solo pregunta si se llego por un
+    // camino que no pasa por ahi.
     assert.match(
         source,
-        /inactivationLastDate = await requestProfileInactivationDate\(\s*profileDraft\.originalName,\s*nextName/
+        /inactivationLastDate =\s*normalizeStoredStart\(profileDraft\.pendingExitDate \|\| ""\) \|\|\s*await requestProfileInactivationDate\(\s*profileDraft\.originalName,\s*nextName/
     );
+    assert.match(source, /if \(!inactivationLastDate\) return false;/);
     assert.match(
         source,
         /cleanupFutureSchedule\(parseInputDate\(cleanupStart\), \{\s*preserveProtectedLeaves: false/
