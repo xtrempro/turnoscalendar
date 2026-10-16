@@ -325,9 +325,18 @@ export function runScheduleTask(type, payload) {
     throw new Error(`Tarea de worker no soportada: ${type}`);
 }
 
-const workerScope = typeof self !== "undefined" ? self : null;
+// Solo un Web Worker de verdad escucha mensajes. El hilo principal tambien
+// importa este modulo (js/workerService.js calcula aqui cuando el Worker no
+// puede cargarse) y alla `self` es la ventana: responderle a cualquier
+// postMessage ajeno la dejaria hablando sola en un bucle.
+const workerScope =
+    typeof WorkerGlobalScope !== "undefined" &&
+    typeof self !== "undefined" &&
+    self instanceof WorkerGlobalScope
+        ? self
+        : null;
 
-if (workerScope?.addEventListener && workerScope?.postMessage) {
+if (workerScope) {
     workerScope.addEventListener("message", event => {
         const message = event.data || {};
 

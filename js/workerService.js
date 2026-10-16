@@ -1,7 +1,18 @@
+// El mismo motor que corre dentro del Worker. Se importa tambien aqui para
+// poder calcular en el hilo principal cuando el Worker no esta disponible:
+// pasa, por ejemplo, con una pestaña abierta desde antes de un despliegue,
+// donde el archivo del Worker ya no existe y el servidor devuelve el index
+// (el navegador lo rechaza por MIME y nunca arranca).
+import { runScheduleTask } from "./workers/scheduleWorker.js";
+
 const DEFAULT_TIMEOUT_MS = 30000;
+const WORKER_UNAVAILABLE = "worker-unavailable";
 
 let scheduleWorker = null;
 let taskSequence = 0;
+// Una vez que el Worker demostro que no puede arrancar, no vale la pena
+// volver a intentarlo en cada tarea: se calcula aqui de entrada.
+let workerUnavailable = false;
 const pendingTasks = new Map();
 const channelTasks = new Map();
 
@@ -9,6 +20,23 @@ function abortError(message = "Tarea cancelada") {
     const error = new Error(message);
     error.name = "AbortError";
     return error;
+}
+
+function workerUnavailableError(message) {
+    const error = new Error(message);
+    error.code = WORKER_UNAVAILABLE;
+    return error;
+}
+
+function runTaskOnMainThread(type, payload, cause = null) {
+    if (cause) {
+        console.warn(
+            `El Web Worker no pudo con ${type}; se calcula en esta pestaña.`,
+            cause
+        );
+    }
+
+    return new Promise(resolve => resolve(runScheduleTask(type, payload)));
 }
 
 function scheduleWorkerUrl() {
@@ -72,26 +100,44 @@ function ensureScheduleWorker() {
     if (scheduleWorker) return scheduleWorker;
 
     if (typeof Worker === "undefined") {
-        throw new Error("Este navegador no soporta Web Workers.");
+        workerUnavailable = true;
+        throw workerUnavailableError("Este navegador no soporta Web Workers.");
     }
 
-    scheduleWorker = new Worker(scheduleWorkerUrl(), { type: "module" });
+    try {
+        scheduleWorker = new Worker(scheduleWorkerUrl(), { type: "module" });
+    } catch (error) {
+        workerUnavailable = true;
+        throw workerUnavailableError(
+            error?.message || "No se pudo iniciar el Web Worker."
+        );
+    }
+
     scheduleWorker.addEventListener("message", handleWorkerMessage);
     scheduleWorker.addEventListener("error", event => {
-        rejectAll(new Error(
+        // Un "error" del Worker es que no cargo: su codigo no alcanza a
+        // lanzar nada (el motor atrapa sus propias excepciones y las
+        // responde como mensaje).
+        workerUnavailable = true;
+        rejectAll(workerUnavailableError(
             event.message || "El Web Worker dejó de responder."
         ));
         scheduleWorker?.terminate();
         scheduleWorker = null;
     });
     scheduleWorker.addEventListener("messageerror", () => {
-        rejectAll(new Error("El Web Worker devolvió datos inválidos."));
+        // Datos que no se pudieron clonar: es de esta tarea, el Worker sigue
+        // sano.
+        rejectAll(workerUnavailableError(
+            "El Web Worker devolvió datos inválidos."
+        ));
     });
 
     return scheduleWorker;
 }
 
-export function runWorkerTask(
+function postWorkerTask(
+    worker,
     type,
     payload,
     {
@@ -101,12 +147,7 @@ export function runWorkerTask(
         replaceChannel = true
     } = {}
 ) {
-    const worker = ensureScheduleWorker();
     const taskId = `schedule_${Date.now()}_${++taskSequence}`;
-
-    if (signal?.aborted) {
-        return Promise.reject(abortError());
-    }
 
     if (channel && replaceChannel) {
         const previousTaskId = channelTasks.get(channel);
@@ -141,6 +182,37 @@ export function runWorkerTask(
         });
         signal?.addEventListener("abort", onAbort, { once: true });
         worker.postMessage({ taskId, type, payload });
+    });
+}
+
+export function runWorkerTask(type, payload, options = {}) {
+    const { signal = null } = options;
+
+    if (signal?.aborted) {
+        return Promise.reject(abortError());
+    }
+
+    // Que el Worker no arranque no puede costarle el trabajo al supervisor:
+    // la rotativa se calcula igual, con el mismo motor, en esta pestaña.
+    if (workerUnavailable) {
+        return runTaskOnMainThread(type, payload);
+    }
+
+    let worker = null;
+
+    try {
+        worker = ensureScheduleWorker();
+    } catch (error) {
+        if (error?.code !== WORKER_UNAVAILABLE) throw error;
+
+        return runTaskOnMainThread(type, payload, error);
+    }
+
+    return postWorkerTask(worker, type, payload, options).catch(error => {
+        if (error?.code !== WORKER_UNAVAILABLE) throw error;
+        if (signal?.aborted) throw abortError();
+
+        return runTaskOnMainThread(type, payload, error);
     });
 }
 

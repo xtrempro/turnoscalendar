@@ -117,6 +117,7 @@
     "test:novedades-semana": "node --test tests/programacion-novedades-semana.test.mjs",
     "test:incremental-render": "node --test tests/frontend-incremental-render.test.mjs",
     "test:worker": "node --test tests/schedule-worker.test.mjs",
+    "test:rotativa-sin-worker": "node --test tests/rotativa-sin-worker.test.mjs",
     "test:linked-units": "node --test tests/linked-units-on-demand.test.mjs",
     "test:leave-application": "node --test tests/leave-application.test.mjs",
     "test:permiso-espera": "node --test tests/permiso-espera-cobertura.test.mjs",
