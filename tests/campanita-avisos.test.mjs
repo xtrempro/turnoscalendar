@@ -297,7 +297,7 @@ test("un aviso con el mismo id se reescribe si cambio lo que dice", () => {
     // Si no cambio nada, no se toca ni se repinta.
     assert.match(
         empujar,
-        /anterior\.title === aviso\.title &&\s*\n\s*anterior\.detail === aviso\.detail\s*\n\s*\) \{\s*\n\s*return false;/
+        /anterior\.title === aviso\.title &&\s*\n\s*anterior\.detail === aviso\.detail &&\s*\n\s*noticeActionKey\(anterior\.action\) === noticeActionKey\(aviso\.action\)\s*\n\s*\) \{\s*\n\s*return false;/
     );
     // Y al reescribir conserva cuando llego.
     assert.match(empujar, /createdAt: item\.createdAt \|\| aviso\.createdAt/);

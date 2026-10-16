@@ -44,6 +44,7 @@ let bellBadge = null;
 let bellPanel = null;
 let bellPanelList = null;
 let onOpenRequests = () => {};
+let onNoticeAction = () => {};
 let knownPendingIds = new Set();
 // Las coberturas que ya estaban aceptadas al abrir. Sin esto, entrar a la
 // unidad generaria un aviso por cada turno aceptado hace semanas.
@@ -84,7 +85,11 @@ export function getBellNotices() {
 // Y si lo que hay que decir CAMBIO -el pedido se corrigio, o uno nuevo reuso el
 // mismo documento-, el aviso se reescribe en vez de quedarse con el texto
 // viejo: un aviso que miente es peor que no tenerlo.
-function pushNotice({ id, title, detail = "" }) {
+function noticeActionKey(action) {
+    return action ? JSON.stringify(action) : "";
+}
+
+function pushNotice({ id, title, detail = "", action = null }) {
     const clave = String(id || "").trim();
 
     if (!clave) return false;
@@ -95,13 +100,18 @@ function pushNotice({ id, title, detail = "" }) {
         id: clave,
         title: String(title || ""),
         detail: String(detail || ""),
+        // Adonde lleva tocar el aviso. Es un DATO y no una funcion porque los
+        // avisos se guardan en el navegador y tienen que sobrevivir a recargar
+        // la pagina; quien sabe interpretarlo es quien lo creo.
+        action: action && typeof action === "object" ? { ...action } : null,
         createdAt: new Date().toISOString()
     };
 
     if (anterior) {
         if (
             anterior.title === aviso.title &&
-            anterior.detail === aviso.detail
+            anterior.detail === aviso.detail &&
+            noticeActionKey(anterior.action) === noticeActionKey(aviso.action)
         ) {
             return false;
         }
@@ -388,12 +398,24 @@ function renderBellPanel() {
     }
 
     for (const aviso of avisos) {
-        const item = document.createElement("article");
+        // Un aviso que lleva a alguna parte es un boton de verdad: se alcanza
+        // con el teclado y se anuncia como lo que es.
+        const accionable = Boolean(aviso?.action);
+        const item = document.createElement(accionable ? "button" : "article");
         const titulo = document.createElement("strong");
 
         item.className = "bell-notice";
         titulo.textContent = aviso?.title || "Aviso";
         item.appendChild(titulo);
+
+        if (accionable) {
+            item.type = "button";
+            item.classList.add("bell-notice--link");
+            item.addEventListener("click", () => {
+                closeBellPanel();
+                onNoticeAction({ ...aviso.action });
+            });
+        }
 
         if (aviso?.detail) {
             const detalle = document.createElement("p");
@@ -570,12 +592,13 @@ function scheduleRefresh() {
     refreshTimer = setTimeout(refreshNow, REFRESH_DEBOUNCE_MS);
 }
 
-export function initNotificationsBell({ onOpen } = {}) {
+export function initNotificationsBell({ onOpen, onNotice } = {}) {
     if (initialized) return;
 
     bellButton = document.getElementById("notificationsBellBtn");
     bellBadge = document.getElementById("notificationsBellBadge");
     onOpenRequests = typeof onOpen === "function" ? onOpen : () => {};
+    onNoticeAction = typeof onNotice === "function" ? onNotice : () => {};
 
     if (!bellButton) return;
 

@@ -7637,6 +7637,7 @@ function renderDashboardState() {
 
     if (activeView === "profile") {
         renderProfileHero(profile, data);
+        renderProfileOtherUnitAlert(profile);
         renderProfileDocs(data, editing);
         scheduleProfileSecondarySections(profile, data, editing);
     }
@@ -12390,17 +12391,131 @@ async function reportWorkerEnteredElsewhere(rut, activeFrom = "") {
     }
 }
 
+// Los avisos vivos de esta unidad: quienes estan activos tambien en otra. Se
+// guardan aqui para que la ficha del trabajador pueda decirlo sin volver a
+// preguntarle al servidor: el oyente ya los trae.
+let movedWorkerNotices = [];
+
+function setMovedWorkerNotices(pendientes = []) {
+    movedWorkerNotices = Array.isArray(pendientes) ? pendientes : [];
+    renderProfileOtherUnitAlert();
+}
+
+function movedWorkerNoticeFor(profile) {
+    if (!profile) return null;
+
+    const rut = normalizeRut(profile.rut);
+    const nombre = String(profile.name || "").trim();
+
+    return movedWorkerNotices.find(aviso => {
+        if (String(aviso?.status || "") !== "pending") return false;
+
+        const avisoRut = normalizeRut(aviso.profileRut);
+
+        // Por RUT, que es lo que identifica a la persona. Por nombre solo si el
+        // aviso no trae RUT: los de antes de que viajara.
+        if (avisoRut) return avisoRut === rut;
+
+        return Boolean(nombre) &&
+            String(aviso.profileName || "").trim() === nombre;
+    }) || null;
+}
+
+// Que decir de alguien que esta en dos unidades. Cambia segun como se supo:
+// enlazo su aplicacion alla -y entonces dejo de ver esta-, o lo ingresaron de
+// cero y la mayoria todavia no tiene la app.
+function movedWorkerNoticeText(aviso) {
+    return String(aviso?.uid || "").trim()
+        ? "Enlazó su aplicación en otra unidad del establecimiento, así que " +
+            "ya no ve el calendario de esta."
+        : "Lo ingresaron en otra unidad del mismo establecimiento.";
+}
+
 function noticeMovedWorkers(pendientes = []) {
     for (const aviso of pendientes) {
         const quien = String(aviso.profileName || "").trim() || "Un trabajador";
 
         addBellNotice({
             id: `cambio-unidad:${aviso.id}`,
-            title: `${quien} se enlazó en otra unidad`,
-            detail: "Su app ya no muestra la tuya. Revísalo en Solicitudes " +
-                "para desactivar su perfil."
+            title: `${quien} está activo en otra unidad`,
+            detail: `${movedWorkerNoticeText(aviso)} Abre su perfil para ` +
+                "evaluar si lo desactivas.",
+            // Tocar el aviso abre SU ficha: es donde se mira si todavia tiene
+            // turnos cargados antes de decidir.
+            action: {
+                kind: "profile",
+                profile: String(aviso.profileName || ""),
+                rut: String(aviso.profileRut || "")
+            }
         });
     }
+}
+
+// El aviso dentro de la ficha. La campanita se lee una vez y se va; quien abre
+// el perfil dos dias despues tiene que seguir viendo que esta en dos unidades.
+function renderProfileOtherUnitAlert(profile = getPerfilActual()) {
+    const host = document.getElementById("profileOtherUnitAlert");
+
+    if (!host) return;
+
+    const aviso = profileDraft.mode === PROFILE_MODE.CREATE
+        ? null
+        : movedWorkerNoticeFor(profile);
+
+    host.replaceChildren();
+    host.hidden = !aviso;
+
+    if (!aviso) return;
+
+    const icono = document.createElement("span");
+
+    icono.className = "pf-alert__ico";
+    icono.setAttribute("aria-hidden", "true");
+    icono.textContent = "⚠";
+
+    const cuerpo = document.createElement("div");
+    const titulo = document.createElement("span");
+    const texto = document.createElement("p");
+
+    cuerpo.className = "pf-alert__body";
+    titulo.className = "pf-alert__title";
+    titulo.textContent = "Está activo en otra unidad del establecimiento";
+    texto.className = "pf-alert__text";
+    // Con nodos y textContent: el nombre viene del estado y no es marcado.
+    texto.textContent = `${movedWorkerNoticeText(aviso)} Si ya no trabaja ` +
+        "contigo, desactiva su perfil para que deje de aparecer en la " +
+        "planificación: en el menú Solicitudes está el botón para hacerlo.";
+    cuerpo.append(titulo, texto);
+    host.append(icono, cuerpo);
+}
+
+// Tocar un aviso de la campanita lleva adonde se decide. Hoy, a la ficha del
+// trabajador: es donde se ve si todavia tiene turnos cargados antes de
+// desactivarlo.
+async function openBellNoticeTarget(accion = {}) {
+    if (String(accion?.kind || "") !== "profile") return;
+
+    const nombre = String(accion.profile || "").trim();
+    const rut = normalizeRut(accion.rut);
+    const perfil = getProfiles().find(item => item.name === nombre) ||
+        (rut
+            ? getProfiles().find(item => normalizeRut(item.rut) === rut)
+            : null);
+
+    if (!perfil) {
+        await showAlert(
+            `${nombre || "Esa persona"} ya no tiene perfil en esta unidad.`,
+            { title: "Perfil no encontrado", tone: "warning" }
+        );
+        return;
+    }
+
+    // El camino de siempre para abrir una ficha: cuida el perfil a medio
+    // editar, muestra al inactivo aunque la lista no lo liste, y navega.
+    await selectProfileByName(perfil.name, {
+        openProfile: true,
+        scrollToTop: true
+    });
 }
 
 // Pedidos de traspaso que llegaron y esperan respuesta.
@@ -14924,6 +15039,31 @@ async function guardarPerfil() {
             );
         }
 
+        // Se ingreso de cero a alguien que ya estaba en otra unidad del
+        // establecimiento: hay que avisarle a esa unidad, que si no se queda
+        // con el perfil activo apareciendo en su planificacion sin que nadie
+        // lo note.
+        //
+        // No corre cuando llego por una transferencia: ese camino ya inactiva
+        // el perfil alla por su cuenta.
+        //
+        // Va AQUI, apenas el perfil quedo escrito, y no al final de este
+        // guardado: lo que viene despues -la rotativa, entre otras cosas-
+        // puede fallar, y hasta el 2026-10-15 ese aviso se perdia con el. Paso
+        // de verdad: un Worker que no cargo dejo a la otra unidad sin enterarse.
+        if (isCreating && !transferIntake) {
+            void reportWorkerEnteredElsewhere(nextProfilePayload.rut);
+        }
+
+        // Reactivado aqui sin pedir el traspaso: la otra unidad tiene que
+        // enterarse de que desde esa fecha esta activo en dos lados.
+        if (reactivationFrom) {
+            void reportWorkerEnteredElsewhere(
+                nextProfilePayload.rut,
+                reactivationFrom
+            );
+        }
+
         if (shiftAssignmentChanged) {
             recordShiftAssignmentChange(
                 nextShiftAssigned,
@@ -15158,26 +15298,6 @@ async function guardarPerfil() {
                     "Vuelve a Aceptar en Unidades enlazadas para confirmarla con este perfil."
                 );
             }
-        }
-
-        // Se ingreso de cero a alguien que ya estaba en otra unidad del
-        // establecimiento: hay que avisarle a esa unidad, que si no se queda
-        // con el perfil activo apareciendo en su planificacion sin que nadie
-        // lo note.
-        //
-        // No corre cuando llego por una transferencia: ese camino ya inactiva
-        // el perfil alla por su cuenta.
-        if (isCreating && !transferIntake) {
-            void reportWorkerEnteredElsewhere(nextProfilePayload.rut);
-        }
-
-        // Reactivado aqui sin pedir el traspaso: la otra unidad tiene que
-        // enterarse de que desde esa fecha esta activo en dos lados.
-        if (reactivationFrom) {
-            void reportWorkerEnteredElsewhere(
-                nextProfilePayload.rut,
-                reactivationFrom
-            );
         }
 
         return true;
@@ -19301,12 +19421,18 @@ initFirebaseShell({
                         error
                     );
                 });
-                // Avisos de trabajadores que se enlazaron en otra unidad.
+                // Avisos de trabajadores que estan activos en otra unidad.
+                //
+                // Se vacian al cambiar de unidad: son de la unidad que se
+                // deja, y la ficha de alguien de la nueva no puede heredar un
+                // aviso ajeno mientras llega el primer dato.
+                setMovedWorkerNotices([]);
                 void watchWorkerUnitChangeNotices(
                     workspace,
                     pendientes => {
                         if (generacion !== workspaceChangeGeneration) return;
 
+                        setMovedWorkerNotices(pendientes);
                         noticeMovedWorkers(pendientes);
                     }
                 ).catch(error => {
@@ -19486,7 +19612,8 @@ initTendersPanel();
 initQualificationsPanel();
 refreshWorkerRequestsNavBadge();
 initNotificationsBell({
-    onOpen: () => { void setActiveShortcut("workerRequestsPanel"); }
+    onOpen: () => { void setActiveShortcut("workerRequestsPanel"); },
+    onNotice: accion => { void openBellNoticeTarget(accion); }
 });
 initPendingLeaveBlinkSync();
 // Un modal no se cierra si el mouse se suelta sobre su fondo pero el arrastre

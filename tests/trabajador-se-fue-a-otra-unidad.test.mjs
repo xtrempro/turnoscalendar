@@ -96,11 +96,14 @@ test("el aviso suena en la campanita al llegar", () => {
 
     const avisar = main.slice(
         main.indexOf("function noticeMovedWorkers("),
-        main.indexOf("function noticeMovedWorkers(") + 700
+        main.indexOf("// El aviso dentro de la ficha.")
     );
 
     assert.match(avisar, /addBellNotice\(/);
-    assert.match(avisar, /Revísalo en Solicitudes/);
+    // Y lleva a la ficha del trabajador, que es donde se decide si se
+    // desactiva (antes mandaba a Solicitudes, a buscarlo a mano).
+    assert.match(avisar, /está activo en otra unidad/);
+    assert.match(avisar, /kind: "profile"/);
 });
 
 test("el cliente nunca marca el aviso por su cuenta", () => {
