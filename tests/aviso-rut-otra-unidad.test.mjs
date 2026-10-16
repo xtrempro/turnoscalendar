@@ -321,10 +321,15 @@ test("la tarjeta vieja ya no existe en el formulario", async () => {
 // calendario, confirmación- y recién al final le decían que ya lo había pedido,
 // con el formulario descartado igual.
 
-function montarAvisoConPendiente({ pendiente, respuesta = false }) {
+function montarAvisoConPendiente({
+    pendiente,
+    respuesta = false,
+    unidades = [URGENCIA]
+}) {
     const cuadros = [];
     const traspasos = [];
     const resueltos = [];
+    const consultas = [];
     const fabrica = new Function(
         "showConfirm",
         "askWorkerHandover",
@@ -339,14 +344,18 @@ function montarAvisoConPendiente({ pendiente, respuesta = false }) {
         cuadros,
         traspasos,
         resueltos,
+        consultas,
         avisar: fabrica(
             async (mensaje, opciones) => {
                 cuadros.push({ mensaje, ...opciones });
                 return respuesta;
             },
             async () => { traspasos.push(true); },
-            { rut: "31.000.001-9", unidades: [URGENCIA] },
-            async () => pendiente,
+            { rut: "31.000.001-9", unidades },
+            async (rut) => {
+                consultas.push(rut);
+                return pendiente;
+            },
             async (pedido) => { resueltos.push(pedido); }
         )
     };
@@ -374,6 +383,36 @@ test("sin pedido vivo, el cuadro de siempre", async () => {
 
     assert.equal(cuadros.length, 1);
     assert.deepEqual(resueltos, []);
+});
+
+test("aunque el RUT no aparezca en ninguna unidad, el pedido vivo se decide", async () => {
+    // La otra unidad borro el perfil: el RUT ya no aparece en el
+    // establecimiento, pero el pedido sigue esperando respuesta. Preguntarlo
+    // despues de mirar las unidades dejaba este caso en silencio, y la persona
+    // se ingresaba de cero con el traspaso en pie.
+    const { avisar, resueltos, consultas, cuadros } = montarAvisoConPendiente({
+        pendiente: { id: "whr-1", sourceWorkspaceId: "ws-1" },
+        unidades: []
+    });
+
+    await avisar();
+
+    assert.deepEqual(consultas, ["31.000.001-9"]);
+    assert.equal(resueltos.length, 1);
+    assert.equal(resueltos[0].id, "whr-1");
+    assert.deepEqual(cuadros, []);
+});
+
+test("sin unidades y sin pedido, no se dice nada", async () => {
+    const { avisar, resueltos, cuadros } = montarAvisoConPendiente({
+        pendiente: null,
+        unidades: []
+    });
+
+    await avisar();
+
+    assert.deepEqual(resueltos, []);
+    assert.deepEqual(cuadros, []);
 });
 
 function montarDecision({ eleccion }) {

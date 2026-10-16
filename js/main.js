@@ -1349,6 +1349,24 @@ async function resolvePendingHandoverRequest(pedido) {
 }
 
 async function announceRutInEstablishment() {
+    // Si ya hay un pedido vivo por este RUT, eso es lo primero que hay que
+    // decir. Antes se callaba: el supervisor recorria todo el camino
+    // -modalidad, rotativa, calendario, confirmacion- y recien al final se
+    // enteraba de que ya lo habia pedido, con el formulario descartado de
+    // todas formas.
+    //
+    // Se pregunta ANTES de mirar en que unidades aparece el RUT, porque el
+    // pedido vive aqui y no depende de eso: si la otra unidad borro el perfil,
+    // el RUT no aparece en ninguna parte y el pedido sigue en pie. Preguntar
+    // despues dejaba ese caso sin aviso, ingresando a la persona de cero con
+    // el traspaso todavia esperando respuesta.
+    const pendiente = await pendingOwnHandoverRequest(rutLookupState.rut);
+
+    if (pendiente) {
+        await resolvePendingHandoverRequest(pendiente);
+        return;
+    }
+
     if (!rutLookupState.unidades.length) return;
 
     // "Inactivo" alla no es un problema, es la mejor senal: quiere decir que
@@ -1363,17 +1381,6 @@ async function announceRutInEstablishment() {
                 : nombre;
         })
         .join(", ");
-    // Si ya hay un pedido vivo por este RUT, eso es lo primero que hay que
-    // decir. Antes se callaba: el supervisor recorria todo el camino -modalidad,
-    // rotativa, calendario, confirmacion- y recien al final se enteraba de que
-    // ya lo habia pedido, con el formulario descartado de todas formas.
-    const pendiente = await pendingOwnHandoverRequest(rutLookupState.rut);
-
-    if (pendiente) {
-        await resolvePendingHandoverRequest(pendiente);
-        return;
-    }
-
     const pedir = await showConfirm(
         `Este RUT ya está registrado en ${nombres}, del mismo establecimiento.\n\n` +
         "Puedes pedir el traspaso de su información, que trae sus datos y sus " +
