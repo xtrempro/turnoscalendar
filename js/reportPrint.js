@@ -35,6 +35,30 @@ function sanitizePrintHTML(value) {
 }
 
 /**
+ * Las imagenes con su direccion completa.
+ *
+ * En la ventana de impresion una ruta relativa ("img/logo.jpeg") se resuelve
+ * contra la pagina; en el archivo de Word descargado no hay contra que
+ * resolverla y el logo sale como un recuadro roto.
+ *
+ * @param {string} html
+ * @param {string} baseURI
+ * @returns {string}
+ */
+export function withAbsoluteImageSources(html, baseURI) {
+    return String(html || "").replace(
+        /(<img\b[^>]*?\ssrc=")(?!https?:|data:|\/\/)([^"]+)(")/gi,
+        (match, before, src, after) => {
+            try {
+                return `${before}${new URL(src, baseURI).href}${after}`;
+            } catch {
+                return match;
+            }
+        }
+    );
+}
+
+/**
  * Descarga el mismo reporte como documento de Word.
  *
  * Es el HTML del reporte envuelto para Word, no un .docx armado a mano: Word
@@ -51,7 +75,15 @@ export function downloadReportAsWord(html, title) {
         return false;
     }
 
-    const safeHTML = sanitizePrintHTML(html);
+    // Word no entiende CSS grid ni posicionados, y las rutas relativas de las
+    // imagenes se rompen al abrir el archivo descargado. Se traduce lo justo
+    // para que el documento se vea como el impreso: el logo con su direccion
+    // completa, el encabezado institucional en dos columnas de tabla y la
+    // barra institucional al pie en vez de flotando.
+    const safeHTML = withAbsoluteImageSources(
+        sanitizePrintHTML(html),
+        document.baseURI
+    );
     const nombre = `${String(title || "Reporte").replace(/[\\/:*?"<>|]/g, "-")}.doc`;
     const documento = `
         <html xmlns:o="urn:schemas-microsoft-com:office:office"
@@ -83,6 +115,51 @@ export function downloadReportAsWord(html, title) {
                     }
                     thead th {
                         background: #e2e8f0;
+                    }
+
+                    /* Lo que Word no sabe hacer, traducido a lo que si sabe. */
+                    .tens-annex,
+                    .tens-annex__institution,
+                    .tens-annex__meta,
+                    .tens-annex__functions {
+                        display: block;
+                        min-height: 0;
+                    }
+                    .tens-annex__institution img {
+                        float: left;
+                        width: 105px;
+                        margin: 0 14px 6px 0;
+                    }
+                    .tens-annex__institution p {
+                        margin: 0 0 2px;
+                        font-size: 8pt;
+                    }
+                    .tens-annex h1 {
+                        clear: both;
+                        padding-top: 10px;
+                    }
+                    .tens-annex table {
+                        font-size: 8pt;
+                    }
+                    .tens-annex th,
+                    .tens-annex td {
+                        border: 1px solid #000;
+                        padding: 3px;
+                    }
+                    /* Flotando se cruzaba sobre la tabla: en Word va al final,
+                       que es donde se ve en el impreso. */
+                    .tens-annex__footer-rule {
+                        position: static;
+                        display: block;
+                        width: 100%;
+                        height: 3px;
+                        margin-top: 24px;
+                        background: #006cb7;
+                    }
+                    .tens-annex__footer-rule span { display: none; }
+                    .tens-annex--new-page {
+                        page-break-before: always;
+                        mso-break-type: page-break;
                     }
                 </style>
             </head>

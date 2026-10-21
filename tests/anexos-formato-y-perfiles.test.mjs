@@ -168,7 +168,7 @@ test("el cuadro del Anexo 1 pide el jefe solicitante, con el firmante puesto", (
     // Y lo escrito es lo que sale impreso; si se borra, vuelve el firmante.
     assert.match(
         tens,
-        /requesterName => buildTensConsolidatedReportHTML\(rows, monthDate, \{\s*\n\s*requesterName: requesterName \|\| firmante\s*\n\s*\}\)/
+        /requesterName => buildAnnexOneDocumentHTML\(sections, monthDate, \{\s*\n\s*requesterName: requesterName \|\| firmante\s*\n\s*\}\)/
     );
 });
 
@@ -204,4 +204,39 @@ test("un cuadro de eleccion puede traer campo de texto", () => {
         dialogos,
         /\? \(input \? \{ value: choiceValue, text: input\.value \} : choiceValue\)/
     );
+});
+
+test("en el Word el logo lleva su direccion completa", async () => {
+    // En la ventana de impresion "img/logo.jpeg" se resuelve contra la pagina;
+    // en el archivo descargado no hay contra que resolverla y sale roto.
+    const { withAbsoluteImageSources } = await import("../js/reportPrint.js");
+    const base = "https://calendarioturnos-7c4d9.web.app/index.html";
+
+    assert.equal(
+        withAbsoluteImageSources('<img src="img/logo.jpeg" alt="x">', base),
+        '<img src="https://calendarioturnos-7c4d9.web.app/img/logo.jpeg" alt="x">'
+    );
+    // Lo que ya es absoluto no se toca.
+    for (const src of [
+        "https://otro.cl/logo.png",
+        "data:image/png;base64,AAAA",
+        "//cdn.cl/logo.png"
+    ]) {
+        const html = `<img src="${src}">`;
+
+        assert.equal(withAbsoluteImageSources(html, base), html, src);
+    }
+});
+
+test("el Word traduce lo que Word no entiende", () => {
+    const word = impresion.slice(
+        impresion.indexOf("export function downloadReportAsWord("),
+        impresion.indexOf("export function printReportPreviewHTML(")
+    );
+
+    // Sin grid, sin posicionados y con la barra al final.
+    assert.match(word, /\.tens-annex__institution img \{[\s\S]*?float: left;/);
+    assert.match(word, /\.tens-annex__footer-rule \{[\s\S]*?position: static;/);
+    assert.match(word, /mso-break-type: page-break/);
+    assert.match(word, /withAbsoluteImageSources\(/);
 });

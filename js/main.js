@@ -384,9 +384,9 @@ import {
     isReplacementReportProfile
 } from "./hoursReport.js";
 import {
-    buildTensConsolidatedReportHTML,
-    isTensConsolidatedCandidate,
-    isTensReportProfile,
+    ANNEX_ONE_GROUPS,
+    annexOneGroupFor,
+    buildAnnexOneDocumentHTML,
     tensShiftTypeLabel
 } from "./tensReport.js";
 import {
@@ -9415,76 +9415,85 @@ async function printTensConsolidatedReport(date) {
         monthDate.getMonth() + 1,
         0
     );
-    const tensProfiles = getProfiles()
-        .filter(isTensReportProfile)
+    // Una hoja por estamento. Antes solo se imprimia la de TENS y el resto del
+    // personal -profesionales, auxiliares, administrativos- quedaba fuera,
+    // aunque hiciera horas extraordinarias igual.
+    const candidates = getProfiles()
         // Quien ya no estaba en el mes no se imprime: lo que el motor sigue
         // proyectando desde su rotativa no son dias trabajados.
         .filter(profile => isAnnexMonthCandidate(profile, monthDate))
         .filter(profile =>
-            isTensConsolidatedCandidate(
-                profile,
+            annexOneGroupFor(profile) &&
+            !isHonorariaContractType(
                 getContractTypeAt(profile.name, effectiveDate) ||
                     profile.contractType
             )
         );
 
-    if (!tensProfiles.length) {
-        alert("No hay trabajadores del estamento Técnico para generar el reporte.");
+    if (!candidates.length) {
+        alert("No hay trabajadores con Anexo 1 para generar el reporte.");
         return;
     }
 
     try {
         const summaries = await Promise.all(
-            tensProfiles.map(async profile => ({
+            candidates.map(async profile => ({
                 profile,
                 summary: await buildWorkerHheeMonthSummary(profile, monthDate)
             }))
         );
-        const rows = summaries
-            .map(({ profile, summary }) => {
-                const effectiveProfile =
-                    getCompensationProfileAt(profile.name, effectiveDate) ||
-                    profile;
-                const dayHours = Math.max(
-                    0,
-                    Number(summary?.hheeDiurnas) || 0
-                );
-                const festiveHours = Math.max(
-                    0,
-                    Number(summary?.hheeNocturnas) || 0
-                );
-                const rotationType = getRotativa(profile.name)?.type || "";
+        const sections = ANNEX_ONE_GROUPS.map(group => ({
+            group,
+            rows: summaries
+                .filter(({ profile }) =>
+                    annexOneGroupFor(profile)?.key === group.key
+                )
+                .map(({ profile, summary }) => {
+                    const effectiveProfile =
+                        getCompensationProfileAt(profile.name, effectiveDate) ||
+                        profile;
+                    const dayHours = Math.max(
+                        0,
+                        Number(summary?.hheeDiurnas) || 0
+                    );
+                    const festiveHours = Math.max(
+                        0,
+                        Number(summary?.hheeNocturnas) || 0
+                    );
+                    const rotationType = getRotativa(profile.name)?.type || "";
 
-                return {
-                    name: profile.name,
-                    grade: effectiveProfile.grade || profile.grade || "",
-                    dayHours,
-                    festiveHours,
-                    returnTransfer: Boolean(summary?.returnTransfer),
-                    shiftType: tensShiftTypeLabel(
-                        rotationType,
-                        getShiftAssigned(profile.name, effectiveDate)
-                    )
-                };
-            })
-            .filter(row => row.dayHours + row.festiveHours > 0)
-            .sort((a, b) =>
-                a.shiftType.localeCompare(b.shiftType, "es") ||
-                a.name.localeCompare(b.name, "es")
-            );
+                    return {
+                        name: profile.name,
+                        grade: effectiveProfile.grade || profile.grade || "",
+                        dayHours,
+                        festiveHours,
+                        returnTransfer: Boolean(summary?.returnTransfer),
+                        shiftType: tensShiftTypeLabel(
+                            rotationType,
+                            getShiftAssigned(profile.name, effectiveDate),
+                            group.label
+                        )
+                    };
+                })
+                .filter(row => row.dayHours + row.festiveHours > 0)
+                .sort((a, b) =>
+                    a.shiftType.localeCompare(b.shiftType, "es") ||
+                    a.name.localeCompare(b.name, "es")
+                )
+        })).filter(section => section.rows.length);
 
-        if (!rows.length) {
-            alert("No hay horas extraordinarias del estamento Técnico para el mes seleccionado.");
+        if (!sections.length) {
+            alert("No hay horas extraordinarias para el mes seleccionado.");
             return;
         }
 
         const firmante = getReportSignatureConfig().lines?.[0] || "";
 
         await deliverReport(
-            requesterName => buildTensConsolidatedReportHTML(rows, monthDate, {
+            requesterName => buildAnnexOneDocumentHTML(sections, monthDate, {
                 requesterName: requesterName || firmante
             }),
-            `Anexo 1 TENS ${formatReportPlanillaTitle(monthDate)}`,
+            `Anexo 1 ${formatReportPlanillaTitle(monthDate)}`,
             {
                 inputLabel: "Jefe solicitante",
                 inputValue: firmante,
@@ -9493,7 +9502,7 @@ async function printTensConsolidatedReport(date) {
         );
     } catch (error) {
         console.error(error);
-        alert("No fue posible generar el reporte consolidado TENS.");
+        alert("No fue posible generar el Anexo 1.");
     }
 }
 

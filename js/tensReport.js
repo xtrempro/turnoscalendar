@@ -11,12 +11,55 @@ export function isTensReportProfile(profile) {
     return estamento === "tecnico" || estamento === "tens";
 }
 
+/**
+ * Los cuatro estamentos que llevan Anexo 1, cada uno en su propia hoja.
+ *
+ * Antes solo se imprimia el de TENS. El resto del personal hace horas
+ * extraordinarias igual, y su autorizacion se armaba a mano.
+ *
+ * `label` es como se nombra al estamento dentro del documento -el titulo, el
+ * bloque de funciones y la columna "Tipo de turno"-, y `matches` reconoce las
+ * variantes con que quedo escrito el estamento en los perfiles.
+ */
+export const ANNEX_ONE_GROUPS = [
+    {
+        key: "tecnico",
+        label: "TENS",
+        heading: "TENS",
+        matches: estamento => ["tecnico", "tens"].includes(estamento)
+    },
+    {
+        key: "profesional",
+        label: "Profesional",
+        heading: "PROFESIONALES",
+        matches: estamento => estamento === "profesional"
+    },
+    {
+        key: "auxiliar",
+        label: "Auxiliar",
+        heading: "AUXILIARES",
+        matches: estamento => estamento === "auxiliar"
+    },
+    {
+        key: "administrativo",
+        label: "Administrativo",
+        heading: "ADMINISTRATIVOS",
+        matches: estamento => estamento === "administrativo"
+    }
+];
+
+export function annexOneGroupFor(profile) {
+    const estamento = normalized(profile?.estamento);
+
+    return ANNEX_ONE_GROUPS.find(group => group.matches(estamento)) || null;
+}
+
 export function isTensConsolidatedCandidate(profile, contractType) {
     return isTensReportProfile(profile) &&
         normalized(contractType) !== "honorarios";
 }
 
-export function tensShiftTypeLabel(rotationType, shiftAssigned) {
+export function tensShiftTypeLabel(rotationType, shiftAssigned, label = "TENS") {
     const type = normalized(rotationType);
 
     if (type === "4turno") {
@@ -27,7 +70,7 @@ export function tensShiftTypeLabel(rotationType, shiftAssigned) {
         return `3° turno ${shiftAssigned ? "con" : "sin"} asignación`;
     }
 
-    if (type === "diurno") return "TENS diurno";
+    if (type === "diurno") return `${label} diurno`;
     if (type === "reemplazo") return "Reemplazo";
     return "Turno libre";
 }
@@ -46,12 +89,43 @@ function monthName(date) {
         .toLocaleUpperCase("es-CL");
 }
 
+/**
+ * El Anexo 1 completo: una hoja por estamento con horas en el mes.
+ *
+ * Un solo documento, un solo boton y una sola impresion; cada estamento
+ * empieza en su propia pagina porque cada hoja se firma por separado.
+ *
+ * @param {Array<{group: Object, rows: Array}>} sections
+ */
+export function buildAnnexOneDocumentHTML(sections, monthDate, options = {}) {
+    const conFilas = (Array.isArray(sections) ? sections : [])
+        .filter(section => (section?.rows || []).length);
+
+    if (!conFilas.length) return "";
+
+    return conFilas
+        .map((section, index) => buildTensConsolidatedReportHTML(
+            section.rows,
+            monthDate,
+            {
+                ...options,
+                group: section.group,
+                // La primera no lleva salto: el salto va ANTES de cada hoja
+                // siguiente, no despues de la ultima (dejaria una pagina en
+                // blanco al final).
+                pageBreakBefore: index > 0
+            }
+        ))
+        .join("");
+}
+
 export function buildTensConsolidatedReportHTML(
     rows,
     monthDate,
     options = {}
 ) {
     const safeRows = Array.isArray(rows) ? rows : [];
+    const group = options.group || ANNEX_ONE_GROUPS[0];
     const requesterName = String(options.requesterName || "").trim();
     const body = safeRows.map(row => `
         <tr>
@@ -143,22 +217,30 @@ export function buildTensConsolidatedReportHTML(
             .tens-annex th:nth-child(7), .tens-annex td:nth-child(7) { width: 24%; }
             .tens-annex__note { margin: 3mm 0 0; font-size: 8pt; }
             .tens-annex__footer-rule {
-                position: fixed;
-                right: 28mm;
-                bottom: 13mm;
-                left: 27mm;
+                /* Al PIE de la hoja. Con position:fixed quedaba a la altura
+                   del visor y se cruzaba encima de las ultimas filas de la
+                   tabla; anclada al bloque de la hoja -que mide una pagina-
+                   cae siempre bajo el contenido. */
+                position: absolute;
+                right: 0;
+                bottom: 3mm;
+                left: 0;
                 display: grid;
                 grid-template-columns: 74% 26%;
                 height: 1.2mm;
             }
             .tens-annex__footer-rule span:first-child { background: #006cb7; }
             .tens-annex__footer-rule span:last-child { background: #ef3340; }
+            .tens-annex--new-page {
+                break-before: page;
+                page-break-before: always;
+            }
             @media print {
                 .report-print-page { max-width: none !important; padding: 0 !important; }
                 .tens-annex { break-inside: avoid; page-break-inside: avoid; }
             }
         </style>
-        <section class="tens-annex">
+        <section class="tens-annex${options.pageBreakBefore ? " tens-annex--new-page" : ""}">
             <header class="tens-annex__institution">
                 <img src="img/formato-anexo-tens-gobierno.jpeg" alt="Gobierno de Chile">
                 <div>
@@ -170,7 +252,7 @@ export function buildTensConsolidatedReportHTML(
                 </div>
             </header>
             <h1>MEMO - A N E X O&nbsp;&nbsp;&nbsp;1</h1>
-            <h2>SOLICITUD Y AUTORIZACION DE TRABAJOS EXTRAORDINARIOS TENS IMAGENOLOGÍA</h2>
+            <h2>SOLICITUD Y AUTORIZACION DE TRABAJOS EXTRAORDINARIOS ${escapeHTML(group.heading)} IMAGENOLOGÍA</h2>
             <div class="tens-annex__meta">
                 <p><strong>JEFE SOLICITANTE:</strong> ${escapeHTML(requesterName)}</p>
                 <p><strong>UNIDAD:</strong> IMAGENOLOGÍA</p>
@@ -178,7 +260,7 @@ export function buildTensConsolidatedReportHTML(
             </div>
             <p class="tens-annex__intro">Solicito a Ud. autorización para realizar trabajos extraordinarios en horario diurno, nocturno y sábado, domingos y festivos, de acuerdo a necesidades del Servicio, para realizar las siguientes funciones:</p>
             <div class="tens-annex__functions">
-                <strong>TENS CON ASIGNACION DE TURNO CUARTO TURNO, CUARTO TURNO SIN ASIGNACIÓN Y TENS DIURNOS</strong>
+                <strong>${escapeHTML(group.heading)} CON ASIGNACION DE TURNO CUARTO TURNO, CUARTO TURNO SIN ASIGNACIÓN Y ${escapeHTML(group.heading)} DIURNOS</strong>
                 <p>Cobertura de ausencias derivadas de feriados legales, administrativos y licencias médicas, conforme a las necesidades del servicio.</p>
                 <p>Apoyo clínico durante la ejecución de exámenes de tomografía computada (TAC), en calidad de técnico extra, conforme a las necesidades operativas del Servicio de Imagenología.</p>
             </div>
