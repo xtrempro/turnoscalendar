@@ -9362,12 +9362,20 @@ async function printSpecificReportPdf(profile, date) {
 // En que formato se lleva el anexo. Word para editarlo o firmarlo a mano antes
 // de mandarlo; PDF a traves del dialogo de impresion, que es el que respeta la
 // hoja apaisada y los colores.
-async function deliverReport(html, title) {
-    const formato = await showChoice(
+async function deliverReport(html, title, options = {}) {
+    // Algunos anexos llevan ademas un dato que se corrige al momento: el
+    // Anexo 1 va dirigido por un jefe solicitante, que no siempre es quien
+    // firma (hay subrogancias). Por eso `html` puede ser una funcion: se arma
+    // DESPUES de preguntar, con lo que se haya escrito.
+    const pideNombre = Boolean(options.inputLabel);
+    const respuesta = await showChoice(
         `¿En qué formato quieres ${title}?`,
         {
             title: "Descargar el anexo",
             confirmText: "Descargar",
+            inputLabel: options.inputLabel || "",
+            value: options.inputValue || "",
+            placeholder: options.inputPlaceholder || "",
             choices: [
                 {
                     value: "pdf",
@@ -9383,11 +9391,17 @@ async function deliverReport(html, title) {
         }
     );
 
-    if (!formato) return false;
+    if (!respuesta) return false;
 
-    if (formato === "word") return downloadReportAsWord(html, title);
+    const formato = pideNombre ? respuesta.value : respuesta;
+    const texto = pideNombre ? String(respuesta.text || "").trim() : "";
+    const contenido = typeof html === "function" ? html(texto) : html;
 
-    printReportPreviewHTML(html, title);
+    if (!contenido) return false;
+
+    if (formato === "word") return downloadReportAsWord(contenido, title);
+
+    printReportPreviewHTML(contenido, title);
 
     return true;
 }
@@ -9464,12 +9478,18 @@ async function printTensConsolidatedReport(date) {
             return;
         }
 
+        const firmante = getReportSignatureConfig().lines?.[0] || "";
+
         await deliverReport(
-            buildTensConsolidatedReportHTML(rows, monthDate, {
-                requesterName:
-                    getReportSignatureConfig().lines?.[0] || ""
+            requesterName => buildTensConsolidatedReportHTML(rows, monthDate, {
+                requesterName: requesterName || firmante
             }),
-            `Anexo 1 TENS ${formatReportPlanillaTitle(monthDate)}`
+            `Anexo 1 TENS ${formatReportPlanillaTitle(monthDate)}`,
+            {
+                inputLabel: "Jefe solicitante",
+                inputValue: firmante,
+                inputPlaceholder: "Nombre de quien solicita"
+            }
         );
     } catch (error) {
         console.error(error);

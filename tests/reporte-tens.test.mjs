@@ -81,10 +81,14 @@ test("usa como jefe solicitante el nombre configurado en el pie de firma", () =>
     assert.doesNotMatch(html, /BERNARDITA FAUNDEZ/);
 });
 
-test("Informes entrega al anexo la primera linea del pie de firma", () => {
+test("Informes propone el pie de firma como jefe solicitante, y deja cambiarlo", () => {
+    // El nombre sale del pie de firma, pero el cuadro de descarga lo deja
+    // corregir: con una subrogancia, quien solicita no es quien firma.
+    assert.match(main, /const firmante = getReportSignatureConfig\(\)\.lines\?\.\[0\] \|\| "";/);
+    assert.match(main, /inputLabel: "Jefe solicitante"/);
     assert.match(
         main,
-        /buildTensConsolidatedReportHTML\(rows, monthDate, \{[\s\S]{0,160}getReportSignatureConfig\(\)\.lines\?\.\[0\]/
+        /buildTensConsolidatedReportHTML\(rows, monthDate, \{[\s\S]{0,120}requesterName: requesterName \|\| firmante/
     );
 });
 

@@ -22,6 +22,7 @@ const leer = ruta => readFile(new URL(ruta, import.meta.url), "utf8");
 
 const main = await leer("../js/main.js");
 const impresion = await leer("../js/reportPrint.js");
+const dialogos = await leer("../js/dialogs.js");
 
 const OCTUBRE = new Date(2026, 9, 1);
 
@@ -125,9 +126,12 @@ test("el cuadro ofrece PDF y Word, y cerrar no descarga nada", () => {
 
     assert.match(entregar, /value: "pdf"/);
     assert.match(entregar, /value: "word"/);
-    assert.match(entregar, /if \(!formato\) return false;/);
-    assert.match(entregar, /if \(formato === "word"\) return downloadReportAsWord\(html, title\);/);
-    assert.match(entregar, /printReportPreviewHTML\(html, title\);/);
+    assert.match(entregar, /if \(!respuesta\) return false;/);
+    assert.match(
+        entregar,
+        /if \(formato === "word"\) return downloadReportAsWord\(contenido, title\);/
+    );
+    assert.match(entregar, /printReportPreviewHTML\(contenido, title\);/);
 });
 
 test("el Word lleva el mismo contenido que se imprime, y en horizontal", () => {
@@ -143,4 +147,61 @@ test("el Word lleva el mismo contenido que se imprime, y en horizontal", () => {
     assert.match(word, /\.doc`/);
     // Un nombre de archivo no puede traer los caracteres que Windows rechaza.
     assert.match(word, /replace\(\/\[\\\\\/:\*\?"<>\|\]\/g, "-"\)/);
+});
+
+// --- El jefe solicitante del Anexo 1 ---
+//
+// El Anexo 1 va dirigido por un jefe solicitante y hasta ahora tomaba, sin
+// preguntar, la primera linea del pie de firma. No siempre es la misma persona:
+// con una subrogancia, el que firma y el que solicita son distintos. Ahora el
+// mismo cuadro que pregunta el formato trae ese nombre, propuesto y editable.
+
+test("el cuadro del Anexo 1 pide el jefe solicitante, con el firmante puesto", () => {
+    const tens = main.slice(
+        main.indexOf("async function printTensConsolidatedReport("),
+        main.indexOf("async function printCoverageAuthorizationReport(")
+    );
+
+    assert.match(tens, /inputLabel: "Jefe solicitante"/);
+    assert.match(tens, /const firmante = getReportSignatureConfig\(\)\.lines\?\.\[0\] \|\| "";/);
+    assert.match(tens, /inputValue: firmante/);
+    // Y lo escrito es lo que sale impreso; si se borra, vuelve el firmante.
+    assert.match(
+        tens,
+        /requesterName => buildTensConsolidatedReportHTML\(rows, monthDate, \{\s*\n\s*requesterName: requesterName \|\| firmante\s*\n\s*\}\)/
+    );
+});
+
+test("el Anexo 2 no pregunta ningun nombre", () => {
+    const cobertura = main.slice(
+        main.indexOf("async function printCoverageAuthorizationReport("),
+        main.indexOf("function decorateReportWorkerName(")
+    );
+
+    assert.doesNotMatch(cobertura, /inputLabel/);
+});
+
+test("el anexo se arma DESPUES de preguntar", () => {
+    // Si se armara antes, el nombre escrito no alcanzaria a entrar.
+    const entregar = main.slice(
+        main.indexOf("async function deliverReport("),
+        main.indexOf("async function printTensConsolidatedReport(")
+    );
+
+    assert.match(entregar, /typeof html === "function" \? html\(texto\) : html/);
+    assert.match(entregar, /const formato = pideNombre \? respuesta\.value : respuesta;/);
+    assert.match(entregar, /if \(!respuesta\) return false;/);
+});
+
+test("un cuadro de eleccion puede traer campo de texto", () => {
+    // Antes solo el \"prompt\" tenia campo, y el \"choice\" solo opciones.
+    assert.match(
+        dialogos,
+        /if \(type === "prompt" \|\| \(type === "choice" && inputLabel\)\) \{/
+    );
+    // Con campo, resuelve lo elegido Y lo escrito; sin campo, como siempre.
+    assert.match(
+        dialogos,
+        /\? \(input \? \{ value: choiceValue, text: input\.value \} : choiceValue\)/
+    );
 });

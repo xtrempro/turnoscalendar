@@ -215,8 +215,10 @@ test("sin extraActions el dialogo sigue devolviendo lo de siempre", () => {
     // El de eleccion (showChoice) devuelve la opcion elegida; todo lo que no es
     // prompt ni choice sigue devolviendo true.
     assert.match(dialogs, /if \(action === "cancel"\)/);
+    // Un "choice" CON campo de texto resuelve { value, text } (lo usa la
+    // descarga del Anexo 1); sin campo, la opcion elegida, como siempre.
     assert.match(
         dialogs,
-        /finish\(\s*\n\s*type === "prompt"\s*\n\s*\? input\.value\s*\n\s*: type === "choice"\s*\n\s*\? choiceValue\s*\n\s*: true\s*\n\s*\);/
+        /finish\(\s*\n\s*type === "prompt"\s*\n\s*\? input\.value\s*\n\s*: type === "choice"[\s\S]{0,220}\? \(input \? \{ value: choiceValue, text: input\.value \} : choiceValue\)\s*\n\s*: true\s*\n\s*\);/
     );
 });

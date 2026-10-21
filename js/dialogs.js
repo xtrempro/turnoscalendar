@@ -187,7 +187,11 @@ function createDialog({
         let choiceValue = "";
         let settled = false;
 
-        if (type === "prompt") {
+        // Un "choice" tambien puede traer un campo de texto: hay decisiones que
+        // son elegir UNA opcion y, de paso, corregir un dato (el Anexo 1 se
+        // baja en PDF o Word y lleva el nombre del jefe solicitante, que no
+        // siempre es el de la firma). Ahi resuelve { value, text }.
+        if (type === "prompt" || (type === "choice" && inputLabel)) {
             const field = document.createElement("label");
             const label = document.createElement("span");
 
@@ -340,7 +344,9 @@ function createDialog({
                 type === "prompt"
                     ? input.value
                     : type === "choice"
-                        ? choiceValue
+                        // Con campo de texto, lo elegido Y lo escrito: quien
+                        // pregunta necesita las dos cosas.
+                        ? (input ? { value: choiceValue, text: input.value } : choiceValue)
                         : true
             );
         };
