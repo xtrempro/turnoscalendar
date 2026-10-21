@@ -11790,10 +11790,12 @@ function createContractFromApprovedAbsence(solicitud = {}) {
 // confirma al guardarlo; si el supervisor lo cancela, sigue pendiente.
 let pendingTransferIntake = null;
 
+// El dia anterior, o "" si no hay fecha. Mismo cuidado que nextCalendarISO:
+// un Date invalido es truthy y devolvia "NaN-NaN-NaN".
 function previousCalendarISO(iso) {
     const date = parseInputDate(iso);
 
-    if (!date) return "";
+    if (!date || Number.isNaN(date.getTime())) return "";
 
     date.setDate(date.getDate() - 1);
     return toInputDate(date);
@@ -14314,10 +14316,18 @@ async function cleanupFutureSchedule(startDate, options = {}) {
     saveHourReturns(profileName, hourReturns);
 }
 
+// El dia siguiente, o "" si no hay fecha de donde partir.
+//
+// parseInputDate("") devuelve un Date INVALIDO, que es truthy: sin mirar el
+// reloj, esto respondia "NaN-NaN-NaN" y esa cadena viajaba como si fuera una
+// fecha -por ejemplo al piso de limpieza de la rotativa al reactivar a alguien
+// sin fecha de salida registrada-. Hoy no borra nada porque las comparaciones
+// de fechas son por texto y "N" cae despues de cualquier anio, pero eso es
+// suerte, no diseño.
 function nextCalendarISO(iso) {
     const date = parseInputDate(iso);
 
-    if (!date) return "";
+    if (!date || Number.isNaN(date.getTime())) return "";
 
     date.setDate(date.getDate() + 1);
     return toInputDate(date);
