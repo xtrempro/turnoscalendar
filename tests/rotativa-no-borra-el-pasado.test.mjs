@@ -62,7 +62,13 @@ function extraer(fuente, nombre) {
 // trae rotationUtils; aqui basta una que produzca turnos y libres).
 const SECUENCIA = [1, 1, 2, 2, 0, 0];
 
-function montarCongelado({ data = {}, baseData = {}, blocked = {}, perfil = "Emilio" }) {
+function montarCongelado({
+    data = {},
+    baseData = {},
+    blocked = {},
+    perfil = "Emilio",
+    honorarios = false
+}) {
     const guardado = { data: null, baseData: null, blocked: null };
     const pedidos = [];
     const fabrica = new Function(
@@ -78,6 +84,7 @@ function montarCongelado({ data = {}, baseData = {}, blocked = {}, perfil = "Emi
         "fetchHolidays",
         "getRotationSequence",
         "generateScheduleInWorker",
+        "isHonorariaProfile",
         `${extraer(rotationApply, "freezeRotationBeforeStart")}
          return freezeRotationBeforeStart;`
     );
@@ -101,7 +108,8 @@ function montarCongelado({ data = {}, baseData = {}, blocked = {}, perfil = "Emi
             async payload => {
                 pedidos.push(payload);
                 return generateSchedule(payload);
-            }
+            },
+            () => honorarios
         )
     };
 }
@@ -194,6 +202,7 @@ function montarHistoria({ previa, nuevoInicio }) {
         "previousCalendarISO",
         "compareISODate",
         "freezeRotationBeforeStart",
+        "formatDisplayDate",
         "showAlert",
         "console",
         `${extraer(main, "freezeRotationHistory")}
@@ -217,6 +226,7 @@ function montarHistoria({ previa, nuevoInicio }) {
                 if (opciones.type === "explota") throw new Error("sin motor");
                 return 10;
             },
+            iso => iso,
             async mensaje => { avisos.push(mensaje); },
             { warn() {} }
         )(
@@ -266,27 +276,67 @@ test("un perfil sin rotativa anterior no dispara nada", async () => {
     assert.deepEqual(llamadas, []);
 });
 
-test("si conservar falla, se dice: lo que sigue mueve el ancla", async () => {
+test("si conservar falla, la rotativa NO se cambia", async () => {
+    // Avisar y seguir dejaba exactamente la perdida que esto evita: el ancla
+    // se movia igual y esos dias se apagaban.
     const { conservar, avisos } = montarHistoria({
         previa: { type: "explota", start: "2026-01-02" },
         nuevoInicio: "2026-10-08"
     });
 
-    await conservar;
-
+    assert.equal(await conservar, false);
     assert.equal(avisos.length, 1);
-    assert.match(avisos[0], /no se pudieron conservar/i);
+    assert.match(avisos[0], /no se cambió|no se pudieron conservar/i);
 });
 
-test("se conserva ANTES de aplicar la rotativa nueva", () => {
+test("cuando se conserva -o no hay nada que conservar- el guardado sigue", async () => {
+    const conMovimiento = montarHistoria({
+        previa: { type: "4turno", start: "2026-01-02" },
+        nuevoInicio: "2026-10-08"
+    });
+    const sinMovimiento = montarHistoria({
+        previa: {},
+        nuevoInicio: "2026-10-08"
+    });
+
+    assert.equal(await conMovimiento.conservar, true);
+    assert.equal(await sinMovimiento.conservar, true);
+});
+
+test("en Honorarios no se inventa nada", async () => {
+    // Para Honorarios el motor NUNCA calcula la secuencia: sus turnos se
+    // escriben uno a uno dentro de cada contrato. Mover el ancla no apaga
+    // nada, y rellenar aqui pintaria dias trabajados fuera de todo contrato.
+    const { congelar, guardado, pedidos } = montarCongelado({ honorarios: true });
+
+    assert.equal(
+        await congelar({
+            type: "4turno",
+            firstTurn: "larga",
+            fromISO: "2026-01-02",
+            untilISO: "2026-10-07"
+        }),
+        0
+    );
+    assert.deepEqual(pedidos, [], "ni se le pide al generador");
+    assert.equal(guardado.data, null);
+});
+
+test("se conserva ANTES de guardar el ancla nueva", () => {
+    // Guardar el ancla primero deja una ventana en que esos dias no los
+    // calcula nadie, y si conservar falla ahi, ya se perdieron.
     const guardar = extraer(main, "guardarPerfil");
-    const conserva = guardar.indexOf("await freezeRotationHistory(previousSnapshot, nextRotationStart)");
+    const conserva = guardar.indexOf("!await freezeRotationHistory(previousSnapshot, nextRotationStart)");
+    const ancla = guardar.indexOf("saveRotativa({");
     const aplica = guardar.indexOf("await applyDraftRotation(");
 
     assert.notEqual(conserva, -1);
-    assert.notEqual(aplica, -1);
-    assert.ok(
-        conserva < aplica,
-        "al reves, la rotativa nueva ya habria movido el ancla"
+    assert.notEqual(ancla, -1);
+    assert.ok(conserva < ancla, "conservar va antes de guardar el ancla");
+    assert.ok(ancla < aplica, "y el ancla antes de aplicar, como siempre");
+    // Y si no se pudo conservar, el guardado se detiene ahi.
+    assert.match(
+        guardar.slice(conserva, conserva + 200),
+        /\)\s*\)\s*\{\s*return false;\s*\}/
     );
 });

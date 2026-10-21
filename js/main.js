@@ -14595,6 +14595,9 @@ function rotationGeneratesTurns(rotationType) {
 // Conserva como turnos escritos lo que la rotativa anterior venia calculando
 // antes del inicio nuevo. Solo cuando el ancla se mueve HACIA ADELANTE: si se
 // mueve hacia atras, esos dias los cubre la rotativa nueva.
+// Devuelve false si NO se pudo conservar. Quien llama tiene que detenerse ahi:
+// si falla y se sigue, el ancla se mueve igual y esos dias se apagan, que es
+// justo lo que esto existe para evitar.
 async function freezeRotationHistory(previousSnapshot, nextStartISO) {
     const previa = previousSnapshot?.rotativa || {};
     const desde = normalizeStoredStart(previa.start || "");
@@ -14602,7 +14605,7 @@ async function freezeRotationHistory(previousSnapshot, nextStartISO) {
         normalizeStoredStart(nextStartISO || "")
     );
 
-    if (!desde || !hasta || compareISODate(desde, hasta) > 0) return;
+    if (!desde || !hasta || compareISODate(desde, hasta) > 0) return true;
 
     try {
         await freezeRotationBeforeStart({
@@ -14611,15 +14614,19 @@ async function freezeRotationHistory(previousSnapshot, nextStartISO) {
             fromISO: desde,
             untilISO: hasta
         });
+
+        return true;
     } catch (error) {
-        // Que falle no puede pasar inadvertido: lo que sigue mueve el ancla, y
-        // esos dias quedarian sin nadie que los calcule.
         console.warn("No se pudieron conservar los turnos anteriores.", error);
         await showAlert(
             "No se pudieron conservar los turnos que esta persona ya tenía " +
-            "antes de la fecha nueva. Revisa su calendario después de guardar.",
-            { title: "Turnos anteriores", tone: "warning" }
+            `antes del ${formatDisplayDate(normalizeStoredStart(nextStartISO))}, ` +
+            "así que la rotativa no se cambió: moverla ahora los borraría de " +
+            "su calendario.\n\nVuelve a intentarlo.",
+            { title: "No se cambió la rotativa", tone: "warning" }
         );
+
+        return false;
     }
 }
 
@@ -15449,6 +15456,19 @@ async function guardarPerfil() {
         } else if (isCreating) {
             setShiftAssigned(false, nextName);
         }
+
+        // ANTES de guardar el ancla nueva: lo que la rotativa anterior venia
+        // calculando hacia atras se escribe como turnos de verdad. El orden
+        // importa -guardar el ancla y conservar despues deja la ventana en que
+        // esos dias no los calcula nadie- y si no se puede conservar, la
+        // rotativa no se cambia.
+        if (
+            shouldApplyRotation &&
+            !await freezeRotationHistory(previousSnapshot, nextRotationStart)
+        ) {
+            return false;
+        }
+
         saveRotativa({
             type: effectiveRotationType,
             start: effectiveRotationStart,
@@ -15584,13 +15604,6 @@ async function guardarPerfil() {
         }
 
         if (shouldApplyRotation) {
-            // Antes de mover el ancla: lo que la rotativa anterior producia
-            // hacia atras se escribe como turnos de verdad. Si no, al cambiar
-            // el inicio esos dias dejan de calcularse y desaparecen -de la
-            // vista, de los reportes y de la app del trabajador- aunque sean
-            // dias ya trabajados.
-            await freezeRotationHistory(previousSnapshot, nextRotationStart);
-
             await applyDraftRotation(
                 nextRotationType,
                 nextRotationStart,

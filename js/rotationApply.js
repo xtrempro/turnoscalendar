@@ -19,6 +19,7 @@ import {
 } from "./rotationCatalog.js";
 import { updateVisibleCalendarDays } from "./calendar.js";
 import { generateScheduleInWorker } from "./workerService.js";
+import { isHonorariaProfile } from "./contracts.js";
 
 function workerISODate(date) {
     return [
@@ -161,6 +162,12 @@ export async function freezeRotationBeforeStart({
 
     if (!profileName || !type || type === "libre") return 0;
     if (!fromISO || !untilISO || fromISO > untilISO) return 0;
+
+    // Honorarios no tiene nada que conservar y si mucho que inventar: para
+    // ellos el motor NUNCA calcula la secuencia -sus turnos se escriben uno a
+    // uno dentro de cada contrato- asi que mover el ancla no apaga nada.
+    // Rellenar aqui pintaria dias trabajados fuera de todo contrato.
+    if (isHonorariaProfile(profileName)) return 0;
 
     let payload = null;
 
