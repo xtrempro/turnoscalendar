@@ -507,7 +507,7 @@ test("mientras se crea un perfil la casilla no pregunta nada", async () => {
 // --- El guardado usa lo respondido ---
 
 test("guardar no vuelve a preguntar lo que ya se respondio", () => {
-    const guardar = extraer("guardarPerfil");
+    const guardar = extraer("saveProfileNow");
 
     assert.match(
         guardar,
@@ -649,7 +649,7 @@ test("guardar espera a que la casilla termine de preguntar", async () => {
     // mientras tanto en pantalla no pasa nada. Quien apreta Guardar ahi
     // disparaba el mismo cuestionario otra vez, en paralelo.
     assert.match(
-        extraer("guardarPerfil"),
+        extraer("saveProfileNow"),
         /await settleProfileActiveToggle\(\);/
     );
 

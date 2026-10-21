@@ -68,20 +68,67 @@ function activeWorkspaceOrThrow() {
  * aqui -el servidor tampoco los manda-, porque esto lo puede consultar un
  * supervisor de otra unidad y alcanza de sobra para ofrecer el traspaso.
  */
+// Fallas que son del momento, no de quien pregunta. La de App Check se vio de
+// verdad el 2026-10-21: la funcion no pudo traer las claves de Google
+// ("Error fetching Json Web Keys: socket hang up") y rechazo un token que
+// estaba bien, con auth VALID y app INVALID. Al supervisor le llego "no se
+// pudo revisar si ya esta en otra unidad", que es justo lo que esta consulta
+// existe para contestar.
+const TRANSIENT_CALL_CODES = new Set([
+    "functions/internal",
+    "functions/unavailable",
+    "functions/deadline-exceeded",
+    "functions/aborted",
+    "functions/unauthenticated",
+    "internal",
+    "unavailable",
+    "deadline-exceeded",
+    "aborted",
+    "unauthenticated"
+]);
+
+function isTransientCallError(error) {
+    return TRANSIENT_CALL_CODES.has(String(error?.code || ""));
+}
+
+const esperar = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 export async function findWorkerInEstablishment(rut) {
     const workspace = getActiveWorkspace();
 
     if (!workspace?.id || !rut) return { establishment: "", unidades: [] };
 
-    const data = await callFunction("findWorkerInEstablishment", {
-        workspaceId: workspace.id,
-        rut
-    });
+    let ultimoError = null;
 
-    return {
-        establishment: String(data?.establishment || ""),
-        unidades: Array.isArray(data?.unidades) ? data.unidades : []
-    };
+    // Tres intentos cortos antes de rendirse: la respuesta decide si se ofrece
+    // el traspaso o se ingresa a alguien de cero, y vale mas esperar un
+    // segundo que contestar "no se pudo".
+    for (const espera of [0, 400, 1200]) {
+        if (espera) await esperar(espera);
+
+        try {
+            const data = await callFunction("findWorkerInEstablishment", {
+                workspaceId: workspace.id,
+                rut
+            });
+
+            return {
+                establishment: String(data?.establishment || ""),
+                unidades: Array.isArray(data?.unidades) ? data.unidades : []
+            };
+        } catch (error) {
+            ultimoError = error;
+
+            if (!isTransientCallError(error)) throw error;
+
+            console.warn(
+                "Reintentando la busqueda del RUT en el establecimiento.",
+                error
+            );
+        }
+    }
+
+    throw ultimoError;
 }
 
 /**

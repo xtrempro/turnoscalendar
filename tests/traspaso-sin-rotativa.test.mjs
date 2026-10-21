@@ -316,7 +316,7 @@ test("la rotativa libre no pide fecha de inicio ni genera turnos", async () => {
 test("al guardar, una rotativa libre no se queda con una fecha de inicio", async () => {
     // guardarPerfil la borra a proposito: una fecha de inicio sin rotativa que
     // empezar reaparece despues como "desde el ..." en la ficha.
-    const guardar = extraer("guardarPerfil");
+    const guardar = extraer("saveProfileNow");
 
     assert.match(
         guardar,
@@ -509,7 +509,7 @@ test("si la otra unidad lo tiene activo, no hay piso", async () => {
 test("al reactivar solo se limpia desde que se fue, no su historia", () => {
     // Tomar el inicio de su rotativa anterior -que puede ser de hace años-
     // borraba todo lo que esa persona trabajo aqui antes de irse.
-    const guardar = extraer("guardarPerfil");
+    const guardar = extraer("saveProfileNow");
     const piso = guardar.slice(
         guardar.indexOf("const rotationClearBeforeStart ="),
         guardar.indexOf("clearBeforeStart: rotationClearBeforeStart")
@@ -524,7 +524,7 @@ test("al reactivar solo se limpia desde que se fue, no su historia", () => {
 });
 
 test("al crear, el piso es su ingreso a la unidad", () => {
-    const guardar = extraer("guardarPerfil");
+    const guardar = extraer("saveProfileNow");
     const piso = guardar.slice(
         guardar.indexOf("const rotationClearBeforeStart ="),
         guardar.indexOf("clearBeforeStart: rotationClearBeforeStart")
@@ -539,7 +539,7 @@ test("al crear, el piso es su ingreso a la unidad", () => {
 test("un perfil que sigue en la unidad no pierde su historia", () => {
     // Ahi lo anterior al inicio nuevo es lo que trabajo, y para acortar la
     // rotativa vigente hay un camino aparte.
-    const guardar = extraer("guardarPerfil");
+    const guardar = extraer("saveProfileNow");
     const piso = guardar.slice(
         guardar.indexOf("const rotationClearBeforeStart ="),
         guardar.indexOf("clearBeforeStart: rotationClearBeforeStart")

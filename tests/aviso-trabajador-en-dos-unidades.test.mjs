@@ -405,7 +405,7 @@ test("los avisos de traspaso dicen adonde llevan", () => {
 // --- El aviso a la otra unidad no depende de lo que venga despues ---
 
 test("se avisa apenas el perfil queda escrito, antes de la rotativa", () => {
-    const guardar = extraer(main, "guardarPerfil");
+    const guardar = extraer(main, "saveProfileNow");
     const avisa = guardar.indexOf("reportWorkerEnteredElsewhere(nextProfilePayload.rut)");
     const rotativa = guardar.indexOf("if (shouldApplyRotation) {");
 

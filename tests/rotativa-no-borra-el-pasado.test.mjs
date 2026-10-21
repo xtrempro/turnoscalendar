@@ -325,7 +325,7 @@ test("en Honorarios no se inventa nada", async () => {
 test("se conserva ANTES de guardar el ancla nueva", () => {
     // Guardar el ancla primero deja una ventana en que esos dias no los
     // calcula nadie, y si conservar falla ahi, ya se perdieron.
-    const guardar = extraer(main, "guardarPerfil");
+    const guardar = extraer(main, "saveProfileNow");
     const conserva = guardar.indexOf("!await freezeRotationHistory(previousSnapshot, nextRotationStart)");
     const ancla = guardar.indexOf("saveRotativa({");
     const aplica = guardar.indexOf("await applyDraftRotation(");

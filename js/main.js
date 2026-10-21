@@ -14871,7 +14871,30 @@ async function resolveDuplicateEmailBeforeSave() {
     return true;
 }
 
+// Un guardado a la vez.
+//
+// Guardar un perfil tarda -consulta el RUT en el establecimiento, conserva los
+// turnos anteriores, aplica la rotativa- y mientras tanto el boton sigue ahi.
+// Apretarlo de nuevo arrancaba un segundo guardado en paralelo: los dos
+// pedian la misma rotativa, el primero quedaba "reemplazado por una solicitud
+// mas reciente" y eso llegaba a la pantalla como un error.
+let profileSaveInFlight = null;
+
 async function guardarPerfil() {
+    if (profileSaveInFlight) return profileSaveInFlight;
+
+    profileSaveInFlight = (async () => {
+        try {
+            return await saveProfileNow();
+        } finally {
+            profileSaveInFlight = null;
+        }
+    })();
+
+    return profileSaveInFlight;
+}
+
+async function saveProfileNow() {
     if (!canEditCurrentProfileMenu()) return false;
 
     // La casilla "Perfil activo" pregunta cosas que tardan -consultar si esa
@@ -15692,6 +15715,14 @@ async function guardarPerfil() {
 
         return true;
     } catch (error) {
+        // "Resultado reemplazado por una solicitud mas reciente": otro
+        // guardado tomo el relevo (dos clics seguidos en Guardar). No es un
+        // error que mostrarle a nadie; el que manda sigue su curso.
+        if (error?.name === "AbortError") {
+            console.warn("El guardado quedo reemplazado por otro.", error);
+            return false;
+        }
+
         alert(
             error.message ||
             "No se pudo guardar el colaborador."
