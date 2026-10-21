@@ -24968,10 +24968,14 @@ body.calendar-direct-edit-off:not(.mode-active) .calendar-panel .day:not(.turn-c
     color: var(--text-muted) !important;
 }
 
+/* Perfil inactivo: los turnos que alcanzo a trabajar SIGUEN VIENDOSE, con su
+   color, pero oscurecido y casi gris. Antes se desteñian hasta perder el color
+   -no se distinguia una Larga de una Noche- y eso es justamente lo que hay que
+   poder leer de un perfil que se fue. */
 .day.inactive-profile-day {
     cursor: not-allowed;
-    opacity: 0.68;
-    filter: grayscale(0.7);
+    opacity: 1;
+    filter: grayscale(0.62) brightness(0.72) contrast(1.05);
 }
 
 @media (display-mode: standalone), (display-mode: fullscreen), (display-mode: minimal-ui) {

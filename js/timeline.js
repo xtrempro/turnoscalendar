@@ -1,4 +1,5 @@
 import { normalizeText } from "./stringUtils.js";
+import { profileInactivePeriods } from "./profileQueries.js";
 import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
 import {
     getProfiles,
@@ -3408,9 +3409,15 @@ function renderTimelineDayCell(profile, d, {
         realTurn
     );
     const isInhabil = !isBusinessDay(date, holidays);
-    const workerBlockedDay = rowAux?.blockedByIso?.has(iso)
-        ? rowAux.blockedByIso.get(iso)
-        : getBlockedDayForProfile(profile.name, key);
+    // Los dias en que no estuvo en la unidad -inactivo, o antes de llegar por
+    // traspaso- se ven bloqueados, igual que en el calendario: ahi no se le
+    // pueden cargar turnos.
+    const outsideUnit = profileInactivePeriods(profile)
+        .some(periodo => iso >= periodo.from && iso <= periodo.to);
+    const workerBlockedDay = outsideUnit ||
+        (rowAux?.blockedByIso?.has(iso)
+            ? rowAux.blockedByIso.get(iso)
+            : getBlockedDayForProfile(profile.name, key));
     const hourReturn = rowAux?.hourReturns
         ? rowAux.hourReturns[key] || null
         : getHourReturn(profile.name, key);

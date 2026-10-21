@@ -107,7 +107,7 @@ test("el bloqueo esta en los DOS caminos que escriben el calendario", () => {
     // son puertas distintas: con una sola tapada, por la otra se cuela.
     const clic = extraer(calendario, "clickDia");
 
-    assert.match(clic, /unitEntryBlockReason\(/);
+    assert.match(clic, /dayOutsideUnitReason\(/);
     assert.match(clic, /return true;/);
 
     const inicioDirecta = calendario.indexOf("const activeProfileEnabled =");
@@ -116,13 +116,18 @@ test("el bloqueo esta en los DOS caminos que escriben el calendario", () => {
         calendario.indexOf("const date = dateFromKeyDay(keyDay);", inicioDirecta)
     );
 
-    assert.match(directa, /unitEntryBlockReason\(/);
+    assert.match(directa, /dayOutsideUnitReason\(/);
     assert.match(directa, /event\.stopPropagation\(\);/);
 });
 
 test("y el dia se ve bloqueado antes de apretarlo", () => {
     assert.match(calendario, /div\.classList\.add\("day-before-unit-entry"\)/);
-    assert.match(calendario, /beforeUnitEntry \|\|\s*\n\s*!activeProfileEnabled/);
+    // El motivo entra en la cuenta de los bloqueos de la casilla.
+    assert.match(calendario, /const otroMotivoDeBloqueo =[\s\S]*?beforeUnitEntry;/);
+    assert.match(
+        calendario,
+        /otroMotivoDeBloqueo \|\| !activeProfileEnabled\s*\n\s*\? "mpa-disabled"/
+    );
 });
 
 test("la marca viaja con el perfil: la ponen los dos caminos del traspaso", () => {

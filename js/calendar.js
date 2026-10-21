@@ -67,7 +67,7 @@ import {
     setNoCoverageDay,
     getCompensationProfileAt
 } from "./storage.js";
-import { unitEntryBlockReason } from "./profileQueries.js";
+import { dayOutsideUnitReason } from "./profileQueries.js";
 import { workerMonthHTML } from "./workerMonthCalendar.js";
 import {
     tieneAusencia,
@@ -1204,7 +1204,7 @@ async function handleCalendarCellFallbackClick(cell, event) {
 
     // La edicion directa escribe el turno sin pasar por clickDia: el mismo
     // limite se comprueba aqui o se cuela por esta puerta.
-    const antesDeEntrar = unitEntryBlockReason(
+    const antesDeEntrar = dayOutsideUnitReason(
         activeWorker,
         isoFromKeyDay(keyDay)
     );
@@ -10871,7 +10871,7 @@ async function clickDia(
 
     // Llego por traspaso: antes de su fecha de ingreso la persona era de otra
     // unidad, y alla su calendario sigue en pie.
-    const antesDeEntrar = unitEntryBlockReason(
+    const antesDeEntrar = dayOutsideUnitReason(
         getProfiles().find(item => item.name === profileName),
         isoFromKeyDay(keyDay)
     );
@@ -12203,7 +12203,7 @@ async function renderCalendarImpl(options = {}) {
         // Dia anterior al ingreso de quien llego por traspaso: no se toca, y
         // se ve que no se toca. El bloqueo de verdad esta en clickDia y en la
         // edicion directa; esto es para no hacer apretar al vacio.
-        const beforeUnitEntry = unitEntryBlockReason(activeWorker, isoDay);
+        const beforeUnitEntry = dayOutsideUnitReason(activeWorker, isoDay);
         const honorariaContractDay =
             Boolean(getHonorariaContractForDate(activeProfile, isoDay));
         const shiftAssigned = shiftAssignedForDate(date);
@@ -12815,17 +12815,26 @@ async function renderCalendarImpl(options = {}) {
             div.title = beforeUnitEntry;
         }
 
+        const otroMotivoDeBloqueo =
+            bloqueado ||
+            addTurnBlocked ||
+            contingencyBlocked ||
+            removeTurnBlocked ||
+            beforeUnitEntry;
+
         if (window.selectionMode || !activeProfileEnabled) {
-            div.classList.add(
-                bloqueado ||
-                addTurnBlocked ||
-                contingencyBlocked ||
-                removeTurnBlocked ||
-                beforeUnitEntry ||
-                !activeProfileEnabled
-                    ? "mpa-disabled"
-                    : "mpa-enabled"
-            );
+            // Un perfil inactivo NO lleva mpa-disabled si ese es el unico
+            // motivo: esa clase apaga el fondo de la casilla y con el se
+            // borraba el color del turno, que es lo que hay que poder leer de
+            // alguien que se fue. Lo oscurece .inactive-profile-day, y que no
+            // se pueda editar ya lo resuelve canModifyCurrentProfile.
+            if (otroMotivoDeBloqueo || window.selectionMode) {
+                div.classList.add(
+                    otroMotivoDeBloqueo || !activeProfileEnabled
+                        ? "mpa-disabled"
+                        : "mpa-enabled"
+                );
+            }
         }
 
         calendarCellHandlers.set(div, async event => {

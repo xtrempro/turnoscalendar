@@ -164,7 +164,11 @@ import { initPwaInstall } from "./pwaInstall.js";
 import { registerSupervisorServiceWorker } from "./serviceWorkerRegistration.js";
 import { isMoveShiftAvailable } from "./supervisorActionAvailability.js";
 import { initSelfTestButton } from "./selfTest.js";
-import { getPerfilActual, getDisplayedProfileData } from "./profileQueries.js";
+import {
+    getPerfilActual,
+    getDisplayedProfileData,
+    profileInactivePeriods
+} from "./profileQueries.js";
 import { validateProfileDraft } from "./profileValidation.js";
 import {
     buildRotationStatus,
@@ -14592,6 +14596,34 @@ function rotationGeneratesTurns(rotationType) {
     return rotationProducesTurns(String(rotationType || ""));
 }
 
+// Los tramos en que esa persona NO estuvo en la unidad, con el de ahora si
+// esta volviendo: desde el dia siguiente a su ultimo turno hasta el dia antes
+// de su regreso.
+//
+// Se anota al reactivar porque es el unico momento en que se sabe -al volver,
+// la fecha de salida se borra del perfil- y porque sin esto esos dias se ven
+// en el calendario como cualquier otro dia libre, cuando en realidad son dias
+// en que esa persona no era de esta unidad.
+function nextProfileInactivePeriods(
+    previousSnapshot,
+    { isReactivating = false, returnISO = "" } = {}
+) {
+    const anteriores = profileInactivePeriods(previousSnapshot);
+
+    if (!isReactivating) return anteriores;
+
+    const from = nextCalendarISO(
+        normalizeStoredStart(previousSnapshot?.unitExitDate || "")
+    );
+    const to = previousCalendarISO(normalizeStoredStart(returnISO || ""));
+
+    // Sin fecha de salida no hay tramo que anotar, y volver el mismo dia -o
+    // antes, corrigiendo hacia atras- tampoco deja ninguno.
+    if (!from || !to || compareISODate(from, to) > 0) return anteriores;
+
+    return [...anteriores, { from, to }];
+}
+
 // Conserva como turnos escritos lo que la rotativa anterior venia calculando
 // antes del inicio nuevo. Solo cuando el ancla se mueve HACIA ADELANTE: si se
 // mueve hacia atras, esos dias los cubre la rotativa nueva.
@@ -15079,6 +15111,10 @@ async function saveProfileNow() {
             })
         )
         : "";
+    const nextInactivePeriods = nextProfileInactivePeriods(previousSnapshot, {
+        isReactivating,
+        returnISO: nextRotationStart
+    });
     const nextProfilePayload = {
         name: nextName,
         email: profileDraft.email.trim(),
@@ -15101,6 +15137,9 @@ async function saveProfileNow() {
         unitExitDate: willBeActive
             ? ""
             : normalizeStoredStart(previousSnapshot?.unitExitDate || ""),
+        // Cuando no estuvo en la unidad. El calendario bloquea esos dias, igual
+        // que los anteriores a un ingreso por traspaso.
+        inactivePeriods: nextInactivePeriods,
         contractType: profileDraft.contractType,
         // Los contratos de Honorarios viven en honorariaContracts_{nombre} (lista),
         // no en el perfil. No se escriben aqui para no pisar los campos legados de

@@ -195,6 +195,52 @@ export function getDisplayedProfileData(){
  * @param {string} iso dia a tocar (yyyy-mm-dd)
  * @returns {string}
  */
+/**
+ * Los tramos en que esa persona NO estuvo en la unidad por estar inactiva.
+ *
+ * Se anotan al reactivarla -ahi se sabe hasta cuando trabajo y desde cuando
+ * vuelve- porque despues no queda rastro: al reactivar, la fecha de salida se
+ * borra del perfil. Sin esto, el calendario de ese tramo se ve igual que
+ * cualquier otro dia libre.
+ */
+export function profileInactivePeriods(profile) {
+    return (Array.isArray(profile?.inactivePeriods)
+        ? profile.inactivePeriods
+        : []
+    )
+        .map(periodo => ({
+            from: normalizeStoredStart(periodo?.from || ""),
+            to: normalizeStoredStart(periodo?.to || "")
+        }))
+        .filter(periodo => periodo.from && periodo.to && periodo.from <= periodo.to);
+}
+
+/**
+ * Por que ese dia no le pertenece a esta unidad: porque todavia no habia
+ * llegado, o porque estuvo inactivo. Devuelve "" si el dia es suyo.
+ *
+ * Los dos casos se ven igual -la casilla queda bloqueada, con barras- porque
+ * para quien planifica significan lo mismo: ahi no se le pueden cargar turnos.
+ */
+export function dayOutsideUnitReason(profile, iso) {
+    const entrada = unitEntryBlockReason(profile, iso);
+
+    if (entrada) return entrada;
+
+    const dia = normalizeStoredStart(iso || "");
+
+    if (!dia) return "";
+
+    const periodo = profileInactivePeriods(profile)
+        .find(item => dia >= item.from && dia <= item.to);
+
+    if (!periodo) return "";
+
+    return `${profile?.name || "Esta persona"} estuvo inactivo en la unidad ` +
+        `entre el ${formatDisplayDate(periodo.from)} y el ` +
+        `${formatDisplayDate(periodo.to)}: esos días no se le pueden cargar turnos.`;
+}
+
 export function unitEntryBlockReason(profile, iso) {
     if (!profile?.unitEntryLocked) return "";
 
