@@ -83,7 +83,9 @@ function montarReactivacion({ elecciones, confirmaciones = [] }) {
         "compareISODate",
         "formatDisplayDate",
         "console",
-        `${extraer("resolveProfileReactivation")}
+        `${extraer("reactivationOverwritesWorkedDays")}
+         ${extraer("confirmReactivationOverwrite")}
+         ${extraer("resolveProfileReactivation")}
          return resolveProfileReactivation;`
     );
     const restantes = [...elecciones];
@@ -133,7 +135,12 @@ test("el cuadro abre sin fecha puesta y en el mes donde se puede empezar", async
     assert.equal(pedidos[0].startEmpty, true);
     // Y abre en el dia siguiente a su ultimo dia trabajado.
     assert.equal(pedidos[0].openAt, "2026-10-19");
-    assert.deepEqual(decision, { ...DESDE_EL_19, handoverRequested: false });
+    assert.deepEqual(decision, {
+        ...DESDE_EL_19,
+        handoverRequested: false,
+        // No piso nada: no hay nada que autorizar.
+        overwriteApprovedFor: ""
+    });
 });
 
 test("sin fecha de salida conocida no se inventa un mes", async () => {
@@ -219,6 +226,67 @@ test("volver a elegir la fecha no vuelve a preguntar la modalidad", async () => 
     // La primera vuelta pregunta la modalidad; la segunda la lleva puesta.
     assert.equal(pedidos[0].rotationType, "");
     assert.equal(pedidos[1].rotationType, "diurno");
+});
+
+test("autorizar sobrescribir queda anotado PARA ESA fecha", async () => {
+    // Lo que se autoriza es una fecha, no un permiso general: si despues se
+    // cambia a otra que tambien pisa lo trabajado, hay que volver a preguntar.
+    const { reactivar } = montarReactivacion({
+        elecciones: [{ ...DESDE_EL_19, startDate: "2026-10-10" }],
+        confirmaciones: [true]
+    });
+
+    const decision = await reactivar("Gabriel Flores", "31.005.006-7", "2026-10-18");
+
+    assert.equal(decision.overwriteApprovedFor, "2026-10-10");
+});
+
+test("si no se pudo revisar si esta en otra unidad, se dice", async () => {
+    // Callarlo se veia igual que "no esta en ninguna otra", y la diferencia
+    // entre las dos es que dos unidades lo cuenten al mismo tiempo.
+    const avisos = [];
+    const fabrica = new Function(
+        "normalizeRut",
+        "findWorkerInEstablishment",
+        "showChoice",
+        "requestHandoverFromUnits",
+        "askHandoverSchedule",
+        "showConfirm",
+        "normalizeStoredStart",
+        "nextCalendarISO",
+        "compareISODate",
+        "formatDisplayDate",
+        "console",
+        `${extraer("reactivationOverwritesWorkedDays")}
+         ${extraer("confirmReactivationOverwrite")}
+         ${extraer("resolveProfileReactivation")}
+         return resolveProfileReactivation;`
+    );
+    const reactivar = fabrica(
+        valor => String(valor || "").replace(/[^0-9kK]/g, ""),
+        async () => { throw new Error("sin red"); },
+        async () => null,
+        async () => false,
+        async () => DESDE_EL_19,
+        async (mensaje, opciones) => {
+            avisos.push({ mensaje, ...opciones });
+            return false;
+        },
+        valor => String(valor || ""),
+        siguienteDia,
+        comparar,
+        iso => iso,
+        { warn() {} }
+    );
+
+    assert.equal(
+        await reactivar("Gabriel Flores", "31.005.006-7", "2026-10-18"),
+        null,
+        "no se sigue a ciegas si se dijo que no"
+    );
+    assert.equal(avisos.length, 1);
+    assert.match(avisos[0].mensaje, /No se pudo revisar/);
+    assert.match(avisos[0].mensaje, /dos\s+unidades lo contarían/);
 });
 
 test("cerrar el cuadro cancela la reactivacion", async () => {
@@ -466,9 +534,101 @@ test("guardar no vuelve a preguntar lo que ya se respondio", () => {
         vuelta,
         /reactivationFrom = normalizeStoredStart\(\s*\n?\s*profileDraft\.rotationStart \|\| ""\s*\n?\s*\);/
     );
+    // Y la fecha FINAL -la del borrador, que se pudo cambiar desde la ficha
+    // despues de responder la casilla- pasa por el permiso de sobrescritura.
+    assert.match(
+        vuelta,
+        /if \(!await ensureReactivationOverwriteAllowed\(\{[\s\S]*?inicio: reactivationFrom,[\s\S]*?aprobadaPara:[\s\S]*?overwriteApprovedFor \|\| ""[\s\S]*?\}\)\) \{\s*\n\s*return false;/
+    );
     // Y al guardar se limpia, para que no se reuse en el proximo cambio.
     assert.match(guardar, /profileDraft\.pendingExitDate = "";/);
     assert.match(guardar, /profileDraft\.pendingReactivation = null;/);
+});
+
+// --- El permiso para pisar lo trabajado ---
+
+function montarPermiso({ respuesta = false } = {}) {
+    const avisos = [];
+    const fabrica = new Function(
+        "showConfirm",
+        "compareISODate",
+        "formatDisplayDate",
+        `${extraer("reactivationOverwritesWorkedDays")}
+         ${extraer("confirmReactivationOverwrite")}
+         ${extraer("ensureReactivationOverwriteAllowed")}
+         return ensureReactivationOverwriteAllowed;`
+    );
+
+    return {
+        avisos,
+        permitir: fabrica(
+            async (mensaje, opciones) => {
+                avisos.push({ mensaje, ...opciones });
+                return respuesta;
+            },
+            comparar,
+            iso => iso
+        )
+    };
+}
+
+test("una fecha posterior a su salida se aplica sin preguntar", async () => {
+    const { permitir, avisos } = montarPermiso();
+
+    assert.equal(
+        await permitir({
+            nombre: "Gabriel",
+            inicio: "2026-10-19",
+            ultimoDia: "2026-10-18"
+        }),
+        true
+    );
+    assert.deepEqual(avisos, []);
+});
+
+test("cambiar la fecha a uno de los dias trabajados vuelve a preguntar", async () => {
+    // El caso de la auditoria: se autorizo el 19 -o ninguno- y despues la
+    // rotativa se movio al 10 desde la ficha. Guardar usa el 10, asi que el
+    // permiso tiene que pedirse por el 10.
+    const { permitir, avisos } = montarPermiso({ respuesta: false });
+
+    assert.equal(
+        await permitir({
+            nombre: "Gabriel",
+            inicio: "2026-10-10",
+            ultimoDia: "2026-10-18",
+            aprobadaPara: "2026-10-19"
+        }),
+        false
+    );
+    assert.equal(avisos.length, 1);
+    assert.equal(avisos[0].cancelText, "Volver");
+    assert.match(avisos[0].mensaje, /2026-10-10/);
+});
+
+test("lo autorizado para ESA fecha no se vuelve a preguntar", async () => {
+    const { permitir, avisos } = montarPermiso();
+
+    assert.equal(
+        await permitir({
+            nombre: "Gabriel",
+            inicio: "2026-10-10",
+            ultimoDia: "2026-10-18",
+            aprobadaPara: "2026-10-10"
+        }),
+        true
+    );
+    assert.deepEqual(avisos, []);
+});
+
+test("sin fecha de salida no hay nada que pisar", async () => {
+    const { permitir, avisos } = montarPermiso();
+
+    assert.equal(
+        await permitir({ nombre: "Gabriel", inicio: "2026-10-10", ultimoDia: "" }),
+        true
+    );
+    assert.deepEqual(avisos, []);
 });
 
 test("la casilla dispara la pregunta", () => {

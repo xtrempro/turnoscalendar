@@ -1782,9 +1782,63 @@ async function requestHandoverFromUnits(unidades, rut, { discardDraft = false } 
 //
 // Devuelve null si se cancela, { handoverRequested: true } si quedo pedido el
 // traspaso -y entonces no se reactiva ahora-, o la fecha y la rotativa.
+// La rotativa nueva empieza DENTRO del tramo que esa persona trabajo aqui:
+// esos dias ya tienen turnos escritos, con sus permisos y cambios de turno.
+function reactivationOverwritesWorkedDays(inicio, ultimoDia) {
+    return Boolean(inicio) &&
+        Boolean(ultimoDia) &&
+        compareISODate(inicio, ultimoDia) <= 0;
+}
+
+// Una sola pregunta para los dos momentos en que se puede llegar a pisar lo
+// trabajado: al elegir la fecha, y al guardar si despues se cambio desde la
+// ficha. Si cada uno la escribiera por su lado, un dia dirian cosas distintas.
+function confirmReactivationOverwrite({
+    nombre,
+    ultimoDia,
+    inicio,
+    cancelText = "Elegir otra fecha"
+}) {
+    return showConfirm(
+        `${nombre} estuvo activo en esta unidad hasta el ` +
+        `${formatDisplayDate(ultimoDia)}, y esos días ya tienen turnos ` +
+        "programados.\n\n" +
+        `Aplicar la rotativa desde el ${formatDisplayDate(inicio)} ` +
+        "los reescribe, y con ellos los permisos, las ausencias y los " +
+        "cambios de turno de ese tramo.",
+        {
+            title: "Vas a sobrescribir turnos ya programados",
+            tone: "warning",
+            confirmText: "Sobrescribir de todos modos",
+            cancelText
+        }
+    );
+}
+
+// ¿Se puede aplicar la rotativa desde esa fecha? Sin pisar nada, si. Pisando
+// lo trabajado, solo si el supervisor lo autorizo PARA ESA FECHA: autorizar el
+// 10 no autoriza el 3, que borra una semana mas.
+async function ensureReactivationOverwriteAllowed({
+    nombre,
+    inicio,
+    ultimoDia,
+    aprobadaPara = ""
+}) {
+    if (!reactivationOverwritesWorkedDays(inicio, ultimoDia)) return true;
+    if (aprobadaPara && aprobadaPara === inicio) return true;
+
+    return confirmReactivationOverwrite({
+        nombre,
+        ultimoDia,
+        inicio,
+        cancelText: "Volver"
+    });
+}
+
 async function resolveProfileReactivation(nombre, rut, exitDate = "") {
     const limpio = normalizeRut(rut);
     let enOtras = [];
+    let fallo = false;
 
     if (limpio.length >= 7) {
         try {
@@ -1794,7 +1848,28 @@ async function resolveProfileReactivation(nombre, rut, exitDate = "") {
         } catch (error) {
             // Es una ayuda: que falle no puede impedir reactivar a alguien.
             console.warn("No se pudo revisar el RUT al reactivar.", error);
+            fallo = true;
         }
+    }
+
+    // Pero callarse que fallo si puede: "no esta en ninguna otra unidad" y "no
+    // se pudo averiguar" se veian exactamente igual -sin ningun cuadro- y la
+    // diferencia entre las dos es que a esta persona la cuenten dos unidades.
+    if (fallo) {
+        const seguir = await showConfirm(
+            `No se pudo revisar si ${nombre} ya está activo en otra unidad ` +
+            "del establecimiento.\n\n" +
+            "Puedes reactivarlo igual, pero si está en otra, las dos " +
+            "unidades lo contarían al mismo tiempo.",
+            {
+                title: "No se pudo revisar",
+                tone: "warning",
+                confirmText: "Reactivar de todos modos",
+                cancelText: "Volver"
+            }
+        );
+
+        if (!seguir) return null;
     }
 
     if (enOtras.length) {
@@ -1853,30 +1928,28 @@ async function resolveProfileReactivation(nombre, rut, exitDate = "") {
 
         modalidad = rotativa.rotationType;
 
-        if (
-            !ultimoDia ||
-            compareISODate(rotativa.startDate, ultimoDia) > 0
-        ) {
-            return { ...rotativa, handoverRequested: false };
+        if (!reactivationOverwritesWorkedDays(rotativa.startDate, ultimoDia)) {
+            return {
+                ...rotativa,
+                handoverRequested: false,
+                overwriteApprovedFor: ""
+            };
         }
 
-        const seguro = await showConfirm(
-            `${nombre} estuvo activo en esta unidad hasta el ` +
-            `${formatDisplayDate(ultimoDia)}, y esos días ya tienen turnos ` +
-            "programados.\n\n" +
-            `Aplicar la rotativa desde el ${formatDisplayDate(rotativa.startDate)} ` +
-            "los reescribe, y con ellos los permisos, las ausencias y los " +
-            "cambios de turno de ese tramo.",
-            {
-                title: "Vas a sobrescribir turnos ya programados",
-                tone: "warning",
-                confirmText: "Sobrescribir de todos modos",
-                cancelText: "Elegir otra fecha"
-            }
-        );
+        const seguro = await confirmReactivationOverwrite({
+            nombre,
+            ultimoDia,
+            inicio: rotativa.startDate
+        });
 
         if (seguro) {
-            return { ...rotativa, handoverRequested: false };
+            // Autorizado para ESA fecha. Si despues se cambia a otra que
+            // tambien pisa lo trabajado, se vuelve a preguntar.
+            return {
+                ...rotativa,
+                handoverRequested: false,
+                overwriteApprovedFor: rotativa.startDate
+            };
         }
     }
 }
@@ -1946,7 +2019,10 @@ async function resolveProfileActiveToggle() {
 
     const decision = await resolveProfileReactivation(
         profileDraft.name || perfil.name,
-        profileDraft.rut,
+        // Del borrador o del perfil guardado: sin RUT no hay forma de revisar
+        // si ya esta en otra unidad, y ese aviso es el que evita contarlo dos
+        // veces.
+        profileDraft.rut || perfil.rut,
         perfil.unitExitDate
     );
 
@@ -14821,6 +14897,20 @@ async function guardarPerfil() {
         reactivationFrom = normalizeStoredStart(
             profileDraft.rotationStart || ""
         );
+
+        // La fecha que se aplica es la del borrador, y pudo cambiarse desde la
+        // ficha despues de responder la casilla. Se revisa la FINAL.
+        if (!await ensureReactivationOverwriteAllowed({
+            nombre: nextName,
+            inicio: reactivationFrom,
+            ultimoDia: normalizeStoredStart(
+                previousSnapshot?.unitExitDate || ""
+            ),
+            aprobadaPara:
+                profileDraft.pendingReactivation?.overwriteApprovedFor || ""
+        })) {
+            return false;
+        }
     }
 
     const nextRotationType = replacementContract
