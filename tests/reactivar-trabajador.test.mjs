@@ -63,7 +63,7 @@ test("reactivar pregunta desde cuando y con que rotativa", () => {
 
     // Sin fecha preseleccionada y abriendo donde se puede empezar: el dia
     // siguiente a su ultimo dia trabajado (ver reactivar-desde-cuando).
-    assert.match(resolver, /askHandoverSchedule\(\{\s*\n[\s\S]*?startEmpty: true,\s*\n\s*openAt: primerDiaLibre\s*\n\s*\}\)/);
+    assert.match(resolver, /askHandoverSchedule\(\{[\s\S]*?startEmpty: true,[\s\S]*?openAt: primerDiaLibre,[\s\S]*?rotationType: modalidad\s*\r?\n\s*\}\)/);
     // Y lo elegido se aplica al borrador ANTES de leer la rotativa al guardar.
     assert.match(main, /profileDraft\.rotationStart = decision\.startDate;/);
     assert.match(main, /const isReactivating = isEditing && !wasActive && willBeActive;/);
@@ -154,8 +154,12 @@ test("reactivar por traspaso no vuelve a preguntar lo acordado", () => {
 });
 
 test("reactivar por traspaso no le avisa a quien ya lo sabe", () => {
-    // Esa unidad acordo el traspaso: avisarle seria ruido.
-    assert.match(main, /reactivationFrom = decision\.startDate;/);
+    // Esa unidad acordo el traspaso: avisarle seria ruido. La fecha del aviso
+    // sale del borrador -lo ultimo elegido-, y solo cuando se reactivo a mano.
+    assert.match(
+        main,
+        /reactivationFrom = normalizeStoredStart\(\s*profileDraft\.rotationStart \|\| ""\s*\);/
+    );
 
     const reactivar = extraer(main, "reactivateProfileFromHandover");
 

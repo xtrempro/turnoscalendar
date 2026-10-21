@@ -1500,11 +1500,14 @@ async function askHandoverSchedule({
     minStart = "",
     minStartMessage = "",
     startEmpty = false,
-    openAt = ""
+    openAt = "",
+    // Modalidad ya elegida: no se vuelve a preguntar. Lo usa quien reabre el
+    // calendario para corregir solo la fecha.
+    rotationType: modalidadElegida = ""
 } = {}) {
     if (!isProfileEditing()) return null;
 
-    const rotationType = await showChoice(
+    const rotationType = modalidadElegida || await showChoice(
         "¿Qué modalidad seguirá en esta unidad?",
         {
             title: "Rotativa en tu unidad",
@@ -1832,16 +1835,23 @@ async function resolveProfileReactivation(nombre, rut, exitDate = "") {
     // Se pregunta hasta que la fecha quede decidida: elegir una anterior a su
     // salida es posible -a veces hay que corregir hacia atras- pero no puede
     // pasar sin que se diga lo que cuesta.
+    // La modalidad se pregunta UNA vez: volver a elegir la fecha reabre el
+    // calendario, no el cuestionario entero.
+    let modalidad = "";
+
     for (;;) {
         const rotativa = await askHandoverSchedule({
             // Sin fecha puesta: la rotativa empieza donde el supervisor
             // haga clic. Antes venia preseleccionada la de su rotativa
             // anterior y aceptar sin mirar la aplicaba desde ahi.
             startEmpty: true,
-            openAt: primerDiaLibre
+            openAt: primerDiaLibre,
+            rotationType: modalidad
         });
 
         if (!rotativa) return null;
+
+        modalidad = rotativa.rotationType;
 
         if (
             !ultimoDia ||
@@ -1894,8 +1904,22 @@ async function resolveProfileActiveToggle() {
 
     if (estaba === queda) return;
 
+    // El cuadro de la rotativa escribe en el borrador apenas se acepta, antes
+    // de que esta reactivacion este decidida. Si despues se abandona -se
+    // rechaza sobrescribir y se cierra el cuadro siguiente-, eso no puede
+    // quedar puesto: guardar cualquier otro cambio aplicaria la rotativa de
+    // una reactivacion que no ocurrio.
+    const rotativaPrevia = {
+        type: profileDraft.rotationType,
+        start: profileDraft.rotationStart,
+        firstTurn: profileDraft.rotationFirstTurn
+    };
+
     const volverAtras = () => {
         profileDraft.active = estaba;
+        profileDraft.rotationType = rotativaPrevia.type;
+        profileDraft.rotationStart = rotativaPrevia.start;
+        profileDraft.rotationFirstTurn = rotativaPrevia.firstTurn;
         DOM.profileActiveToggle.checked = estaba;
         renderDashboardState();
     };
@@ -14756,23 +14780,31 @@ async function guardarPerfil() {
 
     if (isReactivating && !pendingHandoverReactivation) {
         // Lo normal es que ya este respondido: la casilla "Perfil activo"
-        // pregunta al marcarse. Se vuelve a preguntar aqui para los caminos
-        // que reactivan sin pasar por ella.
-        const decision = profileDraft.pendingReactivation ||
-            await resolveProfileReactivation(
+        // pregunta al marcarse y deja lo elegido en el borrador. Aqui solo se
+        // pregunta si se reactivo por un camino que no pasa por la casilla.
+        //
+        // Y NO se vuelve a imponer lo respondido entonces: entre esa pregunta
+        // y este guardado, la rotativa se pudo cambiar desde la ficha, y lo
+        // ultimo que eligio el supervisor es lo que vale.
+        if (!profileDraft.pendingReactivation) {
+            const decision = await resolveProfileReactivation(
                 nextName,
                 profileDraft.rut,
                 previousSnapshot?.unitExitDate || ""
             );
 
-        if (!decision || decision.handoverRequested) return false;
+            if (!decision || decision.handoverRequested) return false;
 
-        profileDraft.rotationType = decision.rotationType;
-        profileDraft.rotationStart = decision.startDate;
-        profileDraft.rotationFirstTurn = decision.rotationFirstTurn;
+            profileDraft.rotationType = decision.rotationType;
+            profileDraft.rotationStart = decision.startDate;
+            profileDraft.rotationFirstTurn = decision.rotationFirstTurn;
+        }
+
         // Solo cuando se reactiva SIN pedir el traspaso: si vino por traspaso,
         // la otra unidad ya lo sabe -lo acordo- y avisarle seria ruido.
-        reactivationFrom = decision.startDate;
+        reactivationFrom = normalizeStoredStart(
+            profileDraft.rotationStart || ""
+        );
     }
 
     const nextRotationType = replacementContract

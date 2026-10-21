@@ -202,6 +202,25 @@ test("si no quiere sobrescribir, vuelve a elegir la fecha", async () => {
     assert.equal(decision.startDate, "2026-10-19");
 });
 
+test("volver a elegir la fecha no vuelve a preguntar la modalidad", async () => {
+    // El cuestionario entero por corregir una fecha es exactamente lo que
+    // hace que nadie corrija nada.
+    const { reactivar, pedidos } = montarReactivacion({
+        elecciones: [
+            { ...DESDE_EL_19, startDate: "2026-10-10", rotationType: "diurno" },
+            { ...DESDE_EL_19, rotationType: "diurno" }
+        ],
+        confirmaciones: [false]
+    });
+
+    await reactivar("Gabriel Flores", "31.005.006-7", "2026-10-18");
+
+    assert.equal(pedidos.length, 2);
+    // La primera vuelta pregunta la modalidad; la segunda la lleva puesta.
+    assert.equal(pedidos[0].rotationType, "");
+    assert.equal(pedidos[1].rotationType, "diurno");
+});
+
 test("cerrar el cuadro cancela la reactivacion", async () => {
     const { reactivar, advertencias } = montarReactivacion({ elecciones: [null] });
 
@@ -214,7 +233,14 @@ test("cerrar el cuadro cancela la reactivacion", async () => {
 
 // --- La casilla pregunta en el acto ---
 
-function montarCasilla({ perfil, marcada, ultimoDia, decision, modo = "edit" }) {
+function montarCasilla({
+    perfil,
+    marcada,
+    ultimoDia,
+    decision,
+    modo = "edit",
+    alAbrirElCuadro = () => {}
+}) {
     const casilla = { checked: marcada };
     const borrador = {
         mode: modo,
@@ -261,6 +287,7 @@ function montarCasilla({ perfil, marcada, ultimoDia, decision, modo = "edit" }) 
             null,
             async (...args) => {
                 preguntas.push({ tipo: "reactivar", args });
+                alAbrirElCuadro();
                 return decision;
             }
         )
@@ -353,6 +380,31 @@ test("cancelar la reactivacion deja el perfil inactivo", async () => {
     assert.equal(borrador.active, false);
 });
 
+test("una reactivacion abandonada no deja su rotativa en el borrador", async () => {
+    // El cuadro de la rotativa escribe en el borrador apenas se acepta. Si
+    // despues se rechaza sobrescribir y se cierra el siguiente cuadro, eso
+    // quedaba puesto: guardar cualquier otro cambio aplicaba la rotativa de
+    // una reactivacion que nunca ocurrio.
+    const { resolver, borrador, casilla } = montarCasilla({
+        perfil: INACTIVO,
+        marcada: true,
+        decision: null,
+        // Lo que el cuadro alcanzo a escribir antes de que se abandonara.
+        alAbrirElCuadro: () => {
+            borrador.rotationType = "diurno";
+            borrador.rotationStart = "2026-10-10";
+            borrador.rotationFirstTurn = "larga";
+        }
+    });
+
+    await resolver();
+
+    assert.equal(casilla.checked, false);
+    assert.equal(borrador.rotationType, "3turno");
+    assert.equal(borrador.rotationStart, "2026-01-01");
+    assert.equal(borrador.rotationFirstTurn, "noche");
+});
+
 test("volver a dejarla como estaba no pregunta nada", async () => {
     const { resolver, preguntas, borrador } = montarCasilla({
         perfil: ACTIVO,
@@ -393,9 +445,26 @@ test("guardar no vuelve a preguntar lo que ya se respondio", () => {
         guardar,
         /normalizeStoredStart\(profileDraft\.pendingExitDate \|\| ""\) \|\|\s*\n\s*await requestProfileInactivationDate\(/
     );
+    const vuelta = guardar.slice(
+        guardar.indexOf("if (isReactivating && !pendingHandoverReactivation) {"),
+        guardar.indexOf("const nextRotationType =")
+    );
+
     assert.match(
-        guardar,
-        /profileDraft\.pendingReactivation \|\|\s*\n\s*await resolveProfileReactivation\(/
+        vuelta,
+        /if \(!profileDraft\.pendingReactivation\) \{\s*\n\s*const decision = await resolveProfileReactivation\(/
+    );
+    // Lo respondido en la casilla NO se vuelve a imponer: si despues se cambio
+    // la rotativa desde la ficha, eso es lo que vale. Por eso las
+    // asignaciones viven DENTRO del "si todavia no se respondio".
+    assert.ok(
+        vuelta.indexOf("if (!profileDraft.pendingReactivation)") <
+            vuelta.indexOf("profileDraft.rotationStart = decision.startDate;"),
+        "las asignaciones tienen que quedar dentro de la guarda"
+    );
+    assert.match(
+        vuelta,
+        /reactivationFrom = normalizeStoredStart\(\s*\n?\s*profileDraft\.rotationStart \|\| ""\s*\n?\s*\);/
     );
     // Y al guardar se limpia, para que no se reuse en el proximo cambio.
     assert.match(guardar, /profileDraft\.pendingExitDate = "";/);
