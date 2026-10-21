@@ -329,9 +329,19 @@ test("se conserva ANTES de guardar el ancla nueva", () => {
     const conserva = guardar.indexOf("!await freezeRotationHistory(previousSnapshot, nextRotationStart)");
     const ancla = guardar.indexOf("saveRotativa({");
     const aplica = guardar.indexOf("await applyDraftRotation(");
+    // Lo PRIMERO del guardado: antes de tocar el perfil. Si no, un fallo al
+    // conservar deja a la persona ya reactivada -activa y sin fecha de
+    // salida-, y el siguiente intento la toma por alguien que nunca estuvo
+    // inactivo: sin las preguntas de la reactivacion y sin limpiar el tramo.
+    const creaPerfil = guardar.indexOf("profiles.push(nextProfilePayload)");
+    const editaPerfil = guardar.indexOf("updateProfile(");
+    const desenlaza = guardar.indexOf("await unlinkWorkerAppForProfile(");
 
     assert.notEqual(conserva, -1);
     assert.notEqual(ancla, -1);
+    assert.ok(conserva < creaPerfil, "antes de crear el perfil");
+    assert.ok(conserva < editaPerfil, "antes de editarlo");
+    assert.ok(conserva < desenlaza, "antes de tocar el enlace de la app");
     assert.ok(conserva < ancla, "conservar va antes de guardar el ancla");
     assert.ok(ancla < aplica, "y el ancla antes de aplicar, como siempre");
     // Y si no se pudo conservar, el guardado se detiene ahi.

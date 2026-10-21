@@ -15368,6 +15368,22 @@ async function saveProfileNow() {
         snapshotCriticalProfileState(profileSaveSealNames);
 
     try {
+        // LO PRIMERO: conservar lo que la rotativa anterior venia calculando
+        // hacia atras. Escribe exactamente lo que ya se veia en pantalla, asi
+        // que si el guardado se detiene despues no cambia nada para nadie.
+        //
+        // Va aqui y no mas adelante porque cualquier paso previo ya deja el
+        // perfil tocado -activo, sin fecha de salida- y entonces reintentar
+        // el guardado lo tomaria por un perfil que nunca estuvo inactivo: sin
+        // las preguntas de la reactivacion y sin limpiar el tramo en que no
+        // estuvo, que quedaria con turnos.
+        if (
+            shouldApplyRotation &&
+            !await freezeRotationHistory(previousSnapshot, nextRotationStart)
+        ) {
+            return false;
+        }
+
         // Antes de cambiar el correo: si el desenlace falla, el correo no se
         // toca y la cuenta anterior sigue como estaba.
         if (shouldReplaceWorkerAppLink) {
@@ -15478,18 +15494,6 @@ async function saveProfileNow() {
             );
         } else if (isCreating) {
             setShiftAssigned(false, nextName);
-        }
-
-        // ANTES de guardar el ancla nueva: lo que la rotativa anterior venia
-        // calculando hacia atras se escribe como turnos de verdad. El orden
-        // importa -guardar el ancla y conservar despues deja la ventana en que
-        // esos dias no los calcula nadie- y si no se puede conservar, la
-        // rotativa no se cambia.
-        if (
-            shouldApplyRotation &&
-            !await freezeRotationHistory(previousSnapshot, nextRotationStart)
-        ) {
-            return false;
         }
 
         saveRotativa({
