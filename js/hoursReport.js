@@ -2705,9 +2705,15 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
                 holidays
             )
             : { d: 0, n: 0 };
-        const clockExtraHours = kind === "extra-only"
-            ? getClockNetExtraHours(profileName, keyDay, date, actual, holidays)
-            : { d: 0, n: 0 };
+        // En diurno se toma el excedente BRUTO porque el deficit se descuenta
+        // una linea mas abajo (diurnoDeficitHours), contra las horas
+        // programadas: con el neto -que ya resta el deficit y no baja de cero-
+        // el atraso se descontaba dos veces.
+        const clockExtraHours = kind !== "extra-only"
+            ? { d: 0, n: 0 }
+            : isDiurno
+                ? getClockExtraHours(profileName, keyDay, date, actual, holidays)
+                : getClockNetExtraHours(profileName, keyDay, date, actual, holidays);
         const scheduledExtraTotal =
             (Number(scheduleExtraHoursNum.d) || 0) +
             (Number(scheduleExtraHoursNum.n) || 0);

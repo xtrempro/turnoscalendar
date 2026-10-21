@@ -380,7 +380,7 @@ const OCTUBRE = 9;
 const diurnaKey = day => `${YEAR}-${OCTUBRE}-${day}`;
 const diurnaIso = day => `${YEAR}-10-${String(day).padStart(2, "0")}`;
 
-function seedDiurna(extensiones) {
+function seedDiurna(extensiones, marcajes = {}) {
     const base = {};
 
     for (let day = 1; day <= 31; day += 1) {
@@ -400,6 +400,10 @@ function seedDiurna(extensiones) {
     localStorage.setItem(`baseData_${DIURNA}`, JSON.stringify(base));
     localStorage.setItem(`data_${DIURNA}`, JSON.stringify(base));
     // "Extension horaria": se queda hasta las 20:00 (turno HT sobre su diurno).
+    if (Object.keys(marcajes).length) {
+        localStorage.setItem(`clockMarks_${DIURNA}`, JSON.stringify(marcajes));
+    }
+
     localStorage.setItem("replacements", JSON.stringify(
         extensiones.map((day, index) => ({
             id: `ext-${index}`,
@@ -415,8 +419,8 @@ function seedDiurna(extensiones) {
     ));
 }
 
-async function diurnaSurfaces(extensiones) {
-    seedDiurna(extensiones);
+async function diurnaSurfaces(extensiones, marcajes = {}) {
+    seedDiurna(extensiones, marcajes);
 
     const data = JSON.parse(localStorage.getItem(`data_${DIURNA}`));
     const stats = calcularHorasMesPerfil(
@@ -434,6 +438,8 @@ async function diurnaSurfaces(extensiones) {
 
     return {
         motor: round(stats.hheeDiurnas),
+        panelTotal: round(panel.reduce((total, record) => total + record.d, 0)),
+        anexoTotal: round((anexo.days || []).reduce((total, day) => total + Number(day.dayHours || 0), 0)),
         panel: panel.map(record => [record.date, round(record.d)]),
         detalle: (resumen.extraShifts || []).map(item => [item.iso, round(item.d)]),
         anexo: (anexo.days || []).map(day => [day.iso, round(day.dayHours)])
@@ -463,4 +469,45 @@ test("el Anexo 2 suma lo mismo que el motor del mes", async () => {
         visto.anexo.map(([, horas]) => horas),
         [3, 3, 3, 3, 4]
     );
+});
+
+test("con atraso y permanencia extra, el descuento se aplica UNA vez", async () => {
+    // Jueves 8: su jornada termina a las 17 y la extension la deja hasta las
+    // 20 (3 h). Llego a las 09 -1 h de atraso- y se fue a las 21 -1 h mas-.
+    // La cuenta es 3 + 1 - 1 = 3. El detalle restaba el atraso dos veces: una
+    // dentro del excedente neto del marcaje y otra contra lo programado.
+    const visto = await diurnaSurfaces([8], {
+        [`${YEAR}-${OCTUBRE}-8`]: {
+            segments: { larga: { entryTime: "09:00", exitTime: "21:00" } }
+        }
+    });
+
+    assert.equal(visto.motor, 3, "motor de horas");
+    assert.equal(visto.panelTotal, 3, "panel Registros HH.EE");
+    assert.equal(visto.anexoTotal, 3, "Anexo 2");
+});
+
+test("un atraso descuenta una hora, no dos", async () => {
+    // Llego a las 09 y se fue a las 20: hizo las 3 horas de extension pero le
+    // falta 1 de su jornada, asi que quedan 2.
+    const visto = await diurnaSurfaces([8], {
+        [`${YEAR}-${OCTUBRE}-8`]: {
+            segments: { larga: { entryTime: "09:00", exitTime: "20:00" } }
+        }
+    });
+
+    assert.equal(visto.anexoTotal, visto.motor, "Anexo 2 y motor");
+    assert.equal(visto.anexoTotal, 2);
+});
+
+test("irse antes de terminar la extension si la recorta", async () => {
+    // Se fue a las 19: hizo 2 de las 3 horas de extension.
+    const visto = await diurnaSurfaces([8], {
+        [`${YEAR}-${OCTUBRE}-8`]: {
+            segments: { larga: { entryTime: "08:00", exitTime: "19:00" } }
+        }
+    });
+
+    assert.equal(visto.anexoTotal, visto.motor, "Anexo 2 y motor");
+    assert.equal(visto.anexoTotal, 2);
 });
