@@ -34,6 +34,77 @@ function sanitizePrintHTML(value) {
     return template.innerHTML;
 }
 
+/**
+ * Descarga el mismo reporte como documento de Word.
+ *
+ * Es el HTML del reporte envuelto para Word, no un .docx armado a mano: Word
+ * abre ese formato desde hace veinte años conservando la tabla, los bordes y
+ * los colores, y asi el documento descargado es EXACTAMENTE lo que se ve al
+ * imprimir. Armar un .docx de verdad obligaria a reconstruir la tabla a mano y
+ * a que los dos caminos se fueran pareciendo cada vez menos.
+ *
+ * La hoja va apaisada porque es como se imprime el Anexo (@page landscape).
+ */
+export function downloadReportAsWord(html, title) {
+    if (!html) {
+        alert("No fue posible generar el reporte.");
+        return false;
+    }
+
+    const safeHTML = sanitizePrintHTML(html);
+    const nombre = `${String(title || "Reporte").replace(/[\\/:*?"<>|]/g, "-")}.doc`;
+    const documento = `
+        <html xmlns:o="urn:schemas-microsoft-com:office:office"
+              xmlns:w="urn:schemas-microsoft-com:office:word"
+              xmlns="http://www.w3.org/TR/REC-html40">
+            <head>
+                <meta charset="UTF-8">
+                <title>${escapeHTML(title || "Reporte")}</title>
+                <style>
+                    @page {
+                        size: A4 landscape;
+                        mso-page-orientation: landscape;
+                        margin: 12mm;
+                    }
+                    body {
+                        font-family: Arial, sans-serif;
+                        font-size: 10pt;
+                        color: #111827;
+                    }
+                    table {
+                        border-collapse: collapse;
+                        width: 100%;
+                    }
+                    th, td {
+                        border: 1px solid #94a3b8;
+                        padding: 3px 5px;
+                        font-size: 9pt;
+                        vertical-align: middle;
+                    }
+                    thead th {
+                        background: #e2e8f0;
+                    }
+                </style>
+            </head>
+            <body>${safeHTML}</body>
+        </html>
+    `;
+    const url = URL.createObjectURL(new Blob(
+        ["﻿", documento],
+        { type: "application/msword" }
+    ));
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = nombre;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+
+    return true;
+}
+
 export function printReportPreviewHTML(html, title) {
     if (!html) {
         alert("No fue posible generar el reporte para imprimir.");

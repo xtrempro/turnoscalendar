@@ -39,6 +39,34 @@ function monthEnd(monthDate) {
 }
 
 /**
+ * ¿Este perfil entra en los anexos del mes?
+ *
+ * Un perfil INACTIVO solo entra si alcanzo a estar en la unidad durante ese
+ * mes: su ultimo dia trabajado cae dentro del mes o despues. Si se fue antes,
+ * los turnos que el motor todavia proyecta desde su rotativa no son dias
+ * trabajados, y la unidad terminaba imprimiendo -y mandando a firmar- horas de
+ * gente que ya no estaba.
+ *
+ * Sin fecha de salida registrada no hay forma de saber hasta cuando estuvo, y
+ * un inactivo sin esa fecha es justamente el caso en que la proyeccion sigue
+ * corriendo sola: queda fuera.
+ *
+ * Cuantas horas tiene en el mes lo decide despues quien imprime: un reemplazo
+ * que alcanzo a trabajar una hora entra por esa hora.
+ */
+export function isAnnexMonthCandidate(profile, monthDate) {
+    if (profile?.active !== false) return true;
+
+    const exit = String(profile?.unitExitDate || "").trim().slice(0, 10);
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(exit)) return false;
+
+    const month = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}-01`;
+
+    return exit >= month;
+}
+
+/**
  * Los honorarios no llevan Anexo 2 (no tienen horas extraordinarias).
  */
 export function isCoverageAuthorizationCandidate(profile, monthDate) {

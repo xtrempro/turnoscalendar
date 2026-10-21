@@ -8,11 +8,11 @@
 // Este test corre los motores REALES sobre los mismos datos y exige que las tres
 // superficies calculables entreguen el mismo numero.
 //
-// Limitacion conocida: el panel de Registros es por evento, asi que en perfiles
-// diurnos y sin asignacion de turno (modos "diurno" y "aggregate") sigue sin
-// coincidir con el motor -que ahi mide contra la jornada normal o contra las
-// horas habiles del mes, no por turno-. Es una divergencia anterior a este
-// cambio y no se cubre aqui.
+// La divergencia de los perfiles DIURNOS ya no es una limitacion conocida: al
+// final del archivo se exige que las cuatro superficies -motor, panel, detalle
+// publicado y Anexo 2- cuenten igual una extension de jornada. Sigue fuera el
+// modo "aggregate" (sin asignacion de turno), que mide contra las horas
+// habiles del mes y no por turno.
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -64,6 +64,7 @@ const {
     buildWorkerHheeMonthSummary
 } = await import("../js/hoursReport.js");
 const { getHheeMonthRecords } = await import("../js/replacements.js");
+const { buildCoverageAuthorizationRow } = await import("../js/coverageAuthorizationRows.js");
 const { TURNO } = await import("../js/constants.js");
 
 const YEAR = 2026;
@@ -354,5 +355,112 @@ test("un dia con permiso aprobado no genera descuento aunque haya marcaje", asyn
             ...withMark(17, "larga", { exitTime: "19:00" })
         }),
         { d: 12, n: 0 }
+    );
+});
+
+// --- Jornada diurna que se estira ---
+//
+// La divergencia que este archivo daba por conocida: en perfiles diurnos el
+// panel media la extension (3 h de lunes a jueves, 4 el viernes) y el detalle
+// por dia le atribuia el bloque entero de media tarde, 6 h. Ese detalle es el
+// que alimenta el Anexo 2 y el resumen que ve el trabajador, asi que la unidad
+// imprimia 6 donde el motor contaba 3.
+//
+// Ahora las cuatro superficies hacen la MISMA cuenta: lo trabajado menos su
+// jornada normal.
+
+const DIURNA = "Diurna";
+const DIURNA_PROFILE = {
+    name: DIURNA,
+    estamento: "Profesional",
+    active: true,
+    contractType: "Contrata"
+};
+const OCTUBRE = 9;
+const diurnaKey = day => `${YEAR}-${OCTUBRE}-${day}`;
+const diurnaIso = day => `${YEAR}-10-${String(day).padStart(2, "0")}`;
+
+function seedDiurna(extensiones) {
+    const base = {};
+
+    for (let day = 1; day <= 31; day += 1) {
+        const fecha = new Date(YEAR, OCTUBRE, day);
+
+        if (![0, 6].includes(fecha.getDay())) base[diurnaKey(day)] = TURNO.DIURNO;
+    }
+
+    localStorage.clear();
+    localStorage.setItem("profiles", JSON.stringify([{ id: "p-diurna", ...DIURNA_PROFILE }]));
+    localStorage.setItem(`rotativa_${DIURNA}`, JSON.stringify({
+        type: "diurno",
+        start: `${YEAR}-10-01`,
+        firstTurn: "larga"
+    }));
+    localStorage.setItem(`shift_${DIURNA}`, JSON.stringify(false));
+    localStorage.setItem(`baseData_${DIURNA}`, JSON.stringify(base));
+    localStorage.setItem(`data_${DIURNA}`, JSON.stringify(base));
+    // "Extension horaria": se queda hasta las 20:00 (turno HT sobre su diurno).
+    localStorage.setItem("replacements", JSON.stringify(
+        extensiones.map((day, index) => ({
+            id: `ext-${index}`,
+            worker: DIURNA,
+            date: diurnaIso(day),
+            year: YEAR,
+            month: OCTUBRE,
+            turno: "HT",
+            reason: "Extension",
+            coverFrom: "08:00",
+            coverUntil: "20:00"
+        }))
+    ));
+}
+
+async function diurnaSurfaces(extensiones) {
+    seedDiurna(extensiones);
+
+    const data = JSON.parse(localStorage.getItem(`data_${DIURNA}`));
+    const stats = calcularHorasMesPerfil(
+        DIURNA, YEAR, OCTUBRE, 31, HOLIDAYS, data, {}, { d: 0, n: 0 }
+    );
+    const panel = getHheeMonthRecords(DIURNA, YEAR, OCTUBRE, HOLIDAYS);
+    const resumen = await buildWorkerHheeMonthSummary(
+        DIURNA_PROFILE,
+        new Date(YEAR, OCTUBRE, 1)
+    );
+    const anexo = await buildCoverageAuthorizationRow(
+        DIURNA_PROFILE,
+        new Date(YEAR, OCTUBRE, 1)
+    );
+
+    return {
+        motor: round(stats.hheeDiurnas),
+        panel: panel.map(record => [record.date, round(record.d)]),
+        detalle: (resumen.extraShifts || []).map(item => [item.iso, round(item.d)]),
+        anexo: (anexo.days || []).map(day => [day.iso, round(day.dayHours)])
+    };
+}
+
+test("la extension de un diurno vale 3 h de lunes a jueves y 4 el viernes", async () => {
+    // Jueves 8 y viernes 16 de octubre de 2026.
+    const visto = await diurnaSurfaces([8, 16]);
+    const esperado = [[diurnaIso(8), 3], [diurnaIso(16), 4]];
+
+    assert.equal(visto.motor, 7, "motor de horas");
+    assert.deepEqual(visto.panel, esperado, "panel Registros HH.EE");
+    assert.deepEqual(visto.detalle, esperado, "detalle publicado a la PWA");
+    assert.deepEqual(visto.anexo, esperado, "Anexo 2");
+});
+
+test("el Anexo 2 suma lo mismo que el motor del mes", async () => {
+    const visto = await diurnaSurfaces([5, 6, 7, 8, 9]);
+
+    assert.equal(
+        visto.anexo.reduce((total, [, horas]) => total + horas, 0),
+        visto.motor
+    );
+    // Lunes a jueves 3 y viernes 4.
+    assert.deepEqual(
+        visto.anexo.map(([, horas]) => horas),
+        [3, 3, 3, 3, 4]
     );
 });

@@ -144,7 +144,10 @@ import {
     getClockActualState,
     buildClockMarkRecordsForProfile
 } from "./clockMarkRecords.js";
-import { printReportPreviewHTML } from "./reportPrint.js";
+import {
+    downloadReportAsWord,
+    printReportPreviewHTML
+} from "./reportPrint.js";
 import {
     CLIP_ICON,
     getRecordYear,
@@ -392,6 +395,7 @@ import {
 } from "./coverageAuthorizationReport.js";
 import {
     buildCoverageAuthorizationRow,
+    isAnnexMonthCandidate,
     isCoverageAuthorizationCandidate
 } from "./coverageAuthorizationRows.js";
 import {
@@ -9355,6 +9359,39 @@ async function printSpecificReportPdf(profile, date) {
     }
 }
 
+// En que formato se lleva el anexo. Word para editarlo o firmarlo a mano antes
+// de mandarlo; PDF a traves del dialogo de impresion, que es el que respeta la
+// hoja apaisada y los colores.
+async function deliverReport(html, title) {
+    const formato = await showChoice(
+        `¿En qué formato quieres ${title}?`,
+        {
+            title: "Descargar el anexo",
+            confirmText: "Descargar",
+            choices: [
+                {
+                    value: "pdf",
+                    label: "PDF",
+                    hint: "Se abre el diálogo de impresión: elige \"Guardar como PDF\"."
+                },
+                {
+                    value: "word",
+                    label: "Word",
+                    hint: "Descarga el documento para editarlo antes de firmarlo."
+                }
+            ]
+        }
+    );
+
+    if (!formato) return false;
+
+    if (formato === "word") return downloadReportAsWord(html, title);
+
+    printReportPreviewHTML(html, title);
+
+    return true;
+}
+
 async function printTensConsolidatedReport(date) {
     if (!ensureCanDownloadReports()) return;
 
@@ -9366,6 +9403,9 @@ async function printTensConsolidatedReport(date) {
     );
     const tensProfiles = getProfiles()
         .filter(isTensReportProfile)
+        // Quien ya no estaba en el mes no se imprime: lo que el motor sigue
+        // proyectando desde su rotativa no son dias trabajados.
+        .filter(profile => isAnnexMonthCandidate(profile, monthDate))
         .filter(profile =>
             isTensConsolidatedCandidate(
                 profile,
@@ -9424,7 +9464,7 @@ async function printTensConsolidatedReport(date) {
             return;
         }
 
-        printReportPreviewHTML(
+        await deliverReport(
             buildTensConsolidatedReportHTML(rows, monthDate, {
                 requesterName:
                     getReportSignatureConfig().lines?.[0] || ""
@@ -9447,6 +9487,7 @@ async function printCoverageAuthorizationReport(date) {
     // coverageAuthorizationRows.js): lo que imprime la unidad y lo que el
     // trabajador valida no pueden diferir.
     const candidates = profiles.filter(profile =>
+        isAnnexMonthCandidate(profile, monthDate) &&
         isCoverageAuthorizationCandidate(profile, monthDate)
     );
 
@@ -9467,7 +9508,7 @@ async function printCoverageAuthorizationReport(date) {
             return;
         }
 
-        printReportPreviewHTML(
+        await deliverReport(
             buildCoverageAuthorizationReportHTML(printableRows, monthDate),
             `Anexo 2 cobertura de turnos ${formatReportPlanillaTitle(monthDate)}`
         );

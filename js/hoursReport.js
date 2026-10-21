@@ -2621,6 +2621,13 @@ function buildAssignedShiftDayRows(profile, year, month, days, holidays) {
 
 function buildDayRows(profile, year, month, days, holidays, kind) {
     const profileName = profile.name;
+    // Una jornada diurna que se estira no vale el bloque entero de la tarde:
+    // vale lo que va DESDE EL FIN de su jornada hasta que se retira (3 h de
+    // lunes a jueves, 4 el viernes). Es la misma cuenta que hace el motor del
+    // mes -restarle a lo trabajado su jornada normal- y la que ya usaba el
+    // reporte de turno asignado; este detalle le atribuia el bloque completo
+    // de media tarde (6 h) y por ahi se colaba al Anexo 2.
+    const isDiurno = isDiurnoReportProfile(profileName);
     const data = getProfileData(profileName);
     const baseData = getBaseProfileData(profileName);
     const maps = getReportMaps(profileName);
@@ -2665,7 +2672,9 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
         const actualHoursNum = kind === "extra-only"
             ? numberHours(date, actual, holidays)
             : extraNumberHours(date, actual, holidays);
-        const scheduleExtraHoursNum = extraNumberHours(date, extraState, holidays);
+        const scheduleExtraHoursNum = isDiurno
+            ? calcularExtraDiurnoProgramadoDia(date, actual, holidays)
+            : extraNumberHours(date, extraState, holidays);
         // Extension horaria por MODIFICACION DE MARCAJE: la hora extra NETA del
         // marcaje (excedente trabajado menos deficit; la parte recuperada no
         // cuenta) es una extension aunque el turno base no sea "extra". El motor
@@ -2675,7 +2684,7 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
         // ("extra-only"): en "all"/"replacement" las horas ya son las realizadas.
         const isExtra = Number(extraState) > TURNO.LIBRE;
         const scheduledExtraWorkedHours =
-            kind === "extra-only" && isExtra
+            kind === "extra-only" && isExtra && !isDiurno
                 ? workedScheduledExtraHours(
                     profileName,
                     keyDay,
@@ -2685,6 +2694,17 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
                     holidays
                 )
                 : scheduleExtraHoursNum;
+        // En diurno lo no trabajado se descuenta aparte, como en el reporte de
+        // turno asignado: la cuenta de arriba parte del turno PROGRAMADO.
+        const diurnoDeficitHours = isDiurno && kind === "extra-only"
+            ? getClockDeficitHours(
+                profileName,
+                keyDay,
+                date,
+                actual,
+                holidays
+            )
+            : { d: 0, n: 0 };
         const clockExtraHours = kind === "extra-only"
             ? getClockNetExtraHours(profileName, keyDay, date, actual, holidays)
             : { d: 0, n: 0 };
@@ -2704,8 +2724,16 @@ function buildDayRows(profile, year, month, days, holidays, kind) {
             n: formatHour(actualHoursNum.n)
         };
         const extraHours = {
-            d: formatHour(scheduledExtraWorkedHours.d + clockExtraHours.d),
-            n: formatHour(scheduledExtraWorkedHours.n + clockExtraHours.n)
+            d: formatHour(
+                scheduledExtraWorkedHours.d +
+                clockExtraHours.d -
+                diurnoDeficitHours.d
+            ),
+            n: formatHour(
+                scheduledExtraWorkedHours.n +
+                clockExtraHours.n -
+                diurnoDeficitHours.n
+            )
         };
         const hasClockExtension = clockExtraHours.d + clockExtraHours.n > 0.001;
         const hasReplacement =

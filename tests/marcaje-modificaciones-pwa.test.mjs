@@ -135,7 +135,13 @@ test("las horas del detalle se suman en numerico y descuentan reducciones de mar
   // turno realizado sigue valorandose con la jornada promedio.
   assert.match(rows, /extraNumberHours\(date, extraState, holidays\)/);
   assert.match(rows, /workedScheduledExtraHours\(/);
-  assert.match(rows, /scheduledExtraWorkedHours\.n \+ clockExtraHours\.n/);
+  // La suma lleva ademas el descuento de la jornada diurna que no se trabajo
+  // (ver hhee-superficies-coinciden): en diurno la cuenta parte del turno
+  // programado, asi que lo no trabajado se resta aqui.
+  assert.match(
+    rows,
+    /scheduledExtraWorkedHours\.n \+\s*\n\s*clockExtraHours\.n -\s*\n\s*diurnoDeficitHours\.n/
+  );
   assert.match(rows, /isPartialExtra/);
   assert.match(src, /partial: Boolean\(row\.esParcial\)/);
   assert.doesNotMatch(rows, /formatHour\(scheduleExtraHours\.n \+ clockExtraHours\.n\)/);
