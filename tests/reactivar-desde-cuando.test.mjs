@@ -540,6 +540,12 @@ test("guardar no vuelve a preguntar lo que ya se respondio", () => {
         vuelta,
         /if \(!await ensureReactivationOverwriteAllowed\(\{[\s\S]*?inicio: reactivationFrom,[\s\S]*?aprobadaPara:[\s\S]*?overwriteApprovedFor \|\| ""[\s\S]*?\}\)\) \{\s*\n\s*return false;/
     );
+    // Y lo autorizado aqui queda anotado: si el guardado se corta despues, el
+    // siguiente intento no vuelve a preguntar por la misma fecha.
+    assert.match(
+        vuelta,
+        /profileDraft\.pendingReactivation = \{\s*\n\s*\.\.\.profileDraft\.pendingReactivation,\s*\n\s*overwriteApprovedFor: reactivationFrom\s*\n\s*\};/
+    );
     // Y al guardar se limpia, para que no se reuse en el proximo cambio.
     assert.match(guardar, /profileDraft\.pendingExitDate = "";/);
     assert.match(guardar, /profileDraft\.pendingReactivation = null;/);
@@ -634,8 +640,57 @@ test("sin fecha de salida no hay nada que pisar", async () => {
 test("la casilla dispara la pregunta", () => {
     assert.match(
         main,
-        /profileDraft\.active =\s*\n\s*DOM\.profileActiveToggle\.checked;\s*\n\s*void resolveProfileActiveToggle\(\);/
+        /profileDraft\.active =\s*\n\s*DOM\.profileActiveToggle\.checked;\s*\n\s*void startProfileActiveToggle\(\);/
     );
+});
+
+test("guardar espera a que la casilla termine de preguntar", async () => {
+    // Consultar si esa persona esta en otra unidad va al servidor y tarda;
+    // mientras tanto en pantalla no pasa nada. Quien apreta Guardar ahi
+    // disparaba el mismo cuestionario otra vez, en paralelo.
+    assert.match(
+        extraer("guardarPerfil"),
+        /await settleProfileActiveToggle\(\);/
+    );
+
+    // Y la espera es de verdad: devuelve la promesa en curso y se limpia al
+    // terminar.
+    let terminar = () => {};
+    const preguntando = new Promise(resolve => { terminar = resolve; });
+    const fabrica = new Function(
+        "resolveProfileActiveToggle",
+        `let profileActiveTogglePending = null;
+         ${extraer("settleProfileActiveToggle")}
+         ${extraer("startProfileActiveToggle")}
+         return { settle: settleProfileActiveToggle, start: startProfileActiveToggle, ver: () => profileActiveTogglePending };`
+    );
+    const { settle, start, ver } = fabrica(() => preguntando);
+
+    assert.equal(ver(), null, "sin preguntas pendientes, nada que esperar");
+
+    const enCurso = start();
+
+    assert.notEqual(ver(), null);
+
+    let siguio = false;
+
+    const espera = settle().then(() => { siguio = true; });
+
+    // Un respiro: si no esperara nada, aqui ya habria seguido.
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(
+        siguio,
+        false,
+        "guardar no puede seguir mientras la casilla esta preguntando"
+    );
+
+    terminar();
+    await enCurso;
+    await espera;
+
+    assert.equal(siguio, true);
+    assert.equal(ver(), null, "al terminar deja de estar pendiente");
 });
 
 test("el cuadro de la rotativa sabe abrirse vacio y en un mes dado", () => {

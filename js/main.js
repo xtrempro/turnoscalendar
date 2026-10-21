@@ -1954,6 +1954,27 @@ async function resolveProfileReactivation(nombre, rut, exitDate = "") {
     }
 }
 
+// Lo que la casilla esta preguntando ahora mismo, si es que esta preguntando
+// algo. Guardar lo espera: hasta que no se responda, no se sabe desde cuando
+// vuelve esa persona ni hasta cuando trabajo.
+let profileActiveTogglePending = null;
+
+function settleProfileActiveToggle() {
+    return profileActiveTogglePending || Promise.resolve();
+}
+
+function startProfileActiveToggle() {
+    const enCurso = resolveProfileActiveToggle().finally(() => {
+        if (profileActiveTogglePending === enCurso) {
+            profileActiveTogglePending = null;
+        }
+    });
+
+    profileActiveTogglePending = enCurso;
+
+    return enCurso;
+}
+
 // Marcar o desmarcar "Perfil activo" pregunta EN EL ACTO: cual fue su
 // ultimo turno, o con que rotativa vuelve. Antes esas preguntas salian
 // recien al apretar Guardar, lejos del gesto que las provoca, y hasta
@@ -14804,6 +14825,13 @@ async function resolveDuplicateEmailBeforeSave() {
 async function guardarPerfil() {
     if (!canEditCurrentProfileMenu()) return false;
 
+    // La casilla "Perfil activo" pregunta cosas que tardan -consultar si esa
+    // persona esta en otra unidad va al servidor-, y mientras tanto en
+    // pantalla no pasa nada. Quien apreta Guardar en ese momento disparaba el
+    // mismo cuestionario por segunda vez, en paralelo: dos cuadros, y las
+    // respuestas de uno pisando al otro. Se espera a que el primero termine.
+    await settleProfileActiveToggle();
+
     if (
         profileDraft.mode === PROFILE_MODE.EDIT &&
         !hasUnsavedProfileDraftChanges()
@@ -14900,16 +14928,31 @@ async function guardarPerfil() {
 
         // La fecha que se aplica es la del borrador, y pudo cambiarse desde la
         // ficha despues de responder la casilla. Se revisa la FINAL.
+        const ultimoDiaPrevio = normalizeStoredStart(
+            previousSnapshot?.unitExitDate || ""
+        );
+
         if (!await ensureReactivationOverwriteAllowed({
             nombre: nextName,
             inicio: reactivationFrom,
-            ultimoDia: normalizeStoredStart(
-                previousSnapshot?.unitExitDate || ""
-            ),
+            ultimoDia: ultimoDiaPrevio,
             aprobadaPara:
                 profileDraft.pendingReactivation?.overwriteApprovedFor || ""
         })) {
             return false;
+        }
+
+        // Autorizada esta fecha. Se anota: si el guardado se corta mas
+        // adelante -otra validacion, un error-, el siguiente intento no vuelve
+        // a preguntar por lo mismo.
+        if (
+            profileDraft.pendingReactivation &&
+            reactivationOverwritesWorkedDays(reactivationFrom, ultimoDiaPrevio)
+        ) {
+            profileDraft.pendingReactivation = {
+                ...profileDraft.pendingReactivation,
+                overwriteApprovedFor: reactivationFrom
+            };
         }
     }
 
@@ -17622,7 +17665,7 @@ function bindProfileForm() {
         if (isProfileEditing()) {
             profileDraft.active =
                 DOM.profileActiveToggle.checked;
-            void resolveProfileActiveToggle();
+            void startProfileActiveToggle();
             return;
         }
 
