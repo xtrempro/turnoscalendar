@@ -130,7 +130,8 @@ import {
     findTopProfileSearchMatch
 } from "./profileSearchUtils.js";
 import {
-    aplicarRotativaConfiguradaDesde
+    aplicarRotativaConfiguradaDesde,
+    freezeRotationBeforeStart
 } from "./rotationApply.js";
 import {
     getRotationDefinitions,
@@ -14591,6 +14592,37 @@ function rotationGeneratesTurns(rotationType) {
     return rotationProducesTurns(String(rotationType || ""));
 }
 
+// Conserva como turnos escritos lo que la rotativa anterior venia calculando
+// antes del inicio nuevo. Solo cuando el ancla se mueve HACIA ADELANTE: si se
+// mueve hacia atras, esos dias los cubre la rotativa nueva.
+async function freezeRotationHistory(previousSnapshot, nextStartISO) {
+    const previa = previousSnapshot?.rotativa || {};
+    const desde = normalizeStoredStart(previa.start || "");
+    const hasta = previousCalendarISO(
+        normalizeStoredStart(nextStartISO || "")
+    );
+
+    if (!desde || !hasta || compareISODate(desde, hasta) > 0) return;
+
+    try {
+        await freezeRotationBeforeStart({
+            type: String(previa.type || ""),
+            firstTurn: String(previa.firstTurn || "larga"),
+            fromISO: desde,
+            untilISO: hasta
+        });
+    } catch (error) {
+        // Que falle no puede pasar inadvertido: lo que sigue mueve el ancla, y
+        // esos dias quedarian sin nadie que los calcule.
+        console.warn("No se pudieron conservar los turnos anteriores.", error);
+        await showAlert(
+            "No se pudieron conservar los turnos que esta persona ya tenía " +
+            "antes de la fecha nueva. Revisa su calendario después de guardar.",
+            { title: "Turnos anteriores", tone: "warning" }
+        );
+    }
+}
+
 async function applyDraftRotation(
     rotationType,
     rotationStart,
@@ -15552,6 +15584,13 @@ async function guardarPerfil() {
         }
 
         if (shouldApplyRotation) {
+            // Antes de mover el ancla: lo que la rotativa anterior producia
+            // hacia atras se escribe como turnos de verdad. Si no, al cambiar
+            // el inicio esos dias dejan de calcularse y desaparecen -de la
+            // vista, de los reportes y de la app del trabajador- aunque sean
+            // dias ya trabajados.
+            await freezeRotationHistory(previousSnapshot, nextRotationStart);
+
             await applyDraftRotation(
                 nextRotationType,
                 nextRotationStart,

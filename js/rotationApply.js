@@ -136,6 +136,94 @@ export async function aplicarTercerTurnoDesde(
 }
 
 /**
+ * Congela lo que la rotativa ANTERIOR producia antes de mover su inicio.
+ *
+ * El motor no guarda un turno por dia: lo CALCULA desde el ancla de la rotativa
+ * -tipo, primer turno y fecha de inicio-. Mover ese ancla hacia adelante, al
+ * reactivar a alguien o al reconfigurar su rotativa, hacia desaparecer de golpe
+ * todo lo anterior: meses de turnos ya trabajados que nadie borro, que
+ * simplemente dejaban de calcularse. En pantalla se ve igual que una perdida de
+ * datos, y para los reportes y la app del trabajador lo es.
+ *
+ * Aqui esos dias se escriben como turnos explicitos ANTES de mover el ancla.
+ * Solo agrega: un dia que ya tiene algo escrito -un cambio de turno, un turno
+ * cargado a mano, un permiso- se respeta tal cual.
+ *
+ * Devuelve cuantos dias quedaron escritos.
+ */
+export async function freezeRotationBeforeStart({
+    type = "",
+    firstTurn = "larga",
+    fromISO = "",
+    untilISO = ""
+} = {}) {
+    const profileName = getCurrentProfile();
+
+    if (!profileName || !type || type === "libre") return 0;
+    if (!fromISO || !untilISO || fromISO > untilISO) return 0;
+
+    let payload = null;
+
+    if (rotationUsesBusinessDays(type)) {
+        const holidays = {};
+        const desde = Number(fromISO.slice(0, 4));
+        const hasta = Number(untilISO.slice(0, 4));
+
+        for (let year = desde; year <= hasta; year += 1) {
+            Object.assign(holidays, await fetchHolidays(year));
+        }
+
+        payload = {
+            mode: "businessDays",
+            businessTurn: rotationBusinessDayTurn(type),
+            holidays
+        };
+    } else {
+        const sequence = getRotationSequence(type, firstTurn);
+
+        if (!sequence.length) return 0;
+
+        payload = { mode: "sequence", sequence };
+    }
+
+    const result = await generateScheduleInWorker({
+        ...payload,
+        startISO: fromISO,
+        endISO: untilISO
+    });
+    const data = getProfileData();
+    const baseData = getBaseProfileData();
+    const blocked = getBlockedDays();
+    let escritos = 0;
+
+    result.entries.forEach(({ keyDay, turn }) => {
+        if (!turn) return;
+
+        // Lo que ya esta escrito manda: puede ser un cambio de turno, un turno
+        // cargado a mano o lo que quedo de un permiso.
+        if (
+            Object.prototype.hasOwnProperty.call(data, keyDay) ||
+            Object.prototype.hasOwnProperty.call(baseData, keyDay)
+        ) {
+            return;
+        }
+
+        data[keyDay] = turn;
+        baseData[keyDay] = turn;
+        blocked[keyDay] = true;
+        escritos += 1;
+    });
+
+    if (!escritos) return 0;
+
+    saveProfileData(data);
+    saveBaseProfileData(baseData);
+    saveBlockedDays(blocked);
+
+    return escritos;
+}
+
+/**
  * Aplica cualquier rotativa configurada en la unidad. Las rotativas de dias
  * habiles conservan el tratamiento de fines de semana y feriados; las demas
  * usan su secuencia ciclica.
