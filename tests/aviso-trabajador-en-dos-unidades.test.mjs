@@ -307,11 +307,13 @@ test("mientras se crea un perfil no sale ningun aviso", () => {
 function montarApertura({ perfiles }) {
     const abiertos = [];
     const alertas = [];
+    const menus = [];
     const fabrica = new Function(
         "getProfiles",
         "normalizeRut",
         "showAlert",
         "selectProfileByName",
+        "setActiveShortcut",
         `${extraer(main, "openBellNoticeTarget")}
          return openBellNoticeTarget;`
     );
@@ -319,11 +321,13 @@ function montarApertura({ perfiles }) {
     return {
         abiertos,
         alertas,
+        menus,
         abrir: fabrica(
             () => perfiles,
             valor => String(valor || "").replace(/[^0-9kK]/g, "").toUpperCase(),
             async mensaje => { alertas.push(mensaje); },
-            async (nombre, opciones) => { abiertos.push({ nombre, opciones }); return true; }
+            async (nombre, opciones) => { abiertos.push({ nombre, opciones }); return true; },
+            async destino => { menus.push(destino); return true; }
         )
     };
 }
@@ -363,12 +367,39 @@ test("si ya no esta en la unidad, lo dice en vez de abrir cualquier cosa", async
 });
 
 test("un destino que no se entiende no hace nada", async () => {
-    const { abrir, abiertos, alertas } = montarApertura({ perfiles: [HELENA] });
+    const { abrir, abiertos, alertas, menus } = montarApertura({
+        perfiles: [HELENA]
+    });
 
     await abrir({ kind: "otra-cosa" });
 
     assert.deepEqual(abiertos, []);
     assert.deepEqual(alertas, []);
+    assert.deepEqual(menus, []);
+});
+
+test("el aviso que manda a Solicitudes lleva hasta ahi", async () => {
+    const { abrir, menus, abiertos } = montarApertura({ perfiles: [HELENA] });
+
+    await abrir({ kind: "requests" });
+
+    assert.deepEqual(menus, ["workerRequestsPanel"]);
+    assert.deepEqual(abiertos, []);
+});
+
+test("los avisos de traspaso dicen adonde llevan", () => {
+    // Un aviso que dice "acéptalo en Solicitudes" y no lleva ahi obliga a
+    // recordar el nombre y buscarlo a mano.
+    const pedidos = extraer(main, "noticeHandoverRequests");
+    const rechazos = extraer(main, "noticeRejectedHandovers");
+    const aMano = extraer(main, "noticeHandoverNeedsHand");
+    const aplicado = extraer(main, "noticeHandoverApplied");
+
+    assert.match(pedidos, /action: \{ kind: "requests" \}/);
+    assert.match(rechazos, /action: \{ kind: "requests" \}/);
+    assert.match(aMano, /action: \{ kind: "requests" \}/);
+    // Ese ya no tiene nada que responder: el perfil existe y se va a su ficha.
+    assert.match(aplicado, /action: \{ kind: "profile", profile: String\(nombre \|\| ""\) \}/);
 });
 
 // --- El aviso a la otra unidad no depende de lo que venga despues ---

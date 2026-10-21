@@ -12175,7 +12175,8 @@ function noticeHandoverNeedsHand(solicitud, nombre, motivo) {
         title: `Revisa el traspaso de ${nombre}`,
         detail:
             `No se creó su perfil porque ${motivo}. ` +
-            "Resuélvelo y vuelve a entrar a la unidad, o créalo a mano con sus datos."
+            "Resuélvelo y vuelve a entrar a la unidad, o créalo a mano con sus datos.",
+        action: { kind: "requests" }
     });
 }
 
@@ -12308,7 +12309,8 @@ async function applyIncomingHandoverTransfers(pendientes = []) {
                 title: `No se pudo crear el perfil de ${nombre}`,
                 detail:
                     "El traspaso fue aceptado y se volverá a intentar. Si no " +
-                    "aparece, créalo a mano con sus datos."
+                    "aparece, créalo a mano con sus datos.",
+                action: { kind: "requests" }
             });
         } finally {
             handoverIntakesInFlight.delete(solicitud.id);
@@ -12425,7 +12427,9 @@ function noticeHandoverApplied(solicitud, nombre) {
         title: `${unidad} aceptó tu pedido de traspaso`,
         detail: inicio
             ? `${nombre} ya está en tu unidad, desde el ${formatDisplayDate(inicio)}.`
-            : `${nombre} ya está en tu unidad.`
+            : `${nombre} ya está en tu unidad.`,
+        // Aqui no queda nada que responder: lo que sigue es mirar su ficha.
+        action: { kind: "profile", profile: String(nombre || "") }
     });
 }
 
@@ -12645,11 +12649,20 @@ function renderProfileOtherUnitAlert(profile = getPerfilActual()) {
     host.append(icono, cuerpo);
 }
 
-// Tocar un aviso de la campanita lleva adonde se decide. Hoy, a la ficha del
-// trabajador: es donde se ve si todavia tiene turnos cargados antes de
-// desactivarlo.
+// Tocar un aviso de la campanita lleva adonde se decide: a Solicitudes cuando
+// hay algo que responder, o a la ficha del trabajador cuando lo que queda es
+// mirarla -si todavia tiene turnos cargados antes de desactivarlo, por
+// ejemplo-. Un aviso que dice "resuélvelo en tal menú" y no lleva ahi obliga a
+// recordar el nombre y buscarlo a mano.
 async function openBellNoticeTarget(accion = {}) {
-    if (String(accion?.kind || "") !== "profile") return;
+    const destino = String(accion?.kind || "");
+
+    if (destino === "requests") {
+        await setActiveShortcut("workerRequestsPanel");
+        return;
+    }
+
+    if (destino !== "profile") return;
 
     const nombre = String(accion.profile || "").trim();
     const rut = normalizeRut(accion.rut);
@@ -12723,7 +12736,9 @@ function noticeHandoverRequests(pendientes = []) {
             detail: desde
                 ? `Comenzaría allá el ${formatDisplayDate(desde)}. ` +
                     "Acéptalo o recházalo en Solicitudes."
-                : "Acéptalo o recházalo en Solicitudes."
+                : "Acéptalo o recházalo en Solicitudes.",
+            // El aviso manda a Solicitudes: que lleve hasta ahi.
+            action: { kind: "requests" }
         });
     }
 }
@@ -12750,7 +12765,8 @@ function noticeRejectedHandovers(rechazados = []) {
             title: `${unidad} rechazó el traspaso que pediste`,
             detail: (motivo ? `Motivo: "${motivo}". ` : "") +
                 `Puedes ingresar de cero a la persona con RUT ` +
-                `${formatRut(rut) || rut}.`
+                `${formatRut(rut) || rut}.`,
+            action: { kind: "requests" }
         });
     }
 }
