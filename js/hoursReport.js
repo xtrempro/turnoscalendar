@@ -4506,6 +4506,7 @@ export async function buildWorkerHheeMonthSummary(
         .map(row => ({
             iso: row.iso,
             turno: row.turnoRealizado || row.turnoExtra || "",
+            extraShift: detailKind === "extra-only" ? row.turnoExtra || "" : "",
             d: num(row.horasDiurnas),
             n: num(row.horasNocturnas),
             full: Boolean(row.esCompleto),
@@ -4513,18 +4514,19 @@ export async function buildWorkerHheeMonthSummary(
             backing: String(row.respaldo || "")
         }))
         .filter(item => item.d + item.n > 0.001);
-    const calendarDays = buildDayRows(
-        profile,
-        year,
-        month,
-        days,
-        holidays,
-        "all"
-    ).map(row => ({
-        iso: row.iso,
-        baseShift: row.turnoBase || "",
-        workedShift: row.turnoRealizado || ""
-    }));
+    // El Anexo 2 necesita la rotativa de todo el mes, incluso sin horas extra
+    // y en dias de permiso que no tienen un turno trabajado.
+    const calendarMaps = getReportMaps(profile.name);
+    const calendarData = getProfileData(profile.name);
+    const calendarDays = Array.from({ length: days }, (_, index) => {
+        const keyDay = key(year, month, index + 1);
+        return {
+            iso: isoFromKey(keyDay),
+            baseShift: turnoLabel(getTurnoBase(profile.name, keyDay)),
+            absenceLabel: dayAbsenceDetail(keyDay, calendarMaps)?.label || "",
+            workedShift: turnoLabel(actualStateForReport(profile.name, calendarData, keyDay))
+        };
+    });
     // Una sola fuente para el total del mes: el motor de horas. Antes, en los
     // perfiles "extra-only" se recalculaba sumando el detalle de turnos, que no
     // arrastra los descuentos por marcaje que no caben en el dia; la tarjeta de

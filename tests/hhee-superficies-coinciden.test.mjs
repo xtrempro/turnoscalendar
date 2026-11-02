@@ -442,7 +442,9 @@ async function diurnaSurfaces(extensiones, marcajes = {}) {
         anexoTotal: round((anexo.days || []).reduce((total, day) => total + Number(day.dayHours || 0), 0)),
         panel: panel.map(record => [record.date, round(record.d)]),
         detalle: (resumen.extraShifts || []).map(item => [item.iso, round(item.d)]),
-        anexo: (anexo.days || []).map(day => [day.iso, round(day.dayHours)])
+        // El anexo incluye tambien la rotativa de los dias sin horas extra.
+        anexo: (anexo.days || []).filter(day => Number(day.dayHours) + Number(day.festiveHours) > 0)
+            .map(day => [day.iso, round(day.dayHours)])
     };
 }
 

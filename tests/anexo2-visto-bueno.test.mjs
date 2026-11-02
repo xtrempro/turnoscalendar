@@ -50,6 +50,7 @@ globalThis.fetch = async () => ({ ok: false, json: async () => ({}) });
 const rows = await import("../js/coverageAuthorizationRows.js");
 const panel = await import("../js/hoursValidationPanel.js");
 const { TURNO } = await import("../js/constants.js");
+const { saveWorkerSchedule } = await import("../js/workerSchedule.js");
 
 const YEAR = 2026;
 const MONTH = 7;
@@ -94,6 +95,104 @@ function seed({ anaExtraDays = [18] } = {}) {
 }
 
 beforeEach(() => seed());
+
+test("Anexo 2 completa la rotativa y los permisos, y muestra solo el horario del turno extra", async () => {
+    const base = {
+        [dayKey(ANA.name, 1)[1]]: TURNO.LARGA,
+        [dayKey(ANA.name, 2)[1]]: TURNO.NOCHE,
+        [dayKey(ANA.name, 3)[1]]: TURNO.LARGA,
+        [dayKey(ANA.name, 4)[1]]: TURNO.NOCHE,
+        [dayKey(ANA.name, 5)[1]]: TURNO.LARGA,
+        [dayKey(ANA.name, 6)[1]]: TURNO.NOCHE
+    };
+    set(`baseData_${ANA.name}`, base);
+    set(`data_${ANA.name}`, {
+        ...base,
+        [dayKey(ANA.name, 4)[1]]: TURNO.TURNO24,
+        [dayKey(ANA.name, 5)[1]]: TURNO.TURNO24
+    });
+    set(`admin_${ANA.name}`, { [dayKey(ANA.name, 2)[1]]: 1 });
+    set(`legal_${ANA.name}`, { [dayKey(ANA.name, 3)[1]]: true });
+    set(`absences_${ANA.name}`, { [dayKey(ANA.name, 6)[1]]: { type: "license" } });
+    const row = await rows.buildCoverageAuthorizationRow(ANA, MONTH_DATE);
+    assert.equal(row.days.length, 31);
+    const detail = day => row.days.find(item => item.iso === `2026-08-${String(day).padStart(2, "0")}`);
+    assert.equal(detail(1).baseShift, "Larga");
+    assert.equal(detail(2).baseShift, "P. Administrativo");
+    assert.equal(detail(3).baseShift, "F. Legal");
+    assert.equal(detail(4).baseShift, "Noche");
+    assert.equal(detail(4).workedShift, "Larga");
+    assert.equal(detail(5).workedShift, "Noche");
+    assert.equal(detail(6).baseShift, "Licencia Médica");
+    for (const day of [1, 2, 3, 6, 7]) {
+        assert.equal(detail(day).schedule, "");
+        assert.equal(detail(day).dayHours + detail(day).festiveHours, 0);
+    }
+    const report = await rows.buildWorkerMonthlyReport(ANA, MONTH_DATE);
+    const cells = day => report.html.match(new RegExp(`<tr>\\s*<td>${day}</td>([\\s\\S]*?)</tr>`))?.[1];
+    assert.match(cells(1), /<td>Larga<\/td>\s*<td><\/td>/);
+    assert.match(cells(2), /<td>P\. Administrativo<\/td>\s*<td><\/td>/);
+    assert.match(cells(4), /<td>Noche<\/td>\s*<td>08 A 20<\/td>/);
+    assert.match(cells(5), /<td>Larga<\/td>\s*<td>20 A 08<\/td>/);
+});
+
+test("Anexo 2 de tercer y cuarto turno sin asignacion usa el horario propio y separa larga y noche en 24h", async () => {
+    for (const type of ["3turno", "4turno"]) {
+        seed();
+        set(`shift_${ANA.name}`, false);
+        set(`rotativa_${ANA.name}`, { type, start: "", firstTurn: "larga" });
+        set(`data_${ANA.name}`, {
+            [dayKey(ANA.name, 17)[1]]: TURNO.LARGA,
+            [dayKey(ANA.name, 18)[1]]: TURNO.NOCHE,
+            [dayKey(ANA.name, 19)[1]]: TURNO.TURNO24
+        });
+        saveWorkerSchedule(ANA.name, { periods: [{
+            from: "2026-08-17",
+            larga: { entry: "07:30", exit: "19:30" }
+        }] });
+
+        const row = await rows.buildCoverageAuthorizationRow(ANA, MONTH_DATE);
+        const schedule = iso => row.days.find(day => day.iso === iso)?.schedule;
+        assert.equal(schedule("2026-08-17"), "07:30 A 19:30", type);
+        assert.equal(schedule("2026-08-18"), "", "noche mantiene el horario general del renderizador");
+        assert.equal(schedule("2026-08-19"), "07:30 A 19:30 / 20:00 A 08:00", type);
+
+        const report = await rows.buildWorkerMonthlyReport(ANA, MONTH_DATE);
+        assert.match(report.html, /<td>07:30 A 19:30<\/td>/);
+        assert.match(report.html, /<td>07:30 A 19:30 \/ 20:00 A 08:00<\/td>/);
+        assert.match(report.html, /<td>20 A 08<\/td>/);
+    }
+});
+
+test("el horario del Anexo 2 respeta la vigencia, los tramos nocturnos y las coberturas explicitas", async () => {
+    set(`shift_${ANA.name}`, false);
+    set(`data_${ANA.name}`, {
+        [dayKey(ANA.name, 17)[1]]: TURNO.LARGA,
+        [dayKey(ANA.name, 18)[1]]: TURNO.TURNO24,
+        [dayKey(ANA.name, 19)[1]]: TURNO.NOCHE,
+        [dayKey(ANA.name, 20)[1]]: TURNO.LARGA
+    });
+    saveWorkerSchedule(ANA.name, { periods: [{
+        from: "2026-08-18", to: "2026-08-19",
+        larga: { entry: "07:30", exit: "19:30" },
+        noche: { entry: "20:30", exit: "08:30" }
+    }] });
+    const row = await rows.buildCoverageAuthorizationRow(ANA, MONTH_DATE);
+    const schedule = iso => row.days.find(day => day.iso === iso)?.schedule;
+    assert.equal(schedule("2026-08-17"), "");
+    assert.equal(schedule("2026-08-18"), "07:30 A 19:30 / 20:30 A 08:30");
+    assert.equal(schedule("2026-08-19"), "20:30 A 08:30");
+    assert.equal(schedule("2026-08-20"), "");
+
+    const explicit = await rows.buildCoverageAuthorizationRow(ANA, MONTH_DATE, {
+        replacements: [{ worker: ANA.name, date: "2026-08-18", coverFrom: "10:00", coverUntil: "14:00" }]
+    });
+    assert.equal(explicit.days.find(day => day.iso === "2026-08-18").schedule, "10:00 A 14:00");
+
+    set(`shift_${ANA.name}`, true);
+    const assigned = await rows.buildCoverageAuthorizationRow(ANA, MONTH_DATE);
+    assert.ok(assigned.days.every(day => day.schedule === ""), "con asignacion conserva el comportamiento previo");
+});
 
 test("Anexo 2 de un trabajador: sus turnos extra con horas, y la huella de esas horas", async () => {
     const row = await rows.buildCoverageAuthorizationRow(ANA, MONTH_DATE, { workspaceName: "Imagenologia" });

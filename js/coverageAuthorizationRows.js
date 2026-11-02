@@ -19,6 +19,7 @@ import {
     getShiftAssigned
 } from "./storage.js";
 import { isHonorariaContractType } from "./contracts.js";
+import { getWorkerScheduleAt } from "./workerSchedule.js";
 import {
     buildCoverageAuthorizationReportHTML,
     hasCoverageAuthorizationOvertime
@@ -28,6 +29,26 @@ export function coverageSchedule(record) {
     const from = record?.coverFrom || record?.shiftFrom || "";
     const until = record?.coverUntil || record?.shiftUntil || "";
     return from && until ? `${from} A ${until}` : "";
+}
+
+function personalShiftSchedule(profileName, iso, shiftLabel) {
+    const type = getRotativa(profileName)?.type;
+    const [year, month, day] = iso.split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+    if (!["3turno", "4turno"].includes(type) || getShiftAssigned(profileName, date)) return "";
+
+    const schedule = getWorkerScheduleAt(profileName, iso);
+    const label = String(shiftLabel || "").toLowerCase();
+    const segments = label.includes("24") ? ["larga", "noche"]
+        : label.includes("larga") ? ["larga"]
+        : label.includes("noche") ? ["noche"] : [];
+    if (!segments.some(key => schedule[key]?.entry || schedule[key]?.exit)) return "";
+
+    // Un 24h puede tener una pausa entre larga y noche: conservar ambos tramos.
+    return segments.map(key => {
+        const defaults = key === "larga" ? ["08:00", "20:00"] : ["20:00", "08:00"];
+        return `${schedule[key]?.entry || defaults[0]} A ${schedule[key]?.exit || defaults[1]}`;
+    }).join(" / ");
 }
 
 function monthPrefix(monthDate) {
@@ -95,8 +116,8 @@ export async function buildCoverageAuthorizationRow(profile, monthDate, options 
         String(record?.date || "").startsWith(prefix)
     );
     const summary = await buildWorkerHheeMonthSummary(profile, month);
-    const calendarByIso = new Map(
-        (summary?.calendarDays || []).map(day => [day.iso, day])
+    const extraByIso = new Map(
+        (summary?.extraShifts || []).map(day => [day.iso, day])
     );
     const recordsByIso = new Map();
 
@@ -108,7 +129,15 @@ export async function buildCoverageAuthorizationRow(profile, monthDate, options 
             recordsByIso.set(record.date, records);
         });
 
-    const days = (summary?.extraShifts || []).map(extra => {
+    const days = (summary?.calendarDays || []).map(calendar => {
+        const extra = extraByIso.get(calendar.iso);
+        if (!extra) return {
+            iso: calendar.iso,
+            baseShift: calendar.absenceLabel || calendar.baseShift || "",
+            schedule: "",
+            dayHours: 0,
+            festiveHours: 0
+        };
         const records = recordsByIso.get(extra.iso) || [];
         const replacedNames = [...new Set(records
             .map(record => record.replaced)
@@ -124,13 +153,13 @@ export async function buildCoverageAuthorizationRow(profile, monthDate, options 
         const schedules = [...new Set(records
             .map(coverageSchedule)
             .filter(Boolean))];
-        const calendar = calendarByIso.get(extra.iso) || {};
+        const workedShift = extra.extraShift || extra.turno || calendar.workedShift || "";
 
         return {
             iso: extra.iso,
-            baseShift: calendar.baseShift || "",
-            workedShift: extra.turno || calendar.workedShift || "",
-            schedule: schedules.join(" / "),
+            baseShift: calendar.absenceLabel || calendar.baseShift || "",
+            workedShift,
+            schedule: schedules.join(" / ") || personalShiftSchedule(profile.name, extra.iso, workedShift),
             dayHours: extra.d,
             festiveHours: extra.n,
             replacedName: replacedNames.join(" / "),
