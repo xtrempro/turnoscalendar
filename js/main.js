@@ -9395,7 +9395,30 @@ async function deliverReport(html, title, options = {}) {
 
     const formato = pideNombre ? respuesta.value : respuesta;
     const texto = pideNombre ? String(respuesta.text || "").trim() : "";
-    const contenido = typeof html === "function" ? html(texto) : html;
+    let pdfVariant = null;
+
+    if (formato === "pdf" && options.pdfVariants?.length) {
+        const estamento = await showChoice(
+            "¿Qué estamento deseas imprimir? Se generará un PDF solo con los trabajadores del estamento seleccionado.",
+            {
+                title: "Anexo 2 por estamento",
+                confirmText: "Imprimir / Guardar PDF",
+                choices: options.pdfVariants.map(variant => ({
+                    value: variant.key,
+                    label: variant.label
+                }))
+            }
+        );
+
+        if (!estamento) return false;
+        pdfVariant = options.pdfVariants.find(variant => variant.key === estamento);
+        if (!pdfVariant) return false;
+        title = `${title} - ${pdfVariant.label}`;
+    }
+
+    const contenido = pdfVariant
+        ? pdfVariant.buildHTML()
+        : typeof html === "function" ? html(texto) : html;
 
     if (!contenido) return false;
 
@@ -9537,9 +9560,34 @@ async function printCoverageAuthorizationReport(date) {
             return;
         }
 
+        // Se agrupa con el estamento vigente que ya trae cada fila del reporte.
+        const groups = new Map();
+        for (const row of printableRows) {
+            const group = annexOneGroupFor(row);
+            const key = group?.key || row.estamento || "sin-estamento";
+            if (!groups.has(key)) {
+                groups.set(key, {
+                    key,
+                    label: group?.key === "tecnico"
+                        ? "Técnico / TENS"
+                        : group?.label || row.estamento || "Sin estamento",
+                    rows: []
+                });
+            }
+            groups.get(key).rows.push(row);
+        }
+        const pdfVariants = [...groups.values()]
+            .sort((a, b) => a.label.localeCompare(b.label, "es"))
+            .map(group => ({
+                key: group.key,
+                label: group.label,
+                buildHTML: () => buildCoverageAuthorizationReportHTML(group.rows, monthDate)
+            }));
+
         await deliverReport(
-            buildCoverageAuthorizationReportHTML(printableRows, monthDate),
-            `Anexo 2 cobertura de turnos ${formatReportPlanillaTitle(monthDate)}`
+            () => buildCoverageAuthorizationReportHTML(printableRows, monthDate),
+            `Anexo 2 cobertura de turnos ${formatReportPlanillaTitle(monthDate)}`,
+            { pdfVariants }
         );
     } catch (error) {
         console.error(error);
