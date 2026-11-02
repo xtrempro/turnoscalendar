@@ -9401,7 +9401,7 @@ async function deliverReport(html, title, options = {}) {
         const estamento = await showChoice(
             "¿Qué estamento deseas imprimir? Se generará un PDF solo con los trabajadores del estamento seleccionado.",
             {
-                title: "Anexo 2 por estamento",
+                title: options.pdfVariantTitle || "Anexo 2 por estamento",
                 confirmText: "Imprimir / Guardar PDF",
                 choices: options.pdfVariants.map(variant => ({
                     value: variant.key,
@@ -9417,7 +9417,7 @@ async function deliverReport(html, title, options = {}) {
     }
 
     const contenido = pdfVariant
-        ? pdfVariant.buildHTML()
+        ? pdfVariant.buildHTML(texto)
         : typeof html === "function" ? html(texto) : html;
 
     if (!contenido) return false;
@@ -9520,7 +9520,19 @@ async function printTensConsolidatedReport(date) {
             {
                 inputLabel: "Jefe solicitante",
                 inputValue: firmante,
-                inputPlaceholder: "Nombre de quien solicita"
+                inputPlaceholder: "Nombre de quien solicita",
+                pdfVariantTitle: "Anexo 1 por estamento",
+                pdfVariants: sections.map(section => ({
+                    key: section.group.key,
+                    label: section.group.key === "tecnico"
+                        ? "Técnico / TENS"
+                        : section.group.label,
+                    buildHTML: requesterName => buildAnnexOneDocumentHTML(
+                        [section], monthDate, {
+                            requesterName: requesterName || firmante
+                        }
+                    )
+                }))
             }
         );
     } catch (error) {
