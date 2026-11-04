@@ -37,10 +37,9 @@ import {
 } from "./turnEngine.js";
 import {
     getAbsenceType,
-    getTurnoExtraAgregado,
-    restarTurnoCubierto,
     tieneAusencia,
-    turnoExtraCubreTurno
+    turnoExtraCubreTurno,
+    turnoExtraSinRespaldo
 } from "./rulesEngine.js";
 import { getBackedTurnForWorker } from "./replacements.js";
 import { calcExtraHours, isBusinessDay } from "./calculations.js";
@@ -464,8 +463,9 @@ export function pendingManualExtraCoversTurn(profileName, keyDay, neededTurn) {
             : getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
     );
-    const pendiente = restarTurnoCubierto(
-        getTurnoExtraAgregado(baseWithSwaps, actualWithSwaps),
+    const pendiente = turnoExtraSinRespaldo(
+        baseWithSwaps,
+        actualWithSwaps,
         getBackedTurnForWorker(profileName, keyDay)
     );
 

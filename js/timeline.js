@@ -55,9 +55,8 @@ import {
 import {
     esAusenciaInjustificada,
     getAbsenceType,
-    getTurnoExtraAgregado,
     requiereReemplazoTurnoBase,
-    restarTurnoCubierto
+    turnoExtraSinRespaldo
 } from "./rulesEngine.js";
 import { actorLabelText, getLeaveApplicationInfo } from "./auditLog.js";
 import {
@@ -2437,13 +2436,9 @@ function pendingManualExtraMarker(nombre, key) {
         getTurnoProgramado(nombre, key),
         { includeReplacements: false }
     );
-    const extraTurn = getTurnoExtraAgregado(
+    return turnoExtraSinRespaldo(
         baseWithSwaps,
-        actualWithSwaps
-    );
-
-    return restarTurnoCubierto(
-        extraTurn,
+        actualWithSwaps,
         getBackedTurnForWorker(nombre, key)
     );
 }
@@ -2739,10 +2734,6 @@ function buildTimelineRowAuxiliaryContext(
                 isoDate: iso
             }
         );
-        const extraTurn = getTurnoExtraAgregado(
-            baseWithSwaps,
-            actualWithoutReplacements
-        );
 
         baseTurnByKey.set(keyDay, baseTurn);
         programmedTurnByKey.set(keyDay, programmedTurn);
@@ -2754,8 +2745,9 @@ function buildTimelineRowAuxiliaryContext(
         );
         pendingManualExtraByKey.set(
             keyDay,
-            restarTurnoCubierto(
-                extraTurn,
+            turnoExtraSinRespaldo(
+                baseWithSwaps,
+                actualWithoutReplacements,
                 backedTurnByKey.get(keyDay) || TURNO.LIBRE
             )
         );

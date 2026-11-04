@@ -25,9 +25,9 @@ import { escapeHTML } from "./htmlUtils.js";
 import {
     getTurnoComponentes,
     getAbsenceType,
-    getTurnoExtraAgregado,
     restarTurnoCubierto,
     turnoDesdeComponentes,
+    turnoExtraSinRespaldo,
     tieneAusencia
 } from "./rulesEngine.js";
 import { calcExtraHours, calcHours, isBusinessDay } from "./calculations.js";
@@ -2068,13 +2068,9 @@ function getPendingManualExtraTurn(profile, keyDay) {
         getTurnoProgramado(profile, keyDay),
         { includeReplacements: false }
     );
-    const extraTurn = getTurnoExtraAgregado(
+    return turnoExtraSinRespaldo(
         baseWithSwaps,
-        actualWithSwaps
-    );
-
-    return restarTurnoCubierto(
-        extraTurn,
+        actualWithSwaps,
         getBackedTurnForWorker(profile, keyDay)
     );
 }

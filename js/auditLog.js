@@ -1330,6 +1330,41 @@ export function cancelContractsForCanceledLeave({ profile, leaveType, keys }) {
     return results;
 }
 
+/**
+ * Un permiso nuevo sobre dias que tenian la barrera de uno anulado la deja
+ * superada.
+ *
+ * La barrera rechaza en la transaccion las coberturas del permiso anulado, y a
+ * las que no traen `leaveLogId` -el LOG del permiso nuevo puede estar archivado
+ * y no resolverse- las rechaza por fecha. Sin esto, anular una LM Profesional y
+ * poner enseguida la Licencia Medica correcta dejaba esos dias sin poder
+ * cubrirse: cada cobertura se anulaba sola (Paloma Armijo, 29-10-2026).
+ */
+function supersedeLeaveCancellationBarriers(profile, keys, leaveLogId) {
+    const isoDates = new Set(keys.map(keyToISO).filter(Boolean));
+
+    if (!profile || !leaveLogId || !isoDates.size) return;
+
+    let changed = false;
+    const replacements = getReplacements().map(item => {
+        if (
+            item?.source !== "leave_cancellation_barrier" ||
+            item.replaced !== profile ||
+            !isoDates.has(item.date) ||
+            item.supersededByLeaveLogId ||
+            item.leaveLogId === leaveLogId
+        ) {
+            return item;
+        }
+
+        changed = true;
+
+        return { ...item, supersededByLeaveLogId: leaveLogId };
+    });
+
+    if (changed) saveReplacements(replacements);
+}
+
 function cancelReplacementsForAbsence(profile, removedKeys, sourceLog) {
     const isoDates = new Set(
         removedKeys.map(keyToISO).filter(Boolean)
@@ -1779,11 +1814,12 @@ export function addAuditLog(category, action, details = "", meta = {}) {
 
     if (leaveType) {
         const leaveKeys = normalizeKeyList(meta.keys);
+        const appliedKeys = leaveKeys.length
+            ? leaveKeys
+            : [isoToDateKey(meta.date)];
 
-        clearLeaveCancellation(
-            entry.profile,
-            leaveKeys.length ? leaveKeys : [isoToDateKey(meta.date)]
-        );
+        clearLeaveCancellation(entry.profile, appliedKeys);
+        supersedeLeaveCancellationBarriers(entry.profile, appliedKeys, entry.id);
     }
 
     const existingIndex = auditEntryId

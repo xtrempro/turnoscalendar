@@ -435,8 +435,11 @@ export function guardReplacementEntryWithBarriers(entry, barrierDocument = {}) {
                 item?.replaced === replacement.replaced &&
                 item?.date === replacement.date &&
                 (
-                    !replacement.leaveLogId ||
-                    item.leaveLogId === replacement.leaveLogId
+                    replacement.leaveLogId
+                        ? item.leaveLogId === replacement.leaveLogId
+                        // Sin id, la fecha basta solo si ese dia no se aplico
+                        // otro permiso despues (ver auditLog.js).
+                        : !item.supersededByLeaveLogId
                 )
             );
 

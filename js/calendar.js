@@ -81,7 +81,8 @@ import {
     getTurnoComponentes,
     restarTurnoCubierto,
     turnoDesdeComponentes,
-    turnoExtraCubreTurno
+    turnoExtraCubreTurno,
+    turnoExtraSinRespaldo
 } from "./rulesEngine.js";
 import { fetchHolidays } from "./holidays.js";
 import {
@@ -5463,6 +5464,20 @@ function getManualExtraTurn(
     keyDay,
     profileData
 ) {
+    const { base, actual } = manualExtraTurnStates(
+        profileName,
+        keyDay,
+        profileData
+    );
+
+    return getTurnoExtraAgregado(base, actual);
+}
+
+function manualExtraTurnStates(
+    profileName,
+    keyDay,
+    profileData
+) {
     const projectedBaseTurn = aplicarCambiosTurno(
         profileName,
         keyDay,
@@ -5485,10 +5500,7 @@ function getManualExtraTurn(
             : getTurnoBase(profileName, keyDay),
         { includeReplacements: false }
     );
-    return getTurnoExtraAgregado(
-        baseWithSwaps,
-        actualWithSwaps
-    );
+    return { base: baseWithSwaps, actual: actualWithSwaps };
 }
 
 function getPendingManualExtraTurn(
@@ -5501,14 +5513,15 @@ function getPendingManualExtraTurn(
     // Lo que se vigila es el tope de horas de su contrato.
     if (isHonorariaProfile(profileName, keyDay)) return 0;
 
-    const extraTurn = getManualExtraTurn(
+    const { base, actual } = manualExtraTurnStates(
         profileName,
         keyDay,
         profileData
     );
 
-    return restarTurnoCubierto(
-        extraTurn,
+    return turnoExtraSinRespaldo(
+        base,
+        actual,
         getBackedTurnForWorker(profileName, keyDay)
     );
 }

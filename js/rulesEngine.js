@@ -197,6 +197,34 @@ export function restarTurnoCubierto(extraState, coveredState) {
     return turnoDesdeComponentes(pending);
 }
 
+/**
+ * Lo que falta respaldar (motivo o a quien cubre) de un turno agregado sobre
+ * la base. Es lo que pinta el "?" y arma los tramos del modal de motivos.
+ *
+ * Difiere de getTurnoExtraAgregado en el Diurno que se queda 24h: lo extra es
+ * la extension de la tarde y la Noche, no el 24h entero. Antes el modal pedia
+ * un tramo "Larga" y la extension respaldada no lo cerraba nunca: cada
+ * guardado sumaba otro motivo igual (Francisca Olave, 29-10-2026). Y como esos
+ * dias se respaldaron con una Larga, una Larga respaldada cubre la extension.
+ */
+export function turnoExtraSinRespaldo(baseState, actualState, backedState) {
+    const extra =
+        Number(baseState) === TURNO.DIURNO &&
+        Number(actualState) === TURNO.TURNO24
+            ? TURNO.TURNO18
+            : getTurnoExtraAgregado(baseState, actualState);
+    const backed = new Set(getTurnoComponentes(backedState));
+
+    if (backed.has("L")) {
+        backed.add("HM");
+        backed.add("HT");
+    }
+
+    return turnoDesdeComponentes(
+        getTurnoComponentes(extra).filter(component => !backed.has(component))
+    );
+}
+
 export function turnoExtraCubreTurno(extraState, coveredState) {
     const extra = Number(extraState) || TURNO.LIBRE;
     const covered = Number(coveredState) || TURNO.LIBRE;
