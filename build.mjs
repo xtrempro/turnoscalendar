@@ -9,7 +9,7 @@
 // como import en tiempo de ejecucion (no se empaqueta).
 
 import * as esbuild from "esbuild";
-import { rmSync, mkdirSync, cpSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { rmSync, mkdirSync, cpSync, readFileSync, writeFileSync, existsSync, statSync } from "fs";
 import path from "path";
 import { buildObfuscatedTree, PROTECTED_MODULES } from "./scripts/obfuscate-engine.mjs";
 import { currentBuildId } from "./scripts/build-id.mjs";
@@ -120,9 +120,20 @@ writeFileSync(
     path.join(DIST, "manifest.webmanifest"),
     readFileSync("manifest.webmanifest")
 );
+// De reports/ solo viajan las plantillas que usa la app (Word/Excel). Esa
+// carpeta tambien junta informes de auditoria y scripts de diagnostico con
+// datos de produccion, y copiarla entera los dejaba publicos en el hosting.
+const PUBLIC_REPORT_TEMPLATE = /\.(docx|xlsx|xlsm)$/i;
+
 for (const dir of ["img", "reports"]) {
     if (existsSync(dir)) {
-        cpSync(dir, path.join(DIST, dir), { recursive: true });
+        cpSync(dir, path.join(DIST, dir), {
+            recursive: true,
+            filter: source =>
+                dir !== "reports" ||
+                statSync(source).isDirectory() ||
+                PUBLIC_REPORT_TEMPLATE.test(source)
+        });
     }
 }
 
