@@ -541,9 +541,12 @@ export function isDiurnoLongCoverageCandidate(
     date,
     holidays
 ) {
+    // Un D+N que cubre una Larga queda en 24h, pero lo que suma es lo mismo que
+    // el Diurno que se extiende: el tramo de 17 a 20.
     return (
         getRotativa(profile.name).type === "diurno" &&
-        currentState === TURNO.DIURNO &&
+        (currentState === TURNO.DIURNO ||
+            currentState === TURNO.DIURNO_NOCHE) &&
         neededTurn === TURNO.LARGA &&
         isBusinessDay(date, holidays)
     );

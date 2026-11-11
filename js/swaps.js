@@ -19,7 +19,12 @@ import {
     addAuditLog,
     AUDIT_CATEGORY
 } from "./auditLog.js";
-import { getTurnoBase, getTurnoProgramado } from "./turnEngine.js";
+import {
+    fusionarTurnos,
+    getTurnoBase,
+    getTurnoProgramado,
+    getTurnoReal
+} from "./turnEngine.js";
 import { isReplacementProfile } from "./contracts.js";
 import {
     getReplacementTurnForWorker,
@@ -704,6 +709,19 @@ function projectedReceiverTurn(incomingTurn, receiverTurn) {
     return current;
 }
 
+// Turno COMPLETO de un dia vecino (programado, reemplazos y cambios), para las
+// reglas de adyacencia. getSwapTurnState no sirve aca: devuelve solo el tramo
+// intercambiable o la base, y un 24h o D+N sobre base Diurno lo leia como
+// Diurno, con lo que la excepcion del Diurno post 24 dejaba pasar un 24 pegado
+// a otro 24 o a una Noche.
+function receiverNeighborTurn(receiver, keyDay, offset) {
+    const key = offsetKey(keyDay, offset);
+
+    return key
+        ? Number(getTurnoReal(receiver, key)) || TURNO.LIBRE
+        : TURNO.LIBRE;
+}
+
 function createsInvertedTwentyFourForReceiver({
     receiver,
     keyDay,
@@ -712,9 +730,9 @@ function createsInvertedTwentyFourForReceiver({
     if (!receiver || !keyDay || !projectedTurn) return false;
 
     const previousTurn =
-        getSwapTurnState(receiver, offsetKey(keyDay, -1));
+        receiverNeighborTurn(receiver, keyDay, -1);
     const nextTurn =
-        getSwapTurnState(receiver, offsetKey(keyDay, 1));
+        receiverNeighborTurn(receiver, keyDay, 1);
 
     return (
         (
@@ -742,9 +760,9 @@ function createsForbiddenTwentyFourAdjacency({
 
     const projected = Number(projectedTurn) || TURNO.LIBRE;
     const previousTurn =
-        Number(getSwapTurnState(receiver, offsetKey(keyDay, -1))) || TURNO.LIBRE;
+        receiverNeighborTurn(receiver, keyDay, -1);
     const nextTurn =
-        Number(getSwapTurnState(receiver, offsetKey(keyDay, 1))) || TURNO.LIBRE;
+        receiverNeighborTurn(receiver, keyDay, 1);
     const isTwentyFour = turno => turno === TURNO.TURNO24;
 
     // Excepcion habilitable por la unidad: un Diurno puro pegado al dia
@@ -951,9 +969,23 @@ export function getSwapDateBlockReason({
         return `${receiver} ya tiene un turno Larga o Noche ese dia.`;
     }
 
+    // Lo que de verdad le queda al receptor. `receiverTurn` es solo el tramo
+    // intercambiable (un D+N se lee como su Diurno base), pero aplicarCambiosTurno
+    // suma la Larga recibida sobre el dia COMPLETO -programado mas reemplazos-:
+    // un D+N que recibe una Larga queda en 24h, y las reglas del 24 tienen que
+    // mirar ese resultado, no la Larga que veia la extension de jornada.
+    const receiverProjectedTurn = receiverExtendsDiurno
+        ? fusionarTurnos(
+            fusionarTurnos(
+                getTurnoProgramado(receiver, keyDay),
+                getReplacementTurnForWorker(receiver, keyDay)
+            ),
+            giverTurn
+        )
+        : projectedReceiverTurn(giverTurn, receiverTurn);
+
     if (
-        receiverTurn !== 0 &&
-        isComplementarySwapTurn(giverTurn, receiverTurn) &&
+        Number(receiverProjectedTurn) === TURNO.TURNO24 &&
         !config.allowTwentyFourHourShifts
     ) {
         return `${receiver} quedaria con turno 24 y esa opcion esta desactivada.`;
@@ -965,10 +997,7 @@ export function getSwapDateBlockReason({
         createsForbiddenTwentyFourAdjacency({
             receiver,
             keyDay,
-            projectedTurn: projectedReceiverTurn(
-                giverTurn,
-                receiverTurn
-            )
+            projectedTurn: receiverProjectedTurn
         })
     ) {
         return `${receiver} no puede quedar con un turno pegado a un turno 24 (ni Larga el dia siguiente, ni Noche el dia anterior a un 24).`;
@@ -979,10 +1008,7 @@ export function getSwapDateBlockReason({
         createsInvertedTwentyFourForReceiver({
             receiver,
             keyDay,
-            projectedTurn: projectedReceiverTurn(
-                giverTurn,
-                receiverTurn
-            )
+            projectedTurn: receiverProjectedTurn
         })
     ) {
         return `${receiver} quedaria con un turno 24 invertido y esa opcion esta desactivada.`;

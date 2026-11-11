@@ -99,6 +99,31 @@ export function fusionarTurnos(actual, recibido) {
         return TURNO.TURNO24;
     }
 
+    /* D+N + Larga = 24: la Larga estira el Diurno hasta las 20:00, que es la
+       parte que le faltaba al D+N (igual que D+N + Extension horaria). Sin
+       esto un Diurno que ya hacia D+N no podia armar el 24 para cubrir una
+       Larga: ni a mano ni en las sugerencias de reemplazo. */
+    if (
+        (actual === TURNO.DIURNO_NOCHE && recibido === TURNO.LARGA) ||
+        (actual === TURNO.LARGA && recibido === TURNO.DIURNO_NOCHE)
+    ) {
+        return TURNO.TURNO24;
+    }
+
+    /* Recibir un 24h o un D+N ya armado (p. ej. reemplazos N + L que juntos
+       dan 24) no puede achicar el dia: un Diurno que recibe ese 24 queda en
+       24, no en Diurno. Antes caia en "mezcla no valida" y devolvia `actual`. */
+    if (recibido === TURNO.TURNO24) {
+        return TURNO.TURNO24;
+    }
+
+    if (
+        recibido === TURNO.DIURNO_NOCHE &&
+        (actual === TURNO.DIURNO || actual === TURNO.NOCHE)
+    ) {
+        return TURNO.DIURNO_NOCHE;
+    }
+
     /* si ya tiene D+N, mantener */
     if (actual === TURNO.DIURNO_NOCHE) {
         return TURNO.DIURNO_NOCHE;
