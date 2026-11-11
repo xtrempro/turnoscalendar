@@ -141,6 +141,13 @@ test("Anexo 2 de tercer y cuarto turno sin asignacion usa el horario propio y se
         seed();
         set(`shift_${ANA.name}`, false);
         set(`rotativa_${ANA.name}`, { type, start: "", firstTurn: "larga" });
+        // Dias libres en su base: el Anexo 2 lista solo lo que excede la
+        // rotativa, tambien sin asignacion de turno (11-11-2026).
+        set(`baseData_${ANA.name}`, {
+            [dayKey(ANA.name, 17)[1]]: TURNO.LIBRE,
+            [dayKey(ANA.name, 18)[1]]: TURNO.LIBRE,
+            [dayKey(ANA.name, 19)[1]]: TURNO.LIBRE
+        });
         set(`data_${ANA.name}`, {
             [dayKey(ANA.name, 17)[1]]: TURNO.LARGA,
             [dayKey(ANA.name, 18)[1]]: TURNO.NOCHE,

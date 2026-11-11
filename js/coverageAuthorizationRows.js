@@ -51,6 +51,15 @@ function personalShiftSchedule(profileName, iso, shiftLabel) {
     }).join(" / ");
 }
 
+// El respaldo de un dia junta sus partes con " | " (hoursReport.js). Las de un
+// cambio de turno empiezan con CCTT (cambio) o DDTT (devolucion).
+export function withoutSwapDetail(backing) {
+    return String(backing || "")
+        .split(" | ")
+        .filter(part => part && !/^(CCTT|DDTT) /.test(part))
+        .join(" | ");
+}
+
 function monthPrefix(monthDate) {
     return `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, "0")}-`;
 }
@@ -115,7 +124,10 @@ export async function buildCoverageAuthorizationRow(profile, monthDate, options 
         !record?.canceled &&
         String(record?.date || "").startsWith(prefix)
     );
-    const summary = await buildWorkerHheeMonthSummary(profile, month);
+    // Solo horas extras sobre el turno base, tenga o no asignacion de turno.
+    const summary = await buildWorkerHheeMonthSummary(profile, month, {
+        extraOnlyDetail: true
+    });
     const extraByIso = new Map(
         (summary?.extraShifts || []).map(day => [day.iso, day])
     );
@@ -154,6 +166,9 @@ export async function buildCoverageAuthorizationRow(profile, monthDate, options 
             .map(coverageSchedule)
             .filter(Boolean))];
         const workedShift = extra.extraShift || extra.turno || calendar.workedShift || "";
+        // El Anexo 2 autoriza horas extras: un cambio de turno ese mismo dia
+        // (CCTT/DDTT) no lo es y no se nombra. Las horas ya vienen sin el.
+        const backing = withoutSwapDetail(extra.backing);
 
         return {
             iso: extra.iso,
@@ -164,8 +179,8 @@ export async function buildCoverageAuthorizationRow(profile, monthDate, options 
             festiveHours: extra.n,
             replacedName: replacedNames.join(" / "),
             replacedRut: replacedRuts.join(" / "),
-            reason: records.length ? "" : extra.backing,
-            motive: motives.join(" / ") || extra.backing || ""
+            reason: records.length ? "" : backing,
+            motive: motives.join(" / ") || backing
         };
     });
     const effectiveProfile =
@@ -179,6 +194,8 @@ export async function buildCoverageAuthorizationRow(profile, monthDate, options 
         estamento: effectiveProfile.estamento || profile.estamento || "",
         rotationType: getRotativa(profile.name)?.type || "",
         shiftAssigned: getShiftAssigned(profile.name, effectiveDate),
+        // Lo usa el Anexo 1, que se arma con estas mismas filas.
+        returnTransfer: Boolean(summary?.returnTransfer),
         days
     };
 }

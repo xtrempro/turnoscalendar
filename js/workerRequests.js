@@ -60,6 +60,7 @@ import {
     supervisorInviteActor
 } from "./supervisorInvitesUI.js";
 import { fetchHolidays } from "./holidays.js";
+import { getJSON } from "./persistence.js";
 import {
     getCurrentProfile,
     getManualLeaveBalances,
@@ -183,6 +184,42 @@ function parseISODate(value) {
         Number(match[2]) - 1,
         Number(match[3])
     );
+}
+
+/**
+ * ¿El P. Administrativo (o 1/2 ADM) que pide la solicitud ya esta registrado,
+ * igual, en el calendario del trabajador?
+ *
+ * Pasa cuando el supervisor lo aplica a mano y el trabajador lo pide igual por
+ * la PWA (Eduardo Castro, 07-11-2026: tres minutos de diferencia). Aplicarlo
+ * de nuevo falla -no cabe un administrativo sobre otro- y, si cupiera,
+ * descontaria el saldo dos veces. Solo se reconoce el caso exacto: los mismos
+ * dias, con el mismo tipo (dia completo o la misma media jornada).
+ */
+export function isAdminLeaveAlreadyApplied(request, adminDays = {}) {
+    const date = parseISODate(request?.date);
+
+    if (!date) return false;
+
+    const admin = adminDays || {};
+    const firstKey = keyFromDate(date);
+
+    if (request.type === "half_admin_morning") return admin[firstKey] === "0.5M";
+    if (request.type === "half_admin_afternoon") return admin[firstKey] === "0.5T";
+    if (request.type !== "admin") return false;
+
+    const days = requestDays(request, 1);
+
+    if (!Number.isInteger(days)) return false;
+
+    const day = new Date(date);
+
+    for (let index = 0; index < days; index++) {
+        if (Number(admin[keyFromDate(day)]) !== 1) return false;
+        day.setDate(day.getDate() + 1);
+    }
+
+    return true;
 }
 
 function isoFromDate(date) {
@@ -2417,6 +2454,29 @@ function showRejectDialog(request) {
 
 async function acceptRequest(request) {
     let claim;
+    // Permiso ya registrado igual en el calendario: se puede cerrar la
+    // solicitud como aceptada sin aplicarlo otra vez ni tocar el saldo.
+    const duplicateProfile = resolveProfileName(request);
+    const alreadyApplied = Boolean(duplicateProfile) &&
+        isAdminLeaveAlreadyApplied(
+            request,
+            getJSON(`admin_${duplicateProfile}`, {})
+        );
+
+    if (alreadyApplied) {
+        const confirmed = await showConfirm(
+            `${duplicateProfile} ya tiene registrado ${requestTypeLabel(request.type)} ` +
+            `desde el ${formatDate(request.date)}. ¿Marcas la solicitud como aceptada ` +
+            "sin volver a aplicarlo? No se descuenta saldo.",
+            {
+                title: "Permiso ya registrado",
+                confirmText: "Marcar como aceptada",
+                cancelText: "Volver"
+            }
+        );
+
+        if (!confirmed) return false;
+    }
 
     try {
         claim = await claimWorkerRequestResolution(request);
@@ -2435,10 +2495,32 @@ async function acceptRequest(request) {
         return false;
     }
 
+    // El dialogo pudo quedar abierto un buen rato: si mientras tanto alguien
+    // anulo o cambio ese permiso, la confirmacion ya no corresponde. Solo
+    // autorizaba cerrar un duplicado, no aplicarlo: se suelta la solicitud y se
+    // avisa (auditoria 11-11-2026, P2).
+    if (
+        alreadyApplied &&
+        !isAdminLeaveAlreadyApplied(
+            request,
+            getJSON(`admin_${resolveProfileName(request)}`, {})
+        )
+    ) {
+        await releaseWorkerRequestResolution(request.id, claim.token)
+            .catch(() => {});
+        alert(
+            "El permiso del calendario cambió mientras confirmabas. " +
+            "Revisa el calendario y vuelve a abrir la solicitud."
+        );
+        return false;
+    }
+
     let result;
 
     try {
-        result = await applyWorkerRequest(request);
+        result = alreadyApplied
+            ? { ok: true }
+            : await applyWorkerRequest(request);
     } catch (error) {
         await releaseWorkerRequestResolution(request.id, claim.token)
             .catch(() => {});
@@ -2492,7 +2574,7 @@ async function acceptRequest(request) {
     addAuditLog(
         AUDIT_CATEGORY.WORKER_REQUESTS,
         "Acepto solicitud de trabajador",
-        `${profileName}: ${requestTypeLabel(request.type)} (${requestDetailsHTML(request)}).`,
+        `${profileName}: ${requestTypeLabel(request.type)} (${requestDetailsHTML(request)})${alreadyApplied ? ". Ya estaba registrado: no se volvio a aplicar ni se desconto saldo" : ""}.`,
         {
             profile: profileName,
             requestId: request.id,

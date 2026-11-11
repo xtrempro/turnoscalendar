@@ -4419,9 +4419,14 @@ export async function buildWorkerReportPreviewHTML(
 // del reporte (turnos extra agregados manualmente, extensiones horarias y el
 // arrastre de horas de noche entre meses). Devuelve totales crudos del mes y
 // netos (con carryIn del mes anterior y carryOut al siguiente).
+//
+// `options.extraOnlyDetail`: el detalle por turno solo con lo extra sobre el
+// turno base programado (con sus cambios de turno), tambien para quien no
+// tiene asignacion de turno. Lo pide el Anexo 2 (ver mas abajo).
 export async function buildWorkerHheeMonthSummary(
     profile,
-    monthDate = new Date()
+    monthDate = new Date(),
+    options = {}
 ) {
     if (!profile?.name) return null;
 
@@ -4493,7 +4498,12 @@ export async function buildWorkerHheeMonthSummary(
     const rotativaType = String(getRotativa(profile.name)?.type || "")
         .trim()
         .toLowerCase();
+    // El Anexo 2 (11-11-2026) es otra cosa: autoriza HORAS EXTRAS, asi que con
+    // o sin asignacion lista solo lo que excede el turno base de la rotativa.
+    // Un turno recibido por cambio de turno ya es parte de esa base: no es
+    // extra y no aparece.
     const showsAllShifts = !isReplacement &&
+        options?.extraOnlyDetail !== true &&
         !getShiftAssigned(profile.name, monthDate) &&
         rotationProducesTurns(rotativaType) &&
         !rotationUsesBusinessDays(rotativaType);

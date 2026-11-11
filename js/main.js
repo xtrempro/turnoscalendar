@@ -373,7 +373,6 @@ import {
     buildDiurnoReportPreviewHTML,
     buildNoAssignmentReportPreviewHTML,
     buildReplacementReportPreviewHTML,
-    buildWorkerHheeMonthSummary,
     exportAssignedShiftReport,
     exportDiurnoShiftReport,
     exportHoursReport,
@@ -395,6 +394,7 @@ import {
 } from "./coverageAuthorizationReport.js";
 import {
     buildCoverageAuthorizationRow,
+    coverageAuthorizationTotals,
     isAnnexMonthCandidate,
     isCoverageAuthorizationCandidate
 } from "./coverageAuthorizationRows.js";
@@ -9459,11 +9459,28 @@ async function printTensConsolidatedReport(date) {
     }
 
     try {
+        // El Anexo 1 es el total del Anexo 2 de cada trabajador: la misma fila
+        // (turnos extra sobre su base, dia por dia, sin arrastre entre meses).
+        // Asi un cambio en el motor mueve los dos anexos a la vez.
+        const profiles = getProfiles();
+        const replacements = getReplacements();
         const summaries = await Promise.all(
-            candidates.map(async profile => ({
-                profile,
-                summary: await buildWorkerHheeMonthSummary(profile, monthDate)
-            }))
+            candidates.map(async profile => {
+                const row = await buildCoverageAuthorizationRow(profile, monthDate, {
+                    profiles,
+                    replacements
+                });
+                const totals = coverageAuthorizationTotals(row);
+
+                return {
+                    profile,
+                    summary: {
+                        hheeDiurnas: totals.day,
+                        hheeNocturnas: totals.festive,
+                        returnTransfer: row.returnTransfer
+                    }
+                };
+            })
         );
         const sections = ANNEX_ONE_GROUPS.map(group => ({
             group,
