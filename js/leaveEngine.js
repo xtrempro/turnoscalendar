@@ -67,6 +67,7 @@ import {
 import { holdLeaveApplication } from "./leaveHold.js";
 import { createLeaveMemoTask } from "./memos.js";
 import { showConfirm } from "./dialogs.js";
+import { getClockMarks, saveClockMarks } from "./clockMarks.js";
 
 /* =========================================
 HELPERS
@@ -1399,6 +1400,21 @@ export async function aplicarLicencia(
 
     await prepareMutation();
 
+    // Los horarios manuales pertenecen a la jornada que la licencia impide
+    // trabajar. Dejarlos guardados hace que el reloj siga apareciendo y que
+    // vuelvan a aplicarse al reasignar un turno. La asistencia importada vive
+    // aparte (attendanceMarks) y se conserva.
+    const clearedClockMarkKeys = [];
+    if (type === "license" || type === "professional_license") {
+        const clockMarks = getClockMarks(profile);
+        keys.forEach(key => {
+            if (!Object.prototype.hasOwnProperty.call(clockMarks, key)) return;
+            delete clockMarks[key];
+            clearedClockMarkKeys.push(key);
+        });
+        if (clearedClockMarkKeys.length) saveClockMarks(profile, clockMarks);
+    }
+
     const returnedLegal = {};
     const returnedComp = {};
     const returnedAdmin = {};
@@ -1467,6 +1483,7 @@ export async function aplicarLicencia(
             keys,
             amount: total,
             type,
+            clearedClockMarkKeys,
             canceledReplacementIds:
                 conflictCancellation.canceledReplacements.map(
                     replacement => replacement.id

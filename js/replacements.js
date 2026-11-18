@@ -582,6 +582,7 @@ export function cancelReplacementsForWorkerKeys(
     if (!canceled.length) return [];
 
     saveReplacements(replacements);
+    canceled.forEach(removeManualExtraTurnFromCalendar);
     canceled.forEach(removeTrainingReplacementClockMark);
     cancelLinkedRequestsForReplacements(canceled, {
         canceledAt,

@@ -41,6 +41,8 @@ const {
 } = await import("../js/replacements.js");
 const { aplicarLicencia } = await import("../js/leaveEngine.js");
 const { setCurrentProfile } = await import("../js/storage.js");
+const { getTurnoProgramado } = await import("../js/turnEngine.js");
+const { TURNO } = await import("../js/constants.js");
 
 const LICENSE_DAY_KEY = "2026-5-10";
 
@@ -280,6 +282,71 @@ test("al aceptar anula reemplazos y cambios antes de aplicar la licencia", async
         false
     );
     assert.equal(swaps[0].canceled, true);
+});
+
+for (const type of ["license", "professional_license"]) {
+    test(`${type}: retira el extra manual, conserva la noche base y limpia el horario`, async () => {
+        setJSON("baseData_Ana", { [LICENSE_DAY_KEY]: TURNO.NOCHE });
+        setJSON("data_Ana", { [LICENSE_DAY_KEY]: TURNO.DIURNO_NOCHE });
+        setJSON("replacements", [{
+            id: "manual", worker: "Ana", date: "2026-06-10",
+            turno: "D", source: "manual_extra", addsShift: false
+        }]);
+        const outsideMark = { segments: { diurno: { exitTime: "16:00" } } };
+        setJSON("clockMarks_Ana", {
+            [LICENSE_DAY_KEY]: outsideMark,
+            "2026-5-11": outsideMark
+        });
+        setJSON("clockMarks_Bruno", { [LICENSE_DAY_KEY]: outsideMark });
+        setJSON("attendanceMarks", [{ id: "real-attendance", time: "16:01" }]);
+
+        assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, type), true);
+        assert.equal(getTurnoProgramado("Ana", LICENSE_DAY_KEY), TURNO.NOCHE);
+        assert.equal(getJSON("replacements", [])[0].canceled, true);
+        assert.deepEqual(getJSON("clockMarks_Ana", {}), { "2026-5-11": outsideMark });
+        assert.deepEqual(getJSON("clockMarks_Bruno", {}), { [LICENSE_DAY_KEY]: outsideMark });
+        assert.deepEqual(getJSON("attendanceMarks", []), [{ id: "real-attendance", time: "16:01" }]);
+        const log = getJSON("auditLog", []).find(log => log.meta?.clearedClockMarkKeys);
+        assert.deepEqual(log?.meta.clearedClockMarkKeys, [LICENSE_DAY_KEY]);
+    });
+}
+
+test("licencia limpia horarios aunque el respaldo del extra ya estuviera anulado", async () => {
+    setJSON("replacements", [{
+        id: "old-extra", worker: "Ana", date: "2026-06-10",
+        turno: "D", source: "manual_extra", canceled: true
+    }]);
+    setJSON("baseData_Ana", { [LICENSE_DAY_KEY]: TURNO.NOCHE });
+    setJSON("data_Ana", { [LICENSE_DAY_KEY]: TURNO.NOCHE });
+    setJSON("clockMarks_Ana", {
+        [LICENSE_DAY_KEY]: { segments: { diurno: { exitTime: "16:00" } } }
+    });
+
+    assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1), true);
+    assert.deepEqual(getJSON("clockMarks_Ana", {}), {});
+    assert.equal(getTurnoProgramado("Ana", LICENSE_DAY_KEY), TURNO.NOCHE);
+});
+
+test("rechazar licencia conserva el extra manual y su horario", async () => {
+    setJSON("data_Ana", { [LICENSE_DAY_KEY]: TURNO.DIURNO });
+    setJSON("replacements", [{
+        id: "manual", worker: "Ana", date: "2026-06-10",
+        turno: "D", source: "manual_extra", addsShift: false
+    }]);
+    const marks = { [LICENSE_DAY_KEY]: { segments: { diurno: { exitTime: "16:00" } } } };
+    setJSON("clockMarks_Ana", marks);
+    globalThis.window = {};
+    try {
+        assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, "license", {
+            confirmConflicts: async () => false
+        }), null);
+        assert.equal(getTurnoProgramado("Ana", LICENSE_DAY_KEY), TURNO.DIURNO);
+        assert.deepEqual(getJSON("clockMarks_Ana", {}), marks);
+        assert.equal(getJSON("replacements", [])[0].canceled, undefined);
+        assert.deepEqual(getJSON("absences_Ana", {}), {});
+    } finally {
+        delete globalThis.window;
+    }
 });
 
 // Licencia sobre un feriado legal ya cubierto (caso de test del 29-09): el
