@@ -67,7 +67,8 @@ import {
 import { holdLeaveApplication } from "./leaveHold.js";
 import { createLeaveMemoTask } from "./memos.js";
 import { showConfirm } from "./dialogs.js";
-import { getClockMarks, saveClockMarks } from "./clockMarks.js";
+import { getClockMarks } from "./clockMarks.js";
+import { suspendClockMarksForLeave } from "./leaveClockMarks.js";
 
 /* =========================================
 HELPERS
@@ -110,7 +111,8 @@ function swapConflictLine(swap) {
 function scheduleConflictMessage({
     label,
     replacements,
-    swaps
+    swaps,
+    clockMarkKeys = []
 }) {
     const sections = [
         `La aplicaci\u00f3n de ${label} se cruza con asignaciones vigentes que deben anularse antes de continuar.`
@@ -129,6 +131,15 @@ function scheduleConflictMessage({
             "",
             `Cambios de turno (${swaps.length}):`,
             swaps.map(swapConflictLine).join("\n")
+        );
+    }
+
+    if (clockMarkKeys.length) {
+        sections.push(
+            "",
+            `Ajustes de horario (${clockMarkKeys.length}):`,
+            clockMarkKeys.map(key => `- ${formatKey(key)}`).join("\n"),
+            "Se retirarán estos ajustes del calendario y se respaldarán completos, incluidos sus documentos. Al anular la licencia se recuperarán si no hay un horario nuevo para ese día."
         );
     }
 
@@ -155,8 +166,12 @@ async function confirmAndCancelScheduleConflicts(
     const replacements = cancelReplacements
         ? getActiveReplacementsForWorkerKeys(profile, keys)
         : [];
+    const clockMarks = cancelReplacements ? getClockMarks(profile) : {};
+    const clockMarkKeys = keys.filter(key =>
+        Object.prototype.hasOwnProperty.call(clockMarks, key)
+    );
 
-    if (!swaps.length && !replacements.length) {
+    if (!swaps.length && !replacements.length && !clockMarkKeys.length) {
         return {
             canceledReplacements: [],
             canceledSwaps: []
@@ -168,7 +183,8 @@ async function confirmAndCancelScheduleConflicts(
         await confirmDialog(scheduleConflictMessage({
             label,
             replacements,
-            swaps
+            swaps,
+            clockMarkKeys
         }), {
             title: "Asignaciones que ser\u00e1n anuladas",
             tone: "warning",
@@ -1370,6 +1386,8 @@ export async function aplicarLicencia(
         coverageAction = action === "remove" ? "remove" : "keep";
     }
 
+    const applicationLogId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    let clearedClockMarkKeys = [];
     let mutationPrepared = false;
     const prepareMutation = async () => {
         if (mutationPrepared) return;
@@ -1378,6 +1396,11 @@ export async function aplicarLicencia(
 
         if (typeof options.beforeMutation === "function") {
             await options.beforeMutation();
+        }
+        // Respaldar antes de anular reemplazos: algunos tambien retiran sus
+        // marcajes de capacitacion. Se conserva el contenido original completo.
+        if (type === "license" || type === "professional_license") {
+            clearedClockMarkKeys = suspendClockMarksForLeave(profile, keys, applicationLogId);
         }
     };
     const conflictCancellation =
@@ -1399,21 +1422,6 @@ export async function aplicarLicencia(
     }
 
     await prepareMutation();
-
-    // Los horarios manuales pertenecen a la jornada que la licencia impide
-    // trabajar. Dejarlos guardados hace que el reloj siga apareciendo y que
-    // vuelvan a aplicarse al reasignar un turno. La asistencia importada vive
-    // aparte (attendanceMarks) y se conserva.
-    const clearedClockMarkKeys = [];
-    if (type === "license" || type === "professional_license") {
-        const clockMarks = getClockMarks(profile);
-        keys.forEach(key => {
-            if (!Object.prototype.hasOwnProperty.call(clockMarks, key)) return;
-            delete clockMarks[key];
-            clearedClockMarkKeys.push(key);
-        });
-        if (clearedClockMarkKeys.length) saveClockMarks(profile, clockMarks);
-    }
 
     const returnedLegal = {};
     const returnedComp = {};
@@ -1484,6 +1492,8 @@ export async function aplicarLicencia(
             amount: total,
             type,
             clearedClockMarkKeys,
+            auditEntryId: applicationLogId,
+            clockMarkBackupId: applicationLogId,
             canceledReplacementIds:
                 conflictCancellation.canceledReplacements.map(
                     replacement => replacement.id

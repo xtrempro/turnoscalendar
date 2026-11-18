@@ -116,6 +116,7 @@ const PREFIX_KEY_MODULES = [
     ["leaveHold_", "turnos"],
     ["leaveBalances_", "turnos"],
     ["clockMarks_", "clockmarks"],
+    ["leaveClockMarks_", "clockmarks"],
     ["carry_", "hours"],
     ["hourReturns_", "hours"],
     ["hheeReturnTransfers_", "hours"],

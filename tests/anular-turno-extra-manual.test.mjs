@@ -177,3 +177,24 @@ test("un reemplazo real conserva el comportamiento anterior", () => {
 
     assert.equal(getTurnoProgramado(NAME, DAY_KEY), TURNO.LIBRE);
 });
+
+for (const [calendarTurn, recordTurn, expected] of [
+    [TURNO.LARGA, "HT", TURNO.DIURNO],
+    [TURNO.TURNO24, "HT", TURNO.DIURNO_NOCHE],
+    [TURNO.TURNO24, "N", TURNO.LARGA],
+    [TURNO.TURNO24, "L", TURNO.DIURNO_NOCHE],
+    [TURNO.DIURNO_NOCHE, "N", TURNO.DIURNO]
+]) {
+    test(`anulacion individual sobre Diurno: ${calendarTurn} menos ${recordTurn} queda ${expected}`, () => {
+        seed({baseTurn: TURNO.DIURNO, calendarTurn, record: {turno: recordTurn, source: "manual_extra"}});
+        assert.ok(cancelReplacementById(RECORD_ID));
+        assert.equal(getTurnoProgramado(NAME, DAY_KEY), expected);
+    });
+}
+
+test("anular cobertura de un turno base trasladado conserva ese turno", () => {
+    seed({baseTurn: TURNO.LARGA, calendarTurn: TURNO.LARGA,
+        record: {turno: "L", source: "manual_extra", replaced: "Carla"}});
+    assert.ok(cancelReplacementById(RECORD_ID));
+    assert.equal(getTurnoProgramado(NAME, DAY_KEY), TURNO.LARGA);
+});

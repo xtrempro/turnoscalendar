@@ -21,6 +21,7 @@ test("clasifica las claves persistidas por modulo de seguridad", () => {
         data_worker_1: "turnos",
         absences_worker_1: "turnos",
         clockMarks_worker_1: "clockmarks",
+        leaveClockMarks_worker_1: "clockmarks",
         workerRequests: "requests",
         memos: "memos",
         informations: "informations",

@@ -2405,6 +2405,7 @@ const CRITICAL_PROFILE_STATE_PREFIXES = [
     "contractHistory_",
     "replacementContracts_",
     "clockMarks_",
+    "leaveClockMarks_",
     "hrLogs_",
     "shiftAttendance_"
 ];

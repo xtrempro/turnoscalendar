@@ -2166,6 +2166,7 @@ export function updateProfile(oldName, nextProfile){
         "replacementContracts_",
         "honorariaContracts_",
         "clockMarks_",
+        "leaveClockMarks_",
         "hrLogs_",
         "shiftAttendance_",
         "gradeHistory_",

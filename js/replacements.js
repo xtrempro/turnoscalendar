@@ -738,7 +738,27 @@ function removeManualExtraTurnFromCalendar(record) {
     if (!worker || !keyDay || !extraTurn) return;
 
     const currentTurn = getTurnoProgramado(worker, keyDay);
-    const restoredTurn = restarTurnoCubierto(currentTurn, extraTurn);
+    const baseTurn = getTurnoBase(worker, keyDay);
+    if (!Number(currentTurn) || Number(currentTurn) === Number(baseTurn)) return;
+    // manual_extra tambien respalda turnos BASE trasladados por la ayuda para
+    // cubrir. Solo se retira lo agregado sobre esa base, nunca la base misma.
+    const remainingExtra = turnoExtraSinRespaldo(baseTurn, currentTurn, extraTurn);
+    if (remainingExtra === turnoExtraSinRespaldo(baseTurn, currentTurn, TURNO.LIBRE)) return;
+    let restoredTurn;
+    if (Number(baseTurn) === TURNO.DIURNO) {
+        // D + HT se guarda como L, y D + HT + N como 24: sus componentes
+        // almacenadas no expresan la extension HT. Recompone desde la base.
+        const remaining = new Set(getTurnoComponentes(remainingExtra));
+        const extended = remaining.has("HT") || remaining.has("L");
+        restoredTurn = remaining.has("N")
+            ? (extended ? TURNO.TURNO24 : TURNO.DIURNO_NOCHE)
+            : (extended ? TURNO.LARGA : TURNO.DIURNO);
+    } else {
+        restoredTurn = turnoDesdeComponentes([
+            ...getTurnoComponentes(baseTurn),
+            ...getTurnoComponentes(remainingExtra)
+        ]);
+    }
 
     // El turno extra puede no estar en el calendario (p. ej. una extension
     // horaria, que solo existe como registro): ahi no hay nada que revertir.

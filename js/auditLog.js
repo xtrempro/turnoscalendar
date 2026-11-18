@@ -21,6 +21,7 @@ import { fetchHolidays } from "./holidays.js";
 import { isBusinessDay } from "./calculations.js";
 import { getCurrentFirebaseUser } from "./firebaseClient.js";
 import { showConfirm } from "./dialogs.js";
+import { restoreClockMarksForLeave } from "./leaveClockMarks.js";
 import { auditLogDisplayMonth } from "./auditLogShardStore.js";
 import {
     auditLogShardReadEnabled,
@@ -1233,6 +1234,10 @@ async function undoLeaveAbsenceLog(log) {
     }
 
     markLeaveCancellation(profile, removedKeys, log.id);
+
+    if (type === "license" || type === "professional_license") {
+        restoreClockMarksForLeave(profile, removedKeys, log.meta?.clockMarkBackupId || log.id);
+    }
 
     const canceledReplacements =
         cancelReplacementsForAbsence(profile, removedKeys, log);

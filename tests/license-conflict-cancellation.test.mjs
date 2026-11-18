@@ -43,6 +43,8 @@ const { aplicarLicencia } = await import("../js/leaveEngine.js");
 const { setCurrentProfile } = await import("../js/storage.js");
 const { getTurnoProgramado } = await import("../js/turnEngine.js");
 const { TURNO } = await import("../js/constants.js");
+const { undoAuditLogEntry } = await import("../js/auditLog.js");
+const { getClockExtraHours } = await import("../js/clockMarks.js");
 
 const LICENSE_DAY_KEY = "2026-5-10";
 
@@ -121,6 +123,7 @@ beforeEach(() => {
         }
     };
     globalThis.localStorage.clear();
+    setJSON("profiles", [{ name: "Ana", id: "ana", contractType: "Contrata" }]);
     setCurrentProfile("Ana");
     seedConflicts();
 });
@@ -347,6 +350,170 @@ test("rechazar licencia conserva el extra manual y su horario", async () => {
     } finally {
         delete globalThis.window;
     }
+});
+
+function enableEvents() {
+    globalThis.window = { dispatchEvent: () => true };
+    globalThis.CustomEvent = class {
+        constructor(type, options = {}) { this.type = type; this.detail = options.detail; }
+    };
+}
+
+for (const type of ["license", "professional_license"]) {
+    test(`${type}: conserva un turno base trasladado, incluso al anular la licencia`, async () => {
+        setJSON("baseData_Ana", { [LICENSE_DAY_KEY]: TURNO.LARGA });
+        setJSON("data_Ana", { [LICENSE_DAY_KEY]: TURNO.LARGA });
+        setJSON("replacements", [{
+            id: "moved-base", worker: "Ana", replaced: "Carla", date: "2026-06-10",
+            turno: "L", source: "manual_extra", addsShift: false
+        }]);
+        assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, type), true);
+        assert.equal(getJSON("replacements", [])[0].canceled, true);
+        assert.equal(getTurnoProgramado("Ana", LICENSE_DAY_KEY), TURNO.LARGA);
+        enableEvents();
+        const log = getJSON("auditLog", []).find(log => log.meta?.type === type);
+        assert.equal((await undoAuditLogEntry(log.id)).ok, true);
+        assert.equal(getTurnoProgramado("Ana", LICENSE_DAY_KEY), TURNO.LARGA);
+    });
+
+    test(`${type}: retira HT de un Diurno extendido a Larga`, async () => {
+        setJSON("baseData_Ana", { [LICENSE_DAY_KEY]: TURNO.DIURNO });
+        setJSON("data_Ana", { [LICENSE_DAY_KEY]: TURNO.LARGA });
+        setJSON("replacements", [{
+            id: "extension", worker: "Ana", date: "2026-06-10",
+            turno: "HT", source: "manual_extra", addsShift: false
+        }]);
+        assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, type), true);
+        assert.equal(getTurnoProgramado("Ana", LICENSE_DAY_KEY), TURNO.DIURNO);
+    });
+
+    test(`${type}: anular recupera la extension por marcaje y sus documentos completos`, async () => {
+        setJSON("replacements", []);
+        setJSON("baseData_Ana", { [LICENSE_DAY_KEY]: TURNO.LARGA });
+        const original = {
+            [LICENSE_DAY_KEY]: {
+                segments: { larga: { exitTime: "22:00", documents: [{
+                    id: "attachment", name: "justificacion.pdf", storagePath: "private/path.pdf"
+                }] } },
+                source: "worker_request", workerRequestId: "request-doc",
+                updatedAt: "2026-06-01T12:00:00.000Z"
+            }
+        };
+        setJSON("clockMarks_Ana", original);
+        const extraBefore = getClockExtraHours("Ana", LICENSE_DAY_KEY, new Date(2026, 5, 10), TURNO.LARGA, {});
+        assert.ok(extraBefore.d + extraBefore.n > 0);
+        assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, type), true);
+        assert.deepEqual(getJSON("clockMarks_Ana", {}), {});
+        const log = getJSON("auditLog", []).find(log => log.meta?.type === type);
+        assert.deepEqual(getJSON("leaveClockMarks_Ana", {})[LICENSE_DAY_KEY].mark, original[LICENSE_DAY_KEY]);
+        assert.equal(log.meta.clockMarkBackupId, log.id);
+        assert.equal(JSON.stringify(log).includes("private/path.pdf"), false);
+        enableEvents();
+        assert.equal((await undoAuditLogEntry(log.id)).ok, true);
+        assert.deepEqual(getJSON("clockMarks_Ana", {}), original);
+        assert.deepEqual(getClockExtraHours("Ana", LICENSE_DAY_KEY, new Date(2026, 5, 10), TURNO.LARGA, {}), extraBefore);
+        assert.deepEqual(getJSON("leaveClockMarks_Ana", {}), {});
+    });
+}
+
+test("anular licencia conserva un horario nuevo en vez de reponer el anterior", async () => {
+    setJSON("replacements", []);
+    setJSON("clockMarks_Ana", { [LICENSE_DAY_KEY]: { segments: { larga: { exitTime: "22:00" } } } });
+    assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1), true);
+    const log = getJSON("auditLog", []).find(log => log.meta?.type === "license");
+    const next = { [LICENSE_DAY_KEY]: { segments: { larga: { exitTime: "21:00" } }, workerRequestId: "new" } };
+    setJSON("clockMarks_Ana", next);
+    enableEvents();
+    assert.equal((await undoAuditLogEntry(log.id)).ok, true);
+    assert.deepEqual(getJSON("clockMarks_Ana", {}), next);
+});
+
+test("rechazar el aviso de horarios sin extras no modifica ni respalda nada", async () => {
+    setJSON("replacements", []);
+    const marks = { [LICENSE_DAY_KEY]: { segments: { larga: { exitTime: "22:00" } } } };
+    setJSON("clockMarks_Ana", marks);
+    enableEvents();
+    let warning = "";
+    let prepared = false;
+    assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, "license", {
+        confirmConflicts: async message => { warning = message; return false; },
+        beforeMutation: () => { prepared = true; }
+    }), null);
+    assert.match(warning, /Ajustes de horario \(1\)/);
+    assert.match(warning, /incluidos sus documentos/);
+    assert.match(warning, /Al anular la licencia se recuperarán/);
+    assert.equal(prepared, false);
+    assert.deepEqual(getJSON("clockMarks_Ana", {}), marks);
+    assert.deepEqual(getJSON("leaveClockMarks_Ana", {}), {});
+    assert.deepEqual(getJSON("absences_Ana", {}), {});
+});
+
+test("beforeMutation fallido conserva el horario y sus documentos", async () => {
+    setJSON("replacements", []);
+    const marks = { [LICENSE_DAY_KEY]: { segments: { larga: { exitTime: "22:00" } } } };
+    setJSON("clockMarks_Ana", marks);
+    await assert.rejects(aplicarLicencia(new Date(2026, 5, 10), 1, "license", {
+        beforeMutation: () => { throw new Error("history failed"); }
+    }), /history failed/);
+    assert.deepEqual(getJSON("clockMarks_Ana", {}), marks);
+    assert.deepEqual(getJSON("leaveClockMarks_Ana", {}), {});
+});
+
+test("el respaldo sincronizado por dia se puede restaurar desde otro equipo", async () => {
+    const { planPartialStateEntries, applyPartialStateEntry } = await import("../js/firebasePartialState.js");
+    const { stateModuleForKey } = await import("../js/firebaseStateModules.js");
+    setJSON("replacements", []);
+    const marks = { [LICENSE_DAY_KEY]: { segments: { larga: { exitTime: "22:00", documents: [{
+        name: "respaldo.pdf", storagePath: "private/request.pdf"
+    }] } }, workerRequestId: "original" } };
+    setJSON("clockMarks_Ana", marks);
+    assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1), true);
+    const logs = getJSON("auditLog", []);
+    const key = "leaveClockMarks_Ana";
+    const raw = localStorage.getItem(key);
+    const entries = planPartialStateEntries({keys:[key], changes:{[key]:{previous:null,next:raw}}, moduleForKey:stateModuleForKey});
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].moduleId, "clockmarks");
+    assert.equal(entries[0].itemKey, LICENSE_DAY_KEY);
+    const hydrated = applyPartialStateEntry({}, entries[0]);
+    localStorage.clear();
+    setJSON("profiles", [{ name:"Ana", id:"ana" }]);
+    setJSON("auditLog", logs);
+    setJSON("absences_Ana", { [LICENSE_DAY_KEY]: {type:"license"} });
+    localStorage.setItem(key, hydrated[key]);
+    enableEvents();
+    const log = logs.find(log => log.meta?.type === "license");
+    assert.equal((await undoAuditLogEntry(log.id)).ok, true);
+    assert.deepEqual(getJSON("clockMarks_Ana", {}), marks);
+});
+
+test("el respaldo solo se repone en los dias que se anulan efectivamente", async () => {
+    setJSON("replacements", []);
+    const marks = {
+        [LICENSE_DAY_KEY]: {segments:{larga:{exitTime:"22:00"}}},
+        "2026-5-11": {segments:{larga:{exitTime:"21:00"}}}
+    };
+    setJSON("clockMarks_Ana", marks);
+    assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 2), true);
+    const log = getJSON("auditLog", []).find(log => log.meta?.type === "license");
+    // Otro permiso vigente ocupa el segundo dia: anular esta licencia no lo toca.
+    setJSON("absences_Ana", {[LICENSE_DAY_KEY]:{type:"license"},"2026-5-11":{type:"training"}});
+    enableEvents();
+    assert.equal((await undoAuditLogEntry(log.id)).ok, true);
+    assert.deepEqual(getJSON("clockMarks_Ana", {}), {[LICENSE_DAY_KEY]:marks[LICENSE_DAY_KEY]});
+    assert.deepEqual(getJSON("leaveClockMarks_Ana", {})["2026-5-11"].mark, marks["2026-5-11"]);
+});
+
+test("una licencia que sustituye otra conserva el respaldo original", async () => {
+    setJSON("replacements", []);
+    const marks = {[LICENSE_DAY_KEY]:{segments:{larga:{exitTime:"22:00"}}}};
+    setJSON("clockMarks_Ana", marks);
+    assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, "license"), true);
+    assert.equal(await aplicarLicencia(new Date(2026, 5, 10), 1, "professional_license"), true);
+    const log = getJSON("auditLog", []).find(log => log.meta?.type === "professional_license");
+    enableEvents();
+    assert.equal((await undoAuditLogEntry(log.id)).ok, true);
+    assert.deepEqual(getJSON("clockMarks_Ana", {}), marks);
 });
 
 // Licencia sobre un feriado legal ya cubierto (caso de test del 29-09): el

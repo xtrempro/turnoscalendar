@@ -16,6 +16,7 @@ const PARTIAL_MAP_PREFIXES = [
     "absences_",
     "hourReturns_",
     "clockMarks_",
+    "leaveClockMarks_",
     "shiftAssignmentHistory_",
     "leaveBalances_",
     "hheeReturnTransfers_",
