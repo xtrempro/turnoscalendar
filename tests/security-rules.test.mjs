@@ -14,6 +14,7 @@ import {
     getDocs,
     query,
     runTransaction,
+    serverTimestamp,
     setDoc,
     updateDoc,
     where
@@ -2749,6 +2750,25 @@ test("reglas modulares de Firestore y Storage", async t => {
             await assertFails(getDoc(doc(outsider.firestore(), ...stateA)));
         }
     );
+
+    await t.test("asignaciones exigen escritor v2, nonce nuevo, revision monotona y hora de servidor incluso con merge", async () => {
+        const target = doc(tasksEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "tasks", "entries", "weekly_task_assignment_entries");
+        const payload = { ...stateEntry("tasks", "weekly_task_assignment_entries"),
+            writerSchemaVersion: 2, taskRevision: 1, taskWriteId: "write-1", updatedAt: serverTimestamp() };
+        await assertFails(setDoc(target, stateEntry("tasks", "weekly_task_assignment_entries")));
+        await assertSucceeds(setDoc(target, payload));
+        // La pestaña antigua hereda writerSchemaVersion de merge:true, pero
+        // no incrementa la revision: mantener la marca no permite saltar la barrera.
+        await assertFails(setDoc(target, { items: { semana: "{}" } }, { merge: true }));
+        await assertFails(updateDoc(target, { taskRevision: 1, updatedAt: serverTimestamp() }));
+        await assertFails(updateDoc(target, { taskRevision: 2, updatedAt: new Date("2000-01-01") }));
+        await assertFails(updateDoc(target, { taskRevision: 0, taskWriteId: "write-2", updatedAt: serverTimestamp() }));
+        await assertSucceeds(updateDoc(target, { taskRevision: 2, taskWriteId: "write-2", updatedAt: serverTimestamp() }));
+        await assertFails(deleteDoc(target));
+        await assertFails(setDoc(doc(tasksEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "tasks", "entries", "alias"), { ...payload, taskRevision: 1 }));
+        await assertFails(setDoc(doc(tasksEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "tasks", "chunks", "legacy"), chunk("tasks")));
+        await assertSucceeds(setDoc(doc(tasksEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "tasks", "entries", "weekly_task_assignment_updated"), stateEntry("tasks", "weekly_task_assignment_updated")));
+    });
 
     await env.cleanup();
 });

@@ -1,0 +1,1029 @@
+{
+  "checkedAt": "2026-11-18T11:36:22.955Z",
+  "workspace": {
+    "id": "Boh7mvO5ku9quFFsPcIq",
+    "name": "Imagenologia",
+    "stateStorage": "entries-v1",
+    "auditLogStorage": "shards-read-v1",
+    "replacementStorage": "records-shadow-v1"
+  },
+  "auditLog": {
+    "comparison": {
+      "legacy": 573,
+      "archive": 2137,
+      "missingOrDifferent": [
+        "1794486661611_ui9ht3n4sje",
+        "1794233397199_no6o1kfao"
+      ],
+      "issues": 2
+    },
+    "integrity": {
+      "shards": 221,
+      "records": 2137,
+      "malformed": [],
+      "unparseable": [],
+      "mismatched": [],
+      "duplicates": [],
+      "issues": 0
+    },
+    "versions": {
+      "adopted": true,
+      "adoptedAtMillis": 1791001846916,
+      "records": 2137,
+      "versioned": 1410,
+      "unversionedRecent": 0,
+      "unversionedIds": [],
+      "lastUnversionedAtMillis": null,
+      "writerMismatchCount": 0,
+      "writerMismatch": [],
+      "recentBuilds": {
+        "20261111T202727Z-7b07bbb": 127,
+        "20261111T122213Z-20d1f98-dirty": 24,
+        "20261104T141140Z-440ad67": 17
+      },
+      "issues": 0
+    },
+    "differences": [
+      {
+        "id": "1794486661611_ui9ht3n4sje",
+        "action": "Aplicó Licencia Médica",
+        "createdAt": "2026-11-12T12:31:01.611Z",
+        "missing": false,
+        "fields": [
+          "canceledAt",
+          "canceledBy",
+          "cancellationDetails"
+        ],
+        "values": {
+          "canceledAt": {
+            "archive": "2026-11-12T13:07:40.893Z"
+          },
+          "canceledBy": {
+            "archive": "Tecnólogo Supervisor"
+          }
+        }
+      },
+      {
+        "id": "1794233397199_no6o1kfao",
+        "action": "Aplicó P. Administrativo",
+        "createdAt": "2026-11-09T14:09:57.199Z",
+        "missing": false,
+        "fields": [
+          "canceledAt",
+          "canceledBy",
+          "cancellationDetails"
+        ],
+        "values": {
+          "canceledAt": {
+            "archive": "2026-11-17T20:06:35.958Z"
+          },
+          "canceledBy": {
+            "archive": "Tecnólogo Supervisor"
+          }
+        }
+      }
+    ],
+    "legacyLatest": "2026-11-17T21:57:00.621Z",
+    "archiveLatest": "2026-11-18T10:53:03.084Z"
+  },
+  "replacements": {
+    "legacy": 1127,
+    "archive": 1127,
+    "missing": [],
+    "different": [],
+    "extra": [],
+    "withoutDate": 521,
+    "issues": 0,
+    "bytes": 879815
+  },
+  "tasks": {
+    "catalog": [
+      {
+        "id": "task_1788743772570_06y9nr",
+        "title": "RESONADOR",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1788743812151_44og9z",
+        "title": "ESCANER",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1788743831071_jj8e7l",
+        "title": "ESTACION DE TRABAJO",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1788743835495_zzh9zr",
+        "title": "RAYOS 1",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1788743837791_zaupyt",
+        "title": "RAYOS 2",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1788743843495_rbak15",
+        "title": "RAYOS 3",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1788743853559_bknxnz",
+        "title": "PABELLON",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1788743861655_u9l8wt",
+        "title": "MAMOGRAFIA",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1787770159879_gy7pry",
+        "title": "ADMINISTRATIVO",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1785510407995_evnbyd",
+        "title": "APOYO TURNO",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1787769628624_bj03h2",
+        "title": "RONDA RX PORTÁTIL",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1785510432067_b2mpeh",
+        "title": "ECÓGRAFO",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1785510463698_o13pbm",
+        "title": "RIS/PACS",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1786994508952_1yrm05",
+        "title": "SUPERVISOR",
+        "shift": "both",
+        "shiftScope": "day"
+      },
+      {
+        "id": "task_1785510497778_245zf6",
+        "title": "TURNO RIS/PACS",
+        "shift": "both",
+        "shiftScope": "both"
+      },
+      {
+        "id": "task_1785510538202_k7g7fv",
+        "title": "AUX TURNO",
+        "shift": "both",
+        "shiftScope": "both"
+      },
+      {
+        "id": "task_1787767001161_jgt6nh",
+        "title": "AUXILIAR DIURNO/PISO -2",
+        "shift": "both",
+        "shiftScope": "day"
+      }
+    ],
+    "entries": [
+      {
+        "key": "weekly_task_assignment_entries",
+        "updatedAt": "2026-11-18T10:53:03.927Z",
+        "bytes": 393750,
+        "hasValue": true,
+        "items": 19,
+        "tombstones": 0,
+        "deleted": false
+      },
+      {
+        "key": "weekly_task_assignment_tasks",
+        "updatedAt": "2026-10-05T02:06:03.067Z",
+        "bytes": 14619,
+        "hasValue": true,
+        "container": "array",
+        "items": 31,
+        "tombstones": 14,
+        "deleted": false
+      },
+      {
+        "key": "weekly_task_assignment_updated",
+        "updatedAt": "2026-11-18T10:53:03.927Z",
+        "bytes": 1147,
+        "hasValue": true,
+        "items": 15,
+        "tombstones": 0,
+        "deleted": true
+      },
+      {
+        "key": "weekly_task_schedule_attachment",
+        "updatedAt": "2026-08-27T23:08:36.055Z",
+        "bytes": 4760,
+        "hasValue": true,
+        "items": 0,
+        "tombstones": 0,
+        "deleted": false
+      },
+      {
+        "key": "weekly_task_schedule_attachments",
+        "updatedAt": "2026-08-27T23:08:36.055Z",
+        "bytes": 7352,
+        "hasValue": true,
+        "items": 0,
+        "tombstones": 0,
+        "deleted": false
+      }
+    ],
+    "weeks": [
+      {
+        "week": "2026-09-21",
+        "cells": 108,
+        "assignments": 144,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-08-03",
+        "cells": 43,
+        "assignments": 57,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-09-28",
+        "cells": 108,
+        "assignments": 145,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-07-20",
+        "cells": 38,
+        "assignments": 43,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-09-14",
+        "cells": 108,
+        "assignments": 129,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-07-27",
+        "cells": 37,
+        "assignments": 50,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-10-12",
+        "cells": 108,
+        "assignments": 144,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-10-05",
+        "cells": 109,
+        "assignments": 137,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-08-10",
+        "cells": 38,
+        "assignments": 53,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-08-17",
+        "cells": 40,
+        "assignments": 55,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-09-07",
+        "cells": 129,
+        "assignments": 157,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-08-31",
+        "cells": 115,
+        "assignments": 160,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-08-24",
+        "cells": 110,
+        "assignments": 143,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-10-19",
+        "cells": 105,
+        "assignments": 139,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-11-02",
+        "cells": 109,
+        "assignments": 141,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-11-23",
+        "cells": 38,
+        "assignments": 49,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-11-09",
+        "cells": 111,
+        "assignments": 138,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-10-26",
+        "cells": 111,
+        "assignments": 142,
+        "orphanCells": 0
+      },
+      {
+        "week": "2026-11-16",
+        "cells": 112,
+        "assignments": 116,
+        "orphanCells": 0
+      }
+    ]
+  },
+  "monitor": {
+    "replacements": {
+      "issues": 0,
+      "unreadable": false,
+      "legacy": 1126,
+      "archive": 1126,
+      "withoutDate": 521
+    },
+    "auditLogShards": {
+      "issues": 0,
+      "shards": 221,
+      "records": 2135
+    },
+    "auditLog": {
+      "legacy": 573,
+      "archive": 2135,
+      "unreadable": false,
+      "issues": 2
+    },
+    "warningDocuments": 1,
+    "criticalDocuments": 0,
+    "largest": {
+      "percent": 83.8,
+      "bytes": 878958,
+      "daysToCritical": 1,
+      "level": "warning",
+      "moduleId": "turnos",
+      "storageKey": "replacements",
+      "bytesPerDay": 6171
+    },
+    "auditLogVersions": {
+      "adoptedAtMillis": 1791001846916,
+      "issues": 0,
+      "writerMismatchCount": 0,
+      "adopted": true,
+      "versioned": 1408,
+      "unversionedRecent": 0,
+      "writerMismatch": 0,
+      "lastUnversionedAtMillis": null
+    }
+  },
+  "dailyAudits": [
+    {
+      "kind": "auditLogShards",
+      "shards": 221,
+      "records": 2135,
+      "malformed": [],
+      "unparseable": [],
+      "mismatched": [],
+      "duplicates": [],
+      "issues": 0
+    },
+    {
+      "kind": "auditLog",
+      "legacy": 573,
+      "archive": 2135,
+      "missingOrDifferent": [
+        "1794233397199_no6o1kfao",
+        "1794486661611_ui9ht3n4sje"
+      ],
+      "issues": 2
+    },
+    {
+      "kind": "replacements",
+      "legacy": 1126,
+      "archive": 1126,
+      "missing": [],
+      "different": [],
+      "extra": [],
+      "withoutDate": 521,
+      "issues": 0
+    }
+  ],
+  "taskAuditLogs": [
+    {
+      "id": "1793741489143_d4untsv2cfi",
+      "action": "Cambió un trabajador predefinido",
+      "createdAt": "2026-11-03T21:31:29.143Z",
+      "changes": {},
+      "buildId": "20261102T150656Z-e0db1af"
+    },
+    {
+      "id": "1793741623559_1vg7ku4vy8l",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-03T21:33:43.559Z",
+      "week": "2026-11-02",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 6
+      },
+      "buildId": "20261102T150656Z-e0db1af"
+    },
+    {
+      "id": "1793742204760_o0nwzs0rpl",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-03T21:43:24.760Z",
+      "week": "2026-11-02",
+      "changes": {
+        "added": 0,
+        "removed": 1,
+        "moved": 1,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261102T150656Z-e0db1af"
+    },
+    {
+      "id": "1793742997845_enb2dna38ka",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-03T21:56:37.845Z",
+      "week": "2026-11-02",
+      "changes": {
+        "added": 3,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261102T150656Z-e0db1af"
+    },
+    {
+      "id": "1793743097311_h02evbe2w2l",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-03T21:58:17.311Z",
+      "week": "2026-11-02",
+      "changes": {
+        "added": 2,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261102T150656Z-e0db1af"
+    },
+    {
+      "id": "1793821719236_wjjaq6fvnyf",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-04T19:48:39.236Z",
+      "week": "2026-11-02",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 4,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261102T150656Z-e0db1af"
+    },
+    {
+      "id": "1793822052792_tn9cpqc0zfj",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-04T19:54:12.792Z",
+      "week": "2026-11-02",
+      "changes": {
+        "added": 1,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1793837687214_c6xviiw1gyi",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-05T00:14:47.214Z",
+      "week": "2026-11-02",
+      "changes": {
+        "added": 1,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261102T150656Z-e0db1af"
+    },
+    {
+      "id": "1794170490055_yja2nlup5ua",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-08T20:41:30.055Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 0,
+        "merged": 6,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794170550568_0ql7n2i6ycu",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-08T20:42:30.568Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 0,
+        "merged": 4,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794170902883_d7te0kmrvx",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-08T20:48:22.883Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 0,
+        "merged": 16,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794170997386_tedkw3tjz0f",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-08T20:49:57.386Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 10,
+        "removed": 5,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794171054870_ulvqmksng9",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-08T20:50:54.870Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 8,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794185194660_6k8xxj8sv5i",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-09T00:46:34.660Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 5,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794185291241_xeyxfnk9jci",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-09T00:48:11.241Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 23,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794185410043_hmlzbpnsyms",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-09T00:50:10.043Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 20,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794185576680_cehy25g9rh9",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-09T00:52:56.680Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 16,
+        "removed": 0,
+        "moved": 1,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794186133767_tdnxvjgxm5a",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-09T01:02:13.767Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 12,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794269916248_orkd8k4ingn",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-10T00:18:36.248Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 1,
+        "removed": 1,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794316274962_zne205n4os8",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-10T13:11:14.962Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 4,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794348099424_ubet9kvowm",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-10T22:01:39.424Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 1,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794348220380_4fce6io67w5",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-10T22:03:40.380Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 1,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 1
+      },
+      "buildId": "20261104T141140Z-440ad67"
+    },
+    {
+      "id": "1794514843726_7xoxtq7dkih",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-12T20:20:43.726Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 1,
+        "moved": 4,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 1
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794515689535_q39tsejdo2",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-12T20:34:49.535Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 1
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794518980824_9veyka2euua",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-12T21:29:40.824Z",
+      "week": "2026-11-09",
+      "changes": {
+        "added": 1,
+        "removed": 0,
+        "moved": 1,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794726576946_2vxkd651cpy",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-15T07:09:36.946Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 3,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794726608224_649asoux4rd",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-15T07:10:08.224Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 1,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794726642922_jtyoygjia3n",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-15T07:10:42.922Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 1,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794929610724_9r3i1xjie8n",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-17T15:33:30.724Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 47,
+        "removed": 1,
+        "moved": 2,
+        "merged": 20,
+        "split": 0,
+        "closed": 8,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794929850887_74mfqtqhz83",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-17T15:37:30.887Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 6,
+        "removed": 0,
+        "moved": 2,
+        "merged": 10,
+        "split": 0,
+        "closed": 1,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794930008156_4dy6b98c7gq",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-17T15:40:08.156Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 0,
+        "removed": 1,
+        "moved": 1,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794933167916_s046puunhu",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-17T16:32:47.916Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 9,
+        "removed": 10,
+        "moved": 1,
+        "merged": 1,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794933429276_6nfzd3t1qz2",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-17T16:37:09.276Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 21,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 0
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794963713929_znkqn2fzb6",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-18T01:01:53.929Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 4,
+        "removed": 4,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 1
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    },
+    {
+      "id": "1794963882302_u3yaptp08e",
+      "action": "Modificó la asignación de tareas",
+      "createdAt": "2026-11-18T01:04:42.302Z",
+      "week": "2026-11-16",
+      "changes": {
+        "added": 0,
+        "removed": 0,
+        "moved": 0,
+        "merged": 0,
+        "split": 0,
+        "closed": 0,
+        "opened": 0,
+        "notes": 4
+      },
+      "buildId": "20261111T202727Z-7b07bbb"
+    }
+  ]
+}

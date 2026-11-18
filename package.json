@@ -35,6 +35,7 @@
     "deploy:security-rules:test": "npm run security:rules:test:build && firebase deploy --only firestore:rules,storage --config firebase.test.security.json --project turnoplus-test-7c4d9",
     "deploy:security-rules:test:mfa": "npm run security:rules:test:build:mfa && firebase deploy --only firestore:rules,storage --config firebase.test.security.json --project turnoplus-test-7c4d9",
     "test:state-modules": "node --test tests/state-modules.test.mjs",
+    "test:storage-concurrency": "node --test tests/task-assignment-concurrency.test.mjs tests/task-rescue-read-only.test.mjs tests/audit-log-cancellation-sync.test.mjs tests/reconcile-audit-log-cancellations.test.mjs tests/edicion-concurrente-listas.test.mjs tests/firebase-partial-state-batch.test.mjs tests/state-modules.test.mjs tests/firebase-state-entry-retry.test.mjs tests/sincronizacion-copia-vieja.test.mjs tests/sincronizacion-elemento-redundante.test.mjs tests/ausencia-local-no-es-borrado.test.mjs tests/task-assignment-catalogo-vacio.test.mjs tests/task-assignment-perfiles-vacios.test.mjs tests/task-assignment-borrar-tarea.test.mjs tests/task-assignment-turno-tarea.test.mjs tests/task-assignment-media-jornada.test.mjs tests/task-assignment-projection.test.mjs tests/task-assignment-casilla-cerrada.test.mjs tests/bitacora-asignacion-tareas.test.mjs tests/bitacora-permisos-cache-precedencia.test.mjs tests/bitacora-version-escritura.test.mjs tests/bitacora-tope-tamano.test.mjs tests/programacion-desde-tareas.test.mjs tests/programacion-automatica-tareas.test.mjs functions/test/storageHealth.test.js",
     "test:sincronizacion": "node --test tests/sincronizacion-tiempo-real.test.mjs tests/firebase-state-entry-retry.test.mjs tests/sincronizacion-elemento-redundante.test.mjs",
     "test:cambio-diurno-larga": "node --test tests/cambio-turno-diurno-larga.test.mjs tests/cambio-turno-diurno-larga-backend.test.mjs",
     "test:cambio-parpadeo": "node --test tests/cambio-turno-pendiente-parpadeo.test.mjs",
@@ -137,6 +138,7 @@
     "test:pwa": "node --test tests/pwa-install.test.mjs",
     "test:reemplazo-suma": "node --test tests/reemplazo-aceptado-suma-turno.test.mjs",
     "test:rules:pwa": "firebase emulators:exec --project demo-proturnos --only firestore \"node --test tests/pwa-lecturas-trabajador.test.mjs\"",
+    "test:storage-emulator": "firebase emulators:exec --project demo-proturnos --only firestore \"node --test tests/task-assignment-firestore.test.mjs\"",
     "test:rules": "firebase emulators:exec --project demo-proturnos --only firestore,storage \"node --test tests/security-rules.test.mjs\"",
     "test:rules:test": "npm run security:rules:test:build && firebase emulators:exec --config firebase.test.security.json --project demo-proturnos --only firestore,storage \"node --test tests/security-rules.test.mjs\"",
     "test:rules:test:mfa": "npm run security:rules:test:build:mfa && firebase emulators:exec --config firebase.test.security.json --project demo-proturnos --only firestore,storage \"node --test tests/security-rules-test-mfa.test.mjs\""

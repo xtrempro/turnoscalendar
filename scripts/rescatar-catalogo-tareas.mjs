@@ -1,3 +1,5 @@
+// Mantenimiento legado: --apply deshabilitado desde el protocolo de tareas v2.
+// Solo se conserva la inspeccion; la reposicion requiere una herramienta por deltas.
 // Rescate del catalogo de tareas perdido, con Point-in-Time Recovery.
 //
 // Por defecto SOLO LEE: acota a que minuto desaparecio el catalogo, vuelca el
@@ -26,6 +28,7 @@ function arg(name, fallback = "") {
 }
 
 const APPLY = process.argv.includes("--apply");
+if (APPLY) throw new Error("Rescate de tareas en solo lectura: --apply esta deshabilitado porque reemplaza semanas completas. Usar una reparacion por deltas revisada.");
 // La guarda de abajo protege el caso normal: no pisar un catalogo que sigue
 // teniendo tareas. Pero un borrado PARCIAL deja sobrevivientes, y entonces la
 // guarda impide justo el rescate que hace falta. --forzar es la salida
@@ -240,7 +243,7 @@ async function main() {
     );
 
     if (!APPLY) {
-        console.log("\nSOLO LECTURA. Para reponer el catalogo: --apply");
+        console.log("\nSOLO LECTURA. La reposicion directa esta deshabilitada (solo lectura).");
         return;
     }
 

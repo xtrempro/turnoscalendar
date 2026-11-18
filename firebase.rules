@@ -895,6 +895,7 @@ service cloud.firestore {
         match /chunks/{chunkId} {
           allow read: if canReadStateModule(workspaceId, moduleId);
           allow create, update: if
+            moduleId != "tasks" &&
             canWriteStateModule(workspaceId, moduleId) &&
             request.resource.data.moduleId == moduleId &&
             request.resource.data.index is int &&
@@ -902,15 +903,36 @@ service cloud.firestore {
             request.resource.data.index < 100 &&
             request.resource.data.text is string &&
             request.resource.data.text.size() <= 450000;
-          allow delete: if canWriteStateModule(workspaceId, moduleId);
+          allow delete: if moduleId != "tasks" && canWriteStateModule(workspaceId, moduleId);
         }
 
         // Delta fino del estado: una edición de calendario escribe solamente
         // la clave/día modificado, sin republicar el módulo completo.
         match /entries/{entryId} {
+          function validTaskAssignmentWriter() {
+            // Un nonce distinto bloquea merge:true de clientes viejos aunque
+            // hereden los metadatos del documento. Se admite la revision igual
+            // durante un conflicto: la precondicion de la transaccion hara que
+            // Firestore reintente. Exigir +1 aqui lo convertiria en permission-denied.
+            let previous = resource != null ? resource.data.get("taskRevision", 0) : 0;
+            return request.resource.data.storageKey == "weekly_task_assignment_entries" &&
+              request.resource.data.writerSchemaVersion == 2 &&
+              request.resource.data.taskRevision is int &&
+              request.resource.data.taskRevision > 0 &&
+              request.resource.data.taskRevision >= previous &&
+              request.resource.data.taskWriteId is string &&
+              request.resource.data.taskWriteId.size() > 0 &&
+              request.resource.data.taskWriteId.size() <= 160 &&
+              request.resource.data.taskWriteId != (resource != null ? resource.data.get("taskWriteId", "") : "") &&
+              request.resource.data.updatedAt == request.time;
+          }
           allow read: if canReadStateModule(workspaceId, moduleId);
           allow create, update: if
             canWriteStateModule(workspaceId, moduleId) &&
+            (moduleId != "tasks" ||
+              (entryId == "weekly_task_assignment_entries"
+                ? validTaskAssignmentWriter()
+                : request.resource.data.storageKey != "weekly_task_assignment_entries")) &&
             request.resource.data.moduleId == moduleId &&
             request.resource.data.storageKey is string &&
             request.resource.data.storageKey.size() > 0 &&
@@ -934,7 +956,8 @@ service cloud.firestore {
                 )
               )
             );
-          allow delete: if canWriteStateModule(workspaceId, moduleId);
+          allow delete: if canWriteStateModule(workspaceId, moduleId) &&
+            !(moduleId == "tasks" && entryId == "weekly_task_assignment_entries");
         }
       }
 

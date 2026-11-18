@@ -1,3 +1,10 @@
+import {
+    TASK_ASSIGNMENTS_KEY,
+    applyTaskAssignmentPatch,
+    composeTaskAssignmentPatches,
+    planTaskAssignmentEntries
+} from "./taskAssignmentSync.js";
+
 const PARTIAL_MAP_PREFIXES = [
     "data_",
     "baseData_",
@@ -158,6 +165,12 @@ export function groupPartialStateEntries(entries = []) {
             const itemKey = encodePartialStateItemKey(entry.itemKey);
 
             if (entry.container) group.container = entry.container;
+            if (entry.taskPatch) {
+                group.taskPatches ||= {};
+                group.taskPatches[itemKey] = composeTaskAssignmentPatches(
+                    group.taskPatches[itemKey], entry.taskPatch
+                );
+            }
 
             group.items[itemKey] = entry.deleted
                 ? "null"
@@ -195,6 +208,14 @@ export function planPartialStateEntries({
         const moduleId = moduleForKey(storageKey);
 
         if (!moduleId) return;
+
+        if (storageKey === TASK_ASSIGNMENTS_KEY) {
+            // Un aviso masivo o un flush sin before/after no es una edicion.
+            // Replanear desde la copia local completa reintroduciria el pisado.
+            if (!Object.hasOwn(change, "previous") || !Object.hasOwn(change, "next")) return;
+            entries.push(...planTaskAssignmentEntries({ moduleId, previousRaw, nextRaw }));
+            return;
+        }
 
         // Que esta sesion NO TENGA la clave no significa que haya que borrarla
         // para todos.
@@ -469,6 +490,11 @@ function applyMapStateEntries(snapshot, storageKey, entries, start, end) {
     for (let position = start; position < end; position++) {
         const entry = entries[position];
         const itemKey = String(entry.itemKey || "");
+
+        if (storageKey === TASK_ASSIGNMENTS_KEY && entry.taskPatch) {
+            map[itemKey] = applyTaskAssignmentPatch(map[itemKey], entry.taskPatch);
+            continue;
+        }
 
         if (entry.deleted) {
             delete map[itemKey];

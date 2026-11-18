@@ -27,6 +27,14 @@ import {
     planPartialStateEntries
 } from "./firebasePartialState.js";
 import { assessFirestoreDocumentHealth } from "./firestoreDocumentHealth.js";
+import { guardAuditLogCancellations } from "./auditLogCancellation.js";
+import {
+    TASK_ASSIGNMENTS_KEY,
+    TASK_ASSIGNMENT_WRITER_SCHEMA_VERSION,
+    acknowledgeTaskAssignmentPatch,
+    guardTaskAssignmentEntry,
+    mergeTaskAssignmentEntries
+} from "./taskAssignmentSync.js";
 import {
     isRemoteDiscrepant,
     isSyncStale,
@@ -135,6 +143,12 @@ let remoteQueueOldestAt = 0;
 let entryLastUserActivityAt = Date.now();
 let pendingEntriesOldestAt = 0;
 let servicesCache = null;
+// Un flush manual y la cola automatica pueden coincidir. Mantener el orden de
+// los envios de tareas evita que un envio local antiguo confirme DESPUES del nuevo.
+let taskAssignmentCommitQueue = Promise.resolve();
+// Ultima version confirmada, sin comparar el reloj del equipo con el servidor.
+let taskAssignmentServerDocument = null;
+let taskAssignmentWriteSequence = 0;
 let onStateChanged = () => {};
 let syncGeneration = 0;
 const lastAppliedHashes = new Map();
@@ -480,7 +494,9 @@ export function normalizeQueuedStateEntries(entries = []) {
                     storageKey,
                     itemKey: decodePartialStateItemKey(itemKey),
                     value: items[itemKey],
-                    deleted: deletedItems[itemKey] === true
+                    deleted: deletedItems[itemKey] === true,
+                    ...(entry.taskPatches?.[itemKey]
+                        ? { taskPatch: entry.taskPatches[itemKey] } : {})
                 }));
             }
 
@@ -489,7 +505,8 @@ export function normalizeQueuedStateEntries(entries = []) {
                 storageKey,
                 itemKey: String(entry.itemKey || ""),
                 value: entry.value,
-                deleted: entry.deleted === true
+                deleted: entry.deleted === true,
+                ...(entry.taskPatch ? { taskPatch: entry.taskPatch } : {})
             })];
         });
 }
@@ -531,6 +548,8 @@ export function isRemoteStateEntryStaleForLocalChange(
 
 function cleanupLocalDirtyStateEntries(now = Date.now()) {
     localDirtyStateEntries.forEach((record, id) => {
+        // Un delta de tareas sin acuse sigue pendiente aunque pase media hora.
+        if (record.entry.taskPatch) return;
         if (
             Number(now) - Number(record.changedAt || 0) >
             LOCAL_ENTRY_PROTECTION_MS
@@ -544,8 +563,10 @@ function rememberLocalStateEntries(entries = [], changedAt = Date.now()) {
     cleanupLocalDirtyStateEntries(changedAt);
 
     normalizeQueuedStateEntries(entries).forEach(entry => {
-        localDirtyStateEntries.set(remoteEntryId(entry), {
-            entry,
+        const id = remoteEntryId(entry);
+        const previous = localDirtyStateEntries.get(id);
+        localDirtyStateEntries.set(id, {
+            entry: mergeTaskAssignmentEntries(previous?.entry, entry),
             changedAt
         });
     });
@@ -628,6 +649,13 @@ export function settleDelay(elapsedMs) {
 }
 
 function mergeLocalDirtyStateEntries(snapshot = {}, moduleId = "") {
+    if ((!moduleId || moduleId === "tasks") && taskAssignmentServerDocument) {
+        const stored = taskAssignmentServerDocument;
+        const confirmed = {};
+        if (Object.hasOwn(stored, "value") && !stored.deleted) confirmed[TASK_ASSIGNMENTS_KEY] = stored.value;
+        mergePartialStateEntries(confirmed, normalizeQueuedStateEntries([stored]));
+        if (Object.hasOwn(confirmed, TASK_ASSIGNMENTS_KEY)) snapshot[TASK_ASSIGNMENTS_KEY] = confirmed[TASK_ASSIGNMENTS_KEY];
+    }
     const entries = locallyProtectedEntries(moduleId);
 
     if (!entries.length) return snapshot;
@@ -639,6 +667,10 @@ function shouldApplyRemoteStateEntry(entry = {}) {
     const id = remoteEntryId(entry);
     const localChange = localDirtyStateEntries.get(id);
 
+    if (entry.storageKey === TASK_ASSIGNMENTS_KEY) {
+        // La revision viene de la transaccion, nunca del reloj del navegador.
+        return Number(entry.taskRevision || 0) >= Number(taskAssignmentServerDocument?.taskRevision || 0);
+    }
     if (!localChange) return true;
 
     if (isRemoteStateEntryStaleForLocalChange(entry, localChange)) {
@@ -1044,7 +1076,7 @@ function scheduleEntrySync(delay = ENTRY_SYNC_DELAY_MS, options = {}) {
     );
 }
 
-function queueGroupedPartialStateEntries(entries = []) {
+function queueGroupedPartialStateEntries(entries = [], { older = false } = {}) {
     normalizeQueuedStateEntries(entries).forEach(entry => {
         const id = [
             entry.moduleId,
@@ -1052,7 +1084,10 @@ function queueGroupedPartialStateEntries(entries = []) {
             entry.itemKey || ""
         ].join("\u001e");
 
-        pendingStateEntries.set(id, entry);
+        const existing = pendingStateEntries.get(id);
+        pendingStateEntries.set(id, older && existing
+            ? mergeTaskAssignmentEntries(entry, existing)
+            : mergeTaskAssignmentEntries(existing, entry));
     });
 
     // Igual que en la cola de bajada: la marca es de la entrada mas antigua sin
@@ -1257,12 +1292,29 @@ async function commitPartialStateFields(
     await batch.commit();
 }
 
-async function commitPartialStateSlice(
+export function commitPartialStateSlice(db, firestoreModule, workspaceId, entries) {
+    if (!entries.some(entry => entry.storageKey === TASK_ASSIGNMENTS_KEY)) {
+        return commitPartialStateSliceNow(db, firestoreModule, workspaceId, entries);
+    }
+    const generation = syncGeneration;
+    const task = taskAssignmentCommitQueue.catch(() => undefined).then(() => {
+        // El destino se capturo al pedir el envio; cambiar de unidad no borra
+        // la intencion ni cambia su destino. El acuse no toca la sesion nueva.
+        return commitPartialStateSliceNow(db, firestoreModule, workspaceId, entries, generation);
+    });
+    taskAssignmentCommitQueue = task.catch(() => undefined);
+    return task;
+}
+
+async function commitPartialStateSliceNow(
     db,
     firestoreModule,
     workspaceId,
-    entries
+    entries,
+    generation = syncGeneration
 ) {
+    const taskWriteId = globalThis.crypto?.randomUUID?.() ||
+        `${getClientId()}:${++taskAssignmentWriteSequence}:${Math.random().toString(36).slice(2)}`;
     const refs = entries.map(entry => firestoreModule.doc(
         moduleEntriesCollection(
             db,
@@ -1273,13 +1325,13 @@ async function commitPartialStateSlice(
         entryDocId(entry.storageKey)
     ));
     try {
-        await firestoreModule.runTransaction(db, async transaction => {
+        const committed = await firestoreModule.runTransaction(db, async transaction => {
             // Firestore exige hacer todas las lecturas antes de la primera escritura.
             const snapshots = await Promise.all(
                 refs.map(ref => transaction.get(ref))
             );
 
-            entries.forEach((entry, index) => {
+            return entries.map((entry, index) => {
                 const current = snapshots[index].exists()
                     ? snapshots[index].data()
                     : {};
@@ -1293,15 +1345,49 @@ async function commitPartialStateSlice(
                         current
                     );
                 }
+                guardedEntry = guardTaskAssignmentEntry(guardedEntry, current);
+                guardedEntry = guardAuditLogCancellations(guardedEntry, current);
                 const payload = partialStateDocumentPayload(
                     guardedEntry,
                     firestoreModule,
                     current
                 );
+                if (entry.storageKey === TASK_ASSIGNMENTS_KEY) {
+                    payload.writerSchemaVersion = TASK_ASSIGNMENT_WRITER_SCHEMA_VERSION;
+                    payload.taskRevision = Number.isSafeInteger(current.taskRevision) ? current.taskRevision + 1 : 1;
+                    payload.taskWriteId = taskWriteId;
+                }
 
                 transaction.set(refs[index], payload, { merge: true });
+                return { sent: entry, payload, document: { ...current, ...payload } };
             });
         });
+        // Solo despues de confirmar, nunca dentro del callback reintentable.
+        if (workspaceId === activeWorkspaceId && generation === syncGeneration) {
+            for (const { sent, document } of committed) {
+                if (sent.storageKey !== TASK_ASSIGNMENTS_KEY) continue;
+                rememberTaskAssignmentServerDocument(document);
+                for (const entry of normalizeQueuedStateEntries([sent])) {
+                    const id = remoteEntryId(entry);
+                    const record = localDirtyStateEntries.get(id);
+                    if (!record?.entry.taskPatch) continue;
+                    const remaining = acknowledgeTaskAssignmentPatch(record.entry.taskPatch, entry.taskPatch);
+                    if (Object.keys(remaining).length) {
+                        localDirtyStateEntries.set(id, { ...record, entry: { ...record.entry, taskPatch: remaining } });
+                    } else localDirtyStateEntries.delete(id);
+                }
+                try {
+                    applyRemoteStateEntries([{ moduleId: "tasks", storageKey: TASK_ASSIGNMENTS_KEY,
+                        itemKey: "", value: "{}", taskRevision: document.taskRevision }]);
+                } catch (error) {
+                    // La escritura YA confirmo. Un fallo de vista no autoriza
+                    // a reenviar operaciones antiguas como si no se guardaron.
+                    dispatchStatus({ type: "app-state-error",
+                        message: "Los cambios se guardaron, pero no se pudo actualizar la vista. Recarga la pagina.",
+                        error: error?.message || String(error) });
+                }
+            }
+        }
     } catch (error) {
         recordPerformanceEvent("firebase-app-state:transaction-fallback", {
             type: "firebase",
@@ -1310,7 +1396,9 @@ async function commitPartialStateSlice(
         });
         if (entries.some(entry =>
             entry.storageKey === "replacements" ||
-            entry.storageKey === "memos"
+            entry.storageKey === "memos" ||
+            entry.storageKey === "auditLog" ||
+            entry.storageKey === TASK_ASSIGNMENTS_KEY
         )) {
             throw error;
         }
@@ -1328,7 +1416,8 @@ async function commitPartialStateDocumentsNow(
     documents = [],
     {
         workspaceId = activeWorkspaceId,
-        reason = "manual-flush"
+        reason = "manual-flush",
+        committedDocuments = new Set()
     } = {}
 ) {
     if (!workspaceId || !documents.length) return;
@@ -1354,7 +1443,21 @@ async function commitPartialStateDocumentsNow(
                 asyncThreshold: 120
             }
         );
+        documents.forEach(entry => committedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`));
     } catch (error) {
+        if (documents.length > 1) {
+            // Un documento corrupto no debe bloquear el resto del guardado.
+            // La transaccion fallida no confirmo ninguno; se aislan por clave.
+            let firstError = null;
+            for (const entry of documents) {
+                try {
+                    await commitPartialStateSlice(db, firestoreModule, workspaceId, [entry]);
+                    committedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`);
+                } catch (isolatedError) { firstError ||= isolatedError; }
+            }
+            if (!firstError) return;
+            error = firstError;
+        }
         // Diagnostico: si Firestore rechaza por tamano de payload (o "Transaction
         // too big"), adjuntamos que claves/modulos son los mas pesados para
         // ubicar el origen.
@@ -1398,6 +1501,21 @@ function isStoredListRaw(raw) {
     }
 }
 
+function acknowledgePendingStateEntries(entries) {
+    entries.forEach(entry => {
+        const id = pendingStateEntryId(entry);
+        const pending = pendingStateEntries.get(id);
+        if (entry.taskPatch && pending?.taskPatch) {
+            const remaining = acknowledgeTaskAssignmentPatch(pending.taskPatch, entry.taskPatch);
+            if (Object.keys(remaining).length) {
+                pendingStateEntries.set(id, { ...pending, taskPatch: remaining });
+                return;
+            }
+        } else if (pending && remoteEntrySignature(pending) !== remoteEntrySignature(entry)) return;
+        pendingStateEntries.delete(id);
+    });
+}
+
 export async function flushPendingFirebaseAppStateEntries({
     keys = [],
     changes = {},
@@ -1410,6 +1528,8 @@ export async function flushPendingFirebaseAppStateEntries({
             reason: "no-workspace"
         };
     }
+    const workspaceId = activeWorkspaceId;
+    const generation = syncGeneration;
 
     const stateKeys = Array.from(new Set(
         (Array.isArray(keys) ? keys : [keys])
@@ -1432,7 +1552,7 @@ export async function flushPendingFirebaseAppStateEntries({
     // cambios reales de una lista ya estan en la cola desde que se hicieron.
     const planKeys = stateKeys.filter(key =>
         Object.prototype.hasOwnProperty.call(changes || {}, key) ||
-        !isStoredListRaw(getRaw(key, null))
+        (key !== TASK_ASSIGNMENTS_KEY && !isStoredListRaw(getRaw(key, null)))
     );
     const planned = planPartialStateEntries({
         keys: planKeys,
@@ -1445,8 +1565,8 @@ export async function flushPendingFirebaseAppStateEntries({
         .filter(entry => stateKeySet.has(entry.storageKey))
         .filter(entry => canWriteModule(entry.moduleId));
     const writable = [
-        ...planned,
-        ...queued
+        ...queued,
+        ...planned
     ];
 
     // Solo listas y nada en cola ni en camino: lo que hay que confirmar ya esta
@@ -1472,14 +1592,16 @@ export async function flushPendingFirebaseAppStateEntries({
     }
 
     const documents = groupPartialStateEntries(writable);
+    const committedDocuments = new Set();
 
     try {
         rememberLocalStateEntries(writable);
-        await commitPartialStateDocumentsNow(documents, { reason });
+        await commitPartialStateDocumentsNow(documents, { reason, workspaceId, committedDocuments });
+        if (workspaceId !== activeWorkspaceId || generation !== syncGeneration) {
+            return { flushed: true, count: writable.length, documentCount: documents.length, reason: "saved-origin-workspace" };
+        }
 
-        writable.forEach(entry => {
-            pendingStateEntries.delete(pendingStateEntryId(entry));
-        });
+        acknowledgePendingStateEntries(writable);
 
         if (!pendingStateEntries.size) {
             pendingEntriesOldestAt = 0;
@@ -1497,8 +1619,11 @@ export async function flushPendingFirebaseAppStateEntries({
             documentCount: documents.length
         };
     } catch (error) {
-        queueGroupedPartialStateEntries(writable);
-        scheduleEntrySync(0, { urgent: true });
+        if (workspaceId === activeWorkspaceId && generation === syncGeneration) {
+            acknowledgePendingStateEntries(writable.filter(entry => committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)));
+            queueGroupedPartialStateEntries(writable.filter(entry => !committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)), { older: true });
+            scheduleEntrySync(0, { urgent: true });
+        }
         throw error;
     }
 }
@@ -1529,6 +1654,7 @@ async function flushPartialStateEntries() {
     }
 
     const workspaceId = activeWorkspaceId;
+    const generation = syncGeneration;
     const pending = [...pendingStateEntries.values()];
     pendingStateEntries.clear();
 
@@ -1553,6 +1679,8 @@ async function flushPartialStateEntries() {
 
     entrySyncInFlight = true;
     const documents = groupPartialStateEntries(writable);
+    const committedDocuments = new Set();
+    let isolatedError = null;
 
     try {
         const { db, firestoreModule } = await services();
@@ -1562,12 +1690,12 @@ async function flushPartialStateEntries() {
             offset < documents.length;
             offset += ENTRY_BATCH_SIZE
         ) {
-            if (workspaceId !== activeWorkspaceId) return;
+            if (workspaceId !== activeWorkspaceId || generation !== syncGeneration) return;
 
             const deferredDelay = urgent ? 0 : firebaseStateInteractiveDelay();
 
             if (deferredDelay > 0) {
-                queueGroupedPartialStateEntries(documents.slice(offset));
+                queueGroupedPartialStateEntries(documents.slice(offset), { older: true });
                 recordPerformanceEvent("firebase-app-state:commit-deferred", {
                     type: "firebase",
                     reason: "user-active-before-slice",
@@ -1583,6 +1711,7 @@ async function flushPartialStateEntries() {
                 offset + ENTRY_BATCH_SIZE
             );
 
+            try {
             await measurePerformance(
                 "firebase-app-state:commit-entries",
                 () => commitPartialStateSlice(
@@ -1602,6 +1731,13 @@ async function flushPartialStateEntries() {
                     asyncThreshold: 120
                 }
             );
+            slice.forEach(entry => committedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`));
+            } catch (error) {
+                isolatedError ||= error;
+                queueGroupedPartialStateEntries(slice, { older: true });
+                dispatchStatus({ type: "app-state-error", keys: slice.map(entry => entry.storageKey),
+                    message: error.message || "No se pudo guardar ese documento." });
+            }
 
             if (offset + ENTRY_BATCH_SIZE < documents.length) {
                 const visible =
@@ -1610,7 +1746,7 @@ async function flushPartialStateEntries() {
 
                 if (shouldDeferFirebaseEntrySlice({ urgent, visible })) {
                     queueGroupedPartialStateEntries(
-                        documents.slice(offset + ENTRY_BATCH_SIZE)
+                        documents.slice(offset + ENTRY_BATCH_SIZE), { older: true }
                     );
                     recordPerformanceEvent("firebase-app-state:commit-deferred", {
                         type: "firebase",
@@ -1633,20 +1769,18 @@ async function flushPartialStateEntries() {
             }
         }
 
+        if (isolatedError) throw isolatedError;
         dispatchStatus({
             type: "app-state-entries-saved",
             count: writable.length
         });
         markServerSync();
     } catch (error) {
-        writable.forEach(entry => {
-            const id = [
-                entry.moduleId,
-                entry.storageKey,
-                entry.itemKey || ""
-            ].join("\u001e");
-            pendingStateEntries.set(id, entry);
-        });
+        if (workspaceId !== activeWorkspaceId || generation !== syncGeneration) return;
+        // Lo fallido es anterior a lo editado mientras esperaba la red.
+        queueGroupedPartialStateEntries(writable.filter(entry =>
+            !committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)
+        ), { older: true });
         dispatchStatus({
             type: "app-state-error",
             message: error.message || "Error guardando cambios parciales"
@@ -1796,9 +1930,18 @@ async function readRemoteModuleSnapshot(
     };
 }
 
-function stateEntriesFromDoc(docSnap) {
+function rememberTaskAssignmentServerDocument(data) {
+    if (data.storageKey !== TASK_ASSIGNMENTS_KEY) return;
+    if (Number(data.taskRevision || 0) < Number(taskAssignmentServerDocument?.taskRevision || 0)) return;
+    taskAssignmentServerDocument = data;
+}
+
+function stateEntriesFromDoc(docSnap, workspaceId = activeWorkspaceId, generation = syncGeneration) {
     observeStateDocumentHealth(docSnap);
     const data = docSnap.data() || {};
+    if (workspaceId === activeWorkspaceId && generation === syncGeneration && !docSnap.metadata?.hasPendingWrites) {
+        rememberTaskAssignmentServerDocument(data);
+    }
     const updatedAtMillis =
         typeof data.updatedAt?.toMillis === "function"
             ? data.updatedAt.toMillis()
@@ -1810,6 +1953,7 @@ function stateEntriesFromDoc(docSnap) {
         updatedAtISO: String(data.updatedAtISO || ""),
         updatedAtMillis
     };
+    if (data.storageKey === TASK_ASSIGNMENTS_KEY) base.taskRevision = Number(data.taskRevision || 0);
 
     if (!base.storageKey) return [];
 
@@ -1861,6 +2005,7 @@ async function readRemoteModuleEntries(
     workspaceId,
     moduleId
 ) {
+    const generation = syncGeneration;
     const { db, firestoreModule } = await services();
     const collectionRef = moduleEntriesCollection(
         db,
@@ -1895,7 +2040,7 @@ async function readRemoteModuleEntries(
         // Cada documento expande cientos de `items`; ceder entre documentos
         // evita convertir toda la pagina en una sola tarea larga del navegador.
         for (const docSnap of snap.docs) {
-            const documentEntries = stateEntriesFromDoc(docSnap)
+            const documentEntries = stateEntriesFromDoc(docSnap, workspaceId, generation)
                 .filter(entry => entry.storageKey);
 
             entries.push(...documentEntries);
@@ -1944,6 +2089,7 @@ function applyRemoteStateEntries(entries = []) {
                 snapshot[key] = getRaw(key, null);
             });
             mergePartialStateEntries(snapshot, applicableEntries);
+            if (storageKeys.has(TASK_ASSIGNMENTS_KEY)) mergeLocalDirtyStateEntries(snapshot, "tasks");
             const patch = {};
             storageKeys.forEach(key => {
                 patch[key] = Object.prototype.hasOwnProperty.call(
@@ -2818,6 +2964,7 @@ export async function startFirebaseAppStateSync(
 }
 
 export function stopFirebaseAppStateSync() {
+    taskAssignmentServerDocument = null;
     deferredPendingModules = new Set();
     deferredHydrations = new Map();
     hydrateDeferred = null;
@@ -2866,6 +3013,23 @@ export function stopFirebaseAppStateSync() {
     syncGeneration++;
 }
 
+export function queueFirebasePersistenceChanges(detail = {}) {
+    const keys = (detail.keys || []).filter(key => !isInternalKey(key));
+    for (const key of keys) {
+        try {
+            queuePartialStateEntries(planPartialStateEntries({
+                keys: [key], changes: detail.changes || {},
+                readRaw: storageKey => getRaw(storageKey, null), moduleForKey: stateModuleForKey
+            }), { urgent: isWorkerCalendarUrgentStateKey(key) });
+        } catch (error) {
+            dispatchStatus({ type: "app-state-error", keys: [key],
+                message: "No se pudo preparar el guardado. Esos cambios siguen solo en este equipo.",
+                error: error?.message || String(error) });
+            recordPerformanceEvent("firebase-app-state:plan-error", { storageKey: key, error: error?.message || String(error) });
+        }
+    }
+}
+
 if (typeof window !== "undefined") {
     [
         "pointerdown",
@@ -2896,21 +3060,6 @@ if (typeof window !== "undefined") {
     });
 
     window.addEventListener("proturnos:persistenceChanged", event => {
-        const keys = event.detail?.keys || [];
-        const stateKeys = keys.filter(key => !isInternalKey(key));
-
-        if (!stateKeys.length) return;
-
-        queuePartialStateEntries(
-            planPartialStateEntries({
-                keys: stateKeys,
-                changes: event.detail?.changes || {},
-                readRaw: key => getRaw(key, null),
-                moduleForKey: stateModuleForKey
-            }),
-            {
-                urgent: stateKeys.some(isWorkerCalendarUrgentStateKey)
-            }
-        );
+        queueFirebasePersistenceChanges(event.detail);
     });
 }

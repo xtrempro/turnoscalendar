@@ -12,6 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
+import { guardTaskAssignmentEntry } from "../js/taskAssignmentSync.js";
 
 const require = createRequire(import.meta.url);
 
@@ -173,7 +174,8 @@ function subir(firestore, storageKey, antes, despues) {
         moduleForKey: stateModuleForKey
     });
 
-    groupPartialStateEntries(entries).forEach(grupo => {
+    groupPartialStateEntries(entries).forEach(planned => {
+        const grupo = guardTaskAssignmentEntry(planned, firestore.docs.get(storageKey) || {});
         const payload = { storageKey: grupo.storageKey };
 
         if (Object.keys(grupo.items).length) {
@@ -345,26 +347,25 @@ test("un objeto se parte por sus claves, no viaja entero", () => {
     assert.deepEqual(entries.map(entry => entry.itemKey), ["allowSwaps"]);
 });
 
-test("la asignacion de tareas tambien se parte: dos supervisores no se pisan", () => {
-    // Es el ejemplo que preocupaba: guarda un objeto, no una lista.
+test("asignaciones en semanas diferentes conservan ambas ediciones", () => {
     const firestore = crearFirestore();
     const CLAVE = "weekly_task_assignment_entries";
-    const original = JSON.stringify({ "sem1": { tarea: "A" } });
+    const original = JSON.stringify({ "sem1": { tarea: { workers: ["A"] } } });
 
     subir(firestore, CLAVE, original, JSON.stringify({
-        "sem1": { tarea: "A" },
-        "sem2": { tarea: "ANA" }
+        "sem1": { tarea: { workers: ["A"] } },
+        "sem2": { tarea: { workers: ["ANA"] } }
     }));
     subir(firestore, CLAVE, original, JSON.stringify({
-        "sem1": { tarea: "A" },
-        "sem3": { tarea: "BETO" }
+        "sem1": { tarea: { workers: ["A"] } },
+        "sem3": { tarea: { workers: ["BETO"] } }
     }));
 
     const resultado = JSON.parse(leer(firestore, CLAVE, original));
 
     assert.deepEqual(Object.keys(resultado).sort(), ["sem1", "sem2", "sem3"]);
-    assert.equal(resultado.sem2.tarea, "ANA");
-    assert.equal(resultado.sem3.tarea, "BETO");
+    assert.deepEqual(resultado.sem2.tarea.workers, ["ANA"]);
+    assert.deepEqual(resultado.sem3.tarea.workers, ["BETO"]);
 });
 
 test("un valor escalar no se parte: no hay nada que partir", () => {
@@ -644,8 +645,8 @@ test("asignacion de tareas y calendario son documentos distintos", () => {
     subir(
         firestore,
         "weekly_task_assignment_entries",
-        JSON.stringify({ a: 1 }),
-        JSON.stringify({ a: 2 })
+        JSON.stringify({ sem1: { tarea: { workers: ["ANA"] } } }),
+        JSON.stringify({ sem1: { tarea: { workers: ["BETO"] } } })
     );
     subir(
         firestore,

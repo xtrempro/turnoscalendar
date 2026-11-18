@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TURNO } from "../js/constants.js";
+import { applyTaskAssignmentPatch, diffTaskAssignmentWeek } from "../js/taskAssignmentSync.js";
 
 function createMemoryStorage() {
     const entries = new Map();
@@ -49,6 +50,27 @@ function scheduleForWeek() {
 function taskTitles(projected, iso) {
     return projected.days[iso].taskAssignments?.map(item => item.title) || [];
 }
+
+test("altas concurrentes al cierre o fusion siguen visibles en la proyeccion PWA",async()=>{
+    globalThis.localStorage=createMemoryStorage();
+    const {addTaskAssignmentsToSchedule}=await import("../js/taskAssignmentProjection.js");
+    const owner="day|rx|2026-6-20",child="day|tac|2026-6-20";
+    const initial={ [owner]:{workers:["ANA"]},[child]:{workers:["BETO"]} };
+    setJSON("weekly_task_assignment_tasks",[
+        {id:"rx",title:"RX",shift:"both",order:0},
+        {id:"tac",title:"TAC",shift:"both",order:1}
+    ]);
+    setJSON("baseData_DIEGO",{"2026-6-20":TURNO.LARGA});
+    const merged={ [owner]:{workers:["ANA","BETO"],mergedNextTaskId:"tac"} };
+    const withDiego=applyTaskAssignmentPatch(applyTaskAssignmentPatch(initial,diffTaskAssignmentWeek(initial,merged)),
+        diffTaskAssignmentWeek(initial,{...initial,[child]:{workers:["BETO","DIEGO"]}}));
+    setJSON("weekly_task_assignment_entries",{"2026-07-20":withDiego});
+    assert.deepEqual(taskTitles(addTaskAssignmentsToSchedule({name:"DIEGO"},scheduleForWeek()),"2026-07-20"),["RX","TAC"]);
+    const closed=applyTaskAssignmentPatch({[owner]:{workers:["ANA","DIEGO"]}},
+        diffTaskAssignmentWeek({[owner]:{workers:["ANA"]}},{[owner]:{workers:[],closed:true}}));
+    setJSON("weekly_task_assignment_entries",{"2026-07-20":closed});
+    assert.deepEqual(taskTitles(addTaskAssignmentsToSchedule({name:"DIEGO"},scheduleForWeek()),"2026-07-20"),["RX"]);
+});
 
 test("proyecta tareas predefinidas para cada turno y solo diurnos habiles", async () => {
     globalThis.localStorage = createMemoryStorage();

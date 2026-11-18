@@ -67,6 +67,17 @@ export function plainDocument(document) {
     );
 }
 
+export function firestorePatchWrite(name, fields, updateMask, updateTime, options = {}) {
+    const timestamps = options.serverTimestampFields || [];
+    return {
+        update: { name, fields },
+        updateMask: { fieldPaths: updateMask.filter(field => !timestamps.includes(field)) },
+        ...(updateTime ? { currentDocument: { updateTime } }
+            : options.mustNotExist ? { currentDocument: { exists: false } } : {}),
+        updateTransforms: timestamps.map(fieldPath => ({ fieldPath, setToServerValue: "REQUEST_TIME" }))
+    };
+}
+
 export async function createFirestoreRestClient(projectId) {
     const auth = firebaseToolsModule("auth.js");
     const account = auth.getProjectDefaultAccount(process.cwd()) ||
@@ -115,6 +126,13 @@ export async function createFirestoreRestClient(projectId) {
         updateTime = "",
         options = {}
     ) {
+        if (options.serverTimestampFields?.length) {
+            const name = `${root.split("/v1/")[1]}/${documentPath}`;
+            return request(`${root}:commit`, {
+                method: "POST",
+                body: JSON.stringify({ writes: [firestorePatchWrite(name, fields, updateMask, updateTime, options)] })
+            });
+        }
         const url = new URL(documentUrl(documentPath));
 
         updateMask.forEach(fieldPath =>

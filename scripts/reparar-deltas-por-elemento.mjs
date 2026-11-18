@@ -1,3 +1,7 @@
+// Mantenimiento legado: solo inspeccion. --apply esta deshabilitado porque
+// reemplaza value y borra items sin control de concurrencia, incluso en tasks.
+// La credencial REST usa IAM; las reglas de clientes no protegen esta ruta.
+//
 // Repara los documentos de deltas que quedaron en formato "por elemento" sin
 // que el cliente supiera leerlos.
 //
@@ -14,7 +18,7 @@
 //
 // Uso:
 //   node scripts/reparar-deltas-por-elemento.mjs --workspace <ws>
-//   node scripts/reparar-deltas-por-elemento.mjs --workspace <ws> --apply
+//   --apply: bloqueado; una reparacion nueva requiere deltas o CAS revisados.
 //
 // Sin --apply solo muestra que haria. Con --all recorre todos los entornos.
 
@@ -33,6 +37,7 @@ const arg = (name) => {
 const PROJECT_ID = arg("--project") || "calendarioturnos-7c4d9";
 const WORKSPACE = arg("--workspace");
 const APPLY = args.includes("--apply");
+if (APPLY) throw new Error("Rescate de tareas en solo lectura: --apply esta deshabilitado porque esta reparacion reemplaza documentos completos. Usar una reparacion por deltas o CAS revisada.");
 const ALL = args.includes("--all");
 
 const ROOT = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}` +
@@ -181,7 +186,7 @@ async function main() {
         process.exit(1);
     }
 
-    console.log(`proyecto ${PROJECT_ID}${APPLY ? "" : "   (simulacion: agrega --apply para escribir)"}\n`);
+    console.log(`proyecto ${PROJECT_ID}   (solo lectura; escritura antigua deshabilitada)\n`);
 
     let reparados = 0;
 

@@ -1,3 +1,5 @@
+// Mantenimiento legado: --apply deshabilitado desde el protocolo de tareas v2.
+// Solo se conserva la inspeccion; la reposicion requiere una herramienta por deltas.
 // Repara las semanas que perdieron sus casillas cuando el supervisor BORRO y
 // RECREO tareas con el mismo nombre (2026-09-07/08 en Imagenologia): al morir
 // la tarea vieja se llevo sus asignaciones, y las nuevas nacieron con otro id.
@@ -28,6 +30,7 @@ function arg(name, fallback = "") {
 }
 
 const APPLY = process.argv.includes("--apply");
+if (APPLY) throw new Error("Rescate de tareas en solo lectura: --apply esta deshabilitado porque reemplaza semanas completas. Usar una reparacion por deltas revisada.");
 const PROJECT_ID = arg("--project", "calendarioturnos-7c4d9");
 const WORKSPACE_ID = arg("--workspace", "Boh7mvO5ku9quFFsPcIq");
 const SNAP_DIR = arg("--snapshots", ".");
@@ -246,7 +249,7 @@ async function main() {
     }
 
     if (!APPLY) {
-        console.log("\nSOLO LECTURA. Para reparar: --apply");
+        console.log("\nSOLO LECTURA. La reparacion directa esta deshabilitada (solo lectura).");
         return;
     }
 

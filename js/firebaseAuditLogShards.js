@@ -8,6 +8,7 @@ import {
 import { encodePartialStateItemKey } from "./firebasePartialState.js";
 import { recordPerformanceEvent } from "./performanceMonitor.js";
 import { cacheFirebaseAuditLogShardEntries } from "./firebaseAuditLogShardReader.js";
+import { preserveAuditLogCancellation } from "./auditLogCancellation.js";
 
 const SHADOW_STORAGE_MODES = new Set([
     "shards-shadow-v1",
@@ -99,7 +100,9 @@ async function writeShardGroups(workspaceId, groups, expectedGeneration) {
                 const items = { ...(current.items || {}) };
 
                 group.logs.forEach(log => {
-                    items[encodePartialStateItemKey(log.id)] = JSON.stringify(log);
+                    const key = encodePartialStateItemKey(log.id);
+                    const previous = items[key] ? JSON.parse(items[key]) : null;
+                    items[key] = JSON.stringify(preserveAuditLogCancellation(log, previous));
                 });
 
                 transaction.set(refs[index], {

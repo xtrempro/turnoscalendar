@@ -1,3 +1,5 @@
+// Mantenimiento legado: --apply deshabilitado desde el protocolo de tareas v2.
+// Solo se conserva la inspeccion; la reposicion requiere una herramienta por deltas.
 // Rescate de las asignaciones borradas, con Point-in-Time Recovery.
 //
 // OJO con el formato: la entrada `weekly_task_assignment_entries` guarda el
@@ -29,6 +31,7 @@ function arg(name, fallback = "") {
 }
 
 const APPLY = process.argv.includes("--apply");
+if (APPLY) throw new Error("Rescate de tareas en solo lectura: --apply esta deshabilitado porque reemplaza semanas completas. Usar una reparacion por deltas revisada.");
 const PROJECT_ID = arg("--project", "calendarioturnos-7c4d9");
 const WORKSPACE_ID = arg("--workspace", "Boh7mvO5ku9quFFsPcIq");
 const FROM = arg("--desde", "2026-09-03T16:50:00Z");
@@ -195,7 +198,7 @@ async function main() {
     console.log(`Respaldo de las semanas buenas en ${OUT}`);
 
     if (!APPLY) {
-        console.log("\nSOLO LECTURA. Para reponer: --apply");
+        console.log("\nSOLO LECTURA. La reposicion directa esta deshabilitada (solo lectura).");
         return;
     }
 

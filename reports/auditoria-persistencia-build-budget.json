@@ -1,0 +1,14 @@
+{
+  "headCommit": "7b07bbb",
+  "current": {
+    "file": "app-NAPMOYQ2.js",
+    "rawBytes": 2347026
+  },
+  "head": {
+    "file": "app-XDNHJQIX.js",
+    "rawBytes": 2340918
+  },
+  "deltaBytes": 6108,
+  "deltaPercent": 0.26,
+  "configuredMaximumBytes": 841559
+}
