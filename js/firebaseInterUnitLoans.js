@@ -49,19 +49,51 @@ function assignmentToReplacement(assignment) {
     };
 }
 
-function applyLoanAssignments(snapshot) {
-    const activeAssignments = snapshot.docs
-        .map(docSnap => ({
-            loanId: docSnap.id,
-            ...docSnap.data()
-        }))
+/**
+ * Los prestamos de la lista son una PROYECCION de `loanAssignments`, y cada
+ * cambio se publica. Solo se proyecta la coleccion completa CONFIRMADA por el
+ * servidor. Un snapshot de cache no se usa para nada:
+ *   - vacio (abrir sin red) publicaba la baja de cada prestamo;
+ *   - atrasado con un "canceled" viejo borraba un prestamo RECREADO con el
+ *     mismo id (el id sale de unidad + trabajador + fecha);
+ *   - atrasado con un "active" viejo volvia a poner uno ya retirado.
+ * (auditoria fase 0 y revision del diseno, P2-1.) Sin red, un prestamo nuevo
+ * aparece al reconectar; ninguno se pierde.
+ */
+export function planLoanAssignments(current = [], snapshot = {}) {
+    if (snapshot.metadata?.fromCache !== false) return current;
+
+    const assignments = (snapshot.docs || []).map(docSnap => ({
+        loanId: docSnap.id,
+        ...docSnap.data()
+    }));
+    const active = new Map(assignments
         .filter(assignment => assignment.status === "active")
-        .map(assignmentToReplacement);
+        .map(assignment => {
+            const replacement = assignmentToReplacement(assignment);
+            return [replacement.id, replacement];
+        }));
+    const next = [];
+
+    for (const replacement of current) {
+        if (replacement?.source !== INTER_UNIT_SOURCE) {
+            next.push(replacement);
+            continue;
+        }
+        // Coleccion completa del servidor: si no esta activo, ya no va.
+        if (active.has(replacement.id)) {
+            next.push(active.get(replacement.id));
+            active.delete(replacement.id);
+        }
+    }
+
+    next.push(...active.values());
+    return next;
+}
+
+function applyLoanAssignments(snapshot) {
     const current = getReplacements();
-    const local = current.filter(replacement =>
-        replacement?.source !== INTER_UNIT_SOURCE
-    );
-    const next = [...local, ...activeAssignments];
+    const next = planLoanAssignments(current, snapshot);
 
     if (JSON.stringify(current) === JSON.stringify(next)) return;
 
@@ -139,6 +171,9 @@ export async function startInterUnitLoanSync(workspace) {
                 workspaceId,
                 "loanAssignments"
             ),
+            // Sin esto, si la cache y el servidor coinciden no llega el aviso
+            // de "ya confirmado" y una baja pendiente no se aplicaria nunca.
+            { includeMetadataChanges: true },
             snapshot => {
                 if (generation !== syncGeneration) return;
                 applyLoanAssignments(snapshot);
