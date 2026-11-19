@@ -150,6 +150,55 @@ export function decodePartialStateItemKey(itemKey) {
     }
 }
 
+// Listas que NUNCA se publican enteras (`value`) ni se borran como clave
+// completa. `replacements` vive en UN documento de Firestore que ronda los
+// 770 KB en `items`: una copia entera encima (merge) lo llevaria a ~1,5 MB, sobre
+// el limite de 1 MiB, y desde ahi fallaria todo guardado de reemplazos. Pasa si
+// la lista tiene un elemento sin id o con id repetido, porque entonces
+// planListStateEntries no la puede partir (auditoria GPT 19-11, P2-2 / fase 0).
+export const WHOLE_LIST_WRITE_FORBIDDEN = new Set(["replacements"]);
+
+function wholeListError(storageKey, reason) {
+    const error = new Error(
+        `No se publico el cambio de "${storageKey}": ${reason}. ` +
+        "Esta lista solo viaja por elemento y no se envia entera."
+    );
+
+    error.code = "whole-list-write-forbidden";
+    error.storageKey = storageKey;
+    return error;
+}
+
+/**
+ * Ultima defensa antes de escribir en Firestore: una entrada de estas listas
+ * con `value` o borrada como clave completa no se envia. Cubre lo que no paso
+ * por el planificador (colas antiguas rehidratadas, flushes manuales).
+ */
+export function assertNoWholeListWrite(entries = []) {
+    for (const entry of entries) {
+        if (!WHOLE_LIST_WRITE_FORBIDDEN.has(entry?.storageKey)) continue;
+        // El envio solo recibe DOCUMENTOS agrupados: los elementos van en
+        // `items`. Un `value` en la raiz se escribe en la raiz aunque la entrada
+        // traiga itemKey (forma cruda), asi que tambien se rechaza (P3-1).
+        if (Object.prototype.hasOwnProperty.call(entry, "value")) {
+            throw wholeListError(entry.storageKey, "la entrada trae la lista entera");
+        }
+        if (entry.deleted === true) {
+            throw wholeListError(entry.storageKey, "la entrada borraria la lista completa");
+        }
+    }
+}
+
+/** Entrada cruda de la cola (ya normalizada) que llevaria la clave entera. */
+export function isWholeListWriteEntry(entry) {
+    return WHOLE_LIST_WRITE_FORBIDDEN.has(entry?.storageKey) && !entry?.itemKey;
+}
+
+/** Rechazo que no se arregla reintentando: no vuelve a la cola automatica. */
+export function isTerminalStateWriteError(error) {
+    return error?.code === "whole-list-write-forbidden";
+}
+
 export function groupPartialStateEntries(entries = []) {
     const grouped = new Map();
 
@@ -232,6 +281,34 @@ export function planPartialStateEntries({
         // Un borrado de VERDAD siempre llega marcado: removeKey() emite el
         // cambio con `removed: true`. Sin esa marca, no hay nada que publicar.
         if (nextRaw === null && change.removed !== true) return;
+
+        // Estas listas viajan SIEMPRE por elemento. Si no se pueden partir no
+        // se cae a la copia entera: se rechaza con un error (lo muestra quien
+        // encola, y los cambios siguen solo en el equipo). Ver
+        // assertNoWholeListWrite.
+        if (WHOLE_LIST_WRITE_FORBIDDEN.has(storageKey)) {
+            if (change.removed === true) {
+                throw wholeListError(storageKey, "se intento borrar la lista completa");
+            }
+
+            const listEntries = planListStateEntries({
+                moduleId,
+                storageKey,
+                previousRaw,
+                nextRaw
+            });
+
+            if (!listEntries) {
+                throw wholeListError(
+                    storageKey,
+                    "hay un elemento sin identificador o con un identificador repetido " +
+                    "(en la version nueva o en la anterior), o el valor no es una lista"
+                );
+            }
+
+            entries.push(...listEntries);
+            return;
+        }
 
         if (!isPartialStateMapKey(storageKey)) {
             const listEntries = planListStateEntries({

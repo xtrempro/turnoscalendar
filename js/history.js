@@ -394,10 +394,14 @@ function restore(state){
         restoreProfile(p, state);
     }
 
-    setRaw("swaps", state.swaps || "[]");
-    setRaw("shiftMoves", state.shiftMoves || "[]");
-    setRaw("replacements", state.replacements || "[]");
-    setRaw("memos", state.memos || "[]");
+    // Una lista que la foto no tenia (getRaw -> null: el modulo aun no se
+    // hidrataba al tomarla) no se "restaura" como vacia. Con las listas
+    // sincronizadas por elemento, escribir "[]" publicaria un borrado por cada
+    // registro que hoy si existe: con los reemplazos, el incidente del 15-09 por
+    // otro camino. Solo se restaura lo que la foto realmente guardo.
+    ["swaps", "shiftMoves", "replacements", "memos"].forEach(key => {
+        if (typeof state[key] === "string") setRaw(key, state[key]);
+    });
 }
 
 export function pushHistory(){

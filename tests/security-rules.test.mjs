@@ -2770,5 +2770,68 @@ test("reglas modulares de Firestore y Storage", async t => {
         await assertSucceeds(setDoc(doc(tasksEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "tasks", "entries", "weekly_task_assignment_updated"), stateEntry("tasks", "weekly_task_assignment_updated")));
     });
 
+    // Fase 0 de la migracion de reemplazos (19-11-2026): el documento ronda 1 MiB.
+    await t.test("la lista de reemplazos solo se guarda por elemento: nunca entera, borrada ni en otro documento", async () => {
+        const path = ["workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "replacements"];
+        const target = doc(turnosEditor.firestore(), ...path);
+        const item = id => JSON.stringify({ id, worker: "ANA", date: "2026-11-20" });
+
+        // Unidad que aun conserva el `value` heredado: puede seguir guardando
+        // por elemento, pero no tocar ese `value`.
+        await env.withSecurityRulesDisabled(async context => {
+            await setDoc(doc(context.firestore(), ...path), {
+                ...stateEntry("turnos", "replacements"),
+                container: "array",
+                items: { a: item("a") },
+                deletedItems: { a: false },
+                value: JSON.stringify([{ id: "a" }]),
+                deleted: false
+            });
+        });
+
+        await assertSucceeds(setDoc(target, {
+            ...stateEntry("turnos", "replacements"),
+            items: { b: item("b") },
+            deletedItems: { b: false }
+        }, { merge: true }));
+        await assertSucceeds(setDoc(target, { deletedItems: { b: true } }, { merge: true }));
+
+        // Lo que hacia la caida a la copia entera.
+        await assertFails(setDoc(target, { value: JSON.stringify([{ id: "a" }, { id: "b" }]), deleted: false }, { merge: true }));
+        await assertFails(updateDoc(target, { value: "[]" }));
+        await assertFails(updateDoc(target, { deleted: true }));
+        await assertFails(deleteDoc(target));
+
+        // Re-etiquetar el documento no apaga la guarda (auditoria fase 0, P2-4):
+        // antes pasaba con storageKey "swaps" y luego se devolvia la etiqueta.
+        await assertFails(setDoc(target, { moduleId: "turnos", storageKey: "swaps", value: "[]", deleted: true }));
+        await assertFails(setDoc(target, { storageKey: "swaps", value: "[]", deleted: true }, { merge: true }));
+        await assertFails(updateDoc(target, { storageKey: "swaps" }));
+        await assertFails(setDoc(target, { storageKey: "swaps" }, { mergeFields: ["storageKey"] }));
+
+        // Unidad ya sin `value`: tampoco se puede volver a crear.
+        await env.withSecurityRulesDisabled(async context => {
+            await setDoc(doc(context.firestore(), ...path), {
+                ...stateEntry("turnos", "replacements"),
+                container: "array",
+                items: { a: item("a") },
+                deletedItems: {}
+            });
+        });
+        await assertSucceeds(setDoc(target, { items: { c: item("c") }, deletedItems: { c: false }, clientId: "x" }, { merge: true }));
+        await assertFails(setDoc(target, { value: "[]", deleted: false }, { merge: true }));
+
+        // Ni en un documento alias del mismo modulo.
+        await assertFails(setDoc(
+            doc(turnosEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "alias"),
+            stateEntry("turnos", "replacements")
+        ));
+        // Las demas claves del modulo siguen igual.
+        await assertSucceeds(setDoc(
+            doc(turnosEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "swaps"),
+            { moduleId: "turnos", storageKey: "swaps", value: "[]", deleted: false, clientId: "x", updatedAtISO: new Date().toISOString() }
+        ));
+    });
+
     await env.cleanup();
 });

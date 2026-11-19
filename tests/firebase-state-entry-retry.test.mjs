@@ -78,7 +78,8 @@ test("un LOG encolado no se pierde si otro cambio urgente se guarda antes", asyn
     assert.match(flush, /queueGroupedPartialStateEntries\(deferred\);/);
     assert.match(
         flush,
-        /const writable = pending\.filter\(entry =>\s*!deferredPendingModules\.has\(entry\.moduleId\) &&\s*canWriteModule\(entry\.moduleId\)\s*\);/
+        // Las entradas con la lista entera se apartan aparte (fase 0, P2-3).
+        /const writable = setAsideWholeListEntries\(pending\.filter\(entry =>\s*!deferredPendingModules\.has\(entry\.moduleId\) &&\s*canWriteModule\(entry\.moduleId\)\s*\)\);/
     );
     assert.match(flush, /if \(!writable\.length\) return;/);
 });

@@ -78,6 +78,35 @@ export function firestorePatchWrite(name, fields, updateMask, updateTime, option
     };
 }
 
+export async function firestoreRestRequest(url, options = {}, { headers = {}, fetchImpl = fetch } = {}) {
+    const response = await fetchImpl(url, {
+        ...options,
+        headers: { ...headers, ...(options.headers || {}) }
+    });
+    const text = await response.text();
+
+    // 404 solo significa "no existe" al LEER. En una escritura (PATCH con
+    // precondicion, :commit) es que no se escribio: devolver null la hacia
+    // pasar por exitosa (auditoria fase 0, P3-2).
+    const reading = !options.method || String(options.method).toUpperCase() === "GET";
+
+    if (response.status === 404 && reading) return null;
+    if (!response.ok) {
+        const error = new Error(`${response.status} ${url}\n${text.slice(0, 1000)}`);
+        // Quien llama distingue una precondicion fallida (otro escritor
+        // llego primero) de un permiso o un fallo de red sin leer el texto.
+        error.status = response.status;
+        try {
+            error.code = String(JSON.parse(text)?.error?.status || "");
+        } catch {
+            error.code = "";
+        }
+        throw error;
+    }
+
+    return text ? JSON.parse(text) : {};
+}
+
 export async function createFirestoreRestClient(projectId) {
     const auth = firebaseToolsModule("auth.js");
     const account = auth.getProjectDefaultAccount(process.cwd()) ||
@@ -96,20 +125,7 @@ export async function createFirestoreRestClient(projectId) {
         "X-Goog-User-Project": projectId
     };
 
-    async function request(url, options = {}) {
-        const response = await fetch(url, {
-            ...options,
-            headers: { ...headers, ...(options.headers || {}) }
-        });
-        const text = await response.text();
-
-        if (response.status === 404) return null;
-        if (!response.ok) {
-            throw new Error(`${response.status} ${url}\n${text.slice(0, 1000)}`);
-        }
-
-        return text ? JSON.parse(text) : {};
-    }
+    const request = (url, options = {}) => firestoreRestRequest(url, options, { headers });
 
     function documentUrl(documentPath) {
         return `${root}/${documentPath}`;

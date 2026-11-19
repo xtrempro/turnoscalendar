@@ -389,3 +389,19 @@ test("el aviso esta montado en la app y tiene estilo", () => {
     assert.match(estilos, /\.sync-blocked-banner\.is-offline \{/);
     assert.doesNotMatch(estilos, /\.sync-blocked-banner\.is-storage-/);
 });
+
+// Va al final: el rechazo queda puesto hasta recargar, y eso es lo que se prueba.
+test("un cambio rechazado queda a la vista y no lo borra otro guardado ni el estado aplicado", () => {
+    handleSyncStatus({ type: "app-state-rejected", keys: ["replacements"], message: "lista entera" });
+
+    assert.equal(falso.hidden, false);
+    assert.match(falso.className, /is-blocked/);
+    assert.match(falso.textContent, /de: reemplazos\./);
+    assert.match(falso.textContent, /solo en este equipo/);
+
+    handleSyncStatus({ type: "app-state-entries-saved", count: 3 });
+    handleSyncStatus({ type: "app-state-applied", modules: ["turnos"] });
+    handleSyncStatus({ type: "app-state-online" });
+
+    assert.equal(falso.hidden, false, "solo se levanta recargando");
+});

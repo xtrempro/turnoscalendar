@@ -10,7 +10,8 @@ import {
     getReplacementRequests,
     getReplacements,
     saveReplacementRequests,
-    saveReplacements
+    saveReplacements,
+    assertReplacementsWritable
 } from "./storage.js";
 import {
     clearLeaveCancellation,
@@ -1172,6 +1173,9 @@ function removeAbsenceBlock(
 }
 
 async function undoLeaveAbsenceLog(log) {
+    // Deshace ausencias antes de anular sus coberturas: si la copia local de
+    // reemplazos no se puede guardar, que no se toque nada.
+    assertReplacementsWritable();
     const profile = String(log.profile || log.meta?.profile || "");
     const startKey = isoToDateKey(log.meta?.date);
     const type = getLeaveUndoType(log);

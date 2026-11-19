@@ -980,7 +980,97 @@ export function getReplacements(){
     return asRecordList(getJSON("replacements", []));
 }
 
+/**
+ * Por que una lista de reemplazos no se puede guardar ("" si se puede).
+ *
+ * Los reemplazos viajan a Firebase uno por `id`. Un elemento sin id o con un id
+ * repetido impide partir la lista, y la unica salida seria mandarla entera: con
+ * el tamano actual el documento pasaria de 1 MiB y dejaria de guardarse
+ * cualquier reemplazo. Mismo criterio que indexListById (firebasePartialState).
+ */
+export function replacementListProblem(list) {
+    if (!Array.isArray(list)) return "la lista de reemplazos no es una lista";
+
+    const seen = new Set();
+
+    for (const item of list) {
+        const id = item && typeof item === "object" && !Array.isArray(item)
+            ? String(item.id ?? "").trim()
+            : "";
+
+        if (!id) return "hay un reemplazo sin identificador";
+        if (seen.has(id)) return `el identificador ${id} esta repetido`;
+
+        seen.add(id);
+    }
+
+    return "";
+}
+
+function rejectReplacementList(message) {
+    const error = new Error(message);
+
+    error.code = "replacement-list-invalid";
+    console.error(error);
+
+    if (typeof window !== "undefined" && typeof window.alert === "function") {
+        window.alert(error.message);
+    }
+
+    return error;
+}
+
+// La copia LOCAL tambien tiene que poder partirse: el planificador compara la
+// lista anterior con la nueva, y una anterior con ids repetidos o sin id deja
+// el cambio sin publicar aunque la nueva este bien. La de la nube va por id y
+// no puede tener ese defecto: recargar la trae limpia.
+function storedReplacementsProblem() {
+    const raw = getRaw("replacements", null);
+
+    if (raw === null) return "";
+
+    let list;
+
+    try {
+        list = JSON.parse(raw);
+    } catch {
+        return "la copia local no se puede leer";
+    }
+
+    return replacementListProblem(list);
+}
+
+/**
+ * Para los flujos que tocan otras claves ANTES de guardar los reemplazos
+ * (licencia, renombrar perfil): se llama al empezar, para que un rechazo no
+ * deje la operacion a medias (auditoria fase 0, P2-2).
+ */
+export function assertReplacementsWritable() {
+    const problem = storedReplacementsProblem();
+
+    if (problem) {
+        throw rejectReplacementList(
+            `No se puede modificar los reemplazos: ${problem} en la copia de este equipo. ` +
+            "No se hizo ningun cambio. Recarga la pagina para traer la copia de la nube y vuelve a intentarlo; si se repite, avisa a soporte."
+        );
+    }
+}
+
 export function saveReplacements(data){
+    // Se rechaza ANTES de tocar el almacenamiento local: guardarla igual dejaria
+    // al equipo con una lista que ya no se puede sincronizar. No se inventan ids
+    // ni se descartan registros en silencio: se avisa y el cambio no se aplica
+    // (auditoria GPT 19-11, fase 0).
+    const problem = replacementListProblem(data);
+
+    if (problem) {
+        throw rejectReplacementList(
+            `No se guardo el cambio en los reemplazos: ${problem}. ` +
+            "Recarga la pagina y vuelve a intentarlo; si se repite, avisa a soporte."
+        );
+    }
+
+    assertReplacementsWritable();
     setJSON("replacements", data);
 }
 
@@ -2095,6 +2185,8 @@ export function saveRotativa(rotativa, profile = currentProfile){
 }
 
 export function updateProfile(oldName, nextProfile){
+    // Mueve claves y perfiles antes de llegar a los reemplazos.
+    assertReplacementsWritable();
     const profiles = getProfiles();
     const targetName = String(
         nextProfile?.name || ""

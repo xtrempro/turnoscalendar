@@ -20,9 +20,12 @@ import {
     stateModulePermission
 } from "./firebaseStateModules.js";
 import {
+    assertNoWholeListWrite,
     decodePartialStateItemKey,
     guardReplacementEntryWithBarriers,
     groupPartialStateEntries,
+    isTerminalStateWriteError,
+    isWholeListWriteEntry,
     mergePartialStateEntries,
     planPartialStateEntries
 } from "./firebasePartialState.js";
@@ -153,6 +156,10 @@ let onStateChanged = () => {};
 let syncGeneration = 0;
 const lastAppliedHashes = new Map();
 const pendingStateEntries = new Map();
+// Cambios que el servidor nunca aceptaria (la lista de reemplazos entera). No
+// se reintentan -eso era un bucle que postergaba a los sanos- ni se descartan
+// en silencio: quedan aqui y se avisan hasta recargar (auditoria fase 0, P2-3).
+const quarantinedStateEntries = new Map();
 const pendingRemoteStateEntries = new Map();
 const localDirtyStateEntries = new Map();
 // Firma del ultimo valor que ya quedo aplicado localmente, por elemento.
@@ -1119,6 +1126,65 @@ function queuePartialStateEntries(entries = [], options = {}) {
     );
 }
 
+function quarantineStateEntries(entries = [], error = null) {
+    const normalized = normalizeQueuedStateEntries(entries);
+
+    if (!normalized.length) return;
+
+    // Se anota la unidad: la cuarentena de otra unidad no bloquea esta.
+    const workspaceId = activeWorkspaceId;
+
+    normalized.forEach(entry => {
+        const id = pendingStateEntryId(entry);
+
+        quarantinedStateEntries.set(`${workspaceId}\u001e${id}`, { ...entry, workspaceId });
+        pendingStateEntries.delete(id);
+    });
+
+    const keys = [...new Set(normalized.map(entry => entry.storageKey))];
+    const message = error?.message || "Ese cambio no se puede enviar en esta forma.";
+
+    console.error("Cambios apartados: el servidor no los aceptaria.", { keys, error });
+    recordPerformanceEvent("firebase-app-state:quarantined", {
+        type: "firebase",
+        keys: keys.join(","),
+        entryCount: normalized.length,
+        error: message
+    });
+    dispatchStatus({ type: "app-state-rejected", keys, message });
+}
+
+/** Separa las entradas crudas que llevarian la lista entera y las aparta. */
+function setAsideWholeListEntries(entries = []) {
+    const rejected = entries.filter(isWholeListWriteEntry);
+
+    if (!rejected.length) return entries;
+
+    quarantineStateEntries(rejected, {
+        message: "Habia en espera un guardado de la lista de reemplazos completa; esa lista solo se guarda por registro."
+    });
+
+    return entries.filter(entry => !isWholeListWriteEntry(entry));
+}
+
+/** Claves pedidas que tienen un cambio apartado (sin enviar) en esa unidad. */
+function quarantinedKeysFor(workspaceId, keys = []) {
+    const wanted = new Set(keys);
+    const found = new Set();
+
+    for (const entry of quarantinedStateEntries.values()) {
+        if (entry.workspaceId === workspaceId && wanted.has(entry.storageKey)) {
+            found.add(entry.storageKey);
+        }
+    }
+
+    return [...found];
+}
+
+export function getQuarantinedFirebaseStateEntries() {
+    return [...quarantinedStateEntries.values()].map(entry => ({ ...entry }));
+}
+
 function pendingStateEntryId(entry = {}) {
     return [
         entry.moduleId,
@@ -1313,6 +1379,9 @@ async function commitPartialStateSliceNow(
     entries,
     generation = syncGeneration
 ) {
+    // Antes de leer nada: una lista que solo viaja por elemento no se envia
+    // entera ni se borra completa, venga de donde venga la entrada.
+    assertNoWholeListWrite(entries);
     const taskWriteId = globalThis.crypto?.randomUUID?.() ||
         `${getClientId()}:${++taskAssignmentWriteSequence}:${Math.random().toString(36).slice(2)}`;
     const refs = entries.map(entry => firestoreModule.doc(
@@ -1564,10 +1633,25 @@ export async function flushPendingFirebaseAppStateEntries({
     const queued = [...pendingStateEntries.values()]
         .filter(entry => stateKeySet.has(entry.storageKey))
         .filter(entry => canWriteModule(entry.moduleId));
-    const writable = [
+    const writable = setAsideWholeListEntries([
         ...queued,
         ...planned
-    ];
+    ]);
+    // Una clave pedida con un cambio apartado NO esta confirmada, aunque no
+    // quede nada que enviar: devolver "already-synced" contradecia el aviso y
+    // sealCriticalProfileState daba por guardado lo que no llego (reauditoria
+    // fase 0). Lo sano se envia igual; el resultado dice que claves faltan.
+    const rejectedKeys = () => quarantinedKeysFor(workspaceId, stateKeys);
+    const rejectedResult = extra => ({
+        flushed: false,
+        reason: "rejected-entries",
+        rejectedKeys: rejectedKeys(),
+        ...extra
+    });
+
+    if (!writable.length && rejectedKeys().length) {
+        return rejectedResult({ count: 0 });
+    }
 
     // Solo listas y nada en cola ni en camino: lo que hay que confirmar ya esta
     // en la nube.
@@ -1598,6 +1682,9 @@ export async function flushPendingFirebaseAppStateEntries({
         rememberLocalStateEntries(writable);
         await commitPartialStateDocumentsNow(documents, { reason, workspaceId, committedDocuments });
         if (workspaceId !== activeWorkspaceId || generation !== syncGeneration) {
+            if (rejectedKeys().length) {
+                return rejectedResult({ count: writable.length, documentCount: documents.length });
+            }
             return { flushed: true, count: writable.length, documentCount: documents.length, reason: "saved-origin-workspace" };
         }
 
@@ -1612,6 +1699,10 @@ export async function flushPendingFirebaseAppStateEntries({
             count: writable.length,
             reason
         });
+
+        if (rejectedKeys().length) {
+            return rejectedResult({ count: writable.length, documentCount: documents.length });
+        }
 
         return {
             flushed: true,
@@ -1666,10 +1757,10 @@ async function flushPartialStateEntries() {
     const deferred = pending.filter(entry =>
         deferredPendingModules.has(entry.moduleId)
     );
-    const writable = pending.filter(entry =>
+    const writable = setAsideWholeListEntries(pending.filter(entry =>
         !deferredPendingModules.has(entry.moduleId) &&
         canWriteModule(entry.moduleId)
-    );
+    ));
 
     queueGroupedPartialStateEntries(deferred);
 
@@ -1680,6 +1771,7 @@ async function flushPartialStateEntries() {
     entrySyncInFlight = true;
     const documents = groupPartialStateEntries(writable);
     const committedDocuments = new Set();
+    const quarantinedDocuments = new Set();
     let isolatedError = null;
 
     try {
@@ -1733,10 +1825,16 @@ async function flushPartialStateEntries() {
             );
             slice.forEach(entry => committedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`));
             } catch (error) {
+                if (isTerminalStateWriteError(error)) {
+                    // Reintentarlo no lo arregla: se aparta y se sigue con el resto.
+                    slice.forEach(entry => quarantinedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`));
+                    quarantineStateEntries(slice, error);
+                } else {
                 isolatedError ||= error;
                 queueGroupedPartialStateEntries(slice, { older: true });
                 dispatchStatus({ type: "app-state-error", keys: slice.map(entry => entry.storageKey),
                     message: error.message || "No se pudo guardar ese documento." });
+                }
             }
 
             if (offset + ENTRY_BATCH_SIZE < documents.length) {
@@ -1779,7 +1877,8 @@ async function flushPartialStateEntries() {
         if (workspaceId !== activeWorkspaceId || generation !== syncGeneration) return;
         // Lo fallido es anterior a lo editado mientras esperaba la red.
         queueGroupedPartialStateEntries(writable.filter(entry =>
-            !committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)
+            !committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`) &&
+            !quarantinedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)
         ), { older: true });
         dispatchStatus({
             type: "app-state-error",
@@ -3025,6 +3124,10 @@ export function queueFirebasePersistenceChanges(detail = {}) {
             dispatchStatus({ type: "app-state-error", keys: [key],
                 message: "No se pudo preparar el guardado. Esos cambios siguen solo en este equipo.",
                 error: error?.message || String(error) });
+            // `app-state-error` no se muestra: este si queda a la vista hasta
+            // recargar. Lo usa cualquier emisor (setJSON, setRaw del deshacer).
+            dispatchStatus({ type: "app-state-rejected", keys: [key],
+                message: error?.message || String(error) });
             recordPerformanceEvent("firebase-app-state:plan-error", { storageKey: key, error: error?.message || String(error) });
         }
     }

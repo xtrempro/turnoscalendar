@@ -383,10 +383,10 @@ test("un valor escalar no se parte: no hay nada que partir", () => {
 
 test("borrar la clave entera sigue borrandola", () => {
     const entries = planPartialStateEntries({
-        keys: ["replacements"],
+        keys: ["swaps"],
         changes: {
-            replacements: {
-                previous: JSON.stringify([reemplazo("r1", "ANA", "x")]),
+            swaps: {
+                previous: JSON.stringify([reemplazo("s1", "ANA", "x")]),
                 next: null,
                 removed: true
             }
@@ -398,6 +398,24 @@ test("borrar la clave entera sigue borrandola", () => {
     assert.equal(entries.length, 1);
     assert.equal(entries[0].itemKey, "");
     assert.equal(entries[0].deleted, true);
+});
+
+// 19-11-2026: `replacements` es la excepcion. Su documento ronda 1 MiB y un
+// borrado o una copia entera dejaria la unidad sin reemplazos o sin poder
+// guardarlos (ver tests/reemplazos-nunca-enteros.test.mjs).
+test("la lista de reemplazos no se borra como clave entera", () => {
+    assert.throws(() => planPartialStateEntries({
+        keys: ["replacements"],
+        changes: {
+            replacements: {
+                previous: JSON.stringify([reemplazo("r1", "ANA", "x")]),
+                next: null,
+                removed: true
+            }
+        },
+        readRaw: () => null,
+        moduleForKey: stateModuleForKey
+    }), error => error.code === "whole-list-write-forbidden");
 });
 
 test("los calendarios siguen partiendose por dia, no por lista", () => {

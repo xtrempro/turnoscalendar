@@ -926,9 +926,24 @@ service cloud.firestore {
               request.resource.data.taskWriteId != (resource != null ? resource.data.get("taskWriteId", "") : "") &&
               request.resource.data.updatedAt == request.time;
           }
+          // La lista de reemplazos vive en UN documento cerca de 1 MiB: viaja
+          // solo por elemento. Ningun cliente -tampoco una pestana con un build
+          // viejo- puede volver a escribirla entera (`value`), marcarla borrada
+          // ni guardarla en otro documento. Las unidades que aun tienen `value`
+          // siguen pudiendo guardar por elemento: esos campos no cambian.
+          function replacementsEntryKeepsShape() {
+            return !request.resource.data.diff(resource != null ? resource.data : {})
+              .affectedKeys().hasAny(["value", "deleted"]);
+          }
           allow read: if canReadStateModule(workspaceId, moduleId);
           allow create, update: if
             canWriteStateModule(workspaceId, moduleId) &&
+            // La guarda va por la RUTA, no por el storageKey que trae la
+            // escritura: si no, re-etiquetar el documento (storageKey "swaps")
+            // la apagaba y permitia borrarlo en dos pasos.
+            (moduleId == "turnos" && entryId == "replacements"
+              ? (request.resource.data.storageKey == "replacements" && replacementsEntryKeepsShape())
+              : request.resource.data.storageKey != "replacements") &&
             (moduleId != "tasks" ||
               (entryId == "weekly_task_assignment_entries"
                 ? validTaskAssignmentWriter()
@@ -957,7 +972,8 @@ service cloud.firestore {
               )
             );
           allow delete: if canWriteStateModule(workspaceId, moduleId) &&
-            !(moduleId == "tasks" && entryId == "weekly_task_assignment_entries");
+            !(moduleId == "tasks" && entryId == "weekly_task_assignment_entries") &&
+            !(moduleId == "turnos" && entryId == "replacements");
         }
       }
 

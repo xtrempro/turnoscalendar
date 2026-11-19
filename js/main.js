@@ -506,7 +506,8 @@ import {
     getReplacementRequestConfig,
     getReportSignatureConfig,
     getWorkerRequests,
-    saveWorkerRequests
+    saveWorkerRequests,
+    assertReplacementsWritable
 } from "./storage.js";
 import { cambioEstaAnulado } from "./swaps.js";
 import {
@@ -2515,6 +2516,13 @@ async function sealCriticalProfileState(
         changes: hasExplicitChanges ? changes : {},
         reason
     });
+
+    if (result?.reason === "rejected-entries") {
+        throw new Error(
+            `No se guardo en la nube un cambio de: ${(result.rejectedKeys || []).join(", ")}. ` +
+            "Anota lo que cambiaste, recarga la pagina y vuelve a hacerlo; si se repite, avisa a soporte."
+        );
+    }
 
     if (!result?.flushed) {
         throw new Error(
@@ -14353,6 +14361,9 @@ async function cleanupFutureSchedule(startDate, options = {}) {
     const profileName = getCurrentProfile();
 
     if (!profileName) return;
+
+    // Antes de tocar el calendario: que un rechazo no lo deje a medias.
+    assertReplacementsWritable();
 
     const data = getProfileData();
     const baseData = getBaseProfileData();

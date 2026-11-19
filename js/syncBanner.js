@@ -15,6 +15,11 @@
 //              bloquea nada: Firestore encola las escrituras y las manda al
 //              reconectar, en orden. Es informativo, y el aviso lo dice.
 //
+//   RECHAZADO  un cambio que el servidor no aceptaria (p. ej. la lista de
+//              reemplazos entera) quedo solo en este equipo. No se reintenta y
+//              no se levanta con otro guardado exitoso: solo recargando, que
+//              trae la copia de la nube (por id, sin ese defecto).
+//
 // Se monta solo al importarse y no necesita hueco en el HTML.
 
 const BANNER_ID = "sync-blocked-banner";
@@ -46,6 +51,9 @@ const LOCK_COPY = {
 
 let banner = null;
 let bloqueado = "";
+// Claves con un cambio que no se pudo enviar y el ultimo motivo.
+const rechazados = new Map();
+const NOMBRE_CLAVE = { replacements: "reemplazos" };
 let lockReason = "";
 let lockNode = null;
 let lockTitle = null;
@@ -198,6 +206,18 @@ function render() {
 
     refreshLockText();
 
+    if (rechazados.size) {
+        const claves = [...rechazados.keys()].map(clave => NOMBRE_CLAVE[clave] || clave).join(", ");
+        const motivo = [...rechazados.values()].pop();
+
+        node.textContent =
+            `No se guardo en la nube un cambio de: ${claves}. Sigue solo en este equipo. ` +
+            `Anota lo que cambiaste, recarga la pagina y vuelve a hacerlo; si se repite, avisa a soporte. (${motivo})`;
+        node.className = "sync-blocked-banner is-blocked";
+        node.hidden = false;
+        return;
+    }
+
     if (caidaConfirmada) {
         node.textContent = MENSAJE_OFFLINE;
         node.className = "sync-blocked-banner is-offline";
@@ -227,6 +247,14 @@ export function handleSyncStatus(detail) {
         bloqueado =
             detail.message ||
             "Sin sincronizacion con el servidor: tus cambios quedan en espera.";
+        render();
+        return;
+    }
+
+    if (tipo === "app-state-rejected") {
+        const claves = Array.isArray(detail.keys) && detail.keys.length ? detail.keys : ["(sin clave)"];
+
+        claves.forEach(clave => rechazados.set(String(clave), String(detail.message || "")));
         render();
         return;
     }
@@ -262,6 +290,11 @@ export function handleSyncStatus(detail) {
  * red unos segundos cada vez que el wifi se reengancha: pasa por la misma
  * espera. Su vuelta no da por vuelto al servidor.
  */
+/** Para pruebas: que claves quedaron con un cambio sin enviar. */
+export function rejectedSyncKeys() {
+    return [...rechazados.keys()];
+}
+
 export function handleBrowserConnectivity(online) {
     navegadorSinRed = !online;
     vigilarCaida();

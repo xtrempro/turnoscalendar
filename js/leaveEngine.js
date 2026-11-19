@@ -31,7 +31,8 @@ import {
     getReplacementRequestConfig,
     isNoCoverageDay,
     saveManualLeaveBalances,
-    setNoCoverageDay
+    setNoCoverageDay,
+    assertReplacementsWritable
 } from "./storage.js";
 
 import {
@@ -162,6 +163,7 @@ async function confirmAndCancelScheduleConflicts(
         beforeCancellation = null
     } = {}
 ) {
+    if (cancelReplacements) assertReplacementsWritable();
     const swaps = getActiveSwapsForProfileKeys(profile, keys);
     const replacements = cancelReplacements
         ? getActiveReplacementsForWorkerKeys(profile, keys)
@@ -1300,6 +1302,11 @@ export async function aplicarLicencia(
     if (!total || total <= 0 || !Number.isInteger(total)) {
         return false;
     }
+
+    // Antes de cualquier dialogo o mutacion: la licencia retira horarios y
+    // marcajes antes de anular reemplazos; si la copia local de reemplazos no
+    // se puede guardar, que no se toque nada (auditoria fase 0, P2-2).
+    assertReplacementsWritable();
 
     const abs = getAbsences();
     const blocked = getBlockedDays();
