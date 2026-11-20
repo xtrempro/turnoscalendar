@@ -12,6 +12,7 @@ import {
     timeNearReference
 } from "./timeUtils.js";
 import { classifyClockMarkSegment } from "./clockMarkUtils.js";
+import { getWorkerScheduleAt } from "./workerSchedule.js";
 import {
     rotationProducesTurns,
     rotationShiftForDate,
@@ -372,6 +373,68 @@ function getHalfAdminScheduledSegments(profile, keyDay, date) {
     return null;
 }
 
+function timeOnDay(date, value, nextDay = false) {
+    const time = parseTime(value);
+
+    if (!time) return null;
+
+    return nextDay
+        ? nextDateAt(date, time.hour, time.minute)
+        : dateAt(date, time.hour, time.minute);
+}
+
+/**
+ * Corre las puntas del turno al HORARIO PROPIO del trabajador.
+ *
+ * Quien entra a las 8:40 y sale a las 17:40 tiene ESE turno programado, no el
+ * de 8:00 a 17:00. Si las puntas quedaban en el horario general, una salida
+ * autorizada a las 19:40 contaba desde las 17:00 y la entrada de las 8:40 se
+ * marcaba como atraso. Con las puntas corridas, el dialogo de marcajes parte
+ * de su horario, el atraso y la hora extra se miden contra el y todo lo que
+ * lee el turno programado -calendario, HHEE, informes- ve lo mismo.
+ *
+ * Los dias de jornada corta (fiestas) la salida sigue siendo la de la jornada
+ * corta, y el horario libre no tiene puntas que correr.
+ */
+function applyWorkerScheduleToSegments(profile, date, segments) {
+    if (!segments.length) return segments;
+
+    const own = getWorkerScheduleAt(profile, date);
+
+    if (own.free) return segments;
+
+    const friday = date.getDay() === 5;
+    const exitOf = part => (friday && part?.exitFriday) || part?.exit || "";
+
+    return segments.map(segment => {
+        let entryPart = null;
+        let exitPart = null;
+
+        if (segment.id === "diurno" || segment.id === "larga" || segment.id === "noche") {
+            entryPart = own[segment.id];
+            exitPart = own[segment.id];
+        } else if (segment.id === "turno24") {
+            entryPart = own.larga;
+            exitPart = own.noche;
+        } else {
+            return segment;
+        }
+
+        if (!entryPart && !exitPart) return segment;
+
+        const crossesMidnight = segment.end.getDate() !== segment.start.getDate();
+        const start = timeOnDay(date, entryPart?.entry) || segment.start;
+        const keepShortEnd = segment.id === "diurno" && isShortDiurnoDay(date);
+        const end = keepShortEnd
+            ? segment.end
+            : timeOnDay(date, exitOf(exitPart), crossesMidnight) || segment.end;
+
+        if (!(start < end)) return segment;
+
+        return { ...segment, start, end };
+    });
+}
+
 function getRawScheduledSegmentsForProfile(
     profile,
     keyDay,
@@ -386,6 +449,19 @@ function getRawScheduledSegmentsForProfile(
         return halfAdminSegments;
     }
 
+    return applyWorkerScheduleToSegments(
+        profile,
+        date,
+        getShiftSegmentsForProfile(profile, date, state, holidays)
+    );
+}
+
+function getShiftSegmentsForProfile(
+    profile,
+    date,
+    state,
+    holidays = {}
+) {
     const rotativa = getRotativa(profile);
     const configuredShift = rotationUsesCustomSchedule(rotativa.type)
         ? rotationShiftForDate(
