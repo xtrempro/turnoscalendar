@@ -70,6 +70,7 @@ import { showAlert, showChoice, showConfirm, showPrompt } from "./dialogs.js";
 import { pushHistory } from "./history.js";
 import { addAuditLog, AUDIT_CATEGORY } from "./auditLog.js";
 import { openMonthlyMagic } from "./monthlyMagic.js";
+import { getShiftGroupDepartures } from "./shiftHolders.js";
 import { buildMotiveCanon, canonicalMotive, motiveKey, usedExtraMotives } from "./motives.js";
 
 // Un motivo escrito de varias formas ("APOYO IMAGENOLOGIA -2", "Apoyo
@@ -429,6 +430,7 @@ function applyPreassignments(rowsByKey, profiles, initials) {
                 const comment = String(record.comment || "").trim();
 
                 person.brecha = true;
+                person.brechaGroup = brechaGroupOf(reason);
                 person.coverDetail = comment ? `${reason} — ${comment}` : reason;
                 row.cupos[slot].splice(0, 1);
                 row.slots[slot].push(person);
@@ -699,6 +701,7 @@ export async function buildMonthlyCalendar(
 
                     person.covering = true;
                     person.brecha = true;
+                    person.brechaGroup = brechaGroupOf(recordReason);
                     person.coverDetail = comment ? `${recordReason} — ${comment}` : recordReason;
                     // Para quitarlo: se anula su registro.
                     person.extraId = String(extraRecord.id || "");
@@ -1086,10 +1089,9 @@ function panelHTML(model, groups) {
     };
     const canEdit = canEditTarget("calendarPanel");
     const brecha = {
-        day: hasBrechaColumn(model, "day"),
-        night: hasBrechaColumn(model, "night")
+        day: brechaColumnsFor(model, "day"),
+        night: brechaColumnsFor(model, "night")
     };
-    const brechaTitle = brechaColumnTitle();
 
     return `
         <div class="mcal${ui.pendingMove ? " is-moving" : ""}">
@@ -1124,7 +1126,7 @@ function panelHTML(model, groups) {
                         <col class="mcal-col-weekday">
                         ${slots.map(slot => `
                             <col class="mcal-col-titulares">
-                            ${brecha[slot] ? `<col class="mcal-col-brecha">` : ""}
+                            ${brecha[slot].map(() => `<col class="mcal-col-brecha">`).join("")}
                             ${columns[slot].length ? `<col data-mcal-xcol="${columns[slot].length}">` : ""}
                         `).join("")}
                     </colgroup>
@@ -1133,7 +1135,7 @@ function panelHTML(model, groups) {
                             <th rowspan="2">Fecha</th>
                             <th rowspan="2"></th>
                             ${slots.map(slot => `
-                                <th colspan="${1 + (brecha[slot] ? 1 : 0) + (columns[slot].length ? 1 : 0)}" class="mcal-group-head">
+                                <th colspan="${1 + brecha[slot].length + (columns[slot].length ? 1 : 0)}" class="mcal-group-head">
                                     ${slot === "day" ? "Día" : "Noche"}
                                     ${ui.expanded[slot] && canGroupExtras(model, slot)
                                         ? `<button type="button" class="mcal-fold" data-mcal-collapse="${slot}" title="Agrupar los motivos con poca gente">− Agrupar</button>`
@@ -1147,11 +1149,13 @@ function panelHTML(model, groups) {
                         <tr>
                             ${slots.map(slot => `
                                 <th class="mcal-sub-head">Titulares</th>
-                                ${brecha[slot]
-                                    ? (canEdit
-                                        ? `<th class="mcal-sub-head mcal-sub-head--brecha is-editable" role="button" tabindex="0" data-mcal-brecha-head="${slot}" title="Quienes cubren un cupo de la Brecha RRHH. Clic para editar el nombre.">${escapeHTML(brechaTitle)}</th>`
-                                        : `<th class="mcal-sub-head mcal-sub-head--brecha" title="Quienes cubren un cupo de la Brecha RRHH">${escapeHTML(brechaTitle)}</th>`)
-                                    : ""}
+                                ${brecha[slot].map((column, index) => {
+                                    const title = brechaColumnTitle(column);
+
+                                    return canEdit
+                                        ? `<th class="mcal-sub-head mcal-sub-head--brecha is-editable" role="button" tabindex="0" data-mcal-brecha-head="${slot}" data-mcal-brecha-index="${index}" title="Quien cubre este cupo de la Brecha RRHH. Clic para editar el nombre.">${escapeHTML(title)}</th>`
+                                        : `<th class="mcal-sub-head mcal-sub-head--brecha" title="Quien cubre este cupo de la Brecha RRHH">${escapeHTML(title)}</th>`;
+                                }).join("")}
                                 ${columns[slot].length
                                     ? extrasCellHTML(
                                         columns[slot].map(column => extraHeadHTML(slot, column, canEdit)).join(""),
@@ -1173,9 +1177,11 @@ function panelHTML(model, groups) {
                                         cupos: row.cupos?.[slot] || [],
                                         movingName: isMoveSource(row.keyDay, slot) ? ui.pendingMove.name : ""
                                     })}</td>
-                                    ${brecha[slot]
-                                        ? `<td class="mcal-slot mcal-slot--brecha" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="brecha" tabindex="0">${brechaPeople(row, slot).length ? chipsHTML(brechaPeople(row, slot), []) : ""}</td>`
-                                        : ""}
+                                    ${brecha[slot].map((column, index) => {
+                                        const people = brechaColumnPeople(row, slot, column);
+
+                                        return `<td class="mcal-slot mcal-slot--brecha" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="brecha:${index}" tabindex="0">${people.length ? chipsHTML(people, []) : ""}</td>`;
+                                    }).join("")}
                                     ${columns[slot].length
                                         ? extrasCellHTML(
                                             columns[slot].map((column, index) => extraCellHTML(row, slot, column, canEdit, index)).join(""),
@@ -1838,23 +1844,22 @@ function closeSlotDialog(backdrop, onKeydown) {
 }
 
 const TITULARES_COLUMN = { kind: "titulares" };
-const BRECHA_COLUMN = { kind: "brecha" };
-
 /**
- * "Cubre Brecha": quien cubre un cupo de la Brecha RRHH se ve en su propia
- * columna, junto a Titulares, en vez de mezclado con ellos. Sigue contando en
- * el tramo (row.slots) para todo lo que cuenta gente -la Ayuda para cubrir,
- * los +Cupo-; solo cambia donde se dibuja. El titulo lo puede cambiar el
- * supervisor y viaja con los turnos de la unidad.
+ * Columnas de la Brecha: UNA POR CUPO. Quien cubre un cupo de la Brecha RRHH
+ * se ve en la columna de ese cupo, junto a Titulares, en vez de mezclado con
+ * ellos. Sigue contando en el tramo (row.slots) para todo lo que cuenta gente
+ * -la Ayuda para cubrir, los +Cupo-; solo cambia donde se dibuja.
+ *
+ * Un grupo de la rotativa con dos cupos tiene dos columnas. Cada una se llama
+ * "Brecha turno A" mas el nombre de quien dejo ese lugar (salio de la unidad o
+ * se cambio de grupo), del mas reciente al mas antiguo; sin registro, se
+ * numeran. El supervisor puede cambiar cada titulo.
  */
 export const BRECHA_TITLE_KEY = "monthlyCalendarBrechaTitle";
-export const DEFAULT_BRECHA_TITLE = "Cubre Brecha";
 
-export function brechaColumnTitle() {
-    const stored = getJSON(BRECHA_TITLE_KEY, null);
-    const title = String(stored?.title || "").trim();
-
-    return title || DEFAULT_BRECHA_TITLE;
+// "Completar rotativa de tecnicos del grupo D" -> "D".
+export function brechaGroupOf(reason) {
+    return String(reason || "").trim().match(/del grupo\s+(\S+)\s*$/i)?.[1] || "";
 }
 
 export function brechaPeople(row, slot) {
@@ -1865,27 +1870,136 @@ export function titularPeople(row, slot) {
     return (row.slots?.[slot] || []).filter(person => !person.brecha);
 }
 
-// La columna aparece en un tramo en cuanto alguien del mes cubre un cupo ahi.
-export function hasBrechaColumn(model, slot) {
-    return (model?.rows || []).some(row => brechaPeople(row, slot).length > 0);
+/**
+ * Las columnas de cupo de un tramo. Aparecen en cuanto alguien del mes cubre
+ * un cupo ahi, y entonces estan TODAS las del tramo: cuantos cupos tiene cada
+ * grupo es lo mas que le falto en un dia del mes (abiertos + cubiertos).
+ */
+export function brechaColumnsFor(model, slot) {
+    const rows = model?.rows || [];
+
+    if (!rows.some(row => brechaPeople(row, slot).length)) return [];
+
+    const perGroup = new Map();
+
+    rows.forEach(row => {
+        const counts = new Map();
+
+        (row.cupos?.[slot] || []).forEach(cupo => {
+            const group = String(cupo.group || "");
+
+            counts.set(group, (counts.get(group) || 0) + 1);
+        });
+        brechaPeople(row, slot).forEach(person => {
+            const group = person.brechaGroup || "";
+
+            counts.set(group, (counts.get(group) || 0) + 1);
+        });
+        counts.forEach((count, group) => {
+            perGroup.set(group, Math.max(perGroup.get(group) || 0, count));
+        });
+    });
+
+    return [...perGroup.entries()]
+        .sort(([a], [b]) => a.localeCompare(b, "es"))
+        .flatMap(([group, count]) => Array.from({ length: count }, (_, index) => ({
+            kind: "brecha",
+            slot,
+            profession: model.group || "",
+            group,
+            index,
+            last: index === count - 1,
+            key: `${slot}|${group}|${index}`
+        })));
 }
 
-async function editBrechaTitle() {
-    if (!canEditTarget("calendarPanel")) return;
+// Los de ESA columna ese dia: los del grupo, en orden fijo, uno por cupo; si
+// llegaran a sobrar, quedan en la ultima columna del grupo.
+export function brechaColumnPeople(row, slot, column) {
+    const people = brechaPeople(row, slot)
+        .filter(person => (person.brechaGroup || "") === column.group)
+        .sort((a, b) => a.name.localeCompare(b.name, "es"));
 
-    const current = brechaColumnTitle();
-    const next = String(await showPrompt(
-        "Nombre de la columna de quienes cubren un cupo de la Brecha.",
+    return column.last ? people.slice(column.index) : people.slice(column.index, column.index + 1);
+}
+
+// "CAMILA ESTRELLA NORAMBUENA DELGADO" -> "Camila Norambuena". Con menos de
+// cuatro palabras no se sabe cual es el apellido: va el nombre completo.
+export function shortPersonName(name) {
+    const words = String(name || "").trim().split(/\s+/).filter(Boolean);
+    const picked = words.length >= 4
+        ? [words[0], words[words.length - 2]]
+        : words;
+
+    return picked
+        .map(word => word.charAt(0).toLocaleUpperCase("es") + word.slice(1).toLocaleLowerCase("es"))
+        .join(" ");
+}
+
+// Quien dejo cada lugar del grupo, de esta profesion: el mas reciente para la
+// primera columna, el anterior para la segunda...
+function brechaOccupant(column) {
+    const departures = (getShiftGroupDepartures(new Date()).get(column.group) || [])
+        .filter(item => !column.profession || groupKeyFor(item.profile) === column.profession);
+
+    return departures[column.index]?.profile?.name || "";
+}
+
+function storedBrechaTitles() {
+    const stored = getJSON(BRECHA_TITLE_KEY, null);
+
+    return stored?.titles && typeof stored.titles === "object" ? stored.titles : {};
+}
+
+function brechaTitleKey(column) {
+    return `${column.profession}|${column.key}`;
+}
+
+export function defaultBrechaTitle(column, occupant = "") {
+    const base = column.group ? `Brecha turno ${column.group}` : "Brecha";
+
+    if (occupant) return `${base} – ${shortPersonName(occupant)}`;
+
+    return column.index > 0 ? `${base} (${column.index + 1})` : base;
+}
+
+export function brechaColumnTitle(column) {
+    const custom = String(storedBrechaTitles()[brechaTitleKey(column)] || "").trim();
+
+    return custom || defaultBrechaTitle(column, brechaOccupant(column));
+}
+
+async function editBrechaTitle(slot, index) {
+    if (!canEditTarget("calendarPanel") || !lastModel) return;
+
+    const column = brechaColumnsFor(lastModel, slot)[Number(index)];
+
+    if (!column) return;
+
+    const current = brechaColumnTitle(column);
+    const automatic = defaultBrechaTitle(column, brechaOccupant(column));
+    const answer = await showPrompt(
+        `Nombre de la columna de este cupo. Déjalo vacío para volver a "${automatic}".`,
         { title: "Editar columna", value: current, confirmText: "Guardar" }
-    ) || "").trim().slice(0, 60);
+    );
 
-    if (!next || next === current) return;
+    if (answer === null || answer === undefined) return;
 
-    setJSON(BRECHA_TITLE_KEY, { title: next });
+    const next = String(answer).trim().slice(0, 60);
+
+    if (next === current) return;
+
+    const stored = getJSON(BRECHA_TITLE_KEY, null) || {};
+    const titles = { ...storedBrechaTitles() };
+
+    if (next && next !== automatic) titles[brechaTitleKey(column)] = next;
+    else delete titles[brechaTitleKey(column)];
+
+    setJSON(BRECHA_TITLE_KEY, { ...stored, titles });
     addAuditLog(
         AUDIT_CATEGORY.CALENDAR,
-        "Renombro la columna de la Brecha",
-        `"${current}" pasa a llamarse "${next}" (Calendario Mensual).`
+        "Renombro una columna de la Brecha",
+        `"${current}" pasa a llamarse "${next || automatic}" (Calendario Mensual).`
     );
     await renderMonthlyCalendarPanel();
 }
@@ -1899,7 +2013,9 @@ function columnForCell(cell) {
         return TITULARES_COLUMN;
     }
 
-    if (col === "brecha") return BRECHA_COLUMN;
+    if (String(col).startsWith("brecha:")) {
+        return brechaColumnsFor(lastModel, slot)[Number(String(col).slice(7))] || TITULARES_COLUMN;
+    }
 
     return visibleExtraColumns(lastModel, slot, ui.expanded[slot])[Number(col)] ||
         TITULARES_COLUMN;
@@ -1914,7 +2030,7 @@ function columnReasons(column) {
 // Solo la gente de ESA casilla, no todo el tramo.
 function columnPeople(row, slot, column) {
     if (column.kind === "titulares") return titularPeople(row, slot);
-    if (column.kind === "brecha") return brechaPeople(row, slot);
+    if (column.kind === "brecha") return brechaColumnPeople(row, slot, column);
 
     return columnReasons(column).flatMap(reason => row.extras?.[slot]?.[reason] || []);
 }
@@ -1922,7 +2038,7 @@ function columnPeople(row, slot, column) {
 function columnLabel(column) {
     if (column.kind === "reason") return column.reason;
     if (column.kind === "group") return "Otros motivos";
-    if (column.kind === "brecha") return brechaColumnTitle();
+    if (column.kind === "brecha") return brechaColumnTitle(column);
     return "Titulares";
 }
 
@@ -2864,9 +2980,11 @@ function onPanelClick(event) {
         if (!event.target.closest("[data-mcal='prev'], [data-mcal='next']")) return;
     }
 
-    if (event.target.closest("[data-mcal-brecha-head]")) {
+    const brechaHead = event.target.closest("[data-mcal-brecha-head]");
+
+    if (brechaHead) {
         event.stopPropagation();
-        void editBrechaTitle();
+        void editBrechaTitle(brechaHead.dataset.mcalBrechaHead, brechaHead.dataset.mcalBrechaIndex);
         return;
     }
 

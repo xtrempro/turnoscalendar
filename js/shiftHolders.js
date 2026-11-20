@@ -522,6 +522,74 @@ function groupGapsFromMap(map) {
     return gaps;
 }
 
+function isoToDate(iso) {
+    const [year, month, day] = String(iso || "").split("-").map(Number);
+
+    return year && month && day ? new Date(year, month - 1, day) : null;
+}
+
+/**
+ * Quienes DEJARON cada grupo del 4to turno, del mas reciente al mas antiguo:
+ * los que salieron de la unidad (perfil inactivo, con su fecha de salida) y
+ * los que se cambiaron a otro grupo dentro de la ventana que se observa.
+ *
+ * Sirve para nombrar el cupo que dejaron: "Brecha turno D - Camila ...".
+ * Solo se ve lo que el calendario prueba: un cambio anterior a la ventana de
+ * observacion (LOOKBACK_DAYS) o a otra rotativa no aparece, y el cupo queda
+ * sin nombre.
+ *
+ * @returns {Map<string, Array<{profile: object, leftOn: string}>>} por letra
+ */
+export function getShiftGroupDepartures(today = new Date()) {
+    const memoKey = keyFromDate(today);
+
+    if (groupMapMemo.departuresKey === memoKey && groupMapMemo.departures) {
+        return groupMapMemo.departures;
+    }
+
+    const byLetter = new Map();
+    const add = (letter, profile, leftOn) => {
+        if (!letter) return;
+
+        const list = byLetter.get(letter) || [];
+
+        list.push({ profile, leftOn: toISODate(leftOn) });
+        byLetter.set(letter, list);
+    };
+
+    getProfiles().forEach(profile => {
+        if (!isProfileActive(profile)) {
+            const exit = isoToDate(profile.unitExitDate);
+
+            if (!exit || exit > today) return;
+
+            const lastDay = addDays(exit, -1);
+
+            add(detectHolderPlacement(profile.name, lastDay)?.letter, profile, exit);
+            return;
+        }
+
+        const now = detectHolderPlacement(profile.name, today);
+
+        if (!now?.changedGroup) return;
+
+        // El dia antes de que empezara su racha en el grupo de hoy.
+        const before = addDays(today, -now.streakDays);
+        const previous = detectHolderPlacement(profile.name, before);
+
+        if (previous?.letter && previous.letter !== now.letter) {
+            add(previous.letter, profile, addDays(before, 1));
+        }
+    });
+
+    byLetter.forEach(list => list.sort((a, b) => b.leftOn.localeCompare(a.leftOn)));
+
+    groupMapMemo.departuresKey = memoKey;
+    groupMapMemo.departures = byLetter;
+
+    return byLetter;
+}
+
 export function invalidateShiftGroupMap() {
     groupMapMemo = { key: "", map: null };
 }
