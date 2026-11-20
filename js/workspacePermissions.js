@@ -52,7 +52,10 @@ const TARGET_TO_MENU = MENU_PERMISSION_DEFS.reduce((map, menu) => {
     shiftHoldersPanel: "turnos",
     // Calendario Mensual: la misma lectura (y edicion) del calendario de la
     // unidad, asi que va con el permiso de Turnos.
-    monthlyCalendarPanel: "turnos"
+    monthlyCalendarPanel: "turnos",
+    // Protocolos son informaciones de categoria "protocolo" (informationsModel.js):
+    // se leen y se editan con el permiso de Informaciones, sin uno propio.
+    protocolsPanel: "informations"
 });
 const LEGACY_FULL_ADMIN_PERMISSION_KEYS = MENU_PERMISSION_DEFS
     .map(menu => menu.key)

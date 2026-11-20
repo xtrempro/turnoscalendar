@@ -30,6 +30,43 @@ export const INFORMATION_CATEGORIES = [
     { id: "general", label: "General" }
 ];
 
+// Los PROTOCOLOS tienen su propio menu (aqui y en la PWA), pero son
+// informaciones de categoria "protocolo": viajan en el mismo documento
+// publicado, con los mismos destinatarios, confirmaciones de lectura, archivos
+// y programacion. Lo unico propio es la SUBCATEGORIA, un texto libre
+// ("Radioproteccion", "Equipos", "Urgencias") que agrupa los protocolos.
+export const PROTOCOL_CATEGORY = "protocolo";
+const MAX_SUBCATEGORY_LENGTH = 60;
+
+export function isProtocol(item = {}) {
+    return normalizeCategory(item?.category) === PROTOCOL_CATEGORY;
+}
+
+export function normalizeSubcategory(value) {
+    return String(value || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, MAX_SUBCATEGORY_LENGTH);
+}
+
+// Las subcategorias en uso, sin repetir (sin distinguir mayusculas), en orden
+// alfabetico. Es la lista que se ofrece al escribir una nueva.
+export function protocolSubcategories(items = []) {
+    const byKey = new Map();
+
+    (Array.isArray(items) ? items : []).forEach(item => {
+        if (!isProtocol(item)) return;
+
+        const label = normalizeSubcategory(item.subcategory);
+
+        if (label && !byKey.has(label.toLowerCase())) {
+            byKey.set(label.toLowerCase(), label);
+        }
+    });
+
+    return [...byKey.values()].sort((a, b) => a.localeCompare(b, "es"));
+}
+
 // Se reparte por lo que NO cambia de un dia a otro. El turno queda fuera a
 // proposito: una persona esta de noche el martes y libre el jueves, asi que
 // "el turno de noche" no es un grupo al que se le pueda escribir, es el estado

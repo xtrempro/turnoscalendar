@@ -1824,9 +1824,16 @@ function informationNotificationBody(item = {}) {
     : title;
 }
 
-function informationDeepLink(informationId) {
+// Un protocolo es una informacion de categoria "protocolo" con menu propio en la
+// PWA. Una PWA vieja que no conoce la pantalla "protocolos" cae igual en
+// Informaciones por el informationId, donde todavia los muestra.
+function isProtocolInformation(item = {}) {
+  return String(item?.category || "").trim().toLowerCase() === "protocolo";
+}
+
+function informationDeepLink(informationId, screen = "informaciones") {
   const params = new URLSearchParams({
-    screen: "informaciones",
+    screen,
     informationId: cleanCallableText(informationId, 180)
   });
 
@@ -1922,9 +1929,11 @@ exports.notifyInformationPublished = onCall(
       80
     );
     const eventId = informationNotificationEventId(informationId, publishedAt);
-    const title = "Nueva informacion";
+    const protocol = isProtocolInformation(information);
+    const screen = protocol ? "protocolos" : "informaciones";
+    const title = protocol ? "Nuevo protocolo" : "Nueva informacion";
     const body = informationNotificationBody(information);
-    const deepLink = informationDeepLink(informationId);
+    const deepLink = informationDeepLink(informationId, screen);
     const activeLinks = linksSnap.docs
       .map((docSnap) => {
         const link = docSnap.data() || {};
@@ -2025,7 +2034,7 @@ exports.notifyInformationPublished = onCall(
           workspaceName,
           workerId: link.profileName,
           profileName: link.profileName,
-          screen: "informaciones",
+          screen,
           url: deepLink,
           tag: `information-${eventId}`,
           requireInteraction: "false",

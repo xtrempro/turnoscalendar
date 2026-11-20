@@ -241,7 +241,8 @@ test("el switch de avisar crea notificaciones solo al publicar", async () => {
     assert.match(functions, /"workerNotifications"/);
     assert.match(functions, /type:\s*"information_published"/);
     assert.match(functions, /category:\s*"informations"/);
-    assert.match(functions, /screen:\s*"informaciones"/);
+    // Informaciones abre su pantalla; un protocolo, la de Protocolos.
+    assert.match(functions, /const screen = protocol \? "protocolos" : "informaciones";/);
     assert.match(functions, /informationId/);
 });
 

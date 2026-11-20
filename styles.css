@@ -1897,6 +1897,7 @@ body:not([data-active-view="dashboard"]) #dashboardPanel,
 body:not([data-active-view="requests"]) #workerRequestsPanel,
 body:not([data-active-view="memos"]) #memosPanel,
 body:not([data-active-view="informations"]) #informationsPanel,
+body:not([data-active-view="protocols"]) #protocolsPanel,
 body:not([data-active-view="medicalEquipment"]) #medicalEquipmentPanel,
 body:not([data-active-view="tenders"]) #tendersPanel,
 body:not([data-active-view="qualifications"]) #qualificationsPanel,
@@ -1938,6 +1939,11 @@ body[data-active-view="informations"] .leave-panel,
 body[data-active-view="informations"] .timeline-panel,
 body[data-active-view="informations"] #turnChangesView,
 body[data-active-view="informations"] .primary-grid,
+body[data-active-view="protocols"] .calendar-panel,
+body[data-active-view="protocols"] .leave-panel,
+body[data-active-view="protocols"] .timeline-panel,
+body[data-active-view="protocols"] #turnChangesView,
+body[data-active-view="protocols"] .primary-grid,
 body[data-active-view="medicalEquipment"] .calendar-panel,
 body[data-active-view="medicalEquipment"] .leave-panel,
 body[data-active-view="medicalEquipment"] .timeline-panel,
@@ -4897,7 +4903,8 @@ body[data-active-view="memos"] .secondary-grid {
     grid-template-columns: minmax(0, 1fr);
 }
 
-body[data-active-view="informations"] .secondary-grid {
+body[data-active-view="informations"] .secondary-grid,
+body[data-active-view="protocols"] .secondary-grid {
     grid-template-columns: minmax(0, 1fr);
 }
 
@@ -6723,6 +6730,11 @@ body[data-active-view="profile"] .profile-view-layout > .sidebar .profile-item__
 }
 
 .actionbar .nav-tile[data-target="informationsPanel"] {
+    order: 13;
+}
+
+/* Protocolos, justo bajo Informaciones: mismo orden, y en el HTML va despues. */
+.actionbar .nav-tile[data-target="protocolsPanel"] {
     order: 13;
 }
 

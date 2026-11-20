@@ -555,7 +555,8 @@ import {
 } from "./memos.js";
 import {
     initInformationsPanel,
-    renderInformationsPanel
+    renderInformationsPanel,
+    renderProtocolsPanel
 } from "./informations.js";
 import {
     initMedicalEquipmentPanel,
@@ -8337,6 +8338,10 @@ async function setActiveShortcut(targetId, options = {}) {
 
         if (nextView === "informations") {
             renderInformationsPanel();
+        }
+
+        if (nextView === "protocols") {
+            renderProtocolsPanel();
         }
 
         if (nextView === "medicalEquipment") {

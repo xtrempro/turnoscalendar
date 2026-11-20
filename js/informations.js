@@ -33,7 +33,11 @@ import {
     effectiveStatus,
     normalizeAudience,
     normalizeCategory,
-    normalizeStatus
+    normalizeStatus,
+    normalizeSubcategory,
+    isProtocol,
+    PROTOCOL_CATEGORY,
+    protocolSubcategories
 } from "./informationsModel.js";
 import {
     hasRead,
@@ -61,6 +65,92 @@ let categoryFilter = "todas";
 // Informacion cuya ficha de lectura esta abierta.
 let readerInformationId = "";
 let readerTab = "leyeron";
+
+/*
+ * Dos menus, un mismo panel: Informaciones y Protocolos. Un protocolo es una
+ * informacion de categoria "protocolo" (ver informationsModel.js), asi que
+ * comparten guardado, publicacion, destinatarios y confirmaciones; cada menu
+ * muestra SOLO lo suyo. El estado de pantalla (pestaña, buscador, filtro,
+ * compositor abierto) es de cada menu: ir y volver no mezcla un borrador de
+ * protocolo con la bandeja de informaciones.
+ */
+const SECTIONS = {
+    informations: {
+        panelId: "informationsPanel",
+        view: "informations",
+        title: "Informaciones",
+        subtitle: "Lo que publiques aqui le llega a la PWA de los trabajadores que elijas.",
+        newLabel: "Nueva informacion",
+        editLabel: "Editar informacion",
+        empty: "Aun no hay informaciones publicadas.",
+        searchLabel: "Buscar informaciones",
+        readonly: "Tu usuario puede revisar las informaciones publicadas, pero no modificarlas."
+    },
+    protocols: {
+        panelId: "protocolsPanel",
+        view: "protocols",
+        title: "Protocolos",
+        subtitle: "Los protocolos de la unidad. Le llegan a la PWA de los trabajadores que elijas, en su menu Protocolos.",
+        newLabel: "Nuevo protocolo",
+        editLabel: "Editar protocolo",
+        empty: "Aun no hay protocolos publicados.",
+        searchLabel: "Buscar protocolos",
+        readonly: "Tu usuario puede revisar los protocolos publicados, pero no modificarlos."
+    }
+};
+
+let section = "informations";
+const sectionStates = {};
+
+function captureSectionState() {
+    return {
+        editingInformationId,
+        composerDraft,
+        activeTab,
+        searchQuery,
+        categoryFilter,
+        readerInformationId,
+        readerTab
+    };
+}
+
+function useSection(next) {
+    if (!SECTIONS[next] || next === section) return;
+
+    sectionStates[section] = captureSectionState();
+
+    const saved = sectionStates[next] || {};
+
+    editingInformationId = saved.editingInformationId || "";
+    composerDraft = saved.composerDraft || null;
+    activeTab = saved.activeTab || "publicadas";
+    searchQuery = saved.searchQuery || "";
+    categoryFilter = saved.categoryFilter || "todas";
+    readerInformationId = saved.readerInformationId || "";
+    readerTab = saved.readerTab || "leyeron";
+    section = next;
+}
+
+function sectionConfig() {
+    return SECTIONS[section];
+}
+
+function inProtocols() {
+    return section === "protocols";
+}
+
+// Solo lo de este menu.
+function sectionItems(items) {
+    return items.filter(item => inProtocols() ? isProtocol(item) : !isProtocol(item));
+}
+
+// Las categorias que se ofrecen en Informaciones: todas menos Protocolo, que
+// tiene su menu.
+function informationCategoryOptions() {
+    return INFORMATION_CATEGORIES.filter(category => category.id !== PROTOCOL_CATEGORY);
+}
+
+const NO_SUBCATEGORY = "__sin__";
 
 const TAB_STATUS = {
     publicadas: "published",
@@ -165,6 +255,9 @@ function normalizeInformation(item = {}) {
         // todas las que existian estaban publicadas.
         status: normalizeStatus(item.status),
         category: normalizeCategory(item.category),
+        subcategory: normalizeCategory(item.category) === PROTOCOL_CATEGORY
+            ? normalizeSubcategory(item.subcategory)
+            : "",
         audience: normalizeAudience(item.audience),
         requiresAck: Boolean(item.requiresAck),
         notify: item.notify === undefined ? true : Boolean(item.notify),
@@ -276,6 +369,7 @@ export function publicInformationsPayload(items = getInformations()) {
             // se actualiza. Ver el comentario de informationType().
             type: informationType(item),
             category: item.category,
+            subcategory: item.subcategory || "",
             audience: item.audience,
             requiresAck: item.requiresAck,
             pinned: item.pinned,
@@ -469,7 +563,15 @@ function matchesFilters(item) {
     const status = effectiveStatus(item);
 
     if (status !== TAB_STATUS[activeTab]) return false;
-    if (categoryFilter !== "todas" && item.category !== categoryFilter) return false;
+    if (categoryFilter !== "todas") {
+        if (inProtocols()) {
+            const sub = normalizeSubcategory(item.subcategory).toLowerCase();
+
+            if ((sub ? `sub:${sub}` : NO_SUBCATEGORY) !== categoryFilter) return false;
+        } else if (item.category !== categoryFilter) {
+            return false;
+        }
+    }
 
     const query = searchQuery.trim().toLowerCase();
 
@@ -479,6 +581,7 @@ function matchesFilters(item) {
         item.title,
         item.body,
         categoryLabel(item.category),
+        item.subcategory || "",
         ...item.attachments.map(attachment => attachment.name)
     ].join(" ").toLowerCase();
 
@@ -506,6 +609,10 @@ function readStatsFor(item) {
 }
 
 function tagHTML(item) {
+    if (isProtocol(item)) {
+        return `<span class="worker-request-type information-type information-type--purple">${escapeHTML(item.subcategory || "Protocolo")}</span>`;
+    }
+
     const tone = CATEGORY_TONE[item.category] || "orange";
 
     return `<span class="worker-request-type information-type information-type--${escapeAttribute(tone)}">${escapeHTML(categoryLabel(item.category))}</span>`;
@@ -732,10 +839,22 @@ function tabsHTML(items) {
 }
 
 function categoryFilterHTML() {
-    const options = [
-        { id: "todas", label: "Todas" },
-        ...INFORMATION_CATEGORIES
-    ];
+    const protocols = inProtocols()
+        ? sectionItems(getInformations())
+        : [];
+    const options = inProtocols()
+        ? [
+            { id: "todas", label: "Todas" },
+            // Prefijo propio: "Todas" como subcategoria no choca con el filtro.
+            ...protocolSubcategories(protocols).map(label => ({ id: `sub:${label.toLowerCase()}`, label })),
+            ...(protocols.some(item => !item.subcategory)
+                ? [{ id: NO_SUBCATEGORY, label: "Sin subcategoria" }]
+                : [])
+        ]
+        : [
+            { id: "todas", label: "Todas" },
+            ...informationCategoryOptions()
+        ];
 
     return options.map(option => `
         <button class="information-chip-filter${categoryFilter === option.id ? " is-on" : ""}" type="button" data-info-category-filter="${escapeAttribute(option.id)}">
@@ -756,7 +875,7 @@ function inboxHTML(items) {
                     <circle cx="11" cy="11" r="7"></circle>
                     <path d="m20 20-3.2-3.2"></path>
                 </svg>
-                <input type="search" value="${escapeAttribute(searchQuery)}" data-info-search placeholder="Buscar por titulo, texto o archivo" aria-label="Buscar informaciones">
+                <input type="search" value="${escapeAttribute(searchQuery)}" data-info-search placeholder="Buscar por titulo, texto o archivo" aria-label="${escapeAttribute(sectionConfig().searchLabel)}">
             </label>
             <div class="information-chip-filters">${categoryFilterHTML()}</div>
         </div>
@@ -768,7 +887,7 @@ function inboxHTML(items) {
                     <div class="empty-state empty-state--compact">
                         ${items.length
                             ? "Nada que mostrar con este filtro."
-                            : "Aun no hay informaciones publicadas."}
+                            : sectionConfig().empty}
                     </div>
                 `}
         </div>
@@ -787,7 +906,8 @@ function draftFromItem(item) {
         isNew: !base,
         title: base?.title || "",
         body: base?.body || "",
-        category: base?.category || "general",
+        category: base?.category || (inProtocols() ? PROTOCOL_CATEGORY : "general"),
+        subcategory: base?.subcategory || "",
         audience: base?.audience || normalizeAudience({}),
         pinned: Boolean(base?.pinned),
         requiresAck: Boolean(base?.requiresAck),
@@ -886,13 +1006,19 @@ function optionToggleHTML(key, title, hint) {
     `;
 }
 
+function composerPreviewTagText() {
+    return composerDraft.category === PROTOCOL_CATEGORY
+        ? composerDraft.subcategory || "Protocolo"
+        : categoryLabel(composerDraft.category);
+}
+
 function composerPreviewHTML() {
     const tone = CATEGORY_TONE[composerDraft.category] || "orange";
 
     return `
         <article class="information-preview__card${composerDraft.pinned ? " is-pinned" : ""}">
             <div class="information-card__tags">
-                <span class="worker-request-type information-type information-type--${escapeAttribute(tone)}" data-preview-tag>${escapeHTML(categoryLabel(composerDraft.category))}</span>
+                <span class="worker-request-type information-type information-type--${escapeAttribute(tone)}" data-preview-tag>${escapeHTML(composerPreviewTagText())}</span>
                 ${composerDraft.pinned ? `<span class="information-pin">Fijado</span>` : ""}
             </div>
             <strong data-preview-title>${escapeHTML(composerDraft.title || "Sin titulo todavia")}</strong>
@@ -927,9 +1053,10 @@ function composerHTML() {
     // La vista previa muestra la publicada mas reciente, atenuada, debajo de la
     // que se esta escribiendo. Sin ella la tarjeta flota sola y no se ve como
     // va a quedar EN LA LISTA, que es como el trabajador la va a encontrar.
-    const published = getInformations()
+    const published = sectionItems(getInformations())
         .filter(item => effectiveStatus(item) === "published")
         .filter(item => item.id !== composerDraft.id);
+    const subcategories = protocolSubcategories(getInformations());
     const publishedCount = published.length;
     const previousCard = published[0] || null;
 
@@ -937,7 +1064,7 @@ function composerHTML() {
         <div class="information-composer">
             <div class="information-composer__head">
                 <div>
-                    <h3>${composerDraft.isNew ? "Nueva informacion" : "Editar informacion"}</h3>
+                    <h3>${escapeHTML(composerDraft.isNew ? sectionConfig().newLabel : sectionConfig().editLabel)}</h3>
                     <p>Escribe a la izquierda; a la derecha ves como le queda al trabajador en su telefono.</p>
                 </div>
                 <span class="information-reach${empty ? " is-empty" : ""}" data-info-reach>
@@ -947,16 +1074,26 @@ function composerHTML() {
 
             <form class="information-composer__grid" data-info-form>
                 <div class="information-composer__main">
+                    ${composerDraft.category === PROTOCOL_CATEGORY ? `
+                        <label class="information-field">
+                            <span>Subcategoria</span>
+                            <input name="subcategory" type="text" maxlength="60" list="infoSubcategoryOptions" value="${escapeAttribute(composerDraft.subcategory)}" data-info-subcategory placeholder="Ej: Radioproteccion, Equipos, Urgencias" ${savingInformation ? "disabled" : ""}>
+                            <datalist id="infoSubcategoryOptions">
+                                ${subcategories.map(label => `<option value="${escapeAttribute(label)}"></option>`).join("")}
+                            </datalist>
+                        </label>
+                    ` : `
                     <label class="information-field">
                         <span>Categoria</span>
                         <div class="information-chip-filters">
-                            ${INFORMATION_CATEGORIES.map(category => `
+                            ${informationCategoryOptions().map(category => `
                                 <button class="information-chip-filter information-chip-filter--${escapeAttribute(CATEGORY_TONE[category.id])}${composerDraft.category === category.id ? " is-on" : ""}" type="button" data-info-category="${escapeAttribute(category.id)}">
                                     ${escapeHTML(category.label)}
                                 </button>
                             `).join("")}
                         </div>
                     </label>
+                    `}
 
                     <label class="information-field">
                         <span>Titulo</span>
@@ -1073,13 +1210,13 @@ function composerHTML() {
                     </div>
                     <div class="information-preview__phone">
                         <div class="information-preview__phonehead">
-                            <strong>Informaciones</strong>
+                            <strong>${escapeHTML(sectionConfig().title)}</strong>
                             <span>${publishedCount + 1}</span>
                         </div>
                         ${composerPreviewHTML()}
                         ${previousCard ? `
                             <article class="information-preview__card information-preview__card--dim">
-                                <span class="worker-request-type information-type information-type--${escapeAttribute(CATEGORY_TONE[previousCard.category] || "orange")}">${escapeHTML(categoryLabel(previousCard.category))}</span>
+                                <span class="worker-request-type information-type information-type--${escapeAttribute(CATEGORY_TONE[previousCard.category] || "orange")}">${escapeHTML(isProtocol(previousCard) ? previousCard.subcategory || "Protocolo" : categoryLabel(previousCard.category))}</span>
                                 <strong>${escapeHTML(previousCard.title)}</strong>
                                 <div class="information-preview__foot">
                                     <span>${escapeHTML(formatDateTime(previousCard.publishedAt || previousCard.updatedAt))}</span>
@@ -1180,10 +1317,11 @@ function readerHTML(item) {
    Pintado
    ========================================================================== */
 
-export function renderInformationsPanel() {
+function renderCurrentSection() {
     if (typeof document === "undefined") return;
 
-    const panel = document.getElementById("informationsPanel");
+    const config = sectionConfig();
+    const panel = document.getElementById(config.panelId);
 
     if (!panel) return;
 
@@ -1192,7 +1330,7 @@ export function renderInformationsPanel() {
     // -y no en el arranque- porque al arrancar todavia no hay unidad activa.
     void watchInformationReads();
 
-    const items = getInformations();
+    const items = sectionItems(getInformations());
     const editable = canEditMenu("informations");
     const published = items.filter(item => effectiveStatus(item) === "published");
     const publishedFiles = published.reduce(
@@ -1222,8 +1360,8 @@ export function renderInformationsPanel() {
         <div class="information-root">
             <div class="section-head section-head--with-action information-head">
                 <span class="section-head__title">
-                    <h3>Informaciones</h3>
-                    <small>Lo que publiques aqui le llega a la PWA de los trabajadores que elijas.</small>
+                    <h3>${escapeHTML(config.title)}</h3>
+                    <small>${escapeHTML(config.subtitle)}</small>
                 </span>
                 <span class="information-head__actions">
                     ${ackSummary ? `
@@ -1239,14 +1377,14 @@ export function renderInformationsPanel() {
                         ${published.length} publicacion(es) / ${publishedFiles} archivo(s)
                     </span>
                     ${editable && !composerDraft ? `
-                        <button class="primary-button" type="button" data-info-new>Nueva informacion</button>
+                        <button class="primary-button" type="button" data-info-new>${escapeHTML(config.newLabel)}</button>
                     ` : ""}
                 </span>
             </div>
             ${editable ? "" : `
                 <section class="panel information-editor--readonly">
                     <strong>Solo lectura</strong>
-                    <p>Tu usuario puede revisar las informaciones publicadas, pero no modificarlas.</p>
+                    <p>${escapeHTML(config.readonly)}</p>
                 </section>
             `}
             <section class="panel information-body-panel">
@@ -1257,6 +1395,16 @@ export function renderInformationsPanel() {
     `;
 
     bindInformationsPanel(panel);
+}
+
+export function renderInformationsPanel() {
+    useSection("informations");
+    renderCurrentSection();
+}
+
+export function renderProtocolsPanel() {
+    useSection("protocols");
+    renderCurrentSection();
 }
 
 /* ==========================================================================
@@ -1278,6 +1426,31 @@ function readComposerFields(form) {
 
     composerDraft.title = clampText(form.elements.title?.value, MAX_TITLE_LENGTH);
     composerDraft.body = clampText(form.elements.body?.value, MAX_BODY_LENGTH);
+
+    if (form.elements.subcategory) {
+        composerDraft.subcategory = normalizeSubcategory(form.elements.subcategory.value);
+    }
+}
+
+// Cierra el compositor del borrador que se guardo, en SU menu, y lo deja en la
+// pestaña donde quedo. Si en el intertanto se abrio otro borrador, no se toca.
+function finishSavedDraft(draft, draftSection, tab) {
+    if (section === draftSection) {
+        if (composerDraft === draft) {
+            composerDraft = null;
+            editingInformationId = "";
+            activeTab = tab;
+        }
+        return;
+    }
+
+    const saved = sectionStates[draftSection];
+
+    if (saved && saved.composerDraft === draft) {
+        saved.composerDraft = null;
+        saved.editingInformationId = "";
+        saved.activeTab = tab;
+    }
 }
 
 async function persistDraft(form, { asDraft = false } = {}) {
@@ -1311,35 +1484,49 @@ async function persistDraft(form, { asDraft = false } = {}) {
         return;
     }
 
+    // Se fija AQUI lo que se guarda: la subida y la publicacion esperan, y en
+    // ese rato el supervisor puede cambiar de menu (useSection cambia
+    // composerDraft y section). Todo lo que sigue usa esta referencia, no los
+    // globales (auditoria GPT 20-11, P2-1).
+    const draft = composerDraft;
+    const draftSection = section;
+
     savingInformation = true;
     Array.from(form.querySelectorAll("input, textarea, button")).forEach(control => {
         control.disabled = true;
     });
 
     try {
-        const uploaded = await uploadInformationFiles(files, composerDraft.id);
+        const uploaded = await uploadInformationFiles(files, draft.id);
         const now = new Date().toISOString();
         const user = getCurrentFirebaseUser();
         const items = getInformations();
-        const current = items.find(item => item.id === composerDraft.id) || null;
-        const scheduled = composerDraft.scheduled &&
-            composerDraft.publishAt &&
-            Date.parse(composerDraft.publishAt) > Date.now();
+        const current = items.find(item => item.id === draft.id) || null;
+        const scheduled = draft.scheduled &&
+            draft.publishAt &&
+            Date.parse(draft.publishAt) > Date.now();
         const status = asDraft ? "draft" : scheduled ? "scheduled" : "published";
         const nextItem = normalizeInformation({
             ...(current || {}),
-            id: composerDraft.id,
-            title: composerDraft.title,
-            body: composerDraft.body,
-            category: composerDraft.category,
-            audience: composerDraft.audience,
-            pinned: composerDraft.pinned,
-            requiresAck: composerDraft.requiresAck,
-            notify: composerDraft.notify,
+            id: draft.id,
+            title: draft.title,
+            body: draft.body,
+            // Lo que se crea en Protocolos es protocolo, y lo de Informaciones
+            // no puede volverse protocolo sin pasar por su menu.
+            category: draftSection === "protocols"
+                ? PROTOCOL_CATEGORY
+                : draft.category === PROTOCOL_CATEGORY && !isProtocol(current || {})
+                    ? "general"
+                    : draft.category,
+            subcategory: draft.subcategory,
+            audience: draft.audience,
+            pinned: draft.pinned,
+            requiresAck: draft.requiresAck,
+            notify: draft.notify,
             status,
-            publishAt: composerDraft.scheduled ? composerDraft.publishAt : "",
-            expiresAt: composerDraft.scheduled ? composerDraft.expiresAt : "",
-            createdAt: composerDraft.createdAt || current?.createdAt || now,
+            publishAt: draft.scheduled ? draft.publishAt : "",
+            expiresAt: draft.scheduled ? draft.expiresAt : "",
+            createdAt: draft.createdAt || current?.createdAt || now,
             // Una que sale de borrador estrena fecha de publicacion; una que ya
             // estaba publicada y solo se corrige conserva la suya, para que no
             // salte al principio de la lista del trabajador por una coma.
@@ -1349,9 +1536,9 @@ async function persistDraft(form, { asDraft = false } = {}) {
                     : now)
                 : "",
             updatedAt: now,
-            createdByUid: composerDraft.createdByUid || current?.createdByUid || user?.uid || "",
+            createdByUid: draft.createdByUid || current?.createdByUid || user?.uid || "",
             updatedByUid: user?.uid || "",
-            attachments: [...composerDraft.attachments, ...uploaded]
+            attachments: [...draft.attachments, ...uploaded]
         });
         const nextItems = current
             ? items.map(item => item.id === current.id ? nextItem : item)
@@ -1392,11 +1579,9 @@ async function persistDraft(form, { asDraft = false } = {}) {
                 }))
         );
 
-        composerDraft = null;
-        editingInformationId = "";
-        activeTab = status === "draft"
+        finishSavedDraft(draft, draftSection, status === "draft"
             ? "borradores"
-            : status === "scheduled" ? "programadas" : "publicadas";
+            : status === "scheduled" ? "programadas" : "publicadas");
 
         if (notificationFailed) {
             await showAlert(
@@ -1415,7 +1600,7 @@ async function persistDraft(form, { asDraft = false } = {}) {
         );
     } finally {
         savingInformation = false;
-        renderInformationsPanel();
+        renderCurrentSection();
     }
 }
 
@@ -1529,7 +1714,7 @@ async function deleteInformation(id) {
             { title: "Informaciones", tone: "danger" }
         );
     } finally {
-        renderInformationsPanel();
+        renderCurrentSection();
     }
 }
 
@@ -1617,6 +1802,18 @@ function bindComposer(panel) {
         };
     }
 
+    const subcategoryInput = panel.querySelector("[data-info-subcategory]");
+
+    if (subcategoryInput) {
+        subcategoryInput.oninput = () => {
+            composerDraft.subcategory = normalizeSubcategory(subcategoryInput.value);
+
+            const tag = panel.querySelector("[data-preview-tag]");
+
+            if (tag) tag.textContent = composerPreviewTagText();
+        };
+    }
+
     if (bodyInput) {
         bodyInput.oninput = () => {
             composerDraft.body = bodyInput.value.slice(0, MAX_BODY_LENGTH);
@@ -1628,7 +1825,7 @@ function bindComposer(panel) {
         button.onclick = () => {
             readComposerFields(form);
             composerDraft.category = button.dataset.infoCategory;
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1639,7 +1836,7 @@ function bindComposer(panel) {
                 ...composerDraft.audience,
                 mode: button.dataset.infoAudienceMode
             });
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1656,7 +1853,7 @@ function bindComposer(panel) {
                 ...composerDraft.audience,
                 groups
             });
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1692,7 +1889,7 @@ function bindComposer(panel) {
                 ...composerDraft.audience,
                 people: [...composerDraft.audience.people, match.name]
             });
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     }
 
@@ -1705,7 +1902,7 @@ function bindComposer(panel) {
                     name => name !== button.dataset.infoPersonRemove
                 )
             });
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1716,7 +1913,7 @@ function bindComposer(panel) {
             const key = button.dataset.infoOption;
 
             composerDraft[key] = !composerDraft[key];
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1729,7 +1926,7 @@ function bindComposer(panel) {
                 ...composerDraft.pendingFiles,
                 ...Array.from(filesInput.files || [])
             ].slice(0, MAX_ATTACHMENT_FILES);
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     }
 
@@ -1742,7 +1939,7 @@ function bindComposer(panel) {
             composerDraft.pendingFiles = composerDraft.pendingFiles.filter(
                 (_file, position) => position !== index
             );
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1752,7 +1949,7 @@ function bindComposer(panel) {
             composerDraft.attachments = composerDraft.attachments.filter(
                 attachment => attachment.id !== button.dataset.infoDraftFile
             );
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1778,14 +1975,14 @@ function bindComposer(panel) {
     panel.querySelector("[data-info-cancel]")?.addEventListener("click", () => {
         composerDraft = null;
         editingInformationId = "";
-        renderInformationsPanel();
+        renderCurrentSection();
     });
 }
 
 function openComposer(item) {
     composerDraft = draftFromItem(item);
     editingInformationId = item?.id || "";
-    renderInformationsPanel();
+    renderCurrentSection();
 }
 
 function bindInformationsPanel(panel) {
@@ -1798,14 +1995,14 @@ function bindInformationsPanel(panel) {
     panel.querySelectorAll("[data-info-tab]").forEach(button => {
         button.onclick = () => {
             activeTab = button.dataset.infoTab;
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
     panel.querySelectorAll("[data-info-category-filter]").forEach(button => {
         button.onclick = () => {
             categoryFilter = button.dataset.infoCategoryFilter;
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1821,7 +2018,7 @@ function bindInformationsPanel(panel) {
 
             // Igual que el compositor: se repinta SOLO la lista para no perder
             // el cursor del buscador con cada letra.
-            const items = getInformations();
+            const items = sectionItems(getInformations());
             const shown = items.filter(matchesFilters);
 
             list.innerHTML = shown.length
@@ -1853,21 +2050,21 @@ function bindCardActions(panel) {
     panel.querySelectorAll("[data-info-archive]").forEach(button => {
         button.onclick = async () => {
             await setInformationStatus(button.dataset.infoArchive, "archived");
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
     panel.querySelectorAll("[data-info-restore]").forEach(button => {
         button.onclick = async () => {
             await setInformationStatus(button.dataset.infoRestore, "published");
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
     panel.querySelectorAll("[data-info-publish-now]").forEach(button => {
         button.onclick = async () => {
             await setInformationStatus(button.dataset.infoPublishNow, "published");
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1875,7 +2072,7 @@ function bindCardActions(panel) {
         button.onclick = () => {
             readerInformationId = button.dataset.infoReaders;
             readerTab = "leyeron";
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1896,14 +2093,14 @@ function bindReader(panel) {
     panel.querySelectorAll("[data-info-reader-close]").forEach(node => {
         node.onclick = () => {
             readerInformationId = "";
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
     panel.querySelectorAll("[data-info-reader-tab]").forEach(button => {
         button.onclick = () => {
             readerTab = button.dataset.infoReaderTab;
-            renderInformationsPanel();
+            renderCurrentSection();
         };
     });
 
@@ -1922,9 +2119,10 @@ export function initInformationsPanel() {
     if (typeof window === "undefined") return;
 
     const repaint = () => {
-        if (document.body.dataset.activeView === "informations") {
-            renderInformationsPanel();
-        }
+        const view = document.body.dataset.activeView;
+
+        if (view === "informations") renderInformationsPanel();
+        if (view === "protocols") renderProtocolsPanel();
     };
     // Las confirmaciones llegan solas desde los telefonos, en cualquier
     // momento. Repintar con el compositor abierto le quitaria el cursor al
