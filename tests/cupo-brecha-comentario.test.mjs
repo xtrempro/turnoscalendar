@@ -235,14 +235,15 @@ test("soltar en un +Cupo a alguien de una columna de motivo: pasa a titulares co
     assert.equal(getJSON("replacements", []).at(-1).comment, COMMENT);
 });
 
-test("el arrastre a un +Cupo pide el mismo cuadro y cancelar no cambia nada", async () => {
+test("el arrastre a un +Cupo mueve sin preguntar (el comentario es del boton Cubrir)", async () => {
     const source = await readFile(new URL("../js/monthlyCalendar.js", import.meta.url), "utf8");
     const calendar = await readFile(new URL("../js/calendar.js", import.meta.url), "utf8");
     const drop = source.slice(source.indexOf("async function dropOnCupo("), source.indexOf("async function onDrop("));
 
+    // El cuadro del comentario sigue existiendo para Cubrir.
     assert.match(calendar, /window\.openCupoCoverReasonDialog = options => openCupoCoverReasonDialog\(options\);/);
     assert.match(source, /function cupoDropFor\(event\)[\s\S]*?data-mcal-col="titulares"[\s\S]*?cupos\?\.\[dragState\.slot\]\?\.\[0\]/);
-    assert.match(drop, /window\.openCupoCoverReasonDialog\?\.\(/);
-    assert.match(drop, /if \(comment === null \|\| comment === undefined\) return;\s*pushHistory\(\);/);
-    assert.match(drop, /setManualExtraReason\(moving\.extraId, cupo\.motive, \{ comment \}\)/);
+    // Pedido del usuario (20-11): arrastrar es mover, sin cuadro.
+    assert.doesNotMatch(drop, /openCupoCoverReasonDialog/);
+    assert.match(drop, /pushHistory\(\);\s*\n\s*if \(setManualExtraReason\(moving\.extraId, cupo\.motive, \{ comment: "" \}\)\)/);
 });

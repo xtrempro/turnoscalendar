@@ -1773,23 +1773,17 @@ function onDragLeave(event) {
 // Soltar en un "+Cupo": el mismo cuadro de comentario que al cubrirlo con
 // clic; su apoyo pasa a ser el de ese cupo (motivo "Completar rotativa de...",
 // que lo deja con los titulares) y cancelar no cambia nada.
+// Arrastrar es mover, no preguntar: sin el cuadro del comentario, la persona
+// pasa al cupo y queda en la columna de la Brecha. El comentario sigue
+// existiendo al cubrir un cupo con el boton Cubrir.
 async function dropOnCupo(moving, cupo) {
-    const comment = await window.openCupoCoverReasonDialog?.({
-        worker: moving.name,
-        keyDay: moving.keyDay,
-        label: cupo.label,
-        turnoLabel: TURNO_LABEL[cupo.turno] || ""
-    });
-
-    if (comment === null || comment === undefined) return;
-
     pushHistory();
 
-    if (setManualExtraReason(moving.extraId, cupo.motive, { comment })) {
+    if (setManualExtraReason(moving.extraId, cupo.motive, { comment: "" })) {
         addAuditLog(
             AUDIT_CATEGORY.CALENDAR,
             "Cubrio un cupo de la Brecha",
-            `${moving.name}: el ${moving.keyDay} pasa de "${moving.reason}" a cubrir el cupo "${cupo.motive}"${comment ? ` (${comment})` : ""} (Calendario Mensual).`,
+            `${moving.name}: el ${moving.keyDay} pasa de "${moving.reason}" a cubrir el cupo "${cupo.motive}" (Calendario Mensual).`,
             { profile: moving.name, keyDay: moving.keyDay }
         );
     }

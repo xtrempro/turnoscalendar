@@ -8574,7 +8574,7 @@ export function openCupoCoverReasonDialog({ worker, keyDay, label, turnoLabel, p
                     <b>${escapeHTML(worker)}</b> ${preassign ? "queda preasignado para" : "cubre"} el cupo de
                     <b>${escapeHTML(label || "la Brecha")}</b>${turnoLabel ? ` en el turno <b>${escapeHTML(turnoLabel)}</b>` : ""}
                     del ${escapeHTML(formatDisplayDate(isoFromKeyDay(keyDay)))}.
-                    El comentario queda en su reporte; el turno sigue con los titulares.
+                    El comentario queda en su reporte; en el Calendario Mensual se ve en la columna de la Brecha.
                 </p>
                 <div class="extra-reason-field">
                     <div class="overtime-backup-subsection__head">
