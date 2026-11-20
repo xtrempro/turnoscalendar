@@ -30,7 +30,7 @@ test("el buscador se oculta solo EL, no la fila entera", () => {
     assert.match(calendar, /class="replacement-search is-hidden"/);
     assert.match(
         calendar,
-        /searchBox\.classList\.toggle\("is-hidden", !scrollable\);/
+        /searchBox\.classList\.toggle\("is-hidden", !scrollable && !hasIneligible\);/
     );
 });
 

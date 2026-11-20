@@ -596,8 +596,14 @@ test("el candidato recibe la configuracion, no la relee por cada uno", async () 
         "utf8"
     )).replace(/\r\n/g, "\n");
 
+    // El barrido lee la configuracion una vez y se la pasa a la regla de cada
+    // candidato (replacementIneligibleReason), que la entrega a cada regla.
     assert.match(
         source,
-        /preassignmentBlocksReplacementCandidate\([\s\S]{0,120}turnChangeConfig\s*\n\s*\)/
+        /replacementIneligibleReason\(candidate, keyDay, neededTurn, turnChangeConfig\)/
+    );
+    assert.match(
+        source,
+        /preassignmentBlocksReplacementCandidate\(name, keyDay, neededTurn, config\)/
     );
 });

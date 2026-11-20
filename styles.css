@@ -11390,6 +11390,83 @@ body.theme-dark .rc-jump { color: #fca5a5; }
     display: none;
 }
 
+/* Quien NO puede cubrir: solo aparece al buscarlo, en rojo y con el motivo.
+   No asigna nada (no es boton); el mouse encima muestra su mes. */
+.replacement-candidate.replacement-candidate--ineligible,
+.replacement-candidate.replacement-candidate--ineligible:hover {
+    border-color: rgba(220, 38, 38, 0.6);
+    background: rgba(220, 38, 38, 0.1);
+    cursor: default;
+    transform: none;
+}
+
+.replacement-candidate.replacement-candidate--ineligible em {
+    background: rgba(220, 38, 38, 0.16);
+    color: #b91c1c;
+}
+
+.replacement-candidate-ineligible-reason {
+    display: block;
+    margin-top: 6px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: rgba(220, 38, 38, 0.14);
+    color: #b91c1c !important;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+body.theme-dark .replacement-candidate-ineligible-reason,
+body.theme-dark .replacement-candidate.replacement-candidate--ineligible em {
+    color: #fca5a5 !important;
+}
+
+/* El dia del turno en el mes del trabajador: alterna entre el turno nuevo
+   (debajo) y el que tiene hoy (esta capa, que aparece y desaparece). */
+.mcal-wcal-day.is-blinking {
+    position: relative;
+}
+
+.mcal-wcal-was {
+    position: absolute;
+    inset: -1px;
+    display: grid;
+    align-content: space-between;
+    padding: 5px 7px;
+    border: 1px dashed var(--border-strong, #94a3b8);
+    border-radius: 8px;
+    background: var(--field);
+    color: var(--text-soft);
+    animation: mcal-wcal-blink 1.6s steps(1, end) infinite;
+}
+
+.mcal-wcal-was.has-turn {
+    border-color: transparent;
+    background: var(--wcal-was);
+    color: #fff;
+}
+
+.mcal-wcal-was b {
+    font-weight: 700;
+}
+
+.mcal-wcal-was small {
+    justify-self: end;
+    font-size: 0.95rem;
+    font-weight: 800;
+}
+
+@keyframes mcal-wcal-blink {
+    0% { opacity: 0; }
+    50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mcal-wcal-was {
+        animation-duration: 3.2s;
+    }
+}
+
 .replacement-options-panel {
     display: grid;
     gap: 12px;

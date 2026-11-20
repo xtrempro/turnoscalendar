@@ -586,6 +586,106 @@ function candidateHasAbsence(profileName, keyDay) {
     );
 }
 
+const TURN_NAME = {
+    [TURNO.LARGA]: "Larga",
+    [TURNO.NOCHE]: "Noche",
+    [TURNO.TURNO24]: "24 h",
+    [TURNO.DIURNO]: "Diurno",
+    [TURNO.DIURNO_NOCHE]: "D+N",
+    [TURNO.MEDIA_MANANA]: "1/2 mañana",
+    [TURNO.MEDIA_TARDE]: "1/2 tarde",
+    [TURNO.TURNO18]: "18 h"
+};
+
+function turnName(turn) {
+    return TURN_NAME[Number(turn)] || "turno";
+}
+
+const ABSENCE_NAME = {
+    license: "licencia médica",
+    professional_license: "licencia médica profesional",
+    unpaid_leave: "permiso sin goce",
+    unjustified: "ausencia injustificada",
+    training: "capacitación"
+};
+
+function absenceReason(profileName, keyDay) {
+    if (getJSON(`admin_${profileName}`, {})[keyDay]) return "Tiene permiso administrativo ese día.";
+    if (getJSON(`legal_${profileName}`, {})[keyDay]) return "Está con feriado legal ese día.";
+    if (getJSON(`comp_${profileName}`, {})[keyDay]) return "Está con feriado compensatorio ese día.";
+
+    const absence = getJSON(`absences_${profileName}`, {})[keyDay];
+    const type = String(absence?.type || absence || "");
+
+    return `Está con ${ABSENCE_NAME[type] || "una ausencia"} ese día.`;
+}
+
+// Que un turno ya trae el otro adentro (una Larga trae el Diurno; un 24, todo).
+const TURN_CONTAINS = {
+    [TURNO.LARGA]: [TURNO.LARGA, TURNO.DIURNO, TURNO.MEDIA_MANANA, TURNO.MEDIA_TARDE],
+    [TURNO.NOCHE]: [TURNO.NOCHE],
+    [TURNO.DIURNO]: [TURNO.DIURNO, TURNO.MEDIA_MANANA],
+    [TURNO.DIURNO_NOCHE]: [TURNO.DIURNO_NOCHE, TURNO.DIURNO, TURNO.NOCHE, TURNO.MEDIA_MANANA],
+    [TURNO.TURNO18]: [TURNO.TURNO18, TURNO.NOCHE, TURNO.MEDIA_TARDE],
+    [TURNO.MEDIA_MANANA]: [TURNO.MEDIA_MANANA],
+    [TURNO.MEDIA_TARDE]: [TURNO.MEDIA_TARDE]
+};
+
+function turnContains(current, needed) {
+    if (Number(current) === TURNO.TURNO24) return true;
+
+    return (TURN_CONTAINS[Number(current)] || []).includes(Number(needed));
+}
+
+/**
+ * Por que un trabajador NO puede cubrir ese turno, en palabras del supervisor,
+ * o "" si puede. Sigue el MISMO orden y las mismas reglas que el filtro de
+ * buildReplacementCandidates: el filtro usa esta funcion, asi que lo que se
+ * explica y lo que se descarta no pueden separarse.
+ */
+export function replacementIneligibleReason(candidate, keyDay, neededTurn, config = getTurnChangeConfig()) {
+    const name = candidate.profile.name;
+    const current = Number(candidate.currentState) || TURNO.LIBRE;
+
+    if (candidateHasAbsence(name, keyDay)) return absenceReason(name, keyDay);
+
+    if (replacementCreatesInvertedTwentyFour(name, keyDay, current, neededTurn, config)) {
+        return "Le quedaría un 24 invertido: una Noche seguida de un turno que entra en la mañana, y la unidad no lo permite.";
+    }
+
+    if (preassignmentBlocksReplacementCandidate(name, keyDay, neededTurn, config)) {
+        return "Con sus turnos y preasignaciones de los días vecinos, le quedaría un 24 pegado a otro turno.";
+    }
+
+    if (cededSwapTurnBlocks(name, keyDay, neededTurn)) {
+        return "Cedió ese turno en un cambio de turno: no puede volver a tomarlo.";
+    }
+
+    if (candidate.backsPendingExtra) return "";
+
+    if (canCoverShift(current, neededTurn, config, {
+        allowDiurnoLongCoverage: candidate.isDiurnoLongCoverage
+    })) {
+        return "";
+    }
+
+    if (current === TURNO.DIURNO && Number(neededTurn) === TURNO.LARGA) {
+        return "Está de Diurno ese día y su rotativa no le permite extenderlo a Larga.";
+    }
+
+    const merged = fusionarTurnos(current, neededTurn);
+
+    if (merged === TURNO.TURNO24 && merged !== current && config.allowTwentyFourHourShifts === false) {
+        return `Con su ${turnName(current)} quedaría en 24 h, y la unidad no permite turnos de 24 horas.`;
+    }
+
+    if (turnContains(current, neededTurn)) {
+        return `Ya tiene ${turnName(current)} ese día, que incluye la ${turnName(neededTurn)}: no le suma nada.`;
+    }
+
+    return `Su ${turnName(current)} de ese día no se puede juntar con una ${turnName(neededTurn)}.`;
+}
+
 /**
  * Arma la lista de candidatos que PUEDEN cubrir un turno.
  *
@@ -751,48 +851,33 @@ export async function buildReplacementCandidates(profileName, keyDay, {
         return { completed: false, neededTurn, candidates: [] };
     }
 
+    // Las reglas duras (ausencia, 24 invertido, adyacencia de 24, turno cedido
+    // y compatibilidad del turno) viven en replacementIneligibleReason: el
+    // descarte y su explicacion salen del mismo lugar. Quien ya tiene el turno
+    // puesto a mano y sin motivo pasa igual (backsPendingExtra): no hay nada
+    // que sumarle, y es justamente por eso que sirve.
+    //
+    // Los descartados viajan aparte, con su motivo: el cuadro de sugerencias
+    // los muestra en rojo si el supervisor los busca por nombre.
     const turnChangeConfig = getTurnChangeConfig();
-    const eligible = candidates.filter(candidate =>
-        !candidateHasAbsence(candidate.profile.name, keyDay) &&
-        !replacementCreatesInvertedTwentyFour(
-            candidate.profile.name,
-            keyDay,
-            candidate.currentState,
-            neededTurn,
-            turnChangeConfig
-        ) &&
-        !preassignmentBlocksReplacementCandidate(
-            candidate.profile.name,
-            keyDay,
-            neededTurn,
-            turnChangeConfig
-        ) &&
-        !cededSwapTurnBlocks(
-            candidate.profile.name,
-            keyDay,
-            neededTurn
-        ) &&
-        (
-            // Quien ya tiene el turno puesto a mano y sin motivo pasa igual:
-            // canCoverShift lo descarta porque no hay nada que sumarle, y es
-            // justamente por eso que sirve.
-            candidate.backsPendingExtra ||
-            canCoverShift(
-                candidate.currentState,
-                neededTurn,
-                turnChangeConfig,
-                {
-                    allowDiurnoLongCoverage:
-                        candidate.isDiurnoLongCoverage
-                }
-            )
-        )
-    );
+    const eligible = [];
+    const ineligible = [];
+
+    candidates.forEach(candidate => {
+        const reason = replacementIneligibleReason(candidate, keyDay, neededTurn, turnChangeConfig);
+
+        if (reason) {
+            ineligible.push({ ...candidate, ineligibleReason: reason });
+        } else {
+            eligible.push(candidate);
+        }
+    });
 
     return {
         completed: true,
         neededTurn,
         candidates: eligible,
+        ineligible,
         date,
         year: y,
         month: m,

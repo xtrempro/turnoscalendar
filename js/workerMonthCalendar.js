@@ -30,7 +30,9 @@ const WEEKDAYS = ["L", "M", "M", "J", "V", "S", "D"];
  * que reciben un turno se destacan y los que quedan libres se marcan con el
  * turno que tenian. Se repinta al marcar o desmarcar cada movimiento.
  */
-export function workerMonthHTML(name, month, moves = [], { title = "Así quedaría su mes" } = {}) {
+// `blink`: el dia que recibe el turno alterna entre el turno nuevo y el que
+// tiene hoy (el modal de reemplazo), para ver de un vistazo que cambia.
+export function workerMonthHTML(name, month, moves = [], { title = "Así quedaría su mes", blink = false } = {}) {
     const year = month.getFullYear();
     const monthIndex = month.getMonth();
     const days = new Date(year, monthIndex + 1, 0).getDate();
@@ -38,10 +40,12 @@ export function workerMonthHTML(name, month, moves = [], { title = "Así quedar�
     const turns = new Map();
     const arriving = new Set();
     const leaving = new Map();
+    const original = new Map();
     const keyOf = day => `${year}-${monthIndex}-${day}`;
 
     for (let day = 1; day <= days; day++) {
         turns.set(keyOf(day), Number(getTurnoReal(name, keyOf(day))) || TURNO.LIBRE);
+        original.set(keyOf(day), turns.get(keyOf(day)));
     }
 
     (moves || []).forEach(move => {
@@ -65,17 +69,25 @@ export function workerMonthHTML(name, month, moves = [], { title = "Así quedar�
         const turn = turns.get(key);
         const color = turn ? TURNO_COLOR[turn] || "#64748b" : "";
         const before = leaving.get(key);
+        const blinking = blink && arriving.has(key);
+        const was = original.get(key) || TURNO.LIBRE;
         const classes = [
             "mcal-wcal-day",
             turn ? "has-turn" : "",
             arriving.has(key) ? "is-arriving" : "",
-            before ? "is-leaving" : ""
+            before ? "is-leaving" : "",
+            blinking ? "is-blinking" : ""
         ].filter(Boolean).join(" ");
+        // La capa del turno que tiene hoy, encima, aparece y desaparece.
+        const wasLayer = blinking
+            ? `<span class="mcal-wcal-was${was ? " has-turn" : ""}"${was ? ` style="--wcal-was:${TURNO_COLOR[was] || "#64748b"}"` : ""} aria-hidden="true"><b>${day}</b><small>${was ? escapeHTML(TURN_SHORT[was] || "") : "Libre"}</small></span>`
+            : "";
 
         cells.push(`
-            <span class="${classes}"${color ? ` style="--wcal-color:${color}"` : ""} title="${escapeHTML(dateLabel(key))}${turn ? `: ${escapeHTML(turnLabel(turn))}` : ""}${arriving.has(key) ? " (llega con el movimiento)" : ""}${before ? ` (se mueve su ${escapeHTML(turnLabel(before))})` : ""}">
+            <span class="${classes}"${color ? ` style="--wcal-color:${color}"` : ""} title="${escapeHTML(dateLabel(key))}${turn ? `: ${escapeHTML(turnLabel(turn))}` : ""}${blinking ? ` (hoy: ${was ? escapeHTML(turnLabel(was)) : "libre"})` : arriving.has(key) ? " (llega con el movimiento)" : ""}${before ? ` (se mueve su ${escapeHTML(turnLabel(before))})` : ""}">
                 <b>${day}</b>
                 <small>${turn ? escapeHTML(TURN_SHORT[turn] || "") : before ? `<s>${escapeHTML(TURN_SHORT[before] || "")}</s>` : ""}</small>
+                ${wasLayer}
             </span>`);
     }
 

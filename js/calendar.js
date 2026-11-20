@@ -5679,9 +5679,65 @@ async function getReplacementCandidates(
     // Se ordena aqui, sin el Web Worker: son unas decenas de candidatos ya
     // calculados. El worker ponia un limite de 15 s que, con la pagina ocupada,
     // vencia en falso y dejaba el modal sin abrir (replacementCandidateOrder.js).
-    return requestId === replacementCandidateRequest
-        ? sortPreparedReplacementCandidates(built.candidates)
-        : null;
+    if (requestId !== replacementCandidateRequest) return null;
+
+    const sorted = sortPreparedReplacementCandidates(built.candidates);
+
+    // Los descartados con su motivo viajan pegados a la lista: el cuadro los
+    // muestra en rojo al buscarlos por nombre. La cobertura automatica usa la
+    // lista y no los ve.
+    sorted.ineligible = built.ineligible || [];
+    return sorted;
+}
+
+/**
+ * Los que NO pueden cubrir ese turno, con el motivo, para mostrarlos en rojo
+ * cuando el supervisor los busca por nombre. Suma a los de otra profesion o
+ * estamento, que ni siquiera entran al calculo de candidatos.
+ */
+function replacementIneligibleCards(profileName, keyDay, candidates, scope) {
+    if (scope === "linked") return [];
+
+    const ruledOut = Array.isArray(candidates?.ineligible) ? candidates.ineligible : [];
+    const known = new Set([
+        profileName,
+        ...(candidates || []).map(candidate => candidate.profile.name),
+        ...ruledOut.map(candidate => candidate.profile.name)
+    ]);
+    const base = getProfiles().find(profile => profile.name === profileName);
+    const outOfProfile = getProfiles()
+        .filter(profile => isProfileActive(profile) && !known.has(profile.name))
+        .map(profile => ({
+            profile,
+            ineligibleReason: base && !profileCanCoverProfile(profile, base)
+                ? `No tiene la profesión o el estamento que pide este turno${base.profession && base.profession !== "Sin informacion" ? ` (${base.profession})` : ""}.`
+                : "No está disponible para este turno."
+        }));
+
+    return [...ruledOut, ...outOfProfile]
+        .sort((a, b) => a.profile.name.localeCompare(b.profile.name, "es"));
+}
+
+// Tarjeta roja de quien no puede cubrir: no es un boton (no asigna nada) y
+// queda oculta hasta que el buscador coincide con su nombre.
+function ineligibleCandidateHTML(candidate, keyDay) {
+    const meta = candidateMeta(candidate, { keyDay, showProfession: true });
+
+    return `
+        <div
+            class="replacement-candidate replacement-candidate--ineligible is-search-hidden"
+            data-ineligible-worker="${escapeHTML(candidate.profile.name)}"
+            tabindex="0"
+            aria-disabled="true"
+        >
+            <span>
+                <strong>${escapeHTML(candidate.profile.name)}</strong>
+                ${meta ? `<small>${escapeHTML(meta)}</small>` : ""}
+                <small class="replacement-candidate-ineligible-reason">No puede cubrir: ${escapeHTML(candidate.ineligibleReason)}</small>
+            </span>
+            <span><em>No apto</em></span>
+        </div>
+    `;
 }
 
 
@@ -5755,7 +5811,9 @@ function replacementDialogHTML({
     // cuadro y al segundo trabajador habia que llegar por el marcaje del
     // primero, que es el rodeo que este modo elimina.
     splitMode = false,
-    selectedCoverWorkers = null
+    selectedCoverWorkers = null,
+    // Quienes no pueden cubrir, con su motivo: rojos y ocultos hasta buscarlos.
+    ineligible = []
 }) {
     // Documento de respaldo, junto a "Anular permiso": si todavia no hay
     // documento el boton invita a subirlo, y si ya lo hay lo abre. Este modal es
@@ -6218,6 +6276,7 @@ function replacementDialogHTML({
             ` : ""}
             <div class="replacement-candidate-list">
                 ${items}
+                ${ineligible.map(candidate => ineligibleCandidateHTML(candidate, keyDay)).join("")}
             </div>
             <div class="turn-change-dialog__actions replacement-dialog__actions">
                 ${sendSelectedButton}
@@ -6658,6 +6717,7 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
     const hoveredCandidateWorker = card => {
         // Uno de otra unidad: su calendario no esta en esta.
         if (!card || card.dataset.workerWorkspaceId) return "";
+        if (card.dataset.ineligibleWorker) return card.dataset.ineligibleWorker;
 
         const input = card.querySelector("[data-worker], [data-request-worker]");
 
@@ -6674,14 +6734,24 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
 
         if (!worker || Number.isNaN(day.getTime())) return;
 
-        // Con lo que ya tenga ese dia: Larga + Noche queda en 24.
-        const turn = fusionarTurnos(getActualState(worker, keyDay), neededTurn);
+        // Con lo que ya tenga ese dia: Larga + Noche queda en 24. Si no se
+        // pueden juntar (quien no puede cubrir), se muestra el turno pedido
+        // tal cual: es el que se esta intentando poner.
+        const actual = Number(getActualState(worker, keyDay)) || TURNO.LIBRE;
+        const merged = fusionarTurnos(actual, neededTurn);
+        const turn = merged !== actual ? merged : neededTurn;
 
+        // El dia parpadea entre el turno nuevo y el que tiene hoy.
         hoverCalendar.innerHTML = workerMonthHTML(
             worker,
             new Date(day.getFullYear(), day.getMonth(), 1),
             [{ sourceKey: keyDay, targetKey: keyDay, destinationTurn: turn }],
-            { title: `${worker}: su mes con este turno` }
+            {
+                title: card.dataset.ineligibleWorker
+                    ? `${worker}: su mes (no puede tomar este turno)`
+                    : `${worker}: su mes con este turno`,
+                blink: true
+            }
         );
         hoverCalendar.hidden = false;
 
@@ -6845,10 +6915,15 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                         const name = normalize(
                             candidate.querySelector("strong")?.textContent
                         );
+                        const matches = name.includes(term);
 
+                        // Los que no pueden cubrir solo aparecen cuando se
+                        // los busca: sin texto, la lista es la de siempre.
                         candidate.classList.toggle(
                             "is-search-hidden",
-                            Boolean(term) && !name.includes(term)
+                            candidate.dataset.ineligibleWorker
+                                ? !term || !matches
+                                : Boolean(term) && !matches
                         );
                     });
             };
@@ -7787,6 +7862,7 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
             splitMode,
             selectedCoverWorkers,
             rota,
+            ineligible: replacementIneligibleCards(profileName, keyDay, candidates, scope),
             linkedStatus: scope === "linked"
                 ? linkedReplacementStatus
                 : ""
@@ -7796,8 +7872,9 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
         hoverCalendar.hidden = true;
         backdrop.appendChild(hoverCalendar);
 
-        // El buscador solo aparece cuando el listado desborda (hay scroll). Se mide
-        // tras insertar el DOM (el backdrop ya esta en el documento).
+        // El buscador aparece cuando el listado desborda (hay scroll) o cuando
+        // hay a quien buscar fuera de la lista: los que no pueden cubrir solo
+        // se ven escribiendo su nombre. Se mide tras insertar el DOM.
         const candidateList =
             backdrop.querySelector(".replacement-candidate-list");
         const searchBox =
@@ -7805,7 +7882,10 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
         if (candidateList && searchBox) {
             const scrollable =
                 candidateList.scrollHeight > candidateList.clientHeight + 4;
-            searchBox.classList.toggle("is-hidden", !scrollable);
+            const hasIneligible = Boolean(
+                candidateList.querySelector("[data-ineligible-worker]")
+            );
+            searchBox.classList.toggle("is-hidden", !scrollable && !hasIneligible);
         }
 
         (

@@ -156,7 +156,7 @@ test("y no revienta con datos incompletos", () => {
 test("el filtro de elegibles lo acepta aunque canCoverShift diga que no", () => {
     assert.match(
         candidatos,
-        /candidate\.backsPendingExtra \|\|\s*\n\s*canCoverShift\(/
+        /if \(candidate\.backsPendingExtra\) return "";\s*\n\s*if \(canCoverShift\(/
     );
     assert.match(candidatos, /backsPendingExtra: pendingManualExtraCoversTurn\(/);
 });

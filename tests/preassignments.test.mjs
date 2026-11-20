@@ -109,7 +109,7 @@ test("integracion: modo, handler, modal, badge, compatibilidad y sync", async ()
     );
 
     assert.match(candidatos, /function preassignmentBlocksReplacementCandidate\(/);
-    assert.match(candidatos, /!preassignmentBlocksReplacementCandidate\(/);
+    assert.match(candidatos, /if \(preassignmentBlocksReplacementCandidate\(/);
     // Timeline: marker + routing.
     assert.match(timeline, /const TIMELINE_PREASSIGN_MARKER =/);
     assert.match(timeline, /data-preassign-profile/);
