@@ -30,7 +30,7 @@ import {
     getShiftAssigned
 } from "./storage.js";
 import { puedeAplicarAdministrativo } from "./rulesEngine.js";
-import { getJSON } from "./persistence.js";
+import { getJSON, setJSON } from "./persistence.js";
 import {
     aplicarCambiosTurno,
     getTurnoBase,
@@ -1085,6 +1085,11 @@ function panelHTML(model, groups) {
         night: visibleExtraColumns(model, "night", ui.expanded.night)
     };
     const canEdit = canEditTarget("calendarPanel");
+    const brecha = {
+        day: hasBrechaColumn(model, "day"),
+        night: hasBrechaColumn(model, "night")
+    };
+    const brechaTitle = brechaColumnTitle();
 
     return `
         <div class="mcal${ui.pendingMove ? " is-moving" : ""}">
@@ -1119,6 +1124,7 @@ function panelHTML(model, groups) {
                         <col class="mcal-col-weekday">
                         ${slots.map(slot => `
                             <col class="mcal-col-titulares">
+                            ${brecha[slot] ? `<col class="mcal-col-brecha">` : ""}
                             ${columns[slot].length ? `<col data-mcal-xcol="${columns[slot].length}">` : ""}
                         `).join("")}
                     </colgroup>
@@ -1127,7 +1133,7 @@ function panelHTML(model, groups) {
                             <th rowspan="2">Fecha</th>
                             <th rowspan="2"></th>
                             ${slots.map(slot => `
-                                <th colspan="${columns[slot].length ? 2 : 1}" class="mcal-group-head">
+                                <th colspan="${1 + (brecha[slot] ? 1 : 0) + (columns[slot].length ? 1 : 0)}" class="mcal-group-head">
                                     ${slot === "day" ? "Día" : "Noche"}
                                     ${ui.expanded[slot] && canGroupExtras(model, slot)
                                         ? `<button type="button" class="mcal-fold" data-mcal-collapse="${slot}" title="Agrupar los motivos con poca gente">− Agrupar</button>`
@@ -1141,6 +1147,11 @@ function panelHTML(model, groups) {
                         <tr>
                             ${slots.map(slot => `
                                 <th class="mcal-sub-head">Titulares</th>
+                                ${brecha[slot]
+                                    ? (canEdit
+                                        ? `<th class="mcal-sub-head mcal-sub-head--brecha is-editable" role="button" tabindex="0" data-mcal-brecha-head="${slot}" title="Quienes cubren un cupo de la Brecha RRHH. Clic para editar el nombre.">${escapeHTML(brechaTitle)}</th>`
+                                        : `<th class="mcal-sub-head mcal-sub-head--brecha" title="Quienes cubren un cupo de la Brecha RRHH">${escapeHTML(brechaTitle)}</th>`)
+                                    : ""}
                                 ${columns[slot].length
                                     ? extrasCellHTML(
                                         columns[slot].map(column => extraHeadHTML(slot, column, canEdit)).join(""),
@@ -1158,10 +1169,13 @@ function panelHTML(model, groups) {
                                 <td class="mcal-date">${row.day}</td>
                                 <td class="mcal-weekday">${row.weekday}</td>
                                 ${slots.map(slot => `
-                                    <td class="mcal-slot${moveTargetClass(row.keyDay, slot)}" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0"${moveTargetTitle(row.keyDay, slot)}>${chipsHTML(row.slots[slot], row.gaps[slot], {
+                                    <td class="mcal-slot${moveTargetClass(row.keyDay, slot)}" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="titulares" tabindex="0"${moveTargetTitle(row.keyDay, slot)}>${chipsHTML(titularPeople(row, slot), row.gaps[slot], {
                                         cupos: row.cupos?.[slot] || [],
                                         movingName: isMoveSource(row.keyDay, slot) ? ui.pendingMove.name : ""
                                     })}</td>
+                                    ${brecha[slot]
+                                        ? `<td class="mcal-slot mcal-slot--brecha" data-mcal-slot="${slot}" data-mcal-key="${escapeHTML(row.keyDay)}" data-mcal-col="brecha" tabindex="0">${brechaPeople(row, slot).length ? chipsHTML(brechaPeople(row, slot), []) : ""}</td>`
+                                        : ""}
                                     ${columns[slot].length
                                         ? extrasCellHTML(
                                             columns[slot].map((column, index) => extraCellHTML(row, slot, column, canEdit, index)).join(""),
@@ -1203,7 +1217,7 @@ export async function renderMonthlyCalendarPanel() {
         panel.addEventListener("scroll", syncExtraScroll, true);
         window.addEventListener("resize", onWindowResize);
         panel.addEventListener("keydown", event => {
-            if (event.key === "Enter" && event.target.closest("[data-mcal-slot], [data-mcal-head-reason]")) {
+            if (event.key === "Enter" && event.target.closest("[data-mcal-slot], [data-mcal-head-reason], [data-mcal-brecha-head]")) {
                 onPanelClick(event);
             }
         });
@@ -1256,6 +1270,7 @@ function paintModel(panel, model, groups) {
 
 const XCELL_WIDTH = 112;
 const TITULARES_MIN_WIDTH = 190;
+const BRECHA_WIDTH = 120;
 
 /**
  * Reparte el ancho: Fecha, dia y Titulares tienen lo suyo, y la franja de
@@ -1271,7 +1286,11 @@ function layoutExtraColumns(wrap) {
     const fixed = [...wrap.querySelectorAll("col.mcal-col-date, col.mcal-col-weekday")]
         .reduce((sum, col) => sum + (parseFloat(getComputedStyle(col).width) || 0), 0);
     const titulares = wrap.querySelectorAll("col.mcal-col-titulares").length;
-    const available = Math.max(0, wrap.clientWidth - fixed - titulares * TITULARES_MIN_WIDTH);
+    const brechaCols = wrap.querySelectorAll("col.mcal-col-brecha").length;
+    const available = Math.max(
+        0,
+        wrap.clientWidth - fixed - titulares * TITULARES_MIN_WIDTH - brechaCols * BRECHA_WIDTH
+    );
     // +2: el borde de la celda, o una franja justa mostraria barra igual.
     const desired = extraCols.map(col => Number(col.dataset.mcalXcol) * XCELL_WIDTH + 2);
     const total = desired.reduce((sum, value) => sum + value, 0);
@@ -1825,6 +1844,57 @@ function closeSlotDialog(backdrop, onKeydown) {
 }
 
 const TITULARES_COLUMN = { kind: "titulares" };
+const BRECHA_COLUMN = { kind: "brecha" };
+
+/**
+ * "Cubre Brecha": quien cubre un cupo de la Brecha RRHH se ve en su propia
+ * columna, junto a Titulares, en vez de mezclado con ellos. Sigue contando en
+ * el tramo (row.slots) para todo lo que cuenta gente -la Ayuda para cubrir,
+ * los +Cupo-; solo cambia donde se dibuja. El titulo lo puede cambiar el
+ * supervisor y viaja con los turnos de la unidad.
+ */
+export const BRECHA_TITLE_KEY = "monthlyCalendarBrechaTitle";
+export const DEFAULT_BRECHA_TITLE = "Cubre Brecha";
+
+export function brechaColumnTitle() {
+    const stored = getJSON(BRECHA_TITLE_KEY, null);
+    const title = String(stored?.title || "").trim();
+
+    return title || DEFAULT_BRECHA_TITLE;
+}
+
+export function brechaPeople(row, slot) {
+    return (row.slots?.[slot] || []).filter(person => person.brecha);
+}
+
+export function titularPeople(row, slot) {
+    return (row.slots?.[slot] || []).filter(person => !person.brecha);
+}
+
+// La columna aparece en un tramo en cuanto alguien del mes cubre un cupo ahi.
+export function hasBrechaColumn(model, slot) {
+    return (model?.rows || []).some(row => brechaPeople(row, slot).length > 0);
+}
+
+async function editBrechaTitle() {
+    if (!canEditTarget("calendarPanel")) return;
+
+    const current = brechaColumnTitle();
+    const next = String(await showPrompt(
+        "Nombre de la columna de quienes cubren un cupo de la Brecha.",
+        { title: "Editar columna", value: current, confirmText: "Guardar" }
+    ) || "").trim().slice(0, 60);
+
+    if (!next || next === current) return;
+
+    setJSON(BRECHA_TITLE_KEY, { title: next });
+    addAuditLog(
+        AUDIT_CATEGORY.CALENDAR,
+        "Renombro la columna de la Brecha",
+        `"${current}" pasa a llamarse "${next}" (Calendario Mensual).`
+    );
+    await renderMonthlyCalendarPanel();
+}
 
 // La columna de una casilla: titulares, un motivo o "Otros motivos".
 function columnForCell(cell) {
@@ -1834,6 +1904,8 @@ function columnForCell(cell) {
     if (!lastModel || col === undefined || col === "titulares") {
         return TITULARES_COLUMN;
     }
+
+    if (col === "brecha") return BRECHA_COLUMN;
 
     return visibleExtraColumns(lastModel, slot, ui.expanded[slot])[Number(col)] ||
         TITULARES_COLUMN;
@@ -1847,7 +1919,8 @@ function columnReasons(column) {
 
 // Solo la gente de ESA casilla, no todo el tramo.
 function columnPeople(row, slot, column) {
-    if (column.kind === "titulares") return row.slots[slot];
+    if (column.kind === "titulares") return titularPeople(row, slot);
+    if (column.kind === "brecha") return brechaPeople(row, slot);
 
     return columnReasons(column).flatMap(reason => row.extras?.[slot]?.[reason] || []);
 }
@@ -1855,6 +1928,7 @@ function columnPeople(row, slot, column) {
 function columnLabel(column) {
     if (column.kind === "reason") return column.reason;
     if (column.kind === "group") return "Otros motivos";
+    if (column.kind === "brecha") return brechaColumnTitle();
     return "Titulares";
 }
 
@@ -2148,15 +2222,26 @@ async function askDaySchedule({ reason, keyDay, monthDate }) {
             <div class="app-dialog__choices" role="radiogroup" aria-label="Turno">
                 ${options.map(option => `
                     <label class="app-dialog__choice">
-                        <input type="radio" name="mcalDaySchedule" value="${option.kind}"${option.kind === predominant.kind ? " checked" : ""}>
+                        <input type="radio" name="mcalDaySchedule" value="${option.kind}">
                         <span class="app-dialog__choice-text">${escapeHTML(option.label)}${option.kind === predominant.kind ? `<small class="app-dialog__choice-hint">El más usado en este motivo</small>` : ""}</span>
                     </label>`).join("")}
             </div>`,
+        // Ninguna viene marcada: aceptar sin mirar guardaba "el mas usado"
+        // (Larga en APOYO CLINICO TAC) cuando se queria un Diurno, y una Larga
+        // sobre una Noche es un 24.
         onReady: dialog => {
-            dialog.querySelector('input[name="mcalDaySchedule"]:checked')?.focus();
+            dialog.querySelector('input[name="mcalDaySchedule"]')?.focus();
         },
-        onAccept: dialog =>
-            dialog.querySelector('input[name="mcalDaySchedule"]:checked')?.value || "larga"
+        onAccept: dialog => {
+            const value = dialog.querySelector('input[name="mcalDaySchedule"]:checked')?.value;
+
+            if (!value) {
+                showScheduleError(dialog, "Elige el turno: Larga, Diurno u horario personalizado.");
+                return undefined;
+            }
+
+            return value;
+        }
     });
 
     if (!kind) return null;
@@ -2313,7 +2398,7 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
                         </li>
                     `).join("")}
                 </ul>
-            ` : `<p class="mcal-dialog-empty">${isTitulares ? "Nadie en este turno." : "Nadie con este motivo."}</p>`}
+            ` : `<p class="mcal-dialog-empty">${isTitulares ? "Nadie en este turno." : column.kind === "brecha" ? "Nadie cubre un cupo en este turno." : "Nadie con este motivo."}</p>`}
             ${gaps.length ? `
                 <ul class="mcal-dialog-list mcal-dialog-list--gaps">
                     ${gaps.map((gap, index) => `
@@ -2338,7 +2423,7 @@ function openSlotDialog(row, slot, column = TITULARES_COLUMN) {
             ` : ""}
             ${canEdit ? "" : `<p class="mcal-dialog-empty">Tu usuario tiene permiso solo de lectura en Turnos.</p>`}
             <div class="turn-change-dialog__actions">
-                ${canEdit && !isTitulares ? `<button class="primary-button" type="button" data-mcal-add>Agregar a alguien</button>` : ""}
+                ${canEdit && !isTitulares && column.kind !== "brecha" ? `<button class="primary-button" type="button" data-mcal-add>Agregar a alguien</button>` : ""}
                 <button class="ghost-button" type="button" data-mcal-close>Cerrar</button>
             </div>
         </section>
@@ -2785,6 +2870,12 @@ function onPanelClick(event) {
         if (!event.target.closest("[data-mcal='prev'], [data-mcal='next']")) return;
     }
 
+    if (event.target.closest("[data-mcal-brecha-head]")) {
+        event.stopPropagation();
+        void editBrechaTitle();
+        return;
+    }
+
     const head = event.target.closest("[data-mcal-head-reason]");
 
     if (head) {
@@ -2858,9 +2949,16 @@ function onPanelClick(event) {
     const slot = cell.dataset.mcalSlot;
     const column = columnForCell(cell);
 
+    // Casilla vacia de la Brecha: a Titulares, donde estan los +Cupo.
+    if (column.kind === "brecha" && !columnPeople(row, slot, column).length) {
+        openSlotDialog(row, slot, TITULARES_COLUMN);
+        return;
+    }
+
     // Casilla de motivo vacia: directo a elegir a quien agregar.
     if (
         column.kind !== "titulares" &&
+        column.kind !== "brecha" &&
         !columnPeople(row, slot, column).length &&
         canEditTarget("calendarPanel")
     ) {

@@ -3041,6 +3041,46 @@ body.theme-dark .mcal-magic-request {
     background: rgba(100, 116, 139, 0.05);
 }
 
+/* "Cubre Brecha": quienes cubren un cupo de la Brecha RRHH, junto a Titulares,
+   en morado suave (tambien en los fines de semana). */
+.mcal-col-brecha {
+    width: 120px;
+}
+
+.mcal-table td.mcal-slot--brecha,
+.mcal-table tr.is-weekend td.mcal-slot--brecha {
+    min-width: 100px;
+    background: rgba(139, 92, 246, 0.09);
+}
+
+.mcal-table tr.is-weekend td.mcal-slot--brecha {
+    background: rgba(139, 92, 246, 0.15);
+}
+
+.mcal-table thead th.mcal-sub-head--brecha {
+    max-width: 130px;
+    white-space: normal;
+    color: #6d28d9;
+    background:
+        linear-gradient(rgba(139, 92, 246, 0.12), rgba(139, 92, 246, 0.12)),
+        linear-gradient(var(--panel), var(--panel)),
+        var(--bg-bottom, #fff);
+}
+
+.mcal-sub-head--brecha.is-editable {
+    cursor: pointer;
+}
+
+.mcal-sub-head--brecha.is-editable:hover,
+.mcal-sub-head--brecha.is-editable:focus-visible {
+    text-decoration: underline;
+    outline: none;
+}
+
+body.theme-dark .mcal-table thead th.mcal-sub-head--brecha {
+    color: #c4b5fd;
+}
+
 /* Franja de motivos HHEE de un tramo: una celda con desplazamiento horizontal
    propio. Todas las filas se mueven juntas (JS); la barra se ve solo en el
    encabezado. */

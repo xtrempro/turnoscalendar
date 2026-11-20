@@ -66,6 +66,9 @@ const EXACT_KEY_MODULES = new Map([
     // con los trabajadores. Las privadas NO pasan por aca: viven en el
     // documento de su dueño (ver js/homeTasks.js).
     ["home_shared_tasks", "home"],
+    // Nombre de la columna "Cubre Brecha" del Calendario Mensual: viaja con los
+    // turnos (lo edita quien edita Turnos) y usa las reglas ya desplegadas.
+    ["monthlyCalendarBrechaTitle", "turnos"],
     ["staffing_config", "weekly"],
     ["staffing_applicants", "weekly"],
     ["staffing_custom_reminders", "weekly"],

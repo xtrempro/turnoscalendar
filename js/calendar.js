@@ -1,7 +1,7 @@
 import { escapeHTML } from "./htmlUtils.js";
 import { uniqueMotives } from "./motives.js";
 import { onlyViewIrrelevantStateKeys } from "./stateChangeRelevance.js";
-import { showChoice, showConfirm } from "./dialogs.js";
+import { showAlert, showChoice, showConfirm } from "./dialogs.js";
 import {
     getEditableBaseShift,
     recordBaseShiftRemoval
@@ -7290,6 +7290,27 @@ async function openReplacementDialog(profileName, keyDay, options = {}) {
                     { replaced: profileName }
                 );
                 return;
+            }
+
+            // Turno extra con motivo (cupo de la Brecha o columna de un motivo)
+            // para quien YA trabaja ese turno ese dia: no agrega nada. Antes se
+            // guardaba igual -un Diurno sobre un D+N-, la casilla no cambiaba,
+            // parecia que no se habia aplicado y se reintentaba con otro turno
+            // (Fernanda Romero, 19-11: termino en 24h). Y el registro de mas
+            // podia contarse como horas extras.
+            if (rota && coveringWorker && !button.dataset.workerWorkspaceId) {
+                const actualState = Number(getActualState(coveringWorker, keyDay)) || TURNO.LIBRE;
+
+                if (
+                    actualState !== TURNO.LIBRE &&
+                    Number(fusionarTurnos(actualState, neededTurn)) === actualState
+                ) {
+                    await showAlert(
+                        `${coveringWorker} ya tiene ${TURNO_LABEL[actualState] || "turno"} ese día, que incluye ${TURNO_LABEL[neededTurn] || "ese turno"}: agregarlo no le suma nada.\n\nSi lo que quieres es dejar ese turno con este motivo, cambia el motivo del turno que ya tiene.`,
+                        { title: "Ya tiene ese turno" }
+                    );
+                    return;
+                }
             }
 
             // Cupo de la Brecha RRHH: comentario del supervisor para el

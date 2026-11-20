@@ -115,6 +115,22 @@ test("los cupos de la Brecha RRHH van en Titulares; quien lo cubre, en rojo con 
     assert.equal(mes.rows[2].cupos.day.length, 0);
     assert.deepEqual(mes.extraColumns.day, ["Apoyo Clínico TC"]);
 
+    // Se dibuja en la columna "Cubre Brecha", junto a Titulares, y no con
+    // ellos; pero sigue contando en el tramo (la Ayuda para cubrir y los
+    // +Cupo cuentan row.slots).
+    assert.equal(mensual.hasBrechaColumn(mes, "day"), true);
+    assert.equal(mensual.hasBrechaColumn(mes, "night"), false);
+    assert.deepEqual(mensual.brechaPeople(mes.rows[2], "day").map(p => p.name), ["Tm00 Apellido"]);
+    assert.ok(!mensual.titularPeople(mes.rows[2], "day").some(p => p.name === "Tm00 Apellido"));
+    assert.ok(mes.rows[2].slots.day.some(p => p.name === "Tm00 Apellido"));
+
+    // El titulo por omision, y el que deja el supervisor.
+    assert.equal(mensual.brechaColumnTitle(), "Cubre Brecha");
+    setJSON(mensual.BRECHA_TITLE_KEY, { title: "Completa rotativa" });
+    assert.equal(mensual.brechaColumnTitle(), "Completa rotativa");
+    setJSON(mensual.BRECHA_TITLE_KEY, { title: "   " });
+    assert.equal(mensual.brechaColumnTitle(), "Cubre Brecha");
+
     // Un TM nuevo entra al grupo A el 18-11: el mejor dotado pasa de 2 a 3.
     // El grupo B (2 TM) queda corto DESDE esa fecha, no desde el 1 del mes:
     // antes se media todo el mes con la foto de hoy.
