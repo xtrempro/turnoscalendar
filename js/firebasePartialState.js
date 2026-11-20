@@ -4,6 +4,9 @@ import {
     composeTaskAssignmentPatches,
     planTaskAssignmentEntries
 } from "./taskAssignmentSync.js";
+import { replacementShardDocKey } from "./replacementShards.js";
+
+export { replacementShardDocKey, replacementShardMonth } from "./replacementShards.js";
 
 const PARTIAL_MAP_PREFIXES = [
     "data_",
@@ -199,14 +202,65 @@ export function isTerminalStateWriteError(error) {
     return error?.code === "whole-list-write-forbidden";
 }
 
+// ---- Reemplazos repartidos por mes (19-11-2026) ----
+//
+// Con la marca `replacementShards: "monthly-v1"` de la unidad, cada reemplazo se
+// guarda en el documento de SU mes (`replacements__2026-11`), no en el unico
+// `replacements` que rondaba 1 MiB. Todos llevan `storageKey: "replacements"`:
+// quien lee (navegador y servidor) junta los elementos por id sin saber de meses.
+//
+// Invariante: un id vive en UN solo documento toda su vida, el del mes de su
+// `date`. Un reemplazo no cambia de mes: un turno extra se anula, no se
+// arrastra, y los cambios de turno son siempre dentro del mismo mes
+// (swapUI.js y workerRequests.js lo exigen). Si algo intentara cambiar de mes
+// un registro existente se rechaza con aviso, en vez de dejarlo en dos
+// documentos. El id no cambia nunca: la bitacora lo guarda como referencia.
+// Las funciones del mes viven en replacementShards.js (sin dependencias).
+
+function shardMoveError(id, from, to) {
+    const error = new Error(
+        `No se guardo el cambio del reemplazo ${id}: lo pasaria de ${from} a ${to}, ` +
+        "y un reemplazo no cambia de mes. Anulalo y crealo en la fecha nueva."
+    );
+
+    error.code = "whole-list-write-forbidden";
+    error.storageKey = "replacements";
+    return error;
+}
+
+function assignReplacementShards(entries, previousRaw) {
+    const previousList = parseStored(previousRaw);
+    const previous = new Map(
+        (Array.isArray(previousList) ? previousList : [])
+            .map(record => [String(record?.id ?? "").trim(), record])
+    );
+
+    return entries.map(entry => {
+        const before = previous.get(entry.itemKey);
+        const after = entry.deleted ? null : parseStored(entry.value);
+        const from = before ? replacementShardDocKey(before) : "";
+        const to = after ? replacementShardDocKey(after) : from;
+
+        if (from && to && from !== to) throw shardMoveError(entry.itemKey, from, to);
+
+        return { ...entry, docKey: to || from };
+    });
+}
+
+/** Identidad del DOCUMENTO de una entrada: varios documentos comparten clave. */
+export function partialStateDocumentId(entry = {}) {
+    return `${entry.moduleId}\u001e${entry.docKey || entry.storageKey}`;
+}
+
 export function groupPartialStateEntries(entries = []) {
     const grouped = new Map();
 
     entries.forEach(entry => {
-        const id = `${entry.moduleId}\u001e${entry.storageKey}`;
+        const id = partialStateDocumentId(entry);
         const group = grouped.get(id) || {
             moduleId: entry.moduleId,
             storageKey: entry.storageKey,
+            ...(entry.docKey ? { docKey: entry.docKey } : {}),
             items: {},
             deletedItems: {}
         };
@@ -243,7 +297,9 @@ export function planPartialStateEntries({
     keys = [],
     changes = {},
     readRaw = () => null,
-    moduleForKey = () => ""
+    moduleForKey = () => "",
+    // Claves cuyos elementos van repartidos por mes (ver replacementShardDocKey).
+    shardedKeys = new Set()
 } = {}) {
     const entries = [];
 
@@ -306,7 +362,9 @@ export function planPartialStateEntries({
                 );
             }
 
-            entries.push(...listEntries);
+            entries.push(...(shardedKeys.has(storageKey)
+                ? assignReplacementShards(listEntries, previousRaw)
+                : listEntries));
             return;
         }
 

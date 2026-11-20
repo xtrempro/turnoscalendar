@@ -747,7 +747,10 @@ service cloud.firestore {
         !("workersCount" in request.resource.data) &&
         !("activeWorkersCount" in request.resource.data) &&
         !("pwaUsersCount" in request.resource.data) &&
-        !("countersUpdatedAt" in request.resource.data);
+        !("countersUpdatedAt" in request.resource.data) &&
+        // Una unidad nueva nace repartida por mes (o sin marca, desde una
+        // version vieja); otros valores son del corte/vuelta atras (Admin).
+        request.resource.data.get("replacementShards", "monthly-v1") == "monthly-v1";
       allow get: if isMember(workspaceId);
       allow list: if false;
       allow update: if isOwner(workspaceId) &&
@@ -931,9 +934,36 @@ service cloud.firestore {
           // viejo- puede volver a escribirla entera (`value`), marcarla borrada
           // ni guardarla en otro documento. Las unidades que aun tienen `value`
           // siguen pudiendo guardar por elemento: esos campos no cambian.
-          function replacementsEntryKeepsShape() {
-            return !request.resource.data.diff(resource != null ? resource.data : {})
-              .affectedKeys().hasAny(["value", "deleted"]);
+          //
+          // Desde el 19-11-2026 la lista puede ir repartida por mes
+          // (`replacements__AAAA-MM`, js/replacementShards.js), con el mismo
+          // storageKey. El documento antiguo se congela (`frozen`, solo Admin)
+          // en el corte y desde ahi no acepta escrituras de ninguna pestana.
+          function isReplacementsDocument() {
+            return moduleId == "turnos" &&
+              (entryId == "replacements" || entryId.matches("replacements__[0-9]{4}-[0-9]{2}"));
+          }
+          function validReplacementsDocument() {
+            return request.resource.data.storageKey == "replacements" &&
+              (resource == null || resource.data.get("frozen", false) != true) &&
+              (entryId == "replacements"
+                // En modo mensual el documento unico no se crea ni se toca: una
+                // unidad que NACE mensual no lo tiene congelado, y una pestana
+                // vieja lo creaba con una segunda copia del mismo id
+                // (reauditoria simplificada, P2-1). Fuera de ese modo (antes del
+                // corte, o tras una vuelta atras) sigue como siempre.
+                ? !("shard" in request.resource.data) &&
+                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.get("replacementShards", "") != "monthly-v1"
+                // Un mes solo se escribe con la unidad EN modo mensual. La
+                // marca la cambia el script (Admin); fuera de ese modo -antes
+                // del corte, o desde que empieza una vuelta atras- ninguna
+                // pestana abierta puede crear ni tocar meses.
+                : (request.resource.data.get("shard", "") == entryId.split("__")[1] &&
+                  get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.get("replacementShards", "") == "monthly-v1")) &&
+              // shard va fijo desde la creacion: no cuenta como cambio de forma.
+              !request.resource.data.diff(resource != null ? resource.data : {})
+                .affectedKeys().hasAny(["value", "deleted", "frozen"]) &&
+              (resource == null || request.resource.data.get("shard", "") == resource.data.get("shard", ""));
           }
           allow read: if canReadStateModule(workspaceId, moduleId);
           allow create, update: if
@@ -941,8 +971,8 @@ service cloud.firestore {
             // La guarda va por la RUTA, no por el storageKey que trae la
             // escritura: si no, re-etiquetar el documento (storageKey "swaps")
             // la apagaba y permitia borrarlo en dos pasos.
-            (moduleId == "turnos" && entryId == "replacements"
-              ? (request.resource.data.storageKey == "replacements" && replacementsEntryKeepsShape())
+            (isReplacementsDocument()
+              ? validReplacementsDocument()
               : request.resource.data.storageKey != "replacements") &&
             (moduleId != "tasks" ||
               (entryId == "weekly_task_assignment_entries"
@@ -973,7 +1003,7 @@ service cloud.firestore {
             );
           allow delete: if canWriteStateModule(workspaceId, moduleId) &&
             !(moduleId == "tasks" && entryId == "weekly_task_assignment_entries") &&
-            !(moduleId == "turnos" && entryId == "replacements");
+            !isReplacementsDocument();
         }
       }
 

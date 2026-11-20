@@ -1338,6 +1338,7 @@ async function refreshWorkspaces() {
                     : (info?.establishment || workspace.establishment || ""),
                 stateStorage: info?.stateStorage || "",
                 replacementStorage: info?.replacementStorage || "",
+                replacementShards: info?.replacementShards || "",
                 auditLogStorage: info?.auditLogStorage || ""
             };
         })

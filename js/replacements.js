@@ -277,14 +277,29 @@ function mergeTurns(currentTurn, nextTurn) {
     ]);
 }
 
+/**
+ * El reemplazo que se muestra para el turno cubierto. Si hay varios (un turno
+ * repartido), se elige por id y no por la posicion en la lista: la posicion
+ * depende de como llego cada cambio a la sesion (en sitio, al final, o en el
+ * orden de las claves al hidratar), y dos pestanas mostraban a personas
+ * distintas (reauditoria por mes, P2-3).
+ */
 export function getReplacementForCoveredShift(profile, keyDay) {
     const iso = isoFromKey(keyDay);
+    let chosen = null;
 
-    return getReplacements().find(replacement =>
-        replacementActive(replacement) &&
-        replacement.replaced === profile &&
-        replacement.date === iso
-    ) || null;
+    getReplacements().forEach(replacement => {
+        if (
+            !replacementActive(replacement) ||
+            replacement.replaced !== profile ||
+            replacement.date !== iso
+        ) return;
+        if (!chosen || String(replacement.id ?? "") < String(chosen.id ?? "")) {
+            chosen = replacement;
+        }
+    });
+
+    return chosen;
 }
 
 export function getActiveCoveredReplacementsForProfileRange(
@@ -1009,6 +1024,10 @@ export function moveManualExtraBackup(profile, fromIso, toIso, turnCode) {
         // `year` y `month` salen de la fecha y se usan para agrupar por mes:
         // moverlos con ella evita que el respaldo quede contado en el mes que
         // ya no le corresponde.
+        // El id no cambia: la bitacora y los permisos lo guardan como
+        // referencia. Los cambios de turno son siempre dentro del mismo mes
+        // (swapUI.js y workerRequests.js lo exigen), asi que con la unidad
+        // repartida por mes el respaldo sigue en el mismo documento.
         return {
             ...replacement,
             date: toIso,

@@ -67,6 +67,8 @@ async function ensurePracticeWorkspaceHandler(request, { db, HttpsError, serverT
       // Mismo formato de almacenamiento que una unidad nueva (workspaces.js).
       stateStorage: "entries-v1",
       replacementStorage: "records-shadow-v1",
+      // Reemplazos repartidos por mes desde el inicio.
+      replacementShards: "monthly-v1",
       auditLogStorage: "shards-shadow-v1",
       createdByEmail: String(token.email || ""),
       practice: true,

@@ -82,6 +82,7 @@ export function setActiveWorkspace(workspace) {
         establishment: normalizeEstablishment(workspace.establishment),
         stateStorage: String(workspace.stateStorage || ""),
         replacementStorage: String(workspace.replacementStorage || ""),
+        replacementShards: String(workspace.replacementShards || ""),
         auditLogStorage: String(workspace.auditLogStorage || "")
     });
 }
@@ -219,6 +220,7 @@ export async function fetchWorkspaceDeletionInfo(workspaceId) {
             establishment: normalizeEstablishment(data.establishment),
             stateStorage: String(data.stateStorage || ""),
             replacementStorage: String(data.replacementStorage || ""),
+            replacementShards: String(data.replacementShards || ""),
             auditLogStorage: String(data.auditLogStorage || ""),
             deletionStatus: data.deletionStatus || "",
             deletionScheduledMs: scheduledMs,
@@ -281,6 +283,9 @@ export async function createWorkspace(user, name, establishment = "") {
         ownerUid: user.uid,
         stateStorage: "entries-v1",
         replacementStorage: "records-shadow-v1",
+        // Las unidades nuevas nacen con los reemplazos repartidos por mes: el
+        // documento unico de reemplazos crecia sin tope hasta rozar 1 MiB.
+        replacementShards: "monthly-v1",
         auditLogStorage: "shards-shadow-v1",
         createdByEmail: user.email || "",
         createdAt: now,
@@ -322,7 +327,9 @@ export async function createWorkspace(user, name, establishment = "") {
     const active = {
         id: workspaceRef.id,
         name: cleanName,
-        role: "owner"
+        role: "owner",
+        // La primera sesion ya escribe por meses, sin esperar a recargar.
+        replacementShards: workspace.replacementShards
     };
 
     setActiveWorkspace(active);

@@ -201,7 +201,11 @@ async function measureWorkspace(db, workspaceId, workspace, now) {
       documentsRead++;
       documents.push({
         moduleId: moduleRef.id,
-        storageKey: String(data.storageKey || entryDoc.id),
+        // Un mes de reemplazos se nombra por su documento: si no, todos
+        // saldrian como "replacements" y se pisarian en el seguimiento.
+        storageKey: data.shard
+          ? String(entryDoc.id)
+          : String(data.storageKey || entryDoc.id),
         bytes: estimateFirestoreDocumentBytes(data, entryDoc.ref.path)
       });
 
@@ -245,7 +249,13 @@ async function measureWorkspace(db, workspaceId, workspace, now) {
     ? checkAuditLogVersions(legacyAuditLogs, shardAuditLogs, now)
     : null;
 
-  if (String(workspace.replacementStorage || "").startsWith("records-") && replacementsEntry) {
+  // Con los reemplazos repartidos por mes la sombra en records ya no se compara:
+  // un solo documento ya no es la lista entera.
+  if (
+    String(workspace.replacementStorage || "").startsWith("records-") &&
+    !workspace.replacementShards &&
+    replacementsEntry
+  ) {
     const recordsSnap = await db
       .collection(`workspaces/${workspaceId}/replacementRecords`)
       .get();

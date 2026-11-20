@@ -26,6 +26,7 @@ import {
     groupPartialStateEntries,
     isTerminalStateWriteError,
     isWholeListWriteEntry,
+    partialStateDocumentId,
     mergePartialStateEntries,
     planPartialStateEntries
 } from "./firebasePartialState.js";
@@ -154,6 +155,15 @@ let taskAssignmentServerDocument = null;
 let taskAssignmentWriteSequence = 0;
 let onStateChanged = () => {};
 let syncGeneration = 0;
+// Claves repartidas por mes en la unidad activa (marca `replacementShards`).
+// Se fija al arrancar la sincronizacion: un cambio de marca exige recargar.
+let shardedStateKeys = new Set();
+
+export function replacementShardKeysFor(workspace) {
+    return workspace?.replacementShards === "monthly-v1"
+        ? new Set(["replacements"])
+        : new Set();
+}
 const lastAppliedHashes = new Map();
 const pendingStateEntries = new Map();
 // Cambios que el servidor nunca aceptaria (la lista de reemplazos entera). No
@@ -491,9 +501,13 @@ export function normalizeQueuedStateEntries(entries = []) {
             // contenedor, y sumarle un campo vacio cambiaria la forma de la
             // entrada para todos los demas caminos.
             const container = String(entry.container || "");
-            const withContainer = base => (
-                container ? { ...base, container } : base
-            );
+            // El documento destino (reemplazos por mes) tambien viaja con cada
+            // elemento: perderlo mandaria el elemento al documento de la clave.
+            const docKey = String(entry.docKey || "");
+            const withContainer = base => {
+                const withDoc = docKey ? { ...base, docKey } : base;
+                return container ? { ...withDoc, container } : withDoc;
+            };
 
             if (itemKeys.size) {
                 return [...itemKeys].map(itemKey => withContainer({
@@ -1201,6 +1215,11 @@ function partialStateDocumentPayload(entry, firestoreModule, current = {}) {
         updatedAtISO: new Date().toISOString(),
         updatedAt: firestoreModule.serverTimestamp()
     };
+    // Documento de un mes de reemplazos: lo dicen las reglas y lo lee el
+    // monitor de tamano. Quien lee la lista no lo necesita.
+    if (entry.docKey && entry.docKey !== entry.storageKey) {
+        payload.shard = entry.docKey.slice(entry.storageKey.length + 2);
+    }
     const itemKeys = new Set([
         ...Object.keys(entry.items || {}),
         ...Object.keys(entry.deletedItems || {})
@@ -1318,7 +1337,7 @@ async function commitPartialStateFields(
                 workspaceId,
                 entry.moduleId
             ),
-            entryDocId(entry.storageKey)
+            entryDocId(entry.docKey || entry.storageKey)
         );
         const payload = partialStateDocumentPayload(
             entry,
@@ -1391,7 +1410,7 @@ async function commitPartialStateSliceNow(
             workspaceId,
             entry.moduleId
         ),
-        entryDocId(entry.storageKey)
+        entryDocId(entry.docKey || entry.storageKey)
     ));
     try {
         const committed = await firestoreModule.runTransaction(db, async transaction => {
@@ -1512,7 +1531,7 @@ async function commitPartialStateDocumentsNow(
                 asyncThreshold: 120
             }
         );
-        documents.forEach(entry => committedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`));
+        documents.forEach(entry => committedDocuments.add(partialStateDocumentId(entry)));
     } catch (error) {
         if (documents.length > 1) {
             // Un documento corrupto no debe bloquear el resto del guardado.
@@ -1521,7 +1540,7 @@ async function commitPartialStateDocumentsNow(
             for (const entry of documents) {
                 try {
                     await commitPartialStateSlice(db, firestoreModule, workspaceId, [entry]);
-                    committedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`);
+                    committedDocuments.add(partialStateDocumentId(entry));
                 } catch (isolatedError) { firstError ||= isolatedError; }
             }
             if (!firstError) return;
@@ -1627,7 +1646,8 @@ export async function flushPendingFirebaseAppStateEntries({
         keys: planKeys,
         changes,
         readRaw: key => getRaw(key, null),
-        moduleForKey: stateModuleForKey
+        moduleForKey: stateModuleForKey,
+        shardedKeys: shardedStateKeys
     }).filter(entry => canWriteModule(entry.moduleId));
     const stateKeySet = new Set(stateKeys);
     const queued = [...pendingStateEntries.values()]
@@ -1711,8 +1731,8 @@ export async function flushPendingFirebaseAppStateEntries({
         };
     } catch (error) {
         if (workspaceId === activeWorkspaceId && generation === syncGeneration) {
-            acknowledgePendingStateEntries(writable.filter(entry => committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)));
-            queueGroupedPartialStateEntries(writable.filter(entry => !committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)), { older: true });
+            acknowledgePendingStateEntries(writable.filter(entry => committedDocuments.has(partialStateDocumentId(entry))));
+            queueGroupedPartialStateEntries(writable.filter(entry => !committedDocuments.has(partialStateDocumentId(entry))), { older: true });
             scheduleEntrySync(0, { urgent: true });
         }
         throw error;
@@ -1823,11 +1843,17 @@ async function flushPartialStateEntries() {
                     asyncThreshold: 120
                 }
             );
-            slice.forEach(entry => committedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`));
+            slice.forEach(entry => committedDocuments.add(partialStateDocumentId(entry)));
             } catch (error) {
-                if (isTerminalStateWriteError(error)) {
+                // Un permiso denegado en reemplazos es el documento antiguo
+                // congelado (corte por meses) o una forma que las reglas no
+                // aceptan: reintentar no lo arregla.
+                if (isTerminalStateWriteError(error) || (
+                    String(error?.code || "").includes("permission-denied") &&
+                    slice.some(entry => entry.storageKey === "replacements")
+                )) {
                     // Reintentarlo no lo arregla: se aparta y se sigue con el resto.
-                    slice.forEach(entry => quarantinedDocuments.add(`${entry.moduleId}\u001e${entry.storageKey}`));
+                    slice.forEach(entry => quarantinedDocuments.add(partialStateDocumentId(entry)));
                     quarantineStateEntries(slice, error);
                 } else {
                 isolatedError ||= error;
@@ -1877,8 +1903,8 @@ async function flushPartialStateEntries() {
         if (workspaceId !== activeWorkspaceId || generation !== syncGeneration) return;
         // Lo fallido es anterior a lo editado mientras esperaba la red.
         queueGroupedPartialStateEntries(writable.filter(entry =>
-            !committedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`) &&
-            !quarantinedDocuments.has(`${entry.moduleId}\u001e${entry.storageKey}`)
+            !committedDocuments.has(partialStateDocumentId(entry)) &&
+            !quarantinedDocuments.has(partialStateDocumentId(entry))
         ), { older: true });
         dispatchStatus({
             type: "app-state-error",
@@ -2703,6 +2729,7 @@ export async function startFirebaseAppStateSync(
 
     stopFirebaseAppStateSync();
     activeWorkspaceId = workspaceId;
+    shardedStateKeys = replacementShardKeysFor(workspace);
     syncGeneration++;
     const generation = syncGeneration;
 
@@ -3109,6 +3136,7 @@ export function stopFirebaseAppStateSync() {
     appliedEntrySignatures.clear();
     entryModulesPresent.clear();
     documentHealthByPath.clear();
+    shardedStateKeys = new Set();
     syncGeneration++;
 }
 
@@ -3118,7 +3146,8 @@ export function queueFirebasePersistenceChanges(detail = {}) {
         try {
             queuePartialStateEntries(planPartialStateEntries({
                 keys: [key], changes: detail.changes || {},
-                readRaw: storageKey => getRaw(storageKey, null), moduleForKey: stateModuleForKey
+                readRaw: storageKey => getRaw(storageKey, null), moduleForKey: stateModuleForKey,
+                shardedKeys: shardedStateKeys
             }), { urgent: isWorkerCalendarUrgentStateKey(key) });
         } catch (error) {
             dispatchStatus({ type: "app-state-error", keys: [key],

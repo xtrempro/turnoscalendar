@@ -1446,6 +1446,38 @@ test("reglas modulares de Firestore y Storage", async t => {
     );
 
     await t.test(
+        "una unidad nueva nace con los reemplazos por mes; la marca no la cambia el cliente",
+        async () => {
+            const base = { ownerUid: "owner", name: "Nueva", stateStorage: "entries-v1" };
+            const ownerDb = owner.firestore();
+
+            await assertSucceeds(setDoc(doc(ownerDb, "workspaces", "nueva-mensual"), { ...base, replacementShards: "monthly-v1" }));
+            // Una version vieja la crea sin marca: se permite (queda en el documento unico).
+            await assertSucceeds(setDoc(doc(ownerDb, "workspaces", "nueva-sin-marca"), base));
+            await assertFails(setDoc(doc(ownerDb, "workspaces", "nueva-rollback"), { ...base, replacementShards: "rollback-pending" }));
+            await assertFails(setDoc(doc(ownerDb, "workspaces", "nueva-otra"), { ...base, replacementShards: "x" }));
+            // Despues, ni el dueño la cambia.
+            await env.withSecurityRulesDisabled(context => setDoc(
+                doc(context.firestore(), "workspaces", "nueva-mensual", "members", "owner"), { role: "owner" }));
+            await assertFails(updateDoc(doc(ownerDb, "workspaces", "nueva-mensual"), { replacementShards: "" }));
+
+            // Nace mensual: escribe en su mes, y una pestana vieja no puede crear
+            // el documento unico (no hay uno congelado que la frene).
+            const entry = id => doc(ownerDb, "workspaces", "nueva-mensual", "stateModules", "turnos", "entries", id);
+            const items = { same: JSON.stringify({ id: "same", date: "2026-11-02" }) };
+            await assertSucceeds(setDoc(entry("replacements__2026-11"), { moduleId: "turnos", storageKey: "replacements",
+                shard: "2026-11", container: "array", items, deletedItems: { same: false } }));
+            await assertFails(setDoc(entry("replacements"), { moduleId: "turnos", storageKey: "replacements",
+                container: "array", items, deletedItems: { same: false } }, { merge: true }));
+            // Sin marca, el documento unico sigue siendo el de siempre.
+            await env.withSecurityRulesDisabled(context => setDoc(
+                doc(context.firestore(), "workspaces", "nueva-sin-marca", "members", "owner"), { role: "owner" }));
+            await assertSucceeds(setDoc(doc(ownerDb, "workspaces", "nueva-sin-marca", "stateModules", "turnos", "entries", "replacements"),
+                { moduleId: "turnos", storageKey: "replacements", container: "array", items, deletedItems: { same: false } }, { merge: true }));
+        }
+    );
+
+    await t.test(
         "un trabajador puede desenlazar solo su propia app",
         async () => {
             const selfUnlinkWorkspaceId = "workspace-worker-self-unlink";
@@ -2826,6 +2858,72 @@ test("reglas modulares de Firestore y Storage", async t => {
             doc(turnosEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "alias"),
             stateEntry("turnos", "replacements")
         ));
+        // Un cliente no congela ni descongela: eso es del corte (Admin).
+        await assertFails(setDoc(target, { frozen: true }, { merge: true }));
+
+        // ---- Reparto por mes (19-11-2026) ----
+        const monthPath = ["workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "replacements__2026-11"];
+        const month = doc(turnosEditor.firestore(), ...monthPath);
+        const monthEntry = (extra = {}) => ({
+            moduleId: "turnos", storageKey: "replacements", shard: "2026-11", container: "array",
+            items: { m1: item("m1") }, deletedItems: { m1: false }, clientId: "x", ...extra
+        });
+
+        const setShardMode = value => env.withSecurityRulesDisabled(async context => {
+            await setDoc(doc(context.firestore(), "workspaces", WORKSPACE_ID), { replacementShards: value }, { merge: true });
+        });
+
+        // Sin la marca de la unidad, ningun mes se crea (auditoria por mes, P2-2).
+        await assertFails(setDoc(month, monthEntry(), { merge: true }));
+        await setShardMode("monthly-v1");
+        await assertSucceeds(setDoc(month, monthEntry(), { merge: true }));
+        // En modo mensual el documento unico no se toca ni se crea: una pestana
+        // vieja dejaba una segunda copia del mismo id (reauditoria simplificada, P2-1).
+        await assertFails(setDoc(target, { items: { c: item("c") }, deletedItems: { c: false } }, { merge: true }));
+        await env.withSecurityRulesDisabled(context => deleteDoc(doc(context.firestore(), ...path)));
+        await assertFails(setDoc(target, stateEntry("turnos", "replacements")));
+        await assertFails(setDoc(target, { moduleId: "turnos", storageKey: "replacements", container: "array",
+            items: { m1: item("m1") }, deletedItems: { m1: false } }, { merge: true }));
+        await assertSucceeds(setDoc(month, { moduleId: "turnos", storageKey: "replacements", shard: "2026-11",
+            items: { m2: item("m2") }, deletedItems: { m2: false } }, { merge: true }));
+        await assertSucceeds(setDoc(month, { deletedItems: { m2: true } }, { merge: true }));
+        // El mes del documento y su campo `shard` tienen que coincidir, y no cambia.
+        await assertFails(setDoc(doc(turnosEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "replacements__2026-12"), monthEntry()));
+        await assertFails(setDoc(month, { shard: "2026-12" }, { merge: true }));
+        await assertFails(setDoc(month, { storageKey: "swaps" }, { merge: true }));
+        // Tampoco aqui viaja la lista entera, ni se borra o congela.
+        await assertFails(setDoc(month, { value: "[]", deleted: false }, { merge: true }));
+        await assertFails(updateDoc(month, { deleted: true }));
+        await assertFails(setDoc(month, { frozen: true }, { merge: true }));
+        await assertFails(deleteDoc(month));
+        // Un nombre que no es un mes no es un documento de reemplazos.
+        await assertFails(setDoc(doc(turnosEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "replacements__nov"), monthEntry({ shard: "nov" })));
+
+        // Vuelta atras en curso: la marca sale de "monthly-v1" y una pestana que
+        // sigue en modo mensual ya no puede tocar ni crear meses.
+        await setShardMode("rollback-pending");
+        await assertFails(setDoc(month, { items: { m3: item("m3") }, deletedItems: { m3: false } }, { merge: true }));
+        await assertFails(setDoc(doc(turnosEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "replacements__2027-01"),
+            monthEntry({ shard: "2027-01" })));
+        await setShardMode("");
+        // Tras la vuelta atras (marca vacia) el documento unico vuelve a aceptar
+        // escrituras, como en una unidad sin marca.
+        await assertSucceeds(setDoc(target, { moduleId: "turnos", storageKey: "replacements", container: "array",
+            items: { m1: item("m1") }, deletedItems: { m1: false } }, { merge: true }));
+
+        // El documento antiguo congelado no acepta nada de ninguna pestana
+        // (reauditoria del diseno v2, P2-1: con las reglas anteriores pasaba).
+        await env.withSecurityRulesDisabled(async context => {
+            await setDoc(doc(context.firestore(), ...path), {
+                ...stateEntry("turnos", "replacements"),
+                container: "array", items: {}, deletedItems: {}, frozen: true
+            });
+        });
+        await assertFails(setDoc(target, { items: { z: item("z") }, deletedItems: { z: false } }, { merge: true }));
+        await assertFails(setDoc(target, { items: { z: item("z") } }, { mergeFields: ["items"] }));
+        await assertFails(setDoc(target, { frozen: false }, { merge: true }));
+        await assertFails(updateDoc(target, { clientId: "otro" }));
+
         // Las demas claves del modulo siguen igual.
         await assertSucceeds(setDoc(
             doc(turnosEditor.firestore(), "workspaces", WORKSPACE_ID, "stateModules", "turnos", "entries", "swaps"),

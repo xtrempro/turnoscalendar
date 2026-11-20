@@ -11,6 +11,9 @@
 
 const { cleanText } = require("./text");
 
+// Claves que pueden vivir en varios documentos (un documento por mes).
+const SHARDED_STORAGE_KEYS = new Set(["replacements"]);
+
 function parseStoredJSON(value, fallback) {
   if (value === null || value === undefined || value === "") return fallback;
   if (typeof value === "object") return value;
@@ -181,9 +184,24 @@ async function applyExactEntries(
   keysByModule = {}
 ) {
   const refs = [];
+  const shardedQueries = [];
 
   Object.entries(keysByModule).forEach(([moduleId, keys]) => {
     [...new Set(keys || [])].forEach(storageKey => {
+      // Los reemplazos pueden estar repartidos por mes (`replacements__AAAA-MM`,
+      // js/replacementShards.js): todos llevan el mismo storageKey, asi que se
+      // piden por ese campo y no por un solo id de documento.
+      if (SHARDED_STORAGE_KEYS.has(storageKey)) {
+        shardedQueries.push(db
+          .collection("workspaces")
+          .doc(workspaceId)
+          .collection("stateModules")
+          .doc(moduleId)
+          .collection("entries")
+          .where("storageKey", "==", storageKey)
+          .get());
+        return;
+      }
       refs.push(db
         .collection("workspaces")
         .doc(workspaceId)
@@ -193,6 +211,14 @@ async function applyExactEntries(
         .doc(entryDocId(storageKey)));
     });
   });
+
+  // Por id de documento: el antiguo `replacements` primero y despues los meses,
+  // igual que en loadWorkspaceState (la coleccion completa viene ordenada asi).
+  for (const snap of await Promise.all(shardedQueries)) {
+    [...snap.docs]
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .forEach(docSnap => applyEntry(state, docSnap.data() || {}));
+  }
 
   if (!refs.length) return state;
 
