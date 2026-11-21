@@ -2128,6 +2128,50 @@ body[data-active-view="home"] .secondary-grid {
    fila conserva la altura de la maqueta. El padding es para que el foco del
    teclado no quede cortado contra la barra de scroll. */
 .hm-scroller { overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+/* Kanban en Inicio: Pendientes y En Proceso lado a lado, Terminadas debajo a
+   lo ancho (y con sus tarjetas tambien en dos columnas). Toda la tarjeta es un
+   boton que abre el menu Kanban. */
+.hm-kb { cursor: pointer; transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.hm-kb:hover { border-color: var(--accent); }
+.hm-kb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hm-kb-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.hm-kb-col {
+    display: flex; flex-direction: column; gap: 6px; min-width: 0;
+    padding: 8px; border-radius: 12px; background: var(--panel-alt); border: 1px solid var(--border);
+}
+.hm-kb-col--done { grid-column: 1 / -1; }
+.hm-kb-col--done .hm-kb-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.hm-kb-col--done .hm-kb-empty,
+.hm-kb-col--done .hm-kb-more { grid-column: 1 / -1; }
+.hm-kb-col-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    font-size: 0.7rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted);
+}
+.hm-kb-col-head b {
+    min-width: 20px; height: 18px; padding: 0 6px; border-radius: 999px; display: grid; place-items: center;
+    background: var(--border-strong); color: var(--text); font-size: 0.7rem;
+}
+.hm-kb-cards { display: flex; flex-direction: column; gap: 6px; }
+.hm-kb-card {
+    --kb-color: #94a3b8;
+    display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    padding: 6px 8px 6px 10px; border-radius: 8px;
+    background: color-mix(in srgb, var(--kb-color) 18%, var(--panel));
+    border-left: 4px solid var(--kb-color);
+}
+.hm-kb-card strong {
+    font-size: 0.8rem; font-weight: 700; line-height: 1.25; color: var(--text);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere;
+}
+.hm-kb-card small { font-size: 0.68rem; color: var(--text-muted); }
+.hm-kb-card--cyan { --kb-color: #19c4d8; }
+.hm-kb-card--yellow { --kb-color: #ffbd3c; }
+.hm-kb-card--green { --kb-color: #72d63c; }
+.hm-kb-card--coral { --kb-color: #ff6267; }
+.hm-kb-card--automatic { --kb-color: #f59e0b; }
+.hm-kb-empty { padding: 6px 2px; font-size: 0.76rem; font-style: italic; color: var(--text-muted); }
+.hm-kb-more { font-size: 0.72rem; font-weight: 700; color: var(--text-soft); padding: 0 2px; }
+
 .hm-tasks-list { max-height: 330px; }
 .hm-bday-list { max-height: 330px; }
 .hm-req-list.hm-scroller,

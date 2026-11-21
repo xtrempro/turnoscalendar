@@ -706,6 +706,35 @@ function bindAutomaticKanbanRefresh() {
     );
 }
 
+// Lo que muestra el widget de Inicio: las MISMAS tarjetas que el tablero
+// (propias + automaticas de equipos y licitaciones), por columna.
+export function getKanbanSummary(today) {
+    const cards = getKanbanCardsForRender(getCards(), today);
+
+    return KANBAN_COLUMNS.map(column => ({
+        key: column.key,
+        label: column.label,
+        cards: cards
+            .filter(card => card.status === column.key)
+            .map(card => ({
+                id: card.id,
+                title: card.title,
+                color: card.color,
+                automatic: isAutomaticCard(card),
+                date: isAutomaticCard(card)
+                    ? `Vence ${formatDate(card.dueDate || card.updatedAt)}`
+                    : formatDate(card.updatedAt)
+            }))
+    }));
+}
+
+// El tablero se respalda por usuario en Firebase y solo se traia al abrir el
+// menu Kanban. Inicio se pinta antes, asi que pide lo mismo; devuelve true si
+// el respaldo cambio lo que habia en este equipo.
+export function hydrateKanbanSummary() {
+    return hydrateKanbanFromFirebase();
+}
+
 export function renderKanbanBoard() {
     const root = document.getElementById("kanbanPanel");
 

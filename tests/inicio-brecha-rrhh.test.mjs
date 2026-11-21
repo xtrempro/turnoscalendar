@@ -342,7 +342,7 @@ test("un turno al que le faltan dos sale como dos filas", () => {
 test("está en el inicio, en la columna del turno", async () => {
     // Es una de las tarjetas del inicio, y el orden de fabrica la pone debajo
     // de la cobertura. Cada administrador puede moverla despues (homeLayout.js).
-    assert.match(home, /\n    brecha: brechaWidget\n/);
+    assert.match(home, /\n    brecha: brechaWidget,?\n/);
     assert.match(
         await read("homeLayout.js"),
         /Object\.freeze\(\["resumen", "minical", "cobertura", "brecha"\]\)/

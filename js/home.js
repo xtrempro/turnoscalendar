@@ -28,6 +28,7 @@ import {
     getWorkerRequests
 } from "./storage.js";
 import { getJSON } from "./persistence.js";
+import { getKanbanSummary, hydrateKanbanSummary } from "./kanban.js";
 import { keyFromDate, keyFromISO, isoFromKey } from "./dateUtils.js";
 import { getTurnoBase, getTurnoReal } from "./turnEngine.js";
 import {
@@ -932,7 +933,8 @@ const IC = {
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     trash: '<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',
-    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+    kanban: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/><path d="M5.5 8h1.5M11 8h2M11 11.5h2M17 8h1.5"/>'
 };
 
 function svg(paths, extra = "") {
@@ -2496,6 +2498,74 @@ function cumpleanosWidget() {
         </div>`;
 }
 
+/* Kanban: el mismo tablero del menu, comprimido. En el ancho de una tarjeta
+   no caben tres columnas legibles, asi que Pendientes y En Proceso van lado a
+   lado y Terminadas debajo, a lo ancho. Cada columna muestra las primeras
+   tarjetas y cuenta el resto; para mover, editar o crear esta el menu, que se
+   abre al presionar la tarjeta. */
+const KANBAN_WIDGET_VISIBLE = 4;
+
+function kanbanColumnHTML(column) {
+    const shown = column.cards.slice(0, KANBAN_WIDGET_VISIBLE);
+    const rest = column.cards.length - shown.length;
+    const cards = shown.map(card => `
+        <div class="hm-kb-card hm-kb-card--${esc(card.automatic ? "automatic" : card.color)}" title="${esc(card.title)}">
+            <strong>${esc(card.title)}</strong>
+            ${card.date ? `<small>${esc(card.date)}</small>` : ""}
+        </div>`).join("");
+
+    return `
+        <section class="hm-kb-col hm-kb-col--${esc(column.key)}">
+            <div class="hm-kb-col-head">
+                <span>${esc(column.label)}</span>
+                <b>${column.cards.length}</b>
+            </div>
+            <div class="hm-kb-cards">
+                ${cards || `<div class="hm-kb-empty">Sin tarjetas</div>`}
+                ${rest > 0 ? `<div class="hm-kb-more">+${rest} más</div>` : ""}
+            </div>
+        </section>`;
+}
+
+function kanbanBodyHTML() {
+    return getKanbanSummary().map(kanbanColumnHTML).join("");
+}
+
+function kanbanWidget() {
+    if (!canViewMenu("kanban")) return "";
+
+    const open = getKanbanSummary()
+        .filter(column => column.key !== "done")
+        .reduce((total, column) => total + column.cards.length, 0);
+
+    return `
+        <div class="hm-card hm-col-4 hm-kb" data-hm="kanban-open" role="button" tabindex="0"
+            title="Abrir el Kanban">
+            ${panelHead(
+                IC.kanban,
+                "Kanban",
+                `<span class="hm-count" data-hm="kanban-count" title="Pendientes y en proceso">${open}</span>`
+            )}
+            <div class="hm-kb-board" data-hm="kanban-board">${kanbanBodyHTML()}</div>
+        </div>`;
+}
+
+function reRenderKanbanWidget(panel) {
+    const board = panel.querySelector('[data-hm="kanban-board"]');
+
+    if (!board) return;
+
+    board.innerHTML = kanbanBodyHTML();
+
+    const count = panel.querySelector('[data-hm="kanban-count"]');
+
+    if (count) {
+        count.textContent = String(getKanbanSummary()
+            .filter(column => column.key !== "done")
+            .reduce((total, column) => total + column.cards.length, 0));
+    }
+}
+
 function resumenWidget() {
     const swapCount = getMonthSwaps().length;
     const dotacion = getDotacionHoy();
@@ -3539,7 +3609,8 @@ const HOME_CARDS = {
     resumen: resumenWidget,
     minical: miniCalendarWidget,
     cobertura: coberturaWidget,
-    brecha: brechaWidget
+    brecha: brechaWidget,
+    kanban: kanbanWidget
 };
 
 // Cada tarjeta lleva su id en la raiz (lo que se arrastra y lo que dice que
@@ -3732,6 +3803,24 @@ function openTaskEdit(panel, id) {
 
 function wire(panel) {
     wireHomeCardOrder(panel);
+
+    // Presionar el Kanban abre su menu. La manija de arrastre vive dentro de
+    // la tarjeta: soltarla no debe navegar.
+    const kanbanCard = panel.querySelector('[data-hm="kanban-open"]');
+    const openKanban = () => {
+        document.querySelector('.nav-tile[data-target="kanbanPanel"]')?.click();
+    };
+
+    kanbanCard?.addEventListener("click", event => {
+        if (event.target.closest?.(".hm-drag-handle, [data-hm-drag-handle]")) return;
+        openKanban();
+    });
+    kanbanCard?.addEventListener("keydown", event => {
+        if (event.target !== kanbanCard) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        openKanban();
+    });
 
     const tasksList = panel.querySelector('[data-hm="tasks-list"]');
     const refreshTasks = () => {
@@ -4904,6 +4993,14 @@ export function renderHomePanel() {
 
     panel.innerHTML = medirHome("home:html", homeHTML);
     medirHome("home:wire", () => wire(panel));
+
+    // El Kanban se respalda por usuario en Firebase; si este equipo tenia una
+    // copia vieja, se repinta solo su tarjeta cuando llega la buena.
+    if (panel.querySelector('[data-hm="kanban-board"]')) {
+        void hydrateKanbanSummary().then(changed => {
+            if (changed) reRenderKanbanWidget(panel);
+        });
+    }
 
     // La tarjeta del dia tambien filtra por "Diario Hábil": sin los feriados
     // cargados, una tarea habil apareceria en un feriado hasta el repintado.
