@@ -319,10 +319,287 @@ ${body}
 </html>`;
 }
 
+// ---------------------------------------------------------------------------
+// Impresion diaria: UN dia en hoja carta vertical, tarea a la izquierda y
+// quienes la cubren a la derecha.
+//
+// Sale de la MISMA semana que la impresion completa (getTaskScheduleWeek), asi
+// que las casillas unidas, la fila de quien esta de turno sin tarea y las
+// novedades son las mismas; solo cambia que se toma una columna.
+//
+// Con la hoja entera para un dia sobra espacio, y se usa en legibilidad: letra
+// de 11 pt y cada nombre como una ficha propia en lugar de "A-B-C" pegados.
+// ---------------------------------------------------------------------------
+
+const DAY_PRINT_STYLES = `
+    @page { size: letter portrait; margin: 0; }
+
+    * { box-sizing: border-box; }
+
+    *,
+    *::before,
+    *::after {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    html, body { margin: 0; padding: 0; background: #fff; }
+
+    /* 10 mm de aire: casi ninguna impresora llega al borde fisico. */
+    body {
+        padding: 10mm 12mm;
+        color: #111827;
+        font-family: "Plus Jakarta Sans", "Segoe UI", Arial, sans-serif;
+        font-size: 11pt;
+        line-height: 1.3;
+    }
+
+    /* En pantalla (el iframe oculto) la pagina se mide al ancho de la hoja,
+       para que el ajuste de abajo calcule el mismo alto que saldra impreso. */
+    @media screen { html { width: 216mm; } }
+
+    header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 6mm;
+        margin-bottom: 5mm;
+        padding-bottom: 3mm;
+        border-bottom: 1.5pt solid #0f172a;
+    }
+
+    h1 {
+        margin: 0;
+        font-size: 18pt;
+        font-weight: 800;
+        letter-spacing: -0.01em;
+    }
+
+    header span {
+        font-size: 10pt;
+        font-weight: 700;
+        color: #475569;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+
+    .tsp-day-section { margin-bottom: 5mm; }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+    }
+
+    thead { display: table-header-group; }
+
+    tr {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    th, td {
+        border: 0.6pt solid #94a3b8;
+        padding: 1.6mm 3mm;
+        vertical-align: middle;
+        overflow-wrap: anywhere;
+    }
+
+    thead th {
+        background: #0f172a;
+        color: #fff;
+        font-size: 9pt;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-align: left;
+        text-transform: uppercase;
+    }
+
+    tbody th {
+        text-align: left;
+        font-size: 11pt;
+        font-weight: 800;
+        background: #f1f5f9;
+    }
+
+    tbody th span {
+        display: block;
+        margin-top: 0.5mm;
+        font-size: 8.5pt;
+        font-weight: 600;
+        color: #475569;
+    }
+
+    col.tsp-day-col--task { width: 32%; }
+    col.tsp-day-col--people { width: 68%; }
+
+    .tsp-day-names {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.5mm 2mm;
+    }
+
+    .tsp-day-name {
+        padding: 0.3mm 2mm;
+        border: 0.6pt solid #cbd5e1;
+        border-radius: 1.5mm;
+        background: rgba(255, 255, 255, 0.75);
+        font-weight: 700;
+        white-space: nowrap;
+    }
+
+    .tsp-day-line { display: block; font-weight: 600; }
+    .tsp-day-line + .tsp-day-line { margin-top: 1mm; }
+
+    .tsp-day-note {
+        display: block;
+        margin-top: 1.2mm;
+        font-size: 9.5pt;
+        font-style: italic;
+        color: #334155;
+    }
+
+    .tsp-day-merged { border-left: 2pt solid #0f172a; }
+
+    .tsp-day-empty { color: #94a3b8; font-style: italic; }
+`;
+
+// Un dia normal cabe en una hoja; uno con muchas tareas se achica lo justo
+// para caber, sin bajar de 70 % (mas chico ya no se lee: ahi mejor dos hojas).
+// Corre DENTRO del documento impreso, asi que mide lo mismo que se imprime.
+const FIT_ONE_PAGE_SCRIPT = `(function () {
+    var page = 279.4 * 96 / 25.4 - 6;
+    var height = document.documentElement.scrollHeight;
+    if (height > page) document.body.style.zoom = String(Math.max(0.7, page / height));
+})();`;
+
+function dayDate(day) {
+    const [year, month, date] = String(day.keyDay || "").split("-").map(Number);
+
+    return new Date(year, month, date);
+}
+
+export function dayPrintTitle(day) {
+    const text = dayDate(day).toLocaleDateString("es-CL", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric"
+    });
+
+    return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function dayCellHTML(cell) {
+    const parts = [];
+
+    if (cell.lines?.length) {
+        parts.push(cell.lines
+            .map(line => `<span class="tsp-day-line">${escapeHTML(line)}</span>`)
+            .join(""));
+    }
+    if (cell.workers?.length) {
+        parts.push(`<div class="tsp-day-names">${cell.workers
+            .map(name => `<span class="tsp-day-name">${escapeHTML(name)}</span>`)
+            .join("")}</div>`);
+    }
+    if (cell.note) {
+        parts.push(`<span class="tsp-day-note">${escapeHTML(cell.note)}</span>`);
+    }
+
+    return parts.length
+        ? parts.join("")
+        : `<span class="tsp-day-empty">Sin asignar</span>`;
+}
+
+// Una seccion, solo con la columna del dia. Las casillas unidas conservan su
+// rowspan: en el dia inhabil todas las tareas suelen ser UN puesto, y asi se
+// ve como tal y no como la misma lista repetida en cada fila.
+function dayTableHTML(section, dayIndex, { skipEmpty = false } = {}) {
+    const rows = section.rows
+        .map((row, rowIndex) => ({ row, rowIndex, cell: row.cells[dayIndex] || {} }))
+        .filter(({ cell }) => !skipEmpty ||
+            cell.lines?.length || cell.workers?.length || cell.note);
+
+    if (!rows.length) return "";
+
+    const body = rows.map(({ row, rowIndex, cell }) => {
+        const tint = rowTint(rowIndex);
+        const people = cell.covered
+            ? ""
+            : cell.rowSpan > 1
+                ? `<td class="tsp-day-merged" rowspan="${cell.rowSpan}" style="${tint}">${dayCellHTML(cell)}</td>`
+                : `<td style="${tint}">${dayCellHTML(cell)}</td>`;
+
+        return `
+        <tr>
+            <th scope="row" style="${rowLabelTint(rowIndex)}">
+                ${escapeHTML(row.title)}
+                ${row.detail ? `<span>${escapeHTML(row.detail)}</span>` : ""}
+            </th>
+            ${people}
+        </tr>`;
+    }).join("");
+
+    return `
+        <section class="tsp-day-section">
+            <table>
+                <colgroup>
+                    <col class="tsp-day-col--task">
+                    <col class="tsp-day-col--people">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>${escapeHTML(section.label.toUpperCase())}</th>
+                        <th>Asignados</th>
+                    </tr>
+                </thead>
+                <tbody>${body}</tbody>
+            </table>
+        </section>`;
+}
+
+export function dayPrintDocumentHTML(week, events, dayIndex) {
+    const day = week.days[dayIndex];
+    const title = dayPrintTitle(day);
+    const tables = week.sections.length
+        ? week.sections.map(section => dayTableHTML(section, dayIndex)).join("")
+        : `<p class="tsp-day-empty">Todavía no hay trabajadores asignados en esta semana.</p>`;
+    // De las novedades solo van las que tienen algo ESE dia.
+    const eventsHTML = events
+        ? dayTableHTML({ ...events, label: "Novedades del día" }, dayIndex, { skipEmpty: true })
+        : "";
+
+    return `<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>${escapeHTML(`Programación · ${title}`)}</title>
+<style>${DAY_PRINT_STYLES}</style>
+</head>
+<body>
+<header><h1>${escapeHTML(title)}</h1><span>Programación diaria</span></header>
+${tables}${eventsHTML}
+<script>${FIT_ONE_PAGE_SCRIPT}</script>
+</body>
+</html>`;
+}
+
 // Se imprime desde un iframe oculto y no desde `window.open`: una ventana
 // emergente la bloquea el navegador por defecto y obligaria a explicarle al
 // supervisor como habilitarla.
 function printSchedule() {
+    printHTML(printDocumentHTML(getTaskScheduleWeek(), getTaskScheduleWeekEvents()));
+}
+
+function printDay(dayIndex) {
+    const week = getTaskScheduleWeek();
+
+    if (!week.days[dayIndex]) return;
+    printHTML(dayPrintDocumentHTML(week, getTaskScheduleWeekEvents(), dayIndex));
+}
+
+function printHTML(html) {
     const frame = document.createElement("iframe");
 
     frame.setAttribute("aria-hidden", "true");
@@ -348,9 +625,7 @@ function printSchedule() {
     }
 
     doc.open();
-    doc.write(
-        printDocumentHTML(getTaskScheduleWeek(), getTaskScheduleWeekEvents())
-    );
+    doc.write(html);
     doc.close();
 
     // Se retira despues de imprimir, no de inmediato: quitar el iframe
@@ -404,16 +679,73 @@ function render() {
         ?.addEventListener("click", clearColors);
 }
 
+// Selector del dia para la impresion diaria: un menu bajo el boton con los
+// siete dias de la semana que se esta mirando.
+function dayMenu() {
+    return backdrop?.querySelector("[data-day-print-menu]") || null;
+}
+
+function dayMenuOpen() {
+    const menu = dayMenu();
+
+    return Boolean(menu && !menu.hidden);
+}
+
+function closeDayMenu() {
+    const menu = dayMenu();
+
+    if (!menu) return;
+    menu.hidden = true;
+    backdrop
+        .querySelector("[data-day-print-toggle]")
+        ?.setAttribute("aria-expanded", "false");
+}
+
+function openDayMenu() {
+    const menu = dayMenu();
+
+    if (!menu) return;
+
+    const week = getTaskScheduleWeek();
+
+    menu.innerHTML = `
+        <p class="tsp-day-menu-title">¿Qué día imprimir?</p>
+        ${week.days.map((day, index) => `
+            <button type="button" role="menuitem" data-day-print="${index}">
+                <strong>${escapeHTML(day.weekday.charAt(0).toUpperCase() + day.weekday.slice(1))}</strong>
+                <span>${escapeHTML(day.shortDate || String(day.dayNumber))}</span>
+            </button>`).join("")}`;
+    menu.hidden = false;
+    backdrop
+        .querySelector("[data-day-print-toggle]")
+        ?.setAttribute("aria-expanded", "true");
+    menu.querySelector("[data-day-print]")?.focus();
+}
+
+function onDocumentClick(event) {
+    if (!dayMenuOpen()) return;
+    if (event.target.closest?.("[data-day-print-wrap]")) return;
+    closeDayMenu();
+}
+
 function close() {
     if (!backdrop) return;
 
     document.removeEventListener("keydown", onKeyDown);
+    document.removeEventListener("click", onDocumentClick, true);
     backdrop.remove();
     backdrop = null;
 }
 
 function onKeyDown(event) {
-    if (event.key === "Escape") close();
+    if (event.key !== "Escape") return;
+
+    // Escape cierra primero el menu de dias, y recien despues el visor.
+    if (dayMenuOpen()) {
+        closeDayMenu();
+        return;
+    }
+    close();
 }
 
 // La semana se mueve en el tablero, no solo en el visor: asi lo que se esta
@@ -445,6 +777,10 @@ export function openTaskSchedulePreview() {
                 <button class="hm-btn-secondary hm-ws-today" type="button" data-preview-nav="today">Hoy</button>
                 <span class="tsp-color-controls" data-color-controls></span>
                 <button class="hm-btn-secondary tsp-print" type="button" data-preview-print>${PRINT_ICON}Imprimir</button>
+                <span class="tsp-day-print" data-day-print-wrap>
+                    <button class="hm-btn-secondary tsp-print" type="button" data-day-print-toggle aria-haspopup="true" aria-expanded="false">${PRINT_ICON}Impresión diaria</button>
+                    <div class="tsp-day-menu" data-day-print-menu role="menu" aria-label="Día a imprimir" hidden></div>
+                </span>
                 <button class="hm-modal-close" type="button" data-preview-close aria-label="Cerrar">&times;</button>
             </div>
             <div class="hm-modal-body" data-preview-body></div>
@@ -460,14 +796,31 @@ export function openTaskSchedulePreview() {
         .querySelector("[data-preview-print]")
         .addEventListener("click", printSchedule);
     backdrop
+        .querySelector("[data-day-print-toggle]")
+        .addEventListener("click", () => {
+            if (dayMenuOpen()) closeDayMenu();
+            else openDayMenu();
+        });
+    backdrop
+        .querySelector("[data-day-print-menu]")
+        .addEventListener("click", event => {
+            const option = event.target.closest("[data-day-print]");
+
+            if (!option) return;
+            closeDayMenu();
+            printDay(Number(option.dataset.dayPrint));
+        });
+    backdrop
         .querySelectorAll("[data-preview-nav]")
         .forEach(button => {
             button.addEventListener("click", () => {
+                closeDayMenu();
                 navigate(button.dataset.previewNav);
             });
         });
 
     document.body.appendChild(backdrop);
     document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("click", onDocumentClick, true);
     render();
 }

@@ -4595,6 +4595,62 @@ body.theme-light .tt-worker {
     font-size: 0.78rem;
 }
 
+/* Impresion diaria: el menu de dias cuelga bajo su boton. */
+.tsp-day-print {
+    position: relative;
+    display: inline-flex;
+}
+
+.tsp-day-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 5;
+    display: grid;
+    gap: 2px;
+    min-width: 210px;
+    padding: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: var(--shadow-panel);
+}
+
+.tsp-day-menu[hidden] { display: none; }
+
+.tsp-day-menu-title {
+    margin: 2px 6px 6px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.tsp-day-menu button {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+    text-align: left;
+    cursor: pointer;
+}
+
+.tsp-day-menu button span { color: var(--text-muted); font-size: 0.78rem; }
+
+.tsp-day-menu button:hover,
+.tsp-day-menu button:focus-visible {
+    background: var(--accent-soft);
+    outline: none;
+}
+
 .tsp-section { display: grid; gap: 8px; }
 
 .tsp-section-title {

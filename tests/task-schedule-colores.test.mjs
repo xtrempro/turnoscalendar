@@ -71,7 +71,8 @@ test("el color llega igual al visor y a la hoja impresa", async () => {
     assert.match(source, /const tint = rowTint\(rowIndex\);/);
     // Y las dos pasan el indice de la fila.
     assert.equal(source.match(/rowCellsHTML\(row, rowIndex\)/g)?.length, 2);
-    assert.equal(source.match(/rowLabelTint\(rowIndex\)/g)?.length, 2);
+    // Visor, hoja semanal y hoja diaria.
+    assert.equal(source.match(/rowLabelTint\(rowIndex\)/g)?.length, 3);
 });
 
 test("el nombre de la tarea sigue legible sobre el pastel en tema oscuro", async () => {
