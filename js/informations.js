@@ -35,6 +35,7 @@ import {
     normalizeCategory,
     normalizeStatus,
     normalizeSubcategory,
+    capInformationItems,
     isProtocol,
     PROTOCOL_CATEGORY,
     protocolSubcategories
@@ -284,11 +285,13 @@ function sortInformations(a, b) {
 }
 
 export function normalizeInformations(value = []) {
-    return (Array.isArray(value) ? value : [])
-        .map(normalizeInformation)
-        .filter(item => item.title || item.body || item.attachments.length)
-        .sort(sortInformations)
-        .slice(0, MAX_ITEMS);
+    return capInformationItems(
+        (Array.isArray(value) ? value : [])
+            .map(normalizeInformation)
+            .filter(item => item.title || item.body || item.attachments.length)
+            .sort(sortInformations),
+        MAX_ITEMS
+    );
 }
 
 export function getInformations() {

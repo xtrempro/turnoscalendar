@@ -67,6 +67,19 @@ export function protocolSubcategories(items = []) {
     return [...byKey.values()].sort((a, b) => a.localeCompare(b, "es"));
 }
 
+// El tope descarta solo informaciones: un protocolo es documentacion que se
+// consulta, no una noticia que envejece, y nunca se pierde por llegar otras.
+// Respeta el orden recibido (ya ordenado, lo mas nuevo primero).
+export function capInformationItems(items = [], max = 200) {
+    let kept = 0;
+
+    return (Array.isArray(items) ? items : []).filter(item => {
+        if (isProtocol(item)) return true;
+        kept += 1;
+        return kept <= max;
+    });
+}
+
 // Se reparte por lo que NO cambia de un dia a otro. El turno queda fuera a
 // proposito: una persona esta de noche el martes y libre el jueves, asi que
 // "el turno de noche" no es un grupo al que se le pueda escribir, es el estado

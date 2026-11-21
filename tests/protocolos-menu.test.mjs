@@ -90,6 +90,23 @@ test("la subcategoria se guarda solo en protocolos y viaja a la PWA", () => {
     assert.equal(published.p1.category, "protocolo");
 });
 
+test("el tope de 200 descarta solo informaciones, nunca protocolos", () => {
+    const day = index => new Date(Date.UTC(2026, 0, 1) + index * 3600000).toISOString();
+    const raw = [
+        // Protocolos MAS VIEJOS que cualquier informacion: con un tope comun serian los primeros en caer.
+        ...Array.from({ length: 3 }, (_, i) => ({ id: `p${i}`, title: `P${i}`, body: "x", category: "protocolo", publishedAt: day(i) })),
+        ...Array.from({ length: 205 }, (_, i) => ({ id: `i${i}`, title: `I${i}`, body: "y", category: "general", publishedAt: day(100 + i) }))
+    ];
+    const items = normalizeInformations(raw);
+    const ids = new Set(items.map(item => item.id));
+
+    assert.equal(items.filter(item => item.category === "protocolo").length, 3);
+    assert.equal(items.filter(item => item.category !== "protocolo").length, 200);
+    // Caen las 5 informaciones mas viejas.
+    for (let i = 0; i < 5; i += 1) assert.equal(ids.has(`i${i}`), false);
+    assert.equal(ids.has("i5"), true);
+});
+
 test("guardar fija el borrador y su menu: cambiar de menu durante la subida no publica en otro (P2-1)", async () => {
     const panel = (await read("../js/informations.js")).replace(/\r\n/g, "\n");
     const start = panel.indexOf("async function persistDraft(");
